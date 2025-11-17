@@ -9,9 +9,10 @@ use crate::arrays::{get_required_array, get_required_array_from_struct_array_fro
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
-    AnyValue, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
-    build_uint16_id_filter, default_match_type, get_uint16_ids, new_optional_record_batch_filter, nulls_to_false,
-    regex_match_column, update_optional_record_batch_filter, update_primary_record_batch_filter,
+    AnyValue, IdSet, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
+    build_id_filter, default_match_type, get_ids, new_child_record_batch_filter,
+    new_parent_record_batch_filter, nulls_to_false, regex_match_column,
+    update_child_record_batch_filter, update_parent_record_batch_filter,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -107,13 +108,13 @@ impl TraceFilter {
                 exclude_span_event_attr_filter,
                 exclude_span_link_attr_filter,
             ) = exclude_config.create_filters(&traces_payload, true)?;
-
             // combine the include and exclude filters
             let resource_attr_filter = arrow::compute::and_kleene(
                 &include_resource_attr_filter,
                 &exclude_resource_attr_filter,
             )
             .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+
             let span_filter =
                 arrow::compute::and_kleene(&include_span_filter, &exclude_span_filter).map_err(
                     |e: arrow_schema::ArrowError| Error::ColumnLengthMismatch { source: e },
@@ -121,7 +122,6 @@ impl TraceFilter {
             let span_attr_filter =
                 arrow::compute::and_kleene(&include_span_attr_filter, &exclude_span_attr_filter)
                     .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-
             let span_event_filter =
                 arrow::compute::and_kleene(&include_span_event_filter, &exclude_span_event_filter)
                     .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
@@ -131,7 +131,6 @@ impl TraceFilter {
                 &exclude_span_event_attr_filter,
             )
             .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-
             let span_link_attr_filter = arrow::compute::and_kleene(
                 &include_span_link_attr_filter,
                 &exclude_span_link_attr_filter,
@@ -158,7 +157,7 @@ impl TraceFilter {
             return Ok(traces_payload);
         };
 
-        let (span_filter, optional_record_batch_filters) = self.sync_up_filters(
+        let (span_filter, child_record_batch_filters) = self.sync_up_filters(
             &traces_payload,
             resource_attr_filter,
             span_filter,
@@ -170,7 +169,7 @@ impl TraceFilter {
 
         apply_filter(&mut traces_payload, ArrowPayloadType::Spans, &span_filter)?;
 
-        for (payload_type, filter) in optional_record_batch_filters {
+        for (payload_type, filter) in child_record_batch_filters {
             apply_filter(&mut traces_payload, payload_type, &filter)?;
         }
 
@@ -185,7 +184,7 @@ impl TraceFilter {
         resource_attr_filter: BooleanArray,
         mut span_filter: BooleanArray,
         span_attr_filter: BooleanArray,
-        span_event_filter: BooleanArray,
+        mut span_event_filter: BooleanArray,
         span_event_attr_filter: BooleanArray,
         span_link_attr_filter: BooleanArray,
     ) -> Result<(BooleanArray, HashMap<ArrowPayloadType, BooleanArray>)> {
@@ -214,10 +213,69 @@ impl TraceFilter {
             consts::ID,
         )?;
 
+        // use the event and link attrs to update the event and link record batches (their parent record batches)
+        // and then we use those to update the span record batch
+        match span_event_attrs {
+            Some(span_event_attrs_record_batch) => {
+                // get event id column
+                if let Some(span_events_record_batch) = span_events {
+                    let span_event_ids_column =
+                        get_required_array(span_events_record_batch, consts::ID)?;
+                    span_event_filter = update_parent_record_batch_filter(
+                        span_event_attrs_record_batch,
+                        span_event_ids_column,
+                        &span_event_attr_filter,
+                        &span_event_filter,
+                    )?;
+                } else {
+                    return Err(Error::UnexpectedRecordBatchState { reason: "Span Event Attribute Record Batch found without Span Event Record Batch".to_string() });
+                }
+            }
+            None => {
+                if span_event_attr_filter.true_count() == 0 {
+                    // the configuration required certain resource_attributes but found none so we can return early
+                    // remove all elements as nothing matches
+                    return Ok((
+                        BooleanArray::from(BooleanBuffer::new_unset(span_filter.len())),
+                        HashMap::new(),
+                    ));
+                }
+            }
+        }
+
+        // if we have span link attributes then we can create the span link filter
+        let mut span_link_filter = match span_link_attrs {
+            Some(span_link_attrs_record_batch) => {
+                // get event id column
+                if let Some(span_links_record_batch) = span_links {
+                    let span_link_ids_column =
+                        get_required_array(span_links_record_batch, consts::ID)?;
+                    Some(new_parent_record_batch_filter(
+                        span_link_attrs_record_batch,
+                        span_link_ids_column,
+                        &span_link_attr_filter,
+                    )?)
+                } else {
+                    return Err(Error::UnexpectedRecordBatchState { reason: "Span Event Attribute Record Batch found without Span Event Record Batch".to_string() });
+                }
+            }
+            None => {
+                if span_link_attr_filter.true_count() == 0 {
+                    // the configuration required certain resource_attributes but found none so we can return early
+                    // remove all elements as nothing matches
+                    return Ok((
+                        BooleanArray::from(BooleanBuffer::new_unset(span_filter.len())),
+                        HashMap::new(),
+                    ));
+                }
+                None
+            }
+        };
+
         // optional record batch
         match resource_attrs {
             Some(resource_attrs_record_batch) => {
-                span_filter = update_primary_record_batch_filter(
+                span_filter = update_parent_record_batch_filter(
                     resource_attrs_record_batch,
                     span_resource_ids_column,
                     &resource_attr_filter,
@@ -239,7 +297,7 @@ impl TraceFilter {
 
         match span_attrs {
             Some(span_attrs_record_batch) => {
-                span_filter = update_primary_record_batch_filter(
+                span_filter = update_parent_record_batch_filter(
                     span_attrs_record_batch,
                     span_ids_column,
                     &span_attr_filter,
@@ -260,7 +318,7 @@ impl TraceFilter {
 
         match span_events {
             Some(span_events_record_batch) => {
-                span_filter = update_primary_record_batch_filter(
+                span_filter = update_parent_record_batch_filter(
                     span_events_record_batch,
                     span_ids_column,
                     &span_event_filter,
@@ -279,44 +337,18 @@ impl TraceFilter {
             }
         }
 
-        match span_event_attrs {
-            Some(span_event_attrs_record_batch) => {
-                span_filter = update_primary_record_batch_filter(
-                    span_event_attrs_record_batch,
-                    span_ids_column,
-                    &span_event_attr_filter,
-                    &span_filter,
-                )?;
-            }
-            None => {
-                if span_event_attr_filter.true_count() == 0 {
-                    // the configuration required certain resource_attributes but found none so we can return early
-                    // remove all elements as nothing matches
-                    return Ok((
-                        BooleanArray::from(BooleanBuffer::new_unset(span_filter.len())),
-                        HashMap::new(),
-                    ));
+        if let Some(link_filter) = &span_link_filter {
+            match span_links {
+                Some(span_links_record_batch) => {
+                    span_filter = update_parent_record_batch_filter(
+                        span_links_record_batch,
+                        span_ids_column,
+                        link_filter,
+                        &span_filter,
+                    )?;
                 }
-            }
-        }
-
-        match span_link_attrs {
-            Some(span_link_attrs_record_batch) => {
-                span_filter = update_primary_record_batch_filter(
-                    span_link_attrs_record_batch,
-                    span_ids_column,
-                    &span_link_attr_filter,
-                    &span_filter,
-                )?;
-            }
-            None => {
-                if span_link_attr_filter.true_count() == 0 {
-                    // the configuration required certain resource_attributes but found none so we can return early
-                    // remove all elements as nothing matches
-                    return Ok((
-                        BooleanArray::from(BooleanBuffer::new_unset(span_filter.len())),
-                        HashMap::new(),
-                    ));
+                None => {
+                    return Err(Error::UnexpectedRecordBatchState { reason: "Span Link Filter created from Span Link Attribute Record Batch but no Span Link Record Batch found".to_string() });
                 }
             }
         }
@@ -325,12 +357,12 @@ impl TraceFilter {
 
         // use hashmap to map filters to their payload types to return,
         // only record batches that exist will have their filter added to this hashmap
-        let mut optional_record_batch_filters = HashMap::new();
+        let mut child_record_batch_filters = HashMap::new();
 
         if let Some(span_attrs_record_batch) = span_attrs {
-            _ = optional_record_batch_filters.insert(
+            _ = child_record_batch_filters.insert(
                 ArrowPayloadType::SpanAttrs,
-                update_optional_record_batch_filter(
+                update_child_record_batch_filter(
                     span_attrs_record_batch,
                     span_ids_column,
                     &span_attr_filter,
@@ -340,45 +372,48 @@ impl TraceFilter {
         }
 
         if let Some(span_events_record_batch) = span_events {
-            _ = optional_record_batch_filters.insert(
-                ArrowPayloadType::SpanEvents,
-                update_optional_record_batch_filter(
-                    span_events_record_batch,
-                    span_ids_column,
-                    &span_event_filter,
-                    &span_filter,
-                )?,
-            );
+            // we update the span event filter because we still need it to
+            // update its child
+            span_event_filter = update_child_record_batch_filter(
+                span_events_record_batch,
+                span_ids_column,
+                &span_event_filter,
+                &span_filter,
+            )?;
+            _ = child_record_batch_filters
+                .insert(ArrowPayloadType::SpanEvents, span_event_filter.clone());
         }
 
-        if let Some(span_event_attrs_record_batch) = span_event_attrs {
-            _ = optional_record_batch_filters.insert(
-                ArrowPayloadType::SpanEventAttrs,
-                update_optional_record_batch_filter(
-                    span_event_attrs_record_batch,
+        span_link_filter = if let Some(span_links_record_batch) = span_links {
+            if let Some(link_filter) = &span_link_filter {
+                let updated_filter = update_child_record_batch_filter(
+                    span_links_record_batch,
                     span_ids_column,
-                    &span_event_attr_filter,
+                    link_filter,
                     &span_filter,
-                )?,
-            );
-        }
+                )?;
 
-        if let Some(span_link_attrs_record_batch) = span_link_attrs {
-            _ = optional_record_batch_filters.insert(
-                ArrowPayloadType::SpanLinkAttrs,
-                update_optional_record_batch_filter(
-                    span_link_attrs_record_batch,
+                _ = child_record_batch_filters
+                    .insert(ArrowPayloadType::SpanLinks, updated_filter.clone());
+                Some(updated_filter)
+            } else {
+                let new_filter = new_child_record_batch_filter(
+                    span_links_record_batch,
                     span_ids_column,
-                    &span_link_attr_filter,
                     &span_filter,
-                )?,
-            );
-        }
+                )?;
+                _ = child_record_batch_filters
+                    .insert(ArrowPayloadType::SpanLinks, new_filter.clone());
+                Some(new_filter)
+            }
+        } else {
+            None
+        };
 
         if let Some(resource_attrs_record_batch) = resource_attrs {
-            _ = optional_record_batch_filters.insert(
+            _ = child_record_batch_filters.insert(
                 ArrowPayloadType::ResourceAttrs,
-                update_optional_record_batch_filter(
+                update_child_record_batch_filter(
                     resource_attrs_record_batch,
                     span_resource_ids_column,
                     &resource_attr_filter,
@@ -388,9 +423,9 @@ impl TraceFilter {
         }
 
         if let Some(scope_attrs_record_batch) = scope_attrs {
-            _ = optional_record_batch_filters.insert(
+            _ = child_record_batch_filters.insert(
                 ArrowPayloadType::ScopeAttrs,
-                new_optional_record_batch_filter(
+                new_child_record_batch_filter(
                     scope_attrs_record_batch,
                     span_scope_ids_column,
                     &span_filter,
@@ -398,14 +433,51 @@ impl TraceFilter {
             );
         }
 
-        if let Some(span_links_record_batch) = span_links {
-            _ = optional_record_batch_filters.insert(
-                ArrowPayloadType::SpanLinks,
-                new_optional_record_batch_filter(span_links_record_batch, span_ids_column, &span_filter)?,
+        if let Some(span_event_attrs_record_batch) = span_event_attrs {
+            let span_event_ids_column = if let Some(span_events_record_batch) = span_events {
+                get_required_array(span_events_record_batch, consts::ID)?
+            } else {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason:
+                        "Span Event Attribute Record Batch found without Span Event Record Batch"
+                            .to_string(),
+                });
+            };
+            _ = child_record_batch_filters.insert(
+                ArrowPayloadType::SpanEventAttrs,
+                update_child_record_batch_filter(
+                    span_event_attrs_record_batch,
+                    span_event_ids_column,
+                    &span_event_attr_filter,
+                    &span_event_filter,
+                )?,
             );
         }
 
-        Ok((span_filter, optional_record_batch_filters))
+        if let Some(span_link_attrs_record_batch) = span_link_attrs {
+            if let Some(link_filter) = &span_link_filter {
+                let span_link_ids_column = if let Some(span_links_record_batch) = span_links {
+                    get_required_array(span_links_record_batch, consts::ID)?
+                } else {
+                    return Err(Error::UnexpectedRecordBatchState {
+                        reason:
+                            "Span Link Attribute Record Batch found without Span Link Record Batch"
+                                .to_string(),
+                    });
+                };
+                _ = child_record_batch_filters.insert(
+                    ArrowPayloadType::SpanLinkAttrs,
+                    update_child_record_batch_filter(
+                        span_link_attrs_record_batch,
+                        span_link_ids_column,
+                        &span_link_attr_filter,
+                        link_filter,
+                    )?,
+                );
+            }
+        }
+
+        Ok((span_filter, child_record_batch_filters))
     }
 }
 
@@ -631,7 +703,10 @@ impl TraceMatchProperties {
         ids_counted.retain(|_key, value| *value >= required_ids_count);
 
         // return filter built with the ids
-        build_uint16_id_filter(parent_id_column, ids_counted.into_keys().collect())
+        build_id_filter(
+            parent_id_column,
+            IdSet::U16(ids_counted.into_keys().collect()),
+        )
     }
 
     /// Creates a booleanarray that will filter a span record batch based on the
@@ -641,10 +716,9 @@ impl TraceMatchProperties {
             .get(ArrowPayloadType::Spans)
             .ok_or_else(|| Error::SpanRecordNotFound)?;
         let num_rows = spans.num_rows();
-        // create filter for span names
-        let mut filter: BooleanArray = BooleanArray::from(BooleanBuffer::new_set(num_rows));
 
         if !&self.span_names.is_empty() {
+            let mut filter: BooleanArray = BooleanArray::from(BooleanBuffer::new_unset(num_rows));
             // create filter for span names
             let names_column = get_required_array(spans, consts::NAME)?;
             for name in &self.span_names {
@@ -663,9 +737,11 @@ impl TraceMatchProperties {
                     .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
                 // combine the filters
             }
-        }
 
-        Ok(nulls_to_false(&filter))
+            Ok(nulls_to_false(&filter))
+        } else {
+            Ok(BooleanArray::from(BooleanBuffer::new_set(num_rows)))
+        }
     }
 
     /// Creates a booleanarray that will filter a span_attribute record batch based on the
@@ -785,9 +861,9 @@ impl TraceMatchProperties {
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the span
         let parent_id_column = get_required_array(span_attrs, consts::PARENT_ID)?;
 
-        let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
+        let ids = get_ids(parent_id_column, &attributes_filter)?;
         // build filter around the ids and return the filter
-        build_uint16_id_filter(parent_id_column, ids)
+        build_id_filter(parent_id_column, ids)
     }
 
     /// Creates a booleanarray that will filter a span_event record batch based on the
@@ -820,7 +896,7 @@ impl TraceMatchProperties {
 
         let num_rows = span_events.num_rows();
         // create filter for span names
-        let mut filter: BooleanArray = BooleanArray::from(BooleanBuffer::new_set(num_rows));
+        let mut filter: BooleanArray = BooleanArray::from(BooleanBuffer::new_unset(num_rows));
 
         if !&self.event_names.is_empty() {
             // create filter for span names
@@ -854,7 +930,7 @@ impl TraceMatchProperties {
     ) -> Result<BooleanArray> {
         let span_event_attrs = match traces_payload.get(ArrowPayloadType::SpanEventAttrs) {
             Some(record_batch) => {
-                if self.event_names.is_empty() {
+                if self.event_attributes.is_empty() {
                     return Ok(BooleanArray::from(BooleanBuffer::new_set(
                         record_batch.num_rows(),
                     )));
@@ -864,7 +940,7 @@ impl TraceMatchProperties {
             None => {
                 // if there is no record batch then
                 // if we didn't plan to match any record attributes -> allow all values through
-                if self.event_names.is_empty() {
+                if self.event_attributes.is_empty() {
                     return Ok(BooleanArray::from(BooleanBuffer::new_set(
                         NO_RECORD_BATCH_FILTER_SIZE,
                     )));
@@ -878,8 +954,8 @@ impl TraceMatchProperties {
         };
 
         let num_rows = span_event_attrs.num_rows();
-        // if there is nothing to filter we return all true
-        let mut attributes_filter = BooleanArray::new_null(num_rows);
+
+        let mut attributes_filter = BooleanArray::from(BooleanBuffer::new_unset(num_rows));
 
         let key_column = get_required_array(span_event_attrs, consts::ATTRIBUTE_KEY)?;
 
@@ -966,9 +1042,9 @@ impl TraceMatchProperties {
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the span event
         let parent_id_column = get_required_array(span_event_attrs, consts::PARENT_ID)?;
 
-        let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
+        let ids = get_ids(parent_id_column, &attributes_filter)?;
         // build filter around the ids and return the filter
-        build_uint16_id_filter(parent_id_column, ids)
+        build_id_filter(parent_id_column, ids)
     }
 
     /// Creates a booleanarray that will filter a span_link_attribute record batch based on the
@@ -976,7 +1052,7 @@ impl TraceMatchProperties {
     fn get_span_link_attr_filter(&self, traces_payload: &OtapArrowRecords) -> Result<BooleanArray> {
         let span_link_attrs = match traces_payload.get(ArrowPayloadType::SpanLinkAttrs) {
             Some(record_batch) => {
-                if self.event_names.is_empty() {
+                if self.link_attributes.is_empty() {
                     return Ok(BooleanArray::from(BooleanBuffer::new_set(
                         record_batch.num_rows(),
                     )));
@@ -986,7 +1062,7 @@ impl TraceMatchProperties {
             None => {
                 // if there is no record batch then
                 // if we didn't plan to match any record attributes -> allow all values through
-                if self.event_names.is_empty() {
+                if self.link_attributes.is_empty() {
                     return Ok(BooleanArray::from(BooleanBuffer::new_set(
                         NO_RECORD_BATCH_FILTER_SIZE,
                     )));
@@ -1000,8 +1076,8 @@ impl TraceMatchProperties {
         };
 
         let num_rows = span_link_attrs.num_rows();
-        // if there is nothing to filter we return all true
-        let mut attributes_filter = BooleanArray::new_null(num_rows);
+
+        let mut attributes_filter = BooleanArray::from(BooleanBuffer::new_unset(num_rows));
 
         let key_column = get_required_array(span_link_attrs, consts::ATTRIBUTE_KEY)?;
 
@@ -1087,8 +1163,8 @@ impl TraceMatchProperties {
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the span link
         let parent_id_column = get_required_array(span_link_attrs, consts::PARENT_ID)?;
 
-        let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
+        let ids = get_ids(parent_id_column, &attributes_filter)?;
         // build filter around the ids and return the filter
-        build_uint16_id_filter(parent_id_column, ids)
+        build_id_filter(parent_id_column, ids)
     }
 }

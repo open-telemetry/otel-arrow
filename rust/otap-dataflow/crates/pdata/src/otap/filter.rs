@@ -3,7 +3,7 @@
 
 use arrow::array::{
     Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, RecordBatch, StringArray,
-    UInt16Array,
+    UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 
@@ -83,6 +83,11 @@ fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
     let valid = arrow::compute::is_not_null(a).expect("is_not_null doesn't error"); // BooleanArray with no nulls
     // the result of boolean array will be a boolean array of equal length so we can guarantee that these two columns have the same length
     arrow::compute::and_kleene(a, &valid).expect("can combine two columns with equal length") // nulls become false; trues stay true
+}
+
+enum IdSet {
+    U16(HashSet<u16>),
+    U32(HashSet<u32>),
 }
 
 /// regex_match_column() takes a string column and a regex expression. The function
@@ -179,7 +184,7 @@ fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
     }
 }
 
-/// build_uint16_id_filter() takes a id_set which contains ids we want to remove and the id_column that
+/// build_uint16_id_filter() takes a id_set which contains ids of u16 we want to remove and the id_column that
 /// the set of id's should map to. The function then iterates through the ids and builds a filter
 /// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
 /// that contain those ids
@@ -196,8 +201,14 @@ fn build_uint16_id_filter(
         for id in id_set {
             let id_scalar = UInt16Array::new_scalar(id);
             // since we use a scalar here we don't have to worry a column length mismatch when we compare
-            let id_filter = arrow::compute::kernels::cmp::eq(id_column, &id_scalar)
-                .expect("can compare uint16 id column with uint16 scalar");
+            let id_filter =
+                arrow::compute::kernels::cmp::eq(id_column, &id_scalar).map_err(|_| {
+                    Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::UInt16,
+                    }
+                })?;
             combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
                 .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
         }
@@ -231,29 +242,263 @@ fn build_uint16_id_filter(
     }
 }
 
-/// get_uint16_ids() takes the id_column from a record batch and the corresponding filter
-/// and applies it to extract all ids that match and then returns the set of ids.
-/// This will return an error if the column is not DataType::UInt16
-fn get_uint16_ids(
+/// build_uint32_id_filter() takes a id_set of u32 which contains ids we want to remove and the id_column that
+/// the set of id's should map to. The function then iterates through the ids and builds a filter
+/// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
+/// that contain those ids
+/// This will return an error if the column is not DataType::UInt32, DataType::Dictionary(UInt8, UInt32)
+/// or DataType::Dictionary(UInt16, UInt32)
+fn build_uint32_id_filter(
     id_column: &Arc<dyn Array>,
-    filter: &BooleanArray,
-    column_type: &str,
-) -> Result<HashSet<u16>> {
+    id_set: HashSet<u32>,
+) -> Result<BooleanArray> {
+    if (id_column.len() >= ID_COLUMN_LENGTH_MIN_THRESHOLD)
+        && ((id_set.len() as f64 / id_column.len() as f64) <= IDS_PERCENTAGE_MAX_THRESHOLD)
+    {
+        let mut combined_id_filter = BooleanArray::new_null(id_column.len());
+        // build id filter using the id hashset
+        for id in id_set {
+            let id_scalar = UInt32Array::new_scalar(id);
+            // since we use a scalar here we don't have to worry a column length mismatch when we compare
+            let id_filter =
+                arrow::compute::kernels::cmp::eq(id_column, &id_scalar).map_err(|_| {
+                    Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::UInt32,
+                    }
+                })?;
+            combined_id_filter = arrow::compute::or_kleene(&combined_id_filter, &id_filter)
+                .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+        }
+
+        Ok(combined_id_filter)
+    } else {
+        // convert id to something we can iterate through
+        // iterate through and check if id is in the id_set if so then we append true to boolean builder if not then false
+        match id_column.data_type() {
+            DataType::UInt32 => {
+                // convert id to something we can iterate through
+                // iterate through and check if id is in the id_set if so then we append true to boolean builder if not then false
+                let uint32_id_array = id_column
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                        name: consts::ID.into(),
+                        actual: id_column.data_type().clone(),
+                        expect: DataType::UInt32,
+                    })?;
+
+                let mut id_filter = BooleanBuilder::with_capacity(uint32_id_array.len());
+                for uint32_id in uint32_id_array {
+                    match uint32_id {
+                        Some(uint32) => {
+                            id_filter.append_value(id_set.contains(&uint32));
+                        }
+                        None => {
+                            id_filter.append_value(false);
+                        }
+                    }
+                }
+
+                Ok(id_filter.finish())
+            }
+            DataType::Dictionary(key, val) => match (key.as_ref(), val.as_ref()) {
+                (&DataType::UInt8, &DataType::UInt32) => {
+                    let uint32_id_dict_array = id_column
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                            name: consts::ID.into(),
+                            actual: id_column.data_type().clone(),
+                            expect: DataType::Dictionary(
+                                Box::new(DataType::UInt8),
+                                Box::new(DataType::UInt32),
+                            ),
+                        })?;
+
+                    let uint32_id_array = uint32_id_dict_array
+                        .values()
+                        .as_any()
+                        .downcast_ref::<UInt32Array>()
+                        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                            name: consts::ID.into(),
+                            actual: uint32_id_dict_array.data_type().clone(),
+                            expect: DataType::UInt32,
+                        })?;
+
+                    let mut id_filter = BooleanBuilder::with_capacity(uint32_id_dict_array.len());
+                    for key in uint32_id_dict_array.keys() {
+                        if let Some(k) = key {
+                            id_filter
+                                .append_value(id_set.contains(&uint32_id_array.value(k as usize)));
+                        } else {
+                            id_filter.append_value(false);
+                        }
+                    }
+
+                    Ok(id_filter.finish())
+                }
+                (&DataType::UInt16, &DataType::UInt32) => {
+                    let uint32_id_dict_array = id_column
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                            name: consts::ID.into(),
+                            actual: id_column.data_type().clone(),
+                            expect: DataType::Dictionary(
+                                Box::new(DataType::UInt16),
+                                Box::new(DataType::UInt32),
+                            ),
+                        })?;
+
+                    let uint32_id_array = uint32_id_dict_array
+                        .values()
+                        .as_any()
+                        .downcast_ref::<UInt32Array>()
+                        .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                            name: consts::ID.into(),
+                            actual: uint32_id_dict_array.data_type().clone(),
+                            expect: DataType::UInt32,
+                        })?;
+
+                    let mut id_filter = BooleanBuilder::with_capacity(uint32_id_dict_array.len());
+                    for key in uint32_id_dict_array.keys() {
+                        if let Some(k) = key {
+                            id_filter
+                                .append_value(id_set.contains(&uint32_id_array.value(k as usize)));
+                        } else {
+                            id_filter.append_value(false);
+                        }
+                    }
+
+                    Ok(id_filter.finish())
+                }
+                _ => Err(Error::InvalidListArray {
+                    expect_oneof: vec![
+                        DataType::UInt32,
+                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                        DataType::Dictionary(
+                            Box::new(DataType::UInt16),
+                            Box::new(DataType::UInt32),
+                        ),
+                    ],
+                    actual: (id_column.data_type().clone()),
+                }),
+            },
+            _ => Err(Error::InvalidListArray {
+                expect_oneof: vec![
+                    DataType::UInt32,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+                ],
+                actual: (id_column.data_type().clone()),
+            }),
+        }
+    }
+}
+
+/// build_id_filter() takes a set of ids either u16 or u32 and maps it it's corresponding method
+/// and then returns a boolean array that masks a column based on the set of ids provided
+fn build_id_filter(id_column: &Arc<dyn Array>, id_set: IdSet) -> Result<BooleanArray> {
+    match id_set {
+        IdSet::U16(u16_ids) => build_uint16_id_filter(id_column, u16_ids),
+        IdSet::U32(u32_ids) => build_uint32_id_filter(id_column, u32_ids),
+    }
+}
+
+/// get_ids() takes the id_column from a record batch and the corresponding filter
+/// and applies it to extract all ids that match and then returns the set of ids.
+/// This will return an error if the column is not DataType::UInt16, DataType::UInt32,
+/// DataType::Dictionary(UInt8, UInt32), or DataType::Dictionary(UInt16, UInt32)
+fn get_ids(id_column: &Arc<dyn Array>, filter: &BooleanArray) -> Result<IdSet> {
     // get ids being removed
     // error out herre
     let filtered_ids = arrow::compute::filter(id_column, filter)
         .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
 
-    // downcast id and get unique values
-    let filtered_ids = filtered_ids
-        .as_any()
-        .downcast_ref::<UInt16Array>()
-        .ok_or_else(|| Error::ColumnDataTypeMismatch {
-            name: column_type.into(),
-            actual: filtered_ids.data_type().clone(),
-            expect: DataType::UInt16,
-        })?;
-    Ok(filtered_ids.iter().flatten().collect())
+    match filtered_ids.data_type() {
+        DataType::UInt16 => {
+            let filtered_ids = filtered_ids
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .expect("Data type is uint16 so we can safely downcast");
+            Ok(IdSet::U16(filtered_ids.iter().flatten().collect()))
+        }
+        DataType::UInt32 => {
+            let filtered_ids = filtered_ids
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .expect("Data type is uint32 so we can safely downcast");
+            Ok(IdSet::U32(filtered_ids.iter().flatten().collect()))
+        }
+        DataType::Dictionary(key, val) => match (key.as_ref(), val.as_ref()) {
+            (&DataType::UInt8, &DataType::UInt32) => {
+                let filtered_ids_dictionary = filtered_ids
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .expect(
+                        "Data type is dictionary with key type uint8, so we can safely downcast",
+                    );
+
+                let filtered_ids_value = filtered_ids_dictionary
+                    .values()
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .expect("Data type of values is Uint32, so we can safely downcast");
+
+                Ok(IdSet::U32(
+                    filtered_ids_dictionary
+                        .keys()
+                        .into_iter()
+                        .flatten()
+                        .map(|k| filtered_ids_value.value(k as usize))
+                        .collect(),
+                ))
+            }
+            (&DataType::UInt16, &DataType::UInt32) => {
+                let filtered_ids_dictionary = filtered_ids
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .expect(
+                        "Data type is dictionary with key type uint8, so we can safely downcast",
+                    );
+
+                let filtered_ids_value = filtered_ids_dictionary
+                    .values()
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .expect("Data type of values is Uint32, so we can safely downcast");
+
+                Ok(IdSet::U32(
+                    filtered_ids_dictionary
+                        .keys()
+                        .into_iter()
+                        .flatten()
+                        .map(|k| filtered_ids_value.value(k as usize))
+                        .collect(),
+                ))
+            }
+            _ => Err(Error::InvalidListArray {
+                expect_oneof: vec![
+                    DataType::UInt16,
+                    DataType::UInt32,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+                ],
+                actual: (filtered_ids.data_type().clone()),
+            }),
+        },
+        _ => Err(Error::InvalidListArray {
+            expect_oneof: vec![
+                DataType::UInt16,
+                DataType::UInt32,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::UInt32)),
+            ],
+            actual: (filtered_ids.data_type().clone()),
+        }),
+    }
 }
 
 /// apply_filter() takes a payload, payload_type, and filter and uses the payload type
@@ -275,39 +520,37 @@ fn apply_filter(
     Ok(())
 }
 
-/// update_optional_record_batch_filter() takes an optional record batch, with it's respective filter
-/// id column from the primary record batch, and the primary record batch filter. 
-/// This function extracts the masked id from the primary record batch and uses these ids to update
+/// update_child_record_batch_filter() takes an child record batch, with it's respective filter
+/// id column from the parent record batch, and the parent record batch filter.
+/// This function extracts the masked id from the parent record batch and uses these ids to update
 /// the optional record batch
 /// This function will return an error if the id column is not DataType::UInt16 or the filter
 /// column length doesn't match the record batch column length
-fn update_optional_record_batch_filter(
+fn update_child_record_batch_filter(
     record_batch: &RecordBatch,
     id_column: &Arc<dyn Array>,
-    filter_to_update: &BooleanArray,
-    primary_filter: &BooleanArray,
+    child_filter: &BooleanArray,
+    parent_filter: &BooleanArray,
 ) -> Result<BooleanArray> {
     let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
-    let ids_filtered = get_uint16_ids(id_column, primary_filter, consts::ID)?;
-    let parent_id_filter = build_uint16_id_filter(parent_id_column, ids_filtered)?;
-    
-    arrow::compute::and_kleene(filter_to_update, &parent_id_filter)
-            .map_err(|e| Error::ColumnLengthMismatch { source: e })
-    
+    let ids_filtered = get_ids(id_column, parent_filter)?;
+    let parent_id_filter = build_id_filter(parent_id_column, ids_filtered)?;
+
+    arrow::compute::and_kleene(child_filter, &parent_id_filter)
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })
 }
 
-
-/// update_primary_record_batch_filter() takes an optional record batch, with it's respective filter
-/// id column from the primary record batch, and the primary record batch filter. 
+/// update_parent_record_batch_filter() takes an child record batch, with it's respective filter
+/// id column from the parent record batch, and the parent record batch filter.
 /// This function extracts the masked id from the optional record batch and uses these ids to update
-/// the primary record batch
+/// the parent record batch
 /// This function will return an error if the id column is not DataType::UInt16 or the filter
 /// column length doesn't match the record batch column length
-fn update_primary_record_batch_filter(
+fn update_parent_record_batch_filter(
     record_batch: &RecordBatch,
     id_column: &Arc<dyn Array>,
-    secondary_filter: &BooleanArray,
-    primary_filter: &BooleanArray,
+    child_filter: &BooleanArray,
+    parent_filter: &BooleanArray,
 ) -> Result<BooleanArray> {
     // starting with the resource_attr
     // -> get ids of filtered attributes
@@ -316,29 +559,48 @@ fn update_primary_record_batch_filter(
     // -> update span filter
     let parent_ids_column = get_required_array(record_batch, consts::PARENT_ID)?;
 
-    let parent_ids_filtered =
-        get_uint16_ids(parent_ids_column, secondary_filter, consts::PARENT_ID)?;
+    // let ids_filter = match parent_ids_column.data_type() {
+    //     DataType::UInt16 => {
+    let parent_ids_filtered = get_ids(parent_ids_column, child_filter)?;
 
     // create filter to remove these ids from span
-    let ids_filter = build_uint16_id_filter(id_column, parent_ids_filtered)?;
+    let ids_filter = build_id_filter(id_column, parent_ids_filtered)?;
 
-    arrow::compute::and_kleene(primary_filter, &ids_filter)
+    arrow::compute::and_kleene(parent_filter, &ids_filter)
         .map_err(|e| Error::ColumnLengthMismatch { source: e })
 }
 
-
-/// new_optional_record_batch_filter() takes an optional record batch,
-/// id column from the primary record batch, and the primary record batch filter. 
-/// This function extracts the masked id from the primary record batch and uses these ids to
-/// create a filter for the provided optional record batch
-/// This function will return an error if the id column is not DataType::UInt16 or the filter
-/// column length doesn't match the record batch column length
-fn new_optional_record_batch_filter(
+/// new_child_record_batch_filter() takes an child record batch,
+/// id column from the parent record batch, and the parent record batch filter.
+/// This function extracts the masked id from the parent record batch and uses these ids to
+/// create a filter for the provided child record batch
+/// This function will return an error if the id column is not DataType::UInt16, DataType::UInt32,
+/// DataType::Dictionary(UInt8, UInt32) or the filter column length doesn't match the record batch column length
+fn new_child_record_batch_filter(
     record_batch: &RecordBatch,
     id_column: &Arc<dyn Array>,
-    primary_filter: &BooleanArray,
+    parent_filter: &BooleanArray,
 ) -> Result<BooleanArray> {
     let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
-    let ids_filtered = get_uint16_ids(id_column, primary_filter, consts::ID)?;
-    build_uint16_id_filter(parent_id_column, ids_filtered)
+    let ids_filtered = get_ids(id_column, parent_filter)?;
+    build_id_filter(parent_id_column, ids_filtered)
+}
+
+/// new_parent_record_batch_filter() takes an child record batch,
+/// id column from the parent record batch, and the parent record batch filter.
+/// This function extracts the masked id from the parent record batch and uses these ids to
+/// create a filter for the provided child record batch
+/// This function will return an error if the id column is not DataType::UInt16, DataType::UInt32,
+/// DataType::Dictionary(UInt8, UInt32) or the filter column length doesn't match the record batch column length
+fn new_parent_record_batch_filter(
+    record_batch: &RecordBatch,
+    id_column: &Arc<dyn Array>,
+    child_filter: &BooleanArray,
+) -> Result<BooleanArray> {
+    let parent_ids_column = get_required_array(record_batch, consts::PARENT_ID)?;
+
+    let parent_ids_filtered = get_ids(parent_ids_column, child_filter)?;
+
+    // create filter to remove these ids from span
+    build_id_filter(id_column, parent_ids_filtered)
 }

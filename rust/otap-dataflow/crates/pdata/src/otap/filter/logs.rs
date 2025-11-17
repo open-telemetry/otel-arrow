@@ -7,13 +7,14 @@
 
 use crate::arrays::{
     get_required_array, get_required_array_from_struct_array,
-    get_required_array_from_struct_array_from_record_batch, get_required_struct_array
+    get_required_array_from_struct_array_from_record_batch, get_required_struct_array,
 };
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::otap::filter::{
-    AnyValue, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
-    build_uint16_id_filter, default_match_type, get_uint16_ids, nulls_to_false, regex_match_column, update_optional_record_batch_filter, update_primary_record_batch_filter, new_optional_record_batch_filter
+    AnyValue, IdSet, KeyValue, MatchType, NO_RECORD_BATCH_FILTER_SIZE, apply_filter,
+    build_id_filter, default_match_type, get_ids, new_child_record_batch_filter, nulls_to_false,
+    regex_match_column, update_child_record_batch_filter, update_parent_record_batch_filter,
 };
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
@@ -140,13 +141,12 @@ impl LogFilter {
             return Ok(logs_payload);
         };
 
-        let (log_record_filter, optional_record_batch_filters) = self
-            .sync_up_filters(
-                &logs_payload,
-                resource_attr_filter,
-                log_record_filter,
-                log_attr_filter,
-            )?;
+        let (log_record_filter, child_record_batch_filters) = self.sync_up_filters(
+            &logs_payload,
+            resource_attr_filter,
+            log_record_filter,
+            log_attr_filter,
+        )?;
 
         apply_filter(
             &mut logs_payload,
@@ -154,10 +154,9 @@ impl LogFilter {
             &log_record_filter,
         )?;
 
-        for (payload_type, filter) in optional_record_batch_filters {
+        for (payload_type, filter) in child_record_batch_filters {
             apply_filter(&mut logs_payload, payload_type, &filter)?;
         }
-
 
         Ok(logs_payload)
     }
@@ -170,10 +169,7 @@ impl LogFilter {
         resource_attr_filter: BooleanArray,
         mut log_record_filter: BooleanArray,
         log_attr_filter: BooleanArray,
-    ) -> Result<(
-        BooleanArray,
-        HashMap<ArrowPayloadType, BooleanArray>
-    )> {
+    ) -> Result<(BooleanArray, HashMap<ArrowPayloadType, BooleanArray>)> {
         // get the record batches we are going to filter
         let resource_attrs = logs_payload.get(ArrowPayloadType::ResourceAttrs);
         let log_records = logs_payload
@@ -199,7 +195,7 @@ impl LogFilter {
         // optional record batch
         match resource_attrs {
             Some(resource_attrs_record_batch) => {
-                log_record_filter = update_primary_record_batch_filter(
+                log_record_filter = update_parent_record_batch_filter(
                     resource_attrs_record_batch,
                     log_record_resource_ids_column,
                     &resource_attr_filter,
@@ -212,7 +208,7 @@ impl LogFilter {
                     // remove all elements as nothing matches
                     return Ok((
                         BooleanArray::from(BooleanBuffer::new_unset(log_record_filter.len())),
-                        HashMap::new()
+                        HashMap::new(),
                     ));
                 }
             }
@@ -220,7 +216,7 @@ impl LogFilter {
 
         match log_attrs {
             Some(log_attrs_record_batch) => {
-                log_record_filter = update_primary_record_batch_filter(
+                log_record_filter = update_parent_record_batch_filter(
                     log_attrs_record_batch,
                     log_record_ids_column,
                     &log_attr_filter,
@@ -233,7 +229,7 @@ impl LogFilter {
                     // remove all elements as nothing matches
                     return Ok((
                         BooleanArray::from(BooleanBuffer::new_unset(log_record_filter.len())),
-                        HashMap::new()
+                        HashMap::new(),
                     ));
                 }
             }
@@ -243,25 +239,24 @@ impl LogFilter {
 
         // use hashmap to map filters to their payload types to return,
         // only record batches that exist will have their filter added to this hashmap
-        let mut optional_record_batch_filters = HashMap::new();
+        let mut child_record_batch_filters = HashMap::new();
 
         if let Some(log_attrs_record_batch) = log_attrs {
-            _ = optional_record_batch_filters.insert(
+            _ = child_record_batch_filters.insert(
                 ArrowPayloadType::LogAttrs,
-                update_optional_record_batch_filter(
+                update_child_record_batch_filter(
                     log_attrs_record_batch,
                     log_record_ids_column,
                     &log_attr_filter,
                     &log_record_filter,
                 )?,
             );
-        } 
+        }
 
-        if let Some(resource_attrs_record_batch) = resource_attrs
-        {
-            _ = optional_record_batch_filters.insert(
+        if let Some(resource_attrs_record_batch) = resource_attrs {
+            _ = child_record_batch_filters.insert(
                 ArrowPayloadType::ResourceAttrs,
-                update_optional_record_batch_filter(
+                update_child_record_batch_filter(
                     resource_attrs_record_batch,
                     log_record_resource_ids_column,
                     &resource_attr_filter,
@@ -271,9 +266,9 @@ impl LogFilter {
         }
 
         if let Some(scope_attrs_record_batch) = scope_attrs {
-           _ = optional_record_batch_filters.insert(
+            _ = child_record_batch_filters.insert(
                 ArrowPayloadType::ScopeAttrs,
-                new_optional_record_batch_filter(
+                new_child_record_batch_filter(
                     scope_attrs_record_batch,
                     log_record_scope_ids_column,
                     &log_record_filter,
@@ -281,10 +276,7 @@ impl LogFilter {
             );
         }
 
-        Ok((
-            log_record_filter,
-            optional_record_batch_filters
-        ))
+        Ok((log_record_filter, child_record_batch_filters))
     }
 }
 
@@ -476,7 +468,10 @@ impl LogMatchProperties {
         ids_counted.retain(|_key, value| *value >= required_ids_count);
 
         // return filter built with the ids
-        build_uint16_id_filter(parent_id_column, ids_counted.into_keys().collect())
+        build_id_filter(
+            parent_id_column,
+            IdSet::U16(ids_counted.into_keys().collect()),
+        )
     }
 
     /// Creates a booleanarray that will filter a log record record batch based on the
@@ -760,9 +755,9 @@ impl LogMatchProperties {
         // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
         let parent_id_column = get_required_array(log_attrs, consts::PARENT_ID)?;
 
-        let ids = get_uint16_ids(parent_id_column, &attributes_filter, consts::PARENT_ID)?;
+        let ids = get_ids(parent_id_column, &attributes_filter)?;
         // build filter around the ids and return the filter
-        build_uint16_id_filter(parent_id_column, ids)
+        build_id_filter(parent_id_column, ids)
     }
 }
 
