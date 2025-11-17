@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, RecordBatch, StringArray,
-    UInt16Array, UInt32Array,
+    Array, ArrayRef, BooleanArray, BooleanBuilder, DictionaryArray, Float64Array, Int64Array,
+    RecordBatch, StringArray, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 
@@ -12,8 +12,9 @@ use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
+use arrow::buffer::BooleanBuffer;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 pub mod logs;
 pub mod traces;
@@ -603,4 +604,285 @@ fn new_parent_record_batch_filter(
 
     // create filter to remove these ids from span
     build_id_filter(id_column, parent_ids_filtered)
+}
+
+/// get_resource_attr_filter() takes a payload a vec of keyvalue pairs defining attributes to filter on, and the match type
+/// and creates a booleanarray that will filter a resource_attribute record batch based on the
+/// defined resource attributes we want to match
+fn get_resource_attr_filter(
+    payload: &OtapArrowRecords,
+    attributes: &Vec<KeyValue>,
+    match_type: &MatchType,
+) -> Result<BooleanArray> {
+    // get resource_attrs record batch
+    let resource_attrs = match payload.get(ArrowPayloadType::ResourceAttrs) {
+        Some(record_batch) => {
+            if attributes.is_empty() {
+                return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                    record_batch.num_rows(),
+                )));
+            }
+            record_batch
+        }
+        None => {
+            // if there is no record batch then
+            // if we didn't plan to match any resource attributes -> allow all values through
+            if attributes.is_empty() {
+                return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                    NO_RECORD_BATCH_FILTER_SIZE,
+                )));
+            } else {
+                // if we did match on resource attributes then there are no attributes to match
+                return Ok(BooleanArray::from(BooleanBuffer::new_unset(
+                    NO_RECORD_BATCH_FILTER_SIZE,
+                )));
+            }
+        }
+    };
+
+    let num_rows = resource_attrs.num_rows();
+    let mut attributes_filter = BooleanArray::new_null(num_rows);
+    let key_column = get_required_array(resource_attrs, consts::ATTRIBUTE_KEY)?;
+
+    // generate the filter for this record_batch
+    for attribute in attributes {
+        // match on key
+        let key_scalar = StringArray::new_scalar(attribute.key.clone());
+        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+        let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
+            .expect("can compare string key column to string scalar");
+        // and match on value
+        let value_filter = match &attribute.value {
+            AnyValue::String(value) => {
+                // get string column
+                let string_column = get_required_array(resource_attrs, consts::ATTRIBUTE_STR)?;
+                match match_type {
+                    MatchType::Regexp => regex_match_column(string_column, value)?,
+                    MatchType::Strict => {
+                        let value_scalar = StringArray::new_scalar(value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+                        arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
+                            .expect("can compare string value column to string scalar")
+                    }
+                }
+            }
+            AnyValue::Int(value) => {
+                let int_column = resource_attrs.column_by_name(consts::ATTRIBUTE_INT);
+
+                // check if column exists if not then there is no resource that has this attribute so we can return a all false boolean array
+                match int_column {
+                    Some(column) => {
+                        let value_scalar = Int64Array::new_scalar(*value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
+                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                            .expect("can compare i64 value column to i64 scalar")
+                    }
+                    None => {
+                        return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
+                    }
+                }
+            }
+            AnyValue::Double(value) => {
+                let double_column = resource_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE);
+                match double_column {
+                    Some(column) => {
+                        let value_scalar = Float64Array::new_scalar(*value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
+                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                            .expect("can compare f64 value column to f64 scalar")
+                    }
+                    None => {
+                        return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
+                    }
+                }
+            }
+            AnyValue::Boolean(value) => {
+                let bool_column = resource_attrs.column_by_name(consts::ATTRIBUTE_BOOL);
+                match bool_column {
+                    Some(column) => {
+                        let value_scalar = BooleanArray::new_scalar(*value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
+                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                            .expect("can compare bool value column to bool scalar")
+                    }
+                    None => {
+                        return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
+                    }
+                }
+            }
+            _ => {
+                // ToDo add keyvalue, array, and bytes
+                return Ok(BooleanArray::from(BooleanBuffer::new_unset(num_rows)));
+            }
+        };
+        // build filter that checks for both matching key and value filter
+        let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+        // combine with overrall filter
+        attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+    }
+
+    // using the attribute filter we need to get the ids of the rows that match and use that to build our final filter
+    // this is to make sure we don't drop attributes that belong to a resource that matched the resource_attributes that
+    // were defined
+
+    // we get the id column and apply filter to get the ids we should keep
+    let parent_id_column = get_required_array(resource_attrs, consts::PARENT_ID)?;
+    // the ids should show up self.resource_attr.len() times otherwise they don't have all the required attributes
+    let ids = arrow::compute::filter(&parent_id_column, &attributes_filter)
+        .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+    // extract correct ids
+    let ids = ids
+        .as_any()
+        .downcast_ref::<UInt16Array>()
+        .expect("array can be downcast to UInt16Array");
+    // remove null values
+    let mut ids_counted: HashMap<u16, usize> = HashMap::with_capacity(ids.len());
+    // since we require that all the resource attributes match we use the count of the ids extracted to determine a full match
+    // a full match should meant that the amount of times a id appears is equal the number of resource attributes we want to match on
+    for id in ids.iter().flatten() {
+        *ids_counted.entry(id).or_default() += 1;
+    }
+
+    let required_ids_count = attributes.len();
+    // filter out ids that don't fully match
+    ids_counted.retain(|_key, value| *value >= required_ids_count);
+
+    // return filter built with the ids
+    build_id_filter(
+        parent_id_column,
+        IdSet::U16(ids_counted.into_keys().collect()),
+    )
+}
+
+/// get_attr_filter() takes a payload a vec of keyvalue pairs defining attributes to filter on, the match type
+/// and the specific attribute payload type to filter on and creates a booleanarray that will filter for that
+/// record batch based on the provided attributes
+fn get_attr_filter(
+    payload: &OtapArrowRecords,
+    attributes: &Vec<KeyValue>,
+    match_type: &MatchType,
+    attribute_payload_type: ArrowPayloadType,
+) -> Result<BooleanArray> {
+    // get record batch containing attributes
+    let log_attrs = match payload.get(attribute_payload_type) {
+        Some(record_batch) => {
+            if attributes.is_empty() {
+                return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                    record_batch.num_rows(),
+                )));
+            }
+            record_batch
+        }
+        None => {
+            // if there is no record batch then
+            // if we didn't plan to match any record attributes -> allow all values through
+            if attributes.is_empty() {
+                return Ok(BooleanArray::from(BooleanBuffer::new_set(
+                    NO_RECORD_BATCH_FILTER_SIZE,
+                )));
+            } else {
+                // if we did match on record attributes then there are no attributes to match
+                return Ok(BooleanArray::from(BooleanBuffer::new_unset(
+                    NO_RECORD_BATCH_FILTER_SIZE,
+                )));
+            }
+        }
+    };
+
+    let num_rows = log_attrs.num_rows();
+    // if there is nothing to filter we return all true
+    let mut attributes_filter = BooleanArray::from(BooleanBuffer::new_unset(num_rows));
+
+    let key_column = get_required_array(log_attrs, consts::ATTRIBUTE_KEY)?;
+
+    // generate the filter for this record_batch
+    for attribute in attributes {
+        // match on key
+        let key_scalar = StringArray::new_scalar(attribute.key.clone());
+        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+
+        let key_filter = arrow::compute::kernels::cmp::eq(&key_column, &key_scalar)
+            .expect("can compare string key column to string scalar");
+        // match on value
+        let value_filter = match &attribute.value {
+            AnyValue::String(value) => {
+                // get string column
+                let string_column = get_required_array(log_attrs, consts::ATTRIBUTE_STR)?;
+
+                match match_type {
+                    MatchType::Regexp => regex_match_column(string_column, value)?,
+                    MatchType::Strict => {
+                        let value_scalar = StringArray::new_scalar(value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+                        arrow::compute::kernels::cmp::eq(&string_column, &value_scalar)
+                            .expect("can compare string value column to string scalar")
+                    }
+                }
+            }
+            AnyValue::Int(value) => {
+                let int_column = log_attrs.column_by_name(consts::ATTRIBUTE_INT);
+                match int_column {
+                    Some(column) => {
+                        let value_scalar = Int64Array::new_scalar(*value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                            .expect("can compare i64 value column to i64 scalar")
+                    }
+                    None => {
+                        continue;
+                    }
+                }
+            }
+            AnyValue::Double(value) => {
+                let double_column = log_attrs.column_by_name(consts::ATTRIBUTE_DOUBLE);
+                match double_column {
+                    Some(column) => {
+                        let value_scalar = Float64Array::new_scalar(*value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                            .expect("can compare f64 value column to f64 scalar")
+                    }
+                    None => {
+                        continue;
+                    }
+                }
+            }
+            AnyValue::Boolean(value) => {
+                let bool_column = log_attrs.column_by_name(consts::ATTRIBUTE_BOOL);
+                match bool_column {
+                    Some(column) => {
+                        let value_scalar = BooleanArray::new_scalar(*value);
+                        // since we use a scalar here we don't have to worry a column length mismatch when we compare
+                        arrow::compute::kernels::cmp::eq(&column, &value_scalar)
+                            .expect("can compare bool value column to bool scalar")
+                    }
+                    None => {
+                        continue;
+                    }
+                }
+            }
+            _ => {
+                // ToDo add keyvalue, array, and bytes
+                continue;
+            }
+        };
+        // build filter that checks for both matching key and value filter
+        let attribute_filter = arrow::compute::and_kleene(&key_filter, &value_filter)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+        // combine with rest of filters
+        attributes_filter = arrow::compute::or_kleene(&attributes_filter, &attribute_filter)
+            .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+    }
+
+    // now we get ids of filtered attributes to make sure we don't drop any attributes that belong to the log record
+    let parent_id_column = get_required_array(log_attrs, consts::PARENT_ID)?;
+
+    let ids = get_ids(parent_id_column, &attributes_filter)?;
+    // build filter around the ids and return the filter
+    build_id_filter(parent_id_column, ids)
 }
