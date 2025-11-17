@@ -985,6 +985,9 @@ fn encode_otlp_response(
 }
 
 #[cfg(test)]
+mod test_common;
+
+#[cfg(test)]
 mod otlp_tests;
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ use crate::compression::CompressionMethod;
 use crate::fake_data_generator::fake_signal::{
     fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
 };
+use crate::otel_receiver::test_common::{build_test_registry, decode_pdata_to_message};
 use crate::pdata::OtapPdata;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
@@ -30,10 +31,10 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use otap_df_pdata::proto::opentelemetry::common::v1::{InstrumentationScope, KeyValue};
-use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
-use otap_df_pdata::proto::opentelemetry::metrics::v1::{MetricsData, ResourceMetrics, ScopeMetrics};
+use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
 use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, TracesData};
+use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use otap_df_pdata::testing::equiv::assert_equivalent;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use prost::Message;
@@ -45,10 +46,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tonic::Code;
-use weaver_forge::registry::{ResolvedGroup, ResolvedRegistry};
-use weaver_resolved_schema::attribute::Attribute;
-use weaver_semconv::attribute::{AttributeType, PrimitiveOrArrayTypeSpec, RequirementLevel};
-use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
+use weaver_forge::registry::ResolvedRegistry;
 
 fn create_logs_service_request() -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
@@ -296,117 +294,6 @@ fn pick_free_port() -> u16 {
     panic!("free port");
 }
 
-fn build_test_registry() -> ResolvedRegistry {
-    let string_attribute = Attribute {
-        name: "service.name".to_string(),
-        r#type: AttributeType::PrimitiveOrArray(PrimitiveOrArrayTypeSpec::String),
-        brief: "service name".to_string(),
-        examples: None,
-        tag: None,
-        requirement_level: RequirementLevel::default(),
-        sampling_relevant: None,
-        note: String::new(),
-        stability: None,
-        deprecated: None,
-        prefix: false,
-        tags: None,
-        annotations: None,
-        value: None,
-        role: None,
-    };
-    let int_attribute = Attribute {
-        name: "example.counter".to_string(),
-        r#type: AttributeType::PrimitiveOrArray(PrimitiveOrArrayTypeSpec::Int),
-        brief: "example counter".to_string(),
-        examples: None,
-        tag: None,
-        requirement_level: RequirementLevel::default(),
-        sampling_relevant: None,
-        note: String::new(),
-        stability: None,
-        deprecated: None,
-        prefix: false,
-        tags: None,
-        annotations: None,
-        value: None,
-        role: None,
-    };
-
-    let span_group = ResolvedGroup {
-        id: "fake_span".to_string(),
-        r#type: GroupType::Span,
-        brief: "test span group".to_string(),
-        note: String::new(),
-        prefix: String::new(),
-        extends: None,
-        stability: None,
-        deprecated: None,
-        attributes: vec![string_attribute.clone()],
-        span_kind: Some(SpanKindSpec::Server),
-        events: vec!["fake.event".to_string()],
-        metric_name: None,
-        instrument: None,
-        unit: None,
-        name: None,
-        lineage: None,
-        display_name: None,
-        body: None,
-        entity_associations: Vec::new(),
-        annotations: None,
-    };
-
-    let metric_group = ResolvedGroup {
-        id: "fake_metric".to_string(),
-        r#type: GroupType::Metric,
-        brief: "test metric group".to_string(),
-        note: String::new(),
-        prefix: String::new(),
-        extends: None,
-        stability: None,
-        deprecated: None,
-        attributes: vec![string_attribute.clone(), int_attribute],
-        span_kind: None,
-        events: Vec::new(),
-        metric_name: Some("requests.count".to_string()),
-        instrument: Some(InstrumentSpec::Counter),
-        unit: Some("1".to_string()),
-        name: None,
-        lineage: None,
-        display_name: None,
-        body: None,
-        entity_associations: Vec::new(),
-        annotations: None,
-    };
-
-    let event_group = ResolvedGroup {
-        id: "fake_event".to_string(),
-        r#type: GroupType::Event,
-        brief: "test event group".to_string(),
-        note: String::new(),
-        prefix: String::new(),
-        extends: None,
-        stability: None,
-        deprecated: None,
-        attributes: vec![string_attribute],
-        span_kind: None,
-        events: Vec::new(),
-        metric_name: None,
-        instrument: None,
-        unit: None,
-        name: Some("app.log".to_string()),
-        lineage: None,
-        display_name: None,
-        body: None,
-        entity_associations: Vec::new(),
-        annotations: None,
-    };
-
-    ResolvedRegistry {
-        registry_url: "test://otlp_fake_registry".to_string(),
-        groups: vec![span_group, metric_group, event_group],
-    }
-}
-
 fn generate_fake_batches(registry: &ResolvedRegistry) -> FakeBatchPlan {
     let mut plan = FakeBatchPlan::default();
     for batch_size in 1..=100 {
@@ -420,7 +307,8 @@ fn generate_fake_batches(registry: &ResolvedRegistry) -> FakeBatchPlan {
         plan.metrics_requests.push(ExportMetricsServiceRequest {
             resource_metrics: metrics.resource_metrics.clone(),
         });
-        plan.expected_metrics.push(OtlpProtoMessage::Metrics(metrics));
+        plan.expected_metrics
+            .push(OtlpProtoMessage::Metrics(metrics));
 
         let traces = fake_otlp_traces(batch_size, registry);
         plan.traces_requests.push(ExportTraceServiceRequest {
@@ -429,37 +317,6 @@ fn generate_fake_batches(registry: &ResolvedRegistry) -> FakeBatchPlan {
         plan.expected_traces.push(OtlpProtoMessage::Traces(traces));
     }
     plan
-}
-
-fn decode_pdata_to_message(pdata: &OtapPdata) -> OtlpProtoMessage {
-    let proto_bytes: OtlpProtoBytes = pdata
-        .clone()
-        .payload()
-        .try_into()
-        .expect("convert to proto bytes");
-    match proto_bytes {
-        OtlpProtoBytes::ExportLogsRequest(bytes) => {
-            let request = ExportLogsServiceRequest::decode(bytes.as_slice())
-                .expect("decode logs payload");
-            OtlpProtoMessage::Logs(LogsData {
-                resource_logs: request.resource_logs,
-            })
-        }
-        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-            let request = ExportMetricsServiceRequest::decode(bytes.as_slice())
-                .expect("decode metrics payload");
-            OtlpProtoMessage::Metrics(MetricsData {
-                resource_metrics: request.resource_metrics,
-            })
-        }
-        OtlpProtoBytes::ExportTracesRequest(bytes) => {
-            let request = ExportTraceServiceRequest::decode(bytes.as_slice())
-                .expect("decode traces payload");
-            OtlpProtoMessage::Traces(TracesData {
-                resource_spans: request.resource_spans,
-            })
-        }
-    }
 }
 
 fn fake_batch_scenario(
@@ -544,8 +401,7 @@ fn fake_batch_validation(
                     message.signal_type()
                 );
                 actual_logs.push(message);
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata))
-                {
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata)) {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("logs ack");
@@ -565,8 +421,7 @@ fn fake_batch_validation(
                     message.signal_type()
                 );
                 actual_metrics.push(message);
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata))
-                {
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata)) {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("metrics ack");
@@ -586,8 +441,7 @@ fn fake_batch_validation(
                     message.signal_type()
                 );
                 actual_traces.push(message);
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata))
-                {
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata)) {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("traces ack");

@@ -10,6 +10,7 @@ use crate::fake_data_generator::attributes::get_attribute_name_value;
 use crate::fake_data_generator::fake_data::{
     current_time, delay, gen_span_id, gen_trace_id, get_scope_name, get_scope_version,
 };
+use otap_df_pdata::proto::opentelemetry::trace::v1::status::StatusCode;
 use otap_df_pdata::proto::opentelemetry::{
     common::v1::{AnyValue, InstrumentationScope, KeyValue},
     logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -136,6 +137,11 @@ fn spans(signal_count: usize, registry: &ResolvedRegistry) -> Vec<Span> {
                 )
                 .kind(otel_span_kind(group.span_kind.as_ref()))
                 .end_time_unix_nano(end_time)
+                // Note: without status set, the OTAP encoder fails at runtime
+                .status(otap_df_pdata::proto::opentelemetry::trace::v1::Status::new(
+                    StatusCode::Ok,
+                    "ok",
+                ))
                 .finish(),
         );
     }
