@@ -11,6 +11,6 @@
 #[cfg(feature = "geneva-exporter")]
 pub mod geneva_exporter;
 
-/// GigLA exporter for Azure Log Analytics
-#[cfg(feature = "gigla-exporter")]
-pub mod gigla_exporter;
+/// Azure Monitor Exporter for Azure Logs Ingestion API
+#[cfg(feature = "azure-monitor-exporter")]
+pub mod azure_monitor_exporter;

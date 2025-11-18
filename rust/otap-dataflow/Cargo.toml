@@ -150,7 +150,7 @@ unchecked-arithmetic = []
 # Experimental exporters (opt-in)
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
-gigla-exporter = ["otap-df-otap/gigla-exporter"]
+azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
 
 [workspace.lints.rust]
 # General compatibility lints

@@ -78,7 +78,7 @@ opentelemetry-proto = { workspace = true, optional = true }
 experimental-exporters = []
 # Experimental exporters
 geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
-gigla-exporter = [
+azure-monitor-exporter = [
     "experimental-exporters", 
     "dep:opentelemetry-proto",
     "dep:azure_identity",
