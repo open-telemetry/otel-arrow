@@ -40,6 +40,7 @@ use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::Duration;
@@ -52,6 +53,17 @@ pub struct PerfExporter {
     config: Config,
     metrics: MetricSet<PerfExporterPdataMetrics>,
     pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    last_telemetry: Instant,
+    last_window: VecDeque<IntervalSample>,
+}
+
+#[derive(Clone, Copy)]
+struct IntervalSample {
+    elapsed_secs: f64,
+    logs: u64,
+    metrics: u64,
+    spans: u64,
+    end: Instant,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -81,11 +93,14 @@ impl PerfExporter {
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
         let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
         let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let last_telemetry = Instant::now();
 
         PerfExporter {
             config,
             metrics,
             pdata_metrics,
+            last_telemetry,
+            last_window: VecDeque::new(),
         }
     }
 
@@ -141,6 +156,60 @@ impl local::Exporter<OtapPdata> for PerfExporter {
             let msg = msg_chan.recv().await?;
             match msg {
                 Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
+                    let now = Instant::now();
+                    if self.config.display_throughput() {
+                        let elapsed_secs = now
+                            .duration_since(self.last_telemetry)
+                            .as_secs_f64()
+                            .max(1e-6);
+
+                        // Capture the last interval sample before clearing metrics.
+                        self.last_window.push_back(IntervalSample {
+                            elapsed_secs,
+                            logs: self.metrics.logs.get(),
+                            metrics: self.metrics.metrics.get(),
+                            spans: self.metrics.spans.get(),
+                            end: now,
+                        });
+                        self.last_telemetry = now;
+
+                        // Keep only the last 10s worth of samples.
+                        let window = Duration::from_secs(10);
+                        while let Some(front) = self.last_window.front() {
+                            if now.duration_since(front.end) > window {
+                                _ = self.last_window.pop_front();
+                            } else {
+                                break;
+                            }
+                        }
+
+                        let (total_logs, total_metrics, total_spans, total_secs) = self
+                            .last_window
+                            .iter()
+                            .fold((0u64, 0u64, 0u64, 0f64), |(l, m, s, d), sample| {
+                                (
+                                    l + sample.logs,
+                                    m + sample.metrics,
+                                    s + sample.spans,
+                                    d + sample.elapsed_secs,
+                                )
+                            });
+
+                        let total_secs = total_secs.max(1e-6);
+                        let logs_per_sec = total_logs as f64 / total_secs;
+                        let metrics_per_sec = total_metrics as f64 / total_secs;
+                        let spans_per_sec = total_spans as f64 / total_secs;
+
+                        effect_handler
+                            .info(&format!(
+                                "PerfExporter throughput (avg last {:.2}s): logs {:.2}/s, metrics {:.2}/s, spans {:.2}/s",
+                                total_secs, logs_per_sec, metrics_per_sec, spans_per_sec,
+                            ))
+                            .await;
+                    } else {
+                        self.last_telemetry = now;
+                    }
+
                     _ = metrics_reporter.report(&mut self.metrics);
                     _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
@@ -380,7 +449,7 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
-        let config = Config::new(1000, 0.3, true, true, true, true, true);
+        let config = Config::new(1000, 0.3, true, true, true, true, true, false);
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());

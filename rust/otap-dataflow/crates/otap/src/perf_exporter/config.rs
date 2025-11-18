@@ -32,6 +32,9 @@ pub struct Config {
 
     #[serde(default = "default_io_usage")]
     io_usage: bool,
+
+    #[serde(default = "default_display_throughput")]
+    display_throughput: bool,
 }
 
 fn default_frequency() -> u64 {
@@ -56,6 +59,10 @@ fn default_io_usage() -> bool {
     true
 }
 
+fn default_display_throughput() -> bool {
+    false
+}
+
 fn default_smoothing_factor() -> f32 {
     0.3
 }
@@ -71,6 +78,7 @@ impl Config {
         mem_usage: bool,
         disk_usage: bool,
         io_usage: bool,
+        display_throughput: bool,
     ) -> Self {
         Self {
             frequency,
@@ -80,6 +88,7 @@ impl Config {
             mem_usage,
             disk_usage,
             io_usage,
+            display_throughput,
         }
     }
     /// check the frequency interval
@@ -117,6 +126,12 @@ impl Config {
     pub const fn smoothing_factor(&self) -> f32 {
         self.smoothing_factor
     }
+
+    /// check if throughput logging is enabled
+    #[must_use]
+    pub const fn display_throughput(&self) -> bool {
+        self.display_throughput
+    }
 }
 
 impl Default for Config {
@@ -129,6 +144,7 @@ impl Default for Config {
             mem_usage: default_mem_usage(),
             disk_usage: default_disk_usage(),
             io_usage: default_io_usage(),
+            display_throughput: default_display_throughput(),
         }
     }
 }
