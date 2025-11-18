@@ -112,11 +112,12 @@ pub(crate) fn encode_any_value(
 ) -> Result<()> {
     match value_type {
         AttributeValueType::Str => {
-            if let Some(attr_str) = &attr_arrays.attr_str {
-                if let Some(val) = attr_str.str_at(index) {
-                    result_buf.encode_string(ANY_VALUE_STRING_VALUE, val);
-                }
-            }
+            let val = attr_arrays
+                .attr_str
+                .as_ref()
+                .and_then(|col| col.str_at(index))
+                .unwrap_or_default();
+            result_buf.encode_string(ANY_VALUE_STRING_VALUE, val);
         }
         AttributeValueType::Bool => {
             if let Some(attr_bool) = &attr_arrays.attr_bool {
@@ -127,27 +128,30 @@ pub(crate) fn encode_any_value(
             }
         }
         AttributeValueType::Int => {
-            if let Some(attr_int) = &attr_arrays.attr_int {
-                if let Some(val) = attr_int.value_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                    result_buf.encode_varint(val as u64);
-                }
-            }
+            let val = attr_arrays
+                .attr_int
+                .as_ref()
+                .and_then(|col| col.value_at(index))
+                .unwrap_or_default();
+            result_buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+            result_buf.encode_varint(val as u64);
         }
         AttributeValueType::Double => {
-            if let Some(attr_double) = &attr_arrays.attr_double {
-                if let Some(val) = attr_double.value_at(index) {
-                    result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-                    result_buf.extend_from_slice(&val.to_le_bytes());
-                }
-            }
+            let val = attr_arrays
+                .attr_double
+                .as_ref()
+                .and_then(|col| col.value_at(index))
+                .unwrap_or_default();
+            result_buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+            result_buf.extend_from_slice(&val.to_le_bytes());
         }
         AttributeValueType::Bytes => {
-            if let Some(attr_bytes) = &attr_arrays.attr_bytes {
-                if let Some(val) = attr_bytes.slice_at(index) {
-                    result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val);
-                }
-            }
+            let val = attr_arrays
+                .attr_bytes
+                .as_ref()
+                .and_then(|col| col.slice_at(index))
+                .unwrap_or_default();
+            result_buf.encode_bytes(ANY_VALUE_BYTES_VALUE, val);
         }
         AttributeValueType::Map | AttributeValueType::Slice => {
             if let Some(ser_bytes) = &attr_arrays.attr_ser {
@@ -162,4 +166,60 @@ pub(crate) fn encode_any_value(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use arrow::array::RecordBatch;
+    use arrow::datatypes::Schema;
+    use prost::Message;
+    use std::sync::Arc;
+
+    use crate::encode::record::attributes::AnyValuesRecordsBuilder;
+    use crate::otlp::ProtoBuffer;
+    use crate::otlp::common::AnyValueArrays;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue};
+
+    #[test]
+    fn test_default_anyvalue_encoded_when_column_missing() {
+        // append a bunch of "default" values
+        let mut rb_builder = AnyValuesRecordsBuilder::new();
+        rb_builder.append_str(b"");
+        rb_builder.append_bytes(b"");
+        rb_builder.append_double(0.0);
+        rb_builder.append_int(0);
+
+        let mut fields = vec![];
+        let mut columns = vec![];
+        rb_builder.finish(&mut columns, &mut fields).unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        let rb = RecordBatch::try_new(schema, columns).unwrap();
+
+        let any_val_arrays = AnyValueArrays::try_from(&rb).unwrap();
+        let mut protobuf = ProtoBuffer::new();
+
+        for i in 0..rb.num_rows() {
+            if let Some(value_type) = any_val_arrays.attr_type.value_at(i) {
+                if let Ok(value_type) = AttributeValueType::try_from(value_type) {
+                    proto_encode_len_delimited_unknown_size!(
+                        1, // the values field in ArrayValue message
+                        encode_any_value(&any_val_arrays, i, value_type, &mut protobuf).unwrap(),
+                        &mut protobuf
+                    );
+                }
+            }
+        }
+
+        let results = ArrayValue::decode(protobuf.as_ref()).unwrap().values;
+        let expected = vec![
+            AnyValue::new_string(""),
+            AnyValue::new_bytes(b""),
+            AnyValue::new_double(0.0),
+            AnyValue::new_int(0),
+        ];
+
+        assert_eq!(results, expected);
+    }
 }
