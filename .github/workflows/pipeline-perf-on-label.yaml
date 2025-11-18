@@ -33,12 +33,11 @@ jobs:
           labels=$(echo '${{ toJson(github.event.pull_request.labels) }}' | jq -r '.[].name')
           echo "Found labels: $labels"
           if echo "$labels" | grep -q "pipelineperf"; then
-            echo "Label pipelineperf found"
+            echo "Label pipelineperf found - perf tests will run"
             echo "has_label=true" >> $GITHUB_OUTPUT
           else
-            echo "::error::Missing 'pipelineperf' label... skipping perf job."
+            echo "Label 'pipelineperf' not found - skipping perf tests"
             echo "has_label=false" >> $GITHUB_OUTPUT
-            exit 1
           fi
 
   pipeline-perf-test:
