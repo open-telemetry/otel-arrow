@@ -146,6 +146,8 @@ impl LogsIngestionClient {
             .map_err(|e| format!("Failed to finish gzip compression: {e}"))
     }
 
+    // TODO: Remove print_stdout after logging is set up
+    #[allow(clippy::print_stdout)]
     /// Send compressed data to Log Analytics ingestion API.
     ///
     /// # Arguments
@@ -182,6 +184,15 @@ impl LogsIngestionClient {
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {token}"))
                 .map_err(|_| "Invalid token format".to_string())?,
+        );
+
+        // TODO: Log as debug after logging is set up (here for debugging for now)
+        let compression_ratio = json_bytes.len() as f64 / compressed_body.len() as f64;
+        println!(
+            "Compressed {} bytes to {} bytes (ratio: {:.2}x)",
+            json_bytes.len(),
+            compressed_body.len(),
+            compression_ratio
         );
 
         // Send compressed body

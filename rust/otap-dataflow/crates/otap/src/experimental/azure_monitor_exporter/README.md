@@ -211,14 +211,6 @@ https://my-workspace.eastus-1.ingest.monitor.azure.com/dataCollectionRules/dcr-a
 
 - Check that schema mappings align with your table structure
 
-### Performance
-
-- Use multiple cores (`--num-cores`) for higher throughput
-
-- Consider adjusting compression settings for large payloads
-
-- Monitor Azure Log Analytics ingestion limits
-
 ## License
 
 Apache 2.0
