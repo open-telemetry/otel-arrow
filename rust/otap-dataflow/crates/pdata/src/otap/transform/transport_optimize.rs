@@ -1156,7 +1156,6 @@ where
     let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
-    // let mut encoded_parent_ids = PrimitiveArray::<T>::builder(record_batch.num_rows());
     let mut encoded_parent_ids =
         PrimitiveArrayBuilder::<T>::new(T::Native::parent_id_array_options());
 
