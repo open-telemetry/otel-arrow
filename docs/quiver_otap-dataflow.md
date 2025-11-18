@@ -18,14 +18,23 @@ developed first for `otap-dataflow`, we intend to keep it decoupled so it can
 integrate into other telemetry pipelines or streaming systems that need durable
 buffering around Apache Arrow.
 
+Throughout the proposal we use **RecordBundle** to describe the logical unit
+Quiver persists. In OTAP terms this corresponds to an `OtapArrowRecords`
+value: a fixed set of payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`,
+`ResourceAttrs`, etc.) that may or may not be populated for a given RecordBundle.
+
 ### Core Concepts
 
 **Segment Store**: Immutable Arrow IPC files containing batches of telemetry.
 Each segment:
 
-- Groups multiple `RecordBatch` objects (8-64MB target size)
-- Contains metadata: time ranges, signal type, schema hash, checksum
-- Supports zero-copy memory-mapped reads
+- Groups multiple `RecordBundle` arrivals (8-64MB target size) and persists the
+  per-slot Arrow streams they reference.
+- Supports many payload types and evolving schemas inside the same segment via
+  a stream directory + batch manifest.
+- Contains metadata: time ranges, signal type (via adapter), schema fingerprints,
+  checksum, and per-stream statistics.
+- Supports zero-copy memory-mapped reads.
 
 **Write-Ahead Log (WAL)**: Append-only log for crash recovery
 
@@ -35,12 +44,13 @@ Each segment:
 
 **Open Segment Buffer (In-Memory)**: Bounded in-memory accumulation
 
-- Each incoming batch is appended to the WAL for durability and also to the
-  current open segment's column builders.
+- Each incoming `RecordBundle` is appended to the WAL for durability and also
+  to the current open segment's per-stream accumulators.
 - Buffer size capped by `segment.target_size` (and optionally
   `segment.max_open_duration` for time slicing).
 - On finalize trigger (size, duration, shutdown, or retention pressure) Quiver
-  writes an immutable Arrow IPC segment file directly from these builders.
+  flushes each accumulator to its Arrow IPC stream slice and writes the segment
+  directory + manifest.
 - After the segment file + metadata are durable, the corresponding WAL region
   becomes eligible for truncation.
 - Early finalize under pressure reduces memory footprint; metrics expose
@@ -48,21 +58,29 @@ Each segment:
 
 Write path overview:
 
-1. Append batch to WAL (optionally flush/fdatasync per policy).
+1. Append `RecordBundle` to WAL (optionally flush/fdatasync per policy).
 2. Send Ack to upstream producer.
-3. Append batch to in-memory open segment builders.
+3. Encode bundle payload slots into their stream accumulators (in-memory Arrow
+  streaming writers).
 4. Finalize: seal builders, assign `segment_seq`, write segment file + metadata.
 5. Notify subscribers; begin Ack/Nack lifecycle.
 6. Truncate WAL range when safe (see definition below).
 
 **WAL Truncation Safety**:
 “Safe” means the WAL entries you are removing are no longer needed for crash
-+recovery of segment data. Concretely:
-1. All batches up to the boundary of one or more finalized segments have been serialized into a segment file AND that file plus its metadata have been made durable (written and flushed per the configured flush/fsync policy).
-2. Those WAL entries are not part of the current open (still accumulating) segment.
+recovery of segment data. Concretely:
+
+1. All batches up to the boundary of one or more finalized segments have been
+  serialized into a segment file AND that file plus its metadata have been
+  made durable (written and flushed per the configured flush/fsync policy).
+2. Those WAL entries are not part of the current open (still accumulating)
+  segment.
 3. The segment finalization was successful (no partial/corrupt write detected).
 
-Subscriber ACKs are *not* required for truncation—the segment file is the durable source for replay until retention deletes it. Truncation never removes WAL entries belonging to:
+Subscriber ACKs are *not* required for truncation—the segment file is the
+durable source for replay until retention deletes it. Truncation never removes
+WAL entries belonging to:
+
 - The active open segment.
 - A segment whose file/metadata durability has not been confirmed.
 
@@ -155,6 +173,213 @@ Protects processed data; smaller footprint, buffers during downstream outages
 8. **Default Strict Durability**: `backpressure` is the default size-cap
   policy, guaranteeing no segment loss prior to acknowledgement; `drop_oldest`
   must be explicitly selected to allow controlled loss.
+
+### Terminology
+
+- **RecordBundle**: The generic ingestion unit Quiver stores in a segment.
+  Conceptually, it is a fixed-width array of optional payload type slots (e.g., slot
+  0 = root records, slot 1 = resource attributes). The type only exposes
+  `arrow::record_batch::RecordBatch` values plus metadata needed to compute a
+  schema fingerprint and row count.
+- **Payload Type Slot**: A stable identifier within a `RecordBundle`. Each slot maps
+  to exactly one logical payload kind for the embedding system. OTAP assigns
+  slots to `Logs`, `LogAttrs`, `ResourceAttrs`, etc.; another integration can
+  provide its own slot table.
+- **Stream**: The ordered sequence of Arrow IPC messages Quiver writes for a
+  `(slot, schema_fingerprint)` pairing inside a segment.
+- **Stream Directory**: The header table that records every stream’s id, slot,
+  schema fingerprint, byte offset, byte length, and statistics.
+- **Batch Manifest**: The ordered list of `RecordBundle` arrivals. Each entry
+  lists the `(stream_id, chunk_index)` to read for every payload slot that was
+  present in the bundle.
+- **Adapter**: A thin crate-specific shim that converts between the embedding
+  project’s structs (for OTAP: `OtapArrowRecords`) and Quiver’s generic
+  `RecordBundle` interface.
+
+### OTAP RecordBundle Primer
+
+- Each OTAP batch (an `OtapArrowRecords` value) maps to a `RecordBundle`
+  through the OTAP adapter.
+- Slots correspond to OTAP payload types (`Logs`, `LogAttrs`, `ScopeAttrs`,
+  `ResourceAttrs`, etc.).
+- During persistence, each slot’s `RecordBatch` is encoded into a stream
+  whenever it is present.
+
+```mermaid
+graph LR
+    subgraph Bundle0[RecordBundle 0]
+      B0L[Logs<br/>rows: 37<br/>schema L1]
+      B0A[LogAttrs<br/>rows: 37<br/>schema A1]
+      B0S[ScopeAttrs<br/>missing]
+      B0R[ResourceAttrs<br/>missing]
+    end
+    subgraph Bundle1[RecordBundle 1]
+      B1L[Logs<br/>rows: 54<br/>schema L1]
+      B1A[LogAttrs<br/>rows: 54<br/>schema A1]
+      B1S[ScopeAttrs<br/>rows: 2<br/>schema S1]
+      B1R[ResourceAttrs<br/>rows: 1<br/>schema R1]
+    end
+    subgraph Bundle2[RecordBundle 2]
+      B2L[Logs<br/>rows: 49<br/>schema L2<br/>+ column]
+      B2A[LogAttrs<br/>rows: 49<br/>schema A2]
+      B2S[ScopeAttrs<br/>missing]
+      B2R[ResourceAttrs<br/>rows: 1<br/>schema R1]
+    end
+    classDef missing fill:#eee,stroke:#bbb,stroke-dasharray:4 2
+    class B0S,B0R,B2S missing
+    classDef variant fill:#cfe3ff,stroke:#004488,stroke-width:2px
+    class B2L,B2A variant
+```
+
+The example highlights three consecutive `RecordBundle`s.
+Bundle 0 omits the `ScopeAttrs` and `ResourceAttrs` slots entirely,
+so those payloads never emit a stream chunk.
+Bundle 1 carries the full set of payloads;
+each slot already has its own fingerprint (L1, A1, S1, R1)
+even though none changed between bundle 0 and 1.
+Bundle 2 shows schema drift for the `Logs` slot (`schema L2` with an
+additional column) and for `LogAttrs` (`schema A2`), while `ResourceAttrs`
+remains on R1 and `ScopeAttrs` is still absent.
+Quiver writes separate Arrow streams for every `(slot, schema)` combination
+and uses the batch manifest to link each bundle back to the correct stream
+chunks when reading segment files.
+
+```mermaid
+graph TD
+  subgraph Streams[Segment Streams]
+    SL1[Logs schema L1<br/>RB0 chunk0 rows 37<br/>RB1 chunk1 rows 54<br/>total rows 91]
+    SL2[Logs schema L2<br/>RB2 chunk0 rows 49<br/>total rows 49]
+    SA1[LogAttrs schema A1<br/>RB0 chunk0 rows 37<br/>RB1 chunk1 rows 54<br/>total rows 91]
+    SA2[LogAttrs schema A2<br/>RB2 chunk0 rows 49<br/>total rows 49]
+    SS1[ScopeAttrs schema S1<br/>RB1 chunk0 rows 2<br/>total rows 2]
+    SR1[ResourceAttrs schema R1<br/>RB1 chunk0 rows 1<br/>RB2 chunk1 rows 1<br/>total rows 2]
+  end
+  subgraph Manifest[Batch Manifest]
+    M0[RecordBundle 0<br/>SL1 chunk0<br/>SA1 chunk0]
+    M1[RecordBundle 1<br/>SL1 chunk1<br/>SA1 chunk1<br/>SS1 chunk0<br/>SR1 chunk0]
+    M2[RecordBundle 2<br/>SL2 chunk0<br/>SA2 chunk0<br/>SR1 chunk1]
+  end
+  M0 --> SL1
+  M0 --> SA1
+  M1 --> SL1
+  M1 --> SA1
+  M1 --> SS1
+  M1 --> SR1
+  M2 --> SL2
+  M2 --> SA2
+  M2 --> SR1
+```
+
+Each stream holds the serialized Arrow `RecordBatch` messages for a particular
+`(slot, schema)` fingerprint. The manifest references those batches by stream
+id and chunk index so the reader can reassemble the original `RecordBundle`
+values.
+
+### Multi-Schema Segment Format
+
+Quiver segments are containers around Arrow IPC streams plus a manifest that
+describes how those streams reassemble back into the `RecordBundle`
+abstraction used by the embedding pipeline.
+
+#### Envelope Overview
+
+- The segment header contains two primary sections:
+  - `stream_directory`: one entry per `(payload_type, schema_signature)` pairing
+    with stream id, payload kind (Logs, LogAttrs, ScopeAttrs, ResourceAttrs,
+    etc.), schema fingerprint, byte offset, and byte length.
+  - `batch_manifest`: ordered entries for every `OtapArrowRecords` that arrived
+    while the segment was open. Each manifest row lists, per payload slot,
+    `stream_id` + `chunk_index` pairs pointing back into the directory.
+- Writers reuse a stream id whenever a payload arrives with the same schema
+  fingerprint; schema evolution during the segment allocates a new stream id.
+- No control records are serialized; the manifest fully describes the replay
+  order without embedding markers inside the Arrow buffers.
+
+```mermaid
+graph TD
+  subgraph SegmentWriter
+    A[Incoming RecordBundles] --> B["StreamAccumulator (per payload/schema)"]
+        B --> |Arrow IPC| C[Segment Data Chunks]
+        B --> |Stream metadata| D[Stream Directory]
+    A --> |Batch manifest entries| E[Batch Manifest]
+    end
+    C --> F[Segment File]
+    D --> F
+    E --> F
+    F --> |mmap| G[Segment Reader]
+```
+
+#### Arrow IPC Encoding
+
+- While a segment is open, Quiver appends messages to each stream using the
+  Arrow **streaming** format so we can keep adding batches without rewriting
+  footers.
+- On finalize, each stream flushes any buffered messages, writes an Arrow
+  **file** footer, and aligns the slice on an 8-byte boundary. The header stores
+  the final offsets and lengths so readers can memory map the slice and hand it
+  directly to `arrow_ipc::FileReader`.
+- During replay, the reader consults the manifest to rebuild each
+  `RecordBundle`, hydrating only the payloads the consumer requested.
+
+```mermaid
+sequenceDiagram
+  participant M as Manifest Entry (RecordBundle)
+  participant SD as Stream Directory
+  participant S as Stream Chunks
+  participant R as Reassembled Bundle
+
+  M->>SD: lookup stream_id for payload slot
+  SD-->>M: schema fingerprint & chunk count
+  M->>S: fetch chunk N from stream_id
+  S-->>M: Arrow RecordBatch bytes
+  M->>R: insert payload batch into RecordBundle
+  R-->>M: RecordBundle returned to adapter
+```
+
+#### Dictionary Handling
+
+- Before writing, Quiver recursively normalizes dictionary-encoded columns so
+  each written stream carries self-contained dictionary data without relying on
+  prior chunks. This avoids Arrow IPC errors when schemas differ only by
+  dictionary id space and keeps replay deterministic.
+- At segment boundaries dictionaries reset, matching the current
+  `otap-dataflow` in-memory lifetime. Operators can still cap dictionary growth
+  to trigger an early finalize if cardinality spikes.
+
+#### DataFusion Integration
+
+- otap-dataflow will eventually ship a `FileFormat` that exposes one payload type
+  at a time. `infer_schema()` returns the **representative schema** for that payload:
+  the union of all columns observed in the segment (or across selected segments)
+  with types promoted to the widest compatible Arrow type.
+- During reads the DataFusion/quiver adapter reorders columns, inserts placeholder
+  arrays for omitted fields, and casts as needed so DataFusion receives a stable
+  schema even when telemetry batches vary.
+- Representative schemas live alongside the stream directory, allowing a table
+  provider to merge schemas across multiple segments without touching the
+  underlying Arrow buffers.
+
+### OTAP Payload Representation in Quiver
+
+- The otap-dataflow crate provides an adapter that implements Quiver’s
+  `RecordBundle` interface on top of `OtapArrowRecords`, mapping slot ids to
+  the OTAP payload enum (`Logs`, `LogAttrs`, `ScopeAttrs`, etc.).
+- Each `OtapArrowRecords` value is treated as a bundle of payload-specific
+  `RecordBatch` values. Within a segment, the manifest records the ordering of
+  payloads so replay reconstructs the familiar `[Option<RecordBatch>; N]`
+  structure for logs, traces, or metrics before handing control back to the
+  adapter.
+- Optional payloads simply do not emit a stream for that batch. Optional
+  columns drop from the schema signature; when the column reappears it yields a
+  new stream id with the expanded schema.
+- Per-segment dictionaries reset at segment boundaries, matching today’s
+  in-memory lifetime: high-cardinality attributes force an early finalize and
+  avoid unbounded growth.
+- Segment metadata keeps per-stream statistics (row count, column omit bitmap)
+  so readers can quickly decide which payload types to materialize.
+- When many segments are queried together, the table provider unions their
+  representative schemas per payload type, ensuring DataFusion sees a single,
+  coherent schema without re-serializing the Arrow buffers.
 
 ### Retention & Size Cap Policy
 
@@ -366,8 +591,10 @@ eventually ack or the operator opts to drop data via `drop_oldest`.
 - Indexing.
 - Configurable policy for recovery prioritization (new arrivals vs. old data,
   forward vs. reverse replay, etc.).
-- Consider support for storing finalized immutable Arrow IPC segments in an object store.
-- Kubernetes support (review for any k8s specific requirements for configuring and/or supporting a quiver store)
+- Consider support for storing finalized immutable Arrow IPC segments in an
+  object store.
+- Kubernetes support (review for any k8s specific requirements for configuring
+  and/or supporting a quiver store).
 
 ### FAQ
 
