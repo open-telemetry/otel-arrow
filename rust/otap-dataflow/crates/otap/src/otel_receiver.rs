@@ -292,7 +292,7 @@ fn build_h2_builder(settings: &GrpcServerSettings) -> server::Builder {
 async fn run_grpc_server(
     incoming: &mut TcpIncoming,
     grpc_config: Rc<GrpcServerSettings>,
-    arrow_router: Rc<GrpcRequestRouter>,
+    grpc_router: Rc<GrpcRequestRouter>,
     cancel: CancellationToken,
     admitter: Admitter,
 ) -> Result<(), io::Error> {
@@ -310,17 +310,11 @@ async fn run_grpc_server(
             res = incoming.next(), if accepting => {
                 match res {
                     Some(Ok(tcp_conn)) => {
-                        if let Err(e) = tcp_conn.set_nodelay(grpc_config.tcp_nodelay) {   // ToDo check it's already done in the TCPIncoming?
-                            if log::log_enabled!(log::Level::Warn) {
-                                log::warn!("Failed to set TCP_NODELAY: {e}");
-                            }
-                        }
-
                         // Admit a connection before spawning the task.
                         match admitter.try_admit_connection() {
                             AdmitDecision::Admitted(conn_guard) => {
                                 let h2_builder = h2_builder.clone();
-                                let router = Rc::clone(&arrow_router);
+                                let router = Rc::clone(&grpc_router);
                                 let keepalive_interval = grpc_config.http2_keepalive_interval;
                                 let keepalive_timeout = grpc_config.http2_keepalive_timeout;
 
