@@ -55,6 +55,7 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Split pdata into context and payload
+        // TODO Ack/Nack handling
         let (_context, payload) = pdata.into_parts();
 
         // TODO: Ack/Nack handling
