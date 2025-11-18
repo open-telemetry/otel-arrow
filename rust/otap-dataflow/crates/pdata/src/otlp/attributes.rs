@@ -120,6 +120,8 @@ pub(crate) fn encode_any_value(
             result_buf.encode_string(ANY_VALUE_STRING_VALUE, val);
         }
         AttributeValueType::Bool => {
+            // TODO handle case when bool column is missing we correct the default value handling
+            // https://github.com/open-telemetry/otel-arrow/issues/1449
             if let Some(attr_bool) = &attr_arrays.attr_bool {
                 if let Some(val) = attr_bool.value_at(index) {
                     result_buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
@@ -190,6 +192,9 @@ mod test {
         rb_builder.append_bytes(b"");
         rb_builder.append_double(0.0);
         rb_builder.append_int(0);
+
+        // TODO include test cases for bool once we've corrected the default value handling:
+        // https://github.com/open-telemetry/otel-arrow/issues/1449
 
         let mut fields = vec![];
         let mut columns = vec![];
