@@ -134,7 +134,7 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
 
-# GigLA Exporter
+# Azure Monnitor Exporter
 azure_identity = "0.30.0"
 flate2 = "1.1.5"
 reqwest = "0.12.24"
