@@ -1,0 +1,63 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - filter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "0.0.0.0:4317"
+      compression_method: gzip
+      wait_for_result: true
+
+  filter:
+    kind: processor
+    plugin_urn: "urn:otel:filter:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      logs:
+        exclude:
+          match_type: strict
+          resource_attributes:
+            - key: fake_data_generator
+              value: v0
+          record_attributes:
+            - key: fake_data_generator
+              value: v0
+          severity_texts:
+            - WARN
+          severity_number: null
+          bodies:
+            - body_text
+        include:
+          match_type: strict
+          resource_attributes:
+            - key: fake_data_generator
+              value: v1
+          record_attributes:
+            - key: gen_ai.system
+              value: openai
+          severity_texts: []
+          severity_number: null
+          bodies: []
+        log_record: []
+
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otap:exporter"
+    config:
+      grpc_endpoint: "http://{{backend_hostname}}:1235"
+      compression_method: zstd
+      arrow:
+        payload_compression: none

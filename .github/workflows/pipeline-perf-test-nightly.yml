@@ -86,6 +86,11 @@ jobs:
           run: |
             cd tools/pipeline_perf_test
             python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/backpressure-docker.yaml
+        
+        - name: Run filter performance test log suite
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/filter-docker.yaml
 
         - name: Upload syslog results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -98,6 +103,12 @@ jobs:
           with:
             name: backpressure-nightly-results
             path: tools/pipeline_perf_test/results/nightly_backpressure/gh-actions-benchmark/*.json
+
+        - name: Upload filter results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: filter-nightly-results
+            path: tools/pipeline_perf_test/results/filter/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
