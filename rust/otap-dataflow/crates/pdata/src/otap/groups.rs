@@ -37,21 +37,28 @@ use itertools::Itertools;
 use otap_df_config::SignalType;
 use smallvec::SmallVec;
 
-/// I logically represent a sequence of OtapArrowRecords that all share exactly the same tag.  I
-/// maintain an invariant that the primary table for each telemetry type in each batch is not None
-/// and has more than zero records.
+/// Represents a sequence of OtapArrowRecords that all share exactly
+/// the same signal.  Invarients:
+///
+/// - the data has batch_length() >= 1
+/// - the primary table (Spans, LogRecords, UnivariateMetrics) has >= 1 rows
+///
+/// The higher-level component is expected to check for empty payloads.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum RecordsGroup {
-    /// A sequence of batches representing log data
+    /// OTAP logs
     Logs(Vec<[Option<RecordBatch>; Logs::COUNT]>),
-    /// A sequence of batches representing metric data
+    /// OTAP metrics
     Metrics(Vec<[Option<RecordBatch>; Metrics::COUNT]>),
-    /// A sequence of batches representing span data
+    /// OTAP traces
     Traces(Vec<[Option<RecordBatch>; Traces::COUNT]>),
 }
 
 impl RecordsGroup {
-    /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects
+    /// Convert a sequence of `OtapArrowRecords` into three `RecordsGroup` objects.
+    /// This is a sanity check. In practice, we expect the higher-level batching
+    /// component to separate data by signal type. The public APIs for separating
+    /// by expected signal type enforce this.
     #[must_use]
     fn separate_by_type(records: Vec<OtapArrowRecords>) -> [Self; 3] {
         let log_count = signal_count(&records, SignalType::Logs);
@@ -102,7 +109,7 @@ impl RecordsGroup {
         ]
     }
 
-    /// Separate expecting only logs
+    /// Separate, expecting only logs.
     pub(crate) fn separate_logs(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !metrics.is_empty() || !traces.is_empty() {
@@ -112,7 +119,7 @@ impl RecordsGroup {
         }
     }
 
-    /// Separate expecting only metrics
+    /// Separate, expecting only metrics.
     pub(crate) fn separate_metrics(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !logs.is_empty() || !traces.is_empty() {
@@ -122,7 +129,7 @@ impl RecordsGroup {
         }
     }
 
-    /// Separate expecting only traces
+    /// Separate, expecting only traces.
     pub(crate) fn separate_traces(records: Vec<OtapArrowRecords>) -> Result<Self> {
         let [logs, metrics, traces] = RecordsGroup::separate_by_type(records);
         if !logs.is_empty() || !metrics.is_empty() {
@@ -132,7 +139,7 @@ impl RecordsGroup {
         }
     }
 
-    /// Split `RecordBatch`es as need when they're larger than our threshold or when we need them in
+    /// Split `RecordBatch`es as needed when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
     pub(crate) fn split(self, max_output_batch: NonZeroU64) -> Result<Self> {
         Ok(match self {
@@ -216,6 +223,7 @@ impl RecordsGroup {
 // Some helpers for `RecordsGroup`...
 // *************************************************************************************************
 
+/// Count the batches by matching signal type, used in separate().
 fn signal_count(records: &[OtapArrowRecords], signal: SignalType) -> usize {
     records
         .iter()
@@ -223,7 +231,7 @@ fn signal_count(records: &[OtapArrowRecords], signal: SignalType) -> usize {
         .sum()
 }
 
-/// Fetch the primary table for a given batch
+/// Fetch the primary table for a given batch.
 #[must_use]
 fn primary_table<const N: usize>(batches: &[Option<RecordBatch>; N]) -> Option<&RecordBatch> {
     match N {
@@ -238,8 +246,7 @@ fn primary_table<const N: usize>(batches: &[Option<RecordBatch>; N]) -> Option<&
     }
 }
 
-// When we're done, the data should be an empty husk; if there's anything still left there,
-// that means we screwed up!
+// Checks that we have taken all the RecordBatches after batching, that the data is all None.
 fn assert_empty<const N: usize>(data: &[Option<RecordBatch>; N]) {
     assert_eq!(data, &[const { None }; N]);
 }
@@ -254,6 +261,8 @@ fn assert_all_empty<const N: usize>(data: &[[Option<RecordBatch>; N]]) {
 // Code for splitting batches
 // *************************************************************************************************
 
+/// Splits the input batches so they are no larger than max_output_batch.
+/// There is always an upper bound due to ID column width, such as a u16 limit.
 fn generic_split<const N: usize>(
     mut batches: Vec<[Option<RecordBatch>; N]>,
     max_output_batch: NonZeroU64,
