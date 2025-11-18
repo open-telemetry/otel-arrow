@@ -3,8 +3,8 @@
 **Status:** ALPHA (Functional - supports logs only)
 
 The Azure Monitor Exporter sends OpenTelemetry logs to Azure using
-[Azure Logs Ingestion API](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/logs-ingestion-api-overview). It transforms OTLP log data into
-the format expected by Azure Log Analytics and provides configurable schema
+[Azure Logs Ingestion API](https://learn.microsoft.com/en-us/azure/azure-monitor/logs/logs-ingestion-api-overview).
+It transforms OTLP log data into the format expected by Azure Log Analytics and provides configurable schema
 mapping for custom log tables.
 
 ## Build df_engine with Azure Monitor Exporter
@@ -71,7 +71,6 @@ nodes:
 ### Authentication
 
 The exporter uses Azure SDK authentication with the following options:
-
 
 ## Usage
 
