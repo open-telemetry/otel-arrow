@@ -152,6 +152,9 @@ Protects processed data; smaller footprint, buffers during downstream outages
   builders hold data in memory until segment finalization. This avoids reading
   back WAL bytes to build Arrow structures, trading bounded memory for lower
   finalize latency.
+8. **Default Strict Durability**: `backpressure` is the default size-cap
+  policy, guaranteeing no segment loss prior to acknowledgement; `drop_oldest`
+  must be explicitly selected to allow controlled loss.
 
 ### Retention & Size Cap Policy
 
