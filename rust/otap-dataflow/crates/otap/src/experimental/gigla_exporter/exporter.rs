@@ -12,7 +12,7 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use prost::Message as _;
 
 use crate::experimental::gigla_exporter::config::Config;
-use crate::experimental::gigla_exporter::gigla_client::GigLaClient;
+use crate::experimental::gigla_exporter::client::GigLaClient;
 use crate::experimental::gigla_exporter::transformer::Transformer;
 use crate::pdata::OtapPdata;
 
