@@ -169,10 +169,10 @@ Quiver keeps disk usage low with two layers of cleanup:
   1. Evict oldest fully processed segments until usage <= cap.
   1. If still over cap:
 
-    - `backpressure` (default): slow or reject ingestion until step 1 becomes
-      possible (strict durability: no pre-ack loss).
-    - `drop_oldest`: remove oldest unprocessed data (prefer finalized; else WAL
-      / open buffers) to preserve throughput under emergencies.
+  - `backpressure` (default): slow or reject ingestion until step 1 becomes
+    possible (strict durability: no pre-ack loss).
+  - `drop_oldest`: remove oldest unprocessed data (prefer finalized; else WAL /
+    open buffers) to preserve throughput under emergencies.
 
   1. Optionally finalize a large open segment early so it becomes eligible for the
      next cleanup pass.
@@ -193,6 +193,14 @@ quiver.gc.evictions_total{reason="size"}
 quiver.retention.size_emergency_total  # future
 quiver.ingest.throttle_total           # when backpressure triggers
 ```
+
+Durability guarantee (default policy): With the default `backpressure` policy
+Quiver guarantees zero segment loss prior to subscriber acknowledgement.
+Segments are deleted only after all subscribers have acked them (or they age
+out per retention time windows). Choosing the optional `drop_oldest` policy
+explicitly authorizes controlled segment loss during size emergencies; each
+evicted segment is recorded as a synthetic `dropped` outcome for affected
+subscribers and surfaced via metrics.
 
 #### Gap Set Interaction with `drop_oldest`
 
@@ -248,7 +256,7 @@ Phase 2 (TBD) will introduce a fair eviction approach instead of
 a naive per-core cap. Preliminary goals:
 
 - Distribute eviction work (no single-core dependency).
-- Accommodate fair eviction when some threads may be blocked on other work.
+- Accomodate fair eviction when some threads may be blocked on other work.
 - Minimal coordination overhead (brief atomic claims, no long-lived tokens).
 - Preserve ordering; escalate to unprocessed deletion only under `drop_oldest`.
 - Limit transient overshoot to ~one segment per concurrently finalizing core.
