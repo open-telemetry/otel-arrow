@@ -969,6 +969,11 @@ mod test {
         test_logs_round_trip(logs_with_empty_log_records());
     }
 
+    #[test]
+    fn test_logs_with_body_empty_string() {
+        test_logs_round_trip(logs_with_body_empty_string());
+    }
+
     //
     // Traces Tests
     //
