@@ -58,7 +58,6 @@ impl AzureMonitorExporter {
         // Split pdata into context and payload
         let (_context, payload) = pdata.into_parts();
 
-
         // Convert OTAP payload to OTLP bytes
         // TODO: This conversion step should be eliminated
         let otlp_bytes: OtlpProtoBytes =
