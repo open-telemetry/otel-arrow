@@ -62,6 +62,3 @@ __pycache__/
 # Collector test binary
 collector/cmd/otelarrowcol/otelarrowcol
 tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp
-
-# .git folder - ignoring this helps with code editor search performance and results
-.git
