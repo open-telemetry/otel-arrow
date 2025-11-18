@@ -78,35 +78,7 @@ impl GigLaClient {
         );
 
         // Create credential based on auth method in config
-        let credential: Arc<dyn TokenCredential> = match config.auth.method {
-            AuthMethod::ManagedIdentity => {
-                let mut options = ManagedIdentityCredentialOptions::default();
-
-                if let Some(client_id) = &config.auth.client_id {
-                    // User-assigned managed identity
-                    println!("Using user-assigned managed identity with client_id: {client_id}");
-                    options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
-                } else {
-                    // System-assigned managed identity
-                    println!("Using system-assigned managed identity");
-                    // user_assigned_id remains None for system-assigned
-                }
-
-                ManagedIdentityCredential::new(Some(options))
-                    .map_err(|e| format!("Failed to create managed identity credential: {e}"))?
-            }
-            AuthMethod::Development => {
-                println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
-                // DeveloperToolsCredential tries Azure CLI and Azure Developer CLI
-                DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                    .map_err(|e| {
-                        format!(
-                            "Failed to create developer tools credential: {e}. \
-                        Ensure Azure CLI or Azure Developer CLI is installed and logged in"
-                        )
-                    })?
-            }
-        };
+        let credential = Self::create_credential(&config.auth)?;
 
         Ok(Self {
             http_client,
@@ -114,6 +86,50 @@ impl GigLaClient {
             credential,
             scope: config.auth.scope.clone(),
         })
+    }
+
+    /// Creates the appropriate credential based on the authentication method in config.
+    ///
+    /// # Arguments
+    /// * `config` - The authentication configuration
+    ///
+    /// # Returns
+    /// * `Ok(Arc<dyn TokenCredential>)` - The configured credential
+    /// * `Err(String)` - Error message if credential creation fails
+    fn create_credential(auth_config: &crate::experimental::gigla_exporter::config::AuthConfig) -> Result<Arc<dyn TokenCredential>, String> {
+        match auth_config.method {
+            AuthMethod::ManagedIdentity => {
+                let mut options = ManagedIdentityCredentialOptions::default();
+
+                if let Some(client_id) = &auth_config.client_id {
+                    // User-assigned managed identity
+                    eprintln!("Using user-assigned managed identity with client_id: {client_id}");
+                    options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
+                } else {
+                    // System-assigned managed identity
+                    eprintln!("Using system-assigned managed identity");
+                    // user_assigned_id remains None for system-assigned
+                }
+
+                let credential = ManagedIdentityCredential::new(Some(options))
+                    .map_err(|e| format!("Failed to create managed identity credential: {e}"))?;
+                
+                Ok(credential as Arc<dyn TokenCredential>)
+            }
+            AuthMethod::Development => {
+                eprintln!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
+                // DeveloperToolsCredential tries Azure CLI and Azure Developer CLI
+                let credential = DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
+                    .map_err(|e| {
+                        format!(
+                            "Failed to create developer tools credential: {e}. \
+                            Ensure Azure CLI or Azure Developer CLI is installed and logged in"
+                        )
+                    })?;
+                
+                Ok(credential as Arc<dyn TokenCredential>)
+            }
+        }
     }
 
     /// Compress data using gzip
