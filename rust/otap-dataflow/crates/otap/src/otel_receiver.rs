@@ -31,7 +31,7 @@ use ack::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use grpc::{
     AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
     build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
@@ -302,6 +302,16 @@ async fn run_grpc_server(
     let h2_builder = build_h2_builder(&grpc_config);
 
     loop {
+        // Drain completed connection tasks without awaiting.
+        // This is outside the select! to avoid cancelling a pending accept.
+        while let Some(res) = tcp_conn_tasks.join_next().now_or_never().flatten() {
+            if let Err(join_err) = res {
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!("H2 connection task join error: {join_err}");
+                }
+            }
+        }
+
         tokio::select! {
             // 1) Cancellation: stop accepting and break to drain
             _ = cancel.cancelled() => break,
@@ -361,15 +371,6 @@ async fn run_grpc_server(
                     }
                 }
             }
-
-            // 3) Observe progress/completion of any connection task
-            maybe_done = tcp_conn_tasks.join_next(), if !tcp_conn_tasks.is_empty() => {
-                if let Some(Err(join_err)) = maybe_done {
-                    if log::log_enabled!(log::Level::Debug) {
-                        log::debug!("H2 connection task join error: {join_err}");
-                    }
-                }
-            }
         }
 
         // If no more accepts will arrive and all tasks are done, we can exit
@@ -419,6 +420,16 @@ async fn handle_tcp_conn(
         }
         let keepalive_armed = keepalive.as_ref().is_some_and(Http2Keepalive::is_armed);
 
+        // Drain completed stream tasks without awaiting.
+        // This is outside the select! to avoid cancelling a pending accept or keepalive.
+        while let Some(res) = stream_tasks.join_next().now_or_never().flatten() {
+            if let Err(join_err) = res {
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!("stream task join error: {join_err}");
+                }
+            }
+        }
+
         tokio::select! {
             // Accept next H2 stream while accepting
             result = http2_conn.accept(), if accepting => {
@@ -466,15 +477,6 @@ async fn handle_tcp_conn(
                     }
                     Some(Err(err)) => return Err(err),
                     None => accepting = false,
-                }
-            }
-
-            // Join completed stream tasks
-            maybe_done = stream_tasks.join_next(), if !stream_tasks.is_empty() => {
-                if let Some(Err(join_err)) = maybe_done {
-                    if log::log_enabled!(log::Level::Debug) {
-                        log::debug!("stream task join error: {join_err}");
-                    }
                 }
             }
 
