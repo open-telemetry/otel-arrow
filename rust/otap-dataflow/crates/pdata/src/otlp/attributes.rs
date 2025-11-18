@@ -197,6 +197,24 @@ mod test {
         let schema = Arc::new(Schema::new(fields));
         let rb = RecordBatch::try_new(schema, columns).unwrap();
 
+        // assert the columns are not present
+        assert!(
+            rb.column_by_name(consts::ATTRIBUTE_BYTES).is_none(),
+            "Bytes column should be omitted"
+        );
+        assert!(
+            rb.column_by_name(consts::ATTRIBUTE_STR).is_none(),
+            "Str column should be omitted"
+        );
+        assert!(
+            rb.column_by_name(consts::ATTRIBUTE_INT).is_none(),
+            "Int column should be omitted"
+        );
+        assert!(
+            rb.column_by_name(consts::ATTRIBUTE_DOUBLE).is_none(),
+            "Double column should be omitted"
+        );
+
         let any_val_arrays = AnyValueArrays::try_from(&rb).unwrap();
         let mut protobuf = ProtoBuffer::new();
 
