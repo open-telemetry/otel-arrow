@@ -15,16 +15,18 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, PrimitiveBuilder,
-        RecordBatch, StructArray, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
+        PrimitiveBuilder, RecordBatch, StructArray, UInt16Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::{SortColumn, SortOptions, and, take_record_batch},
-    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
+    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
 };
 
 use crate::{
-    arrays::{NullableArrayAccessor, get_u8_array},
+    arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array},
+    encode::record::array::{ArrayAppend, PrimitiveArrayBuilder},
+    encode::record::attributes::AttributesRecordBatchBuilderConstructorHelper,
     error::{Error, Result},
     otap::transform::{
         create_next_element_equality_array, create_next_eq_array_for_array,
@@ -656,26 +658,12 @@ pub fn remap_parent_ids(
     let parent_id_col = record_batch.column(field_idx);
     let new_parent_ids = match remapping {
         RemappedParentIds::UInt16(ids) => {
-            let parent_id_col = parent_id_col
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::InvalidListArray {
-                    expect_oneof: vec![DataType::UInt16],
-                    actual: parent_id_col.data_type().clone(),
-                })?;
-            Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
+            remap_parent_id_col_maybe_dict::<UInt16Type>(parent_id_col, ids)
         }
         RemappedParentIds::UInt32(ids) => {
-            let parent_id_col = parent_id_col
-                .as_any()
-                .downcast_ref::<UInt32Array>()
-                .ok_or_else(|| Error::InvalidListArray {
-                    expect_oneof: vec![DataType::UInt32],
-                    actual: parent_id_col.data_type().clone(),
-                })?;
-            Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
+            remap_parent_id_col_maybe_dict::<UInt32Type>(parent_id_col, ids)
         }
-    };
+    }?;
 
     let new_columns = record_batch.columns().iter().enumerate().map(|(i, col)| {
         if i == field_idx {
@@ -690,6 +678,87 @@ pub fn remap_parent_ids(
     // length as the replacement
     Ok(RecordBatch::try_new(schema, new_columns.collect())
         .expect("could not create new record batch"))
+}
+
+/// apply parent ID remappings to column that is possibly a dictionary, or is otherwise a native
+/// array. If the column is a dictionary, then the remappings will be applied to the dictionary
+/// values which are expected to be of type T
+fn remap_parent_id_col_maybe_dict<T: ArrowPrimitiveType>(
+    parent_ids: &ArrayRef,
+    remapped_ids: &[T::Native],
+) -> Result<ArrayRef> {
+    match parent_ids.data_type() {
+        DataType::Dictionary(k, v) => {
+            // ensure the values in the dictionary are the correct type
+            if v.as_ref() != &T::DATA_TYPE {
+                return Err(Error::InvalidListArray {
+                    expect_oneof: vec![T::DATA_TYPE],
+                    actual: v.as_ref().clone(),
+                });
+            }
+
+            match k.as_ref() {
+                DataType::UInt8 => {
+                    // safety - we've checked the datatype
+                    let dict_arr = parent_ids
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("can cast to datatype");
+
+                    // safety - we've already checked the datatype of the values type above
+                    let values = dict_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<T>>()
+                        .expect("can cast to datatype");
+
+                    Ok(Arc::new(DictionaryArray::new(
+                        dict_arr.keys().clone(),
+                        Arc::new(remap_parent_id_col(values, remapped_ids)?),
+                    )))
+                }
+                DataType::UInt16 => {
+                    // safety - we've checked the datatype
+                    let dict_arr = parent_ids
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("can cast to datatype");
+
+                    // safety - we've already checked the datatype of the values type above
+                    let values = dict_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<T>>()
+                        .expect("can cast to datatype");
+
+                    Ok(Arc::new(DictionaryArray::new(
+                        dict_arr.keys().clone(),
+                        Arc::new(remap_parent_id_col(values, remapped_ids)?),
+                    )))
+                }
+                bad_key_type => Err(Error::UnsupportedDictionaryKeyType {
+                    expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                    actual: bad_key_type.clone(),
+                }),
+            }
+        }
+        data_type if data_type == &T::DATA_TYPE => {
+            // safety: we've already checked that the array is of the type we're casting to
+            let parent_id_col = parent_ids
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .expect("parent id cols are primitive");
+            Ok(Arc::new(remap_parent_id_col(parent_id_col, remapped_ids)?) as ArrayRef)
+        }
+        bad_data_type => Err(Error::InvalidListArray {
+            actual: bad_data_type.clone(),
+            expect_oneof: vec![
+                T::DATA_TYPE.clone(),
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(T::DATA_TYPE.clone())),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(T::DATA_TYPE.clone())),
+            ],
+        }),
+    }
 }
 
 fn remap_parent_id_col<T: ArrowPrimitiveType>(
@@ -871,7 +940,10 @@ fn apply_encoding_for_id_type<T>(
 ) -> Result<Option<EncodedColumnResult>>
 where
     T: ArrowPrimitiveType,
-    T::Native: From<u8> + ParentId + Sub<Output = T::Native>,
+    T::Native: From<u8>
+        + ParentId
+        + Sub<Output = T::Native>
+        + AttributesRecordBatchBuilderConstructorHelper,
     RemappedParentIds: From<Vec<T::Native>>,
 {
     let column = match access_column(
@@ -883,16 +955,17 @@ where
         None => return Ok(None),
     };
 
-    let column = column
-        .as_any()
-        .downcast_ref::<PrimitiveArray<T>>()
-        .ok_or_else(|| Error::InvalidListArray {
-            expect_oneof: vec![T::DATA_TYPE],
-            actual: column.data_type().clone(),
-        })?;
-
     let result = match column_encoding.encoding {
-        Encoding::DeltaRemapped => create_new_delta_encoded_column_from::<T>(column),
+        Encoding::DeltaRemapped => {
+            let column = column
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .ok_or_else(|| Error::InvalidListArray {
+                    expect_oneof: vec![T::DATA_TYPE],
+                    actual: column.data_type().clone(),
+                })?;
+            create_new_delta_encoded_column_from::<T>(column)
+        }
 
         Encoding::AttributeQuasiDelta => {
             let new_column = transport_encode_parent_id_for_attributes::<T>(record_batch)?;
@@ -1031,16 +1104,12 @@ pub fn remove_transport_optimized_encodings(
 pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
 where
     T: ArrowPrimitiveType,
-    T::Native: ParentId + Sub<Output = T::Native>,
+    T::Native: ParentId + Sub<Output = T::Native> + AttributesRecordBatchBuilderConstructorHelper,
 {
-    // downcast parent ID into an array of the primitive type
-    let parent_id_arr = T::Native::get_parent_id_column(record_batch)?
-        .as_any()
-        .downcast_ref::<PrimitiveArray<T>>()
-        // safety: this should be OK because we're basically recasting the primitive array to the
-        // same type, where it contains T::Native instead of <T as ParentId>::ArrayType::Native
-        // this cast avoids some messy type constraints on the method signature
-        .expect("unable to downcast to type");
+    let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T>>::try_new(get_required_array(
+        record_batch,
+        consts::PARENT_ID,
+    )?)?;
 
     if record_batch.num_rows() == 0 {
         // safety: we've already called `T::get_parent_id_column`, which checks that the column
@@ -1087,7 +1156,8 @@ where
     let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
-    let mut encoded_parent_ids = PrimitiveArray::<T>::builder(record_batch.num_rows());
+    let mut encoded_parent_ids =
+        PrimitiveArrayBuilder::<T>::new(T::Native::parent_id_array_options());
 
     // below we're iterating through the record batch and each time we find a contiguous range
     // where all the types & attribute keys are the same, we use the "eq" compute kernel to
@@ -1126,7 +1196,7 @@ where
                 // safety: there's a check at the beginning of this function to ensure that
                 // the batch is not empty
                 .expect("expect the batch not to be empty");
-            encoded_parent_ids.append_value(first_parent_id);
+            encoded_parent_ids.append_value(&first_parent_id);
 
             if let Some(value_arr) = value_arr {
                 // if we have a value array here, we want the parent ID to be delta encoded
@@ -1148,13 +1218,13 @@ where
                         // otherwise, we break the delta encoding
                         curr_parent_id
                     };
-                    encoded_parent_ids.append_value(parent_id_or_delta);
+                    encoded_parent_ids.append_value(&parent_id_or_delta);
                 }
             } else {
                 // if we're here, we've determined that the parent ID values are not delta encoded
                 // because the type doesn't support it
                 for batch_idx in (curr_range_start + 1)..(idx + 1) {
-                    encoded_parent_ids.append_value(parent_id_arr.value_at_or_default(batch_idx));
+                    encoded_parent_ids.append_value(&parent_id_arr.value_at_or_default(batch_idx));
                 }
             }
 
@@ -1162,7 +1232,12 @@ where
         }
     }
 
-    let encoded_parent_ids = Arc::new(encoded_parent_ids.finish());
+    // safety: we can call expect here because finish() in this case should only return a None
+    // option if the array is optional, which parent_id column for attributes is not
+    let encoded_parent_ids = encoded_parent_ids
+        .finish()
+        .expect("parent IDs are not optional");
+
     Ok(encoded_parent_ids)
 }
 
@@ -1258,7 +1333,7 @@ mod test {
     use arrow::{
         array::{
             FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StructArray,
-            TimestampNanosecondArray, UInt8Array, UInt16Array,
+            TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
         },
         datatypes::{Field, Fields, TimeUnit},
     };

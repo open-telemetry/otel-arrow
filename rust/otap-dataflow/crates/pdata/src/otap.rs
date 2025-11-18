@@ -839,12 +839,14 @@ pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [Ar
 #[cfg(test)]
 mod test {
     use arrow::array::{
-        ArrowPrimitiveType, FixedSizeBinaryArray, Float64Array, Int64Array, PrimitiveArray,
-        RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+        ArrowPrimitiveType, FixedSizeBinaryArray, Float64Array, Int64Array, RecordBatch,
+        StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Fields, Schema, UInt16Type, UInt32Type};
     use std::sync::Arc;
 
+    use crate::encode::record::array::{ArrayAppend, PrimitiveArrayBuilder};
+    use crate::encode::record::attributes::AttributesRecordBatchBuilderConstructorHelper;
     use crate::otlp::attributes::AttributeValueType;
     use crate::schema::FieldExt;
 
@@ -858,20 +860,32 @@ mod test {
     fn attrs_from_data<T: ArrowPrimitiveType>(
         data: Vec<(T::Native, &'static str)>,
         encoding: &'static str,
-    ) -> RecordBatch {
-        let attrs_schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, T::DATA_TYPE, false).with_encoding(encoding),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        ]));
-        let parent_ids = PrimitiveArray::<T>::from_iter_values(data.iter().map(|d| d.0));
+    ) -> RecordBatch
+    where
+        T::Native: AttributesRecordBatchBuilderConstructorHelper,
+    {
+        let mut parent_id_builder =
+            PrimitiveArrayBuilder::<T>::new(T::Native::parent_id_array_options());
+        data.iter()
+            .map(|d| d.0)
+            .for_each(|id| parent_id_builder.append_value(&id));
+        let parent_ids = parent_id_builder.finish().unwrap();
+
         let attr_vals = StringArray::from_iter_values(data.iter().map(|d| d.1));
         let attr_keys = StringArray::from_iter_values(std::iter::repeat_n("a", data.len()));
         let attr_types = UInt8Array::from_iter_values(std::iter::repeat_n(
             AttributeValueType::Str as u8,
             data.len(),
         ));
+
+        let attrs_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, parent_ids.data_type().clone(), false)
+                .with_encoding(encoding),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
         RecordBatch::try_new(
             attrs_schema,
             vec![
