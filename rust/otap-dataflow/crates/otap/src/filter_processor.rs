@@ -398,7 +398,7 @@ mod tests {
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
                 let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -410,7 +410,7 @@ mod tests {
                     .try_into()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
                         .expect("failed to decode logs into logsdata"),
                     _ => panic!("expected logs type"),
                 };
@@ -567,7 +567,7 @@ mod tests {
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
                 let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -579,7 +579,7 @@ mod tests {
                     .try_into()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
                         .expect("failed to decode logs into logsdata"),
                     _ => panic!("expected logs type"),
                 };
@@ -723,7 +723,7 @@ mod tests {
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
                 let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -735,7 +735,7 @@ mod tests {
                     .try_into()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
                         .expect("failed to decode logs into logsdata"),
                     _ => panic!("expected logs type"),
                 };
@@ -883,7 +883,7 @@ mod tests {
                     .encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
                 let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -895,7 +895,7 @@ mod tests {
                     .try_into()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
                         .expect("failed to decode logs into logsdata"),
                     _ => panic!("expected logs type"),
                 };

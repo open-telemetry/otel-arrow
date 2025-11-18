@@ -959,7 +959,7 @@ fn respond_with_error(
     }
 }
 
-fn otlp_proto_bytes(signal: SignalType, bytes: Vec<u8>) -> OtlpProtoBytes {
+fn otlp_proto_bytes(signal: SignalType, bytes: Bytes) -> OtlpProtoBytes {
     match signal {
         SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
         SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),

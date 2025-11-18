@@ -410,15 +410,19 @@ impl TryFrom<OtlpProtoMessage> for OtapPdata {
         Ok(match value {
             OtlpProtoMessage::Logs(logs_data) => {
                 logs_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into())
             }
             OtlpProtoMessage::Metrics(metrics_data) => {
                 metrics_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
+                OtapPdata::new_todo_context(
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.into()).into(),
+                )
             }
             OtlpProtoMessage::Traces(trace_data) => {
                 trace_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
+                OtapPdata::new_todo_context(
+                    OtlpProtoBytes::ExportTracesRequest(bytes.into()).into(),
+                )
             }
         })
     }

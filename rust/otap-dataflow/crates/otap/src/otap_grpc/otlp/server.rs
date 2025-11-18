@@ -186,9 +186,9 @@ impl Decoder for OtlpBytesDecoder {
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         let buf = src.chunk();
         let result = match self.signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec().into()),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec().into()),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec().into()),
         };
         src.advance(buf.len());
         Ok(Some(OtapPdata::new(Context::default(), result.into())))

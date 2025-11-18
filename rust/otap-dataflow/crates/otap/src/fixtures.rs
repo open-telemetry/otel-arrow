@@ -126,7 +126,7 @@ pub fn create_single_logs_pdata_with_attrs(attributes: Vec<KeyValue>) -> OtapPda
     };
     let mut bytes = vec![];
     log_req_1.encode(&mut bytes).unwrap();
-    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into())
+    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into())
 }
 
 pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {

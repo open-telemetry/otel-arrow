@@ -9,6 +9,7 @@ use crate::otap_mock::create_otap_batch;
 use crate::otel_receiver::test_common::{build_test_registry, decode_pdata_to_message};
 use crate::pdata::OtapPdata;
 use async_stream::stream;
+use bytes::Bytes;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -63,7 +64,7 @@ fn generate_otap_fake_batches(registry: &ResolvedRegistry) -> OtapFakeBatchPlan 
         let logs_req = ExportLogsServiceRequest {
             resource_logs: logs_data.resource_logs.clone(),
         };
-        let logs_bytes = logs_req.encode_to_vec();
+        let logs_bytes = Bytes::from(logs_req.encode_to_vec());
         let logs_records: OtapArrowRecords = OtlpProtoBytes::ExportLogsRequest(logs_bytes)
             .try_into()
             .expect("encode logs to arrow");
@@ -74,7 +75,7 @@ fn generate_otap_fake_batches(registry: &ResolvedRegistry) -> OtapFakeBatchPlan 
         let metrics_req = ExportMetricsServiceRequest {
             resource_metrics: metrics_data.resource_metrics.clone(),
         };
-        let metrics_bytes = metrics_req.encode_to_vec();
+        let metrics_bytes = Bytes::from(metrics_req.encode_to_vec());
         let metrics_records: OtapArrowRecords = OtlpProtoBytes::ExportMetricsRequest(metrics_bytes)
             .try_into()
             .expect("encode metrics to arrow");
@@ -85,7 +86,7 @@ fn generate_otap_fake_batches(registry: &ResolvedRegistry) -> OtapFakeBatchPlan 
         let traces_req = ExportTraceServiceRequest {
             resource_spans: traces_data.resource_spans.clone(),
         };
-        let traces_bytes = traces_req.encode_to_vec();
+        let traces_bytes = Bytes::from(traces_req.encode_to_vec());
         let traces_records: OtapArrowRecords = OtlpProtoBytes::ExportTracesRequest(traces_bytes)
             .try_into()
             .expect("encode traces to arrow");

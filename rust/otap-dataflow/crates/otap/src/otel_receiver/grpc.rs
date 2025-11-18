@@ -755,15 +755,15 @@ where
     S: BodyStream + Unpin + 'static,
 {
     /// Returns the next raw gRPC frame payload, copying when compression is enabled.
-    pub(crate) async fn next_message_bytes(&mut self) -> Result<Option<Vec<u8>>, Status> {
+    pub(crate) async fn next_message_bytes(&mut self) -> Result<Option<Bytes>, Status> {
         let Some((compressed, payload)) = self.next_payload().await? else {
             return Ok(None);
         };
         if compressed {
             let bytes = self.decompress(payload)?;
-            Ok(Some(bytes.to_vec()))
+            Ok(Some(Bytes::copy_from_slice(bytes)))
         } else {
-            Ok(Some(payload.to_vec()))
+            Ok(Some(payload))
         }
     }
 }

@@ -138,13 +138,13 @@ pub fn decode_pdata_to_message(pdata: &OtapPdata) -> OtlpProtoMessage {
     match proto_bytes {
         OtlpProtoBytes::ExportLogsRequest(bytes) => {
             let request =
-                ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode logs payload");
+                ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode logs payload");
             OtlpProtoMessage::Logs(LogsData {
                 resource_logs: request.resource_logs,
             })
         }
         OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-            let request = ExportMetricsServiceRequest::decode(bytes.as_slice())
+            let request = ExportMetricsServiceRequest::decode(bytes.as_ref())
                 .expect("decode metrics payload");
             OtlpProtoMessage::Metrics(MetricsData {
                 resource_metrics: request.resource_metrics,
@@ -152,7 +152,7 @@ pub fn decode_pdata_to_message(pdata: &OtapPdata) -> OtlpProtoMessage {
         }
         OtlpProtoBytes::ExportTracesRequest(bytes) => {
             let request =
-                ExportTraceServiceRequest::decode(bytes.as_slice()).expect("decode traces payload");
+                ExportTraceServiceRequest::decode(bytes.as_ref()).expect("decode traces payload");
             OtlpProtoMessage::Traces(TracesData {
                 resource_spans: request.resource_spans,
             })
