@@ -342,13 +342,18 @@ sequenceDiagram
 
 #### Dictionary Handling
 
-- Before writing, Quiver recursively normalizes dictionary-encoded columns so
-  each written stream carries self-contained dictionary data without relying on
-  prior chunks. This avoids Arrow IPC errors when schemas differ only by
-  dictionary id space and keeps replay deterministic.
-- At segment boundaries dictionaries reset, matching the current
-  `otap-dataflow` in-memory lifetime. Operators can still cap dictionary growth
-  to trigger an early finalize if cardinality spikes.
+- Each `(slot, schema)` stream keeps dictionary encoding intact. While bundles
+  accumulate we capture the union of dictionary values per column. When
+  finalizing the segment we rebuild those columns against a deterministic
+  vocabulary and emit the Arrow IPC **file** with the canonical dictionary in
+  the header. Readers reopen the slice via `arrow_ipc::FileReader`, which
+  replays the seeded dictionaries before yielding the chunk referenced by the
+  manifest.
+- Dictionaries stay deterministic for the lifetime of a stream because the
+  final vocabulary is chosen from the accumulated batches. If a stream would
+  exceed configured cardinality limits we rotate to a fresh stream (resetting
+  dictionary ids) rather than serializing delta messages. That mirrors the
+  in-memory lifecycle in `otap-dataflow` and keeps chunks self-contained.
 
 #### DataFusion Integration
 
