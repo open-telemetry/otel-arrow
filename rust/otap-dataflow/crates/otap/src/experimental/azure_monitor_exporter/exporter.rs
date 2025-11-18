@@ -54,11 +54,10 @@ impl AzureMonitorExporter {
         pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        // TODO: Ack/Nack handling
         // Split pdata into context and payload
-        // TODO Ack/Nack handling
         let (_context, payload) = pdata.into_parts();
 
-        // TODO: Ack/Nack handling
 
         // Convert OTAP payload to OTLP bytes
         // TODO: This conversion step should be eliminated
