@@ -63,8 +63,8 @@ Write path overview:
 3. Encode bundle payload slots into their stream accumulators (in-memory Arrow
   streaming writers).
 4. Finalize: seal builders, assign `segment_seq`, write segment file + metadata.
-5. Notify subscribers; begin Ack/Nack lifecycle.
-6. Truncate WAL range when safe (see definition below).
+5. Notify subscribers for each finalized `RecordBundle`; begin per-bundle
+  Ack/Nack lifecycle.
 
 **WAL Truncation Safety**:
 “Safe” means the WAL entries you are removing are no longer needed for crash
@@ -86,8 +86,10 @@ WAL entries belonging to:
 
 **Acknowledgement Log (`ack.log`)**: Shared append-only log for subscriber state
 
-- Stores every Ack/Nack with `(segment_seq, subscriber_id, outcome)`
-- Replayed on startup to rebuild per-subscriber high-water marks and gap sets
+- Stores every per-bundle Ack/Nack as `(segment_seq, bundle_index,
+  subscriber_id, outcome)`
+- Replayed on startup to rebuild each subscriber’s in-flight bundle set and
+  advance segment high-water marks once all bundles are acknowledged
 - Enables recovery without per-subscriber WALs
 
 **Dual Time & Ordering Semantics**:
@@ -107,19 +109,21 @@ and will follow query feature implementation.
 **Pub/Sub Notifications**: Subscribers (exporters) receive notifications when
 new segments are ready.
 
-**Multi-Subscriber Tracking**: Each subscriber maintains a high-water mark; data
-is deleted only when all subscribers have processed it (or retention policy
-overrides). High-water mark = highest contiguous segment sequence that
-subscriber has acked. Out-of-order ACKs land in a tiny gap set until missing
-segments arrive, so the mark never jumps past a hole. Each ACK also decrements
-the segment's outstanding subscriber count.
+**Multi-Subscriber Tracking**: Each subscriber maintains per-segment bundle
+progress; data is deleted only when every subscriber has acknowledged every
+bundle (or retention policy overrides). A subscriber’s high-water mark is the
+highest contiguous segment whose bundles all have Ack (or dropped) outcomes.
+Out-of-order Acks land in a tiny gap set keyed by `(segment_seq, bundle_index)`
+so the mark never jumps past a missing bundle. Each bundle Ack decrements the
+segment’s outstanding bundle counter; once it reaches zero the segment becomes
+eligible for deletion.
 
 Ack/Nack events append to a shared log (single WAL keyed by subscriber ID) so
-this state is replayed after crashes without per-subscriber files. The shared
-log (`ack.log`) lives alongside the main WAL. Periodic checkpoints persist each
-subscriber's current high-water mark into the metadata index so recovery can
-skip directly to the first gap, replaying the log only for recent events; gap
-sets are rebuilt on replay from the same log stream.
+per-bundle state is replayed after crashes without per-subscriber files. The
+shared log (`ack.log`) lives alongside the main WAL. Periodic checkpoints
+persist each subscriber’s current high-water mark into the metadata index so
+recovery can skip directly to the first gap, replaying the log only for recent
+events; bundle gap sets are rebuilt on replay from the same log stream.
 
 ### Integration with OTAP Dataflow
 
@@ -424,8 +428,9 @@ quiver.ingest.throttle_total           # when backpressure triggers
 
 Durability guarantee (default policy): With the default `backpressure` policy
 Quiver guarantees zero segment loss prior to subscriber acknowledgement.
-Segments are deleted only after all subscribers have acked them (or they age
-out per retention time windows). Choosing the optional `drop_oldest` policy
+Segments are deleted only after all subscribers have acked every bundle within
+them (or they age out per retention time windows). Choosing the optional
+`drop_oldest` policy
 explicitly authorizes controlled segment loss during size emergencies; each
 evicted segment is recorded as a synthetic `dropped` outcome for affected
 subscribers and surfaced via metrics.
@@ -433,23 +438,23 @@ subscribers and surfaced via metrics.
 #### Gap Set Interaction with `drop_oldest`
 
 `drop_oldest` must not leave subscribers with permanent, unfillable gaps. If a
-size emergency forces eviction of a finalized segment that still appears in any
-subscriber's gap set (subscriber acked later segments but not this one), Quiver
-records a synthetic `dropped` outcome for that `(segment_seq, subscriber_id)` in
-`ack.log` before deletion.
+size emergency forces eviction of a finalized segment that still has unacked
+bundles for any subscriber, Quiver records synthetic `dropped` outcomes for
+each outstanding `(segment_seq, bundle_index, subscriber_id)` in `ack.log`
+before deletion.
 
-- `dropped` is treated like an `ack` for advancing the high-water mark (HWM) and
-  immediately removes the sequence from the gap set.
-- HWM only advances across a contiguous run of `ack` or `dropped`; real gaps
-  still block.
-- Without this, deleting a gap segment would freeze the subscriber's HWM
+- `dropped` is treated like an `ack` for advancing the high-water mark (HWM)
+  and immediately removes the bundle from the subscriber’s gap set.
+- HWM only advances across a contiguous run of bundles with `ack` or
+  `dropped`; real gaps still block.
+- Without this, deleting a gap bundle would freeze the subscriber's HWM
   forever and distort lag metrics.
 
 Metrics:
 
 ```text
-quiver.subscriber.dropped_segments_total    # increments per subscriber per dropped segment
-quiver.segment.dropped_total                # unique segments dropped pre-ack
+quiver.subscriber.dropped_bundles_total    # increments per subscriber per dropped bundle
+quiver.segment.dropped_total               # unique segments that lost bundles pre-ack
 ```
 
 Operators that require strict delivery semantics (never convert missing data to
