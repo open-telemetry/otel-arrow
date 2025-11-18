@@ -565,29 +565,38 @@ Consider a single `persistence` node feeding both a Parquet exporter (local file
 writer) and an OTLP exporter (remote endpoint). Each exporter is a Quiver
 subscriber with its own cursor and participates in the OTAP Ack/Nack protocol.
 
-Happy-path flow for segment `seg-120` (4 MiB):
+Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
 
 1. Incoming batches append to the WAL and accumulate in the in-memory open
   segment until finalize triggers; then the data is written as `seg-120.arrow`.
 1. Quiver enqueues a notification for `parquet_exporter` and `otlp_exporter`.
-1. Each exporter pulls the segment via its channel, processes it, then issues
-  `Ack(segment_id)` back to Quiver.
+1. Each exporter drains the segment’s three bundles in order and, after
+  finishing each bundle, emits `Ack(segment_seq, bundle_index)` (or `Nack`) back
+  to Quiver. The consumer-side cursor only advances to the next bundle once the
+  acknowledgement for the current bundle is recorded.
 1. On every Ack/Nack Quiver appends a record to the shared acknowledgement log:
 
   ```text
-  ts=2025-11-10T18:22:07Z  segment=seg-120  subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:08Z  segment=seg-120  subscriber=otlp_exporter     ack
+  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0  subscriber=parquet_exporter  ack
+  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0  subscriber=otlp_exporter     ack
+  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1  subscriber=parquet_exporter  ack
+  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1  subscriber=otlp_exporter     ack
+  ts=2025-11-10T18:22:09Z  segment=seg-120  bundle=2  subscriber=parquet_exporter  ack
+  ts=2025-11-10T18:22:10Z  segment=seg-120  bundle=2  subscriber=otlp_exporter     ack
   ```
 
-1. Once all subscribers ack `seg-120`, it becomes eligible for eviction according
-  to the retention policy.
+1. Once every subscriber has acknowledged bundle `0..=2` for `seg-120`, the
+  segment’s outstanding bundle count drops to zero and it becomes eligible for
+  eviction according to the retention policy.
 1. During crash recovery Quiver replays the acknowledgement log alongside the
   WAL to restore per-subscriber high-water marks; no per-subscriber WAL files
   are required.
 
-Nack handling reuses the same log: Quiver records the nack, retries delivery
-according to OTAP policy, and keeps the segment pinned until all subscribers
-eventually ack or the operator opts to drop data via `drop_oldest`.
+Nack handling reuses the same log: Quiver records the nack, retries delivery for
+the specific `(segment_seq, bundle_index)` according to OTAP policy, and keeps
+the segment pinned until every subscriber eventually acks each bundle or the
+operator opts to drop data via `drop_oldest` (which synthesizes `dropped`
+entries for the missing bundles).
 
 ### Future Enhancements
 
@@ -615,8 +624,8 @@ atomics, not external daemons.
 
 **What happens on crash recovery?**: On restart we replay the data WAL to rebuild
 segments, replay `ack.log` to restore subscriber high-water marks, and immediately
-resume dispatch. Segments acknowledged by all subscribers before the crash are
-eligible for deletion as soon as the steady-state sweeper runs.
+resume dispatch. Segments whose every bundle was acknowledged by all subscribers
+before the crash are eligible for deletion as soon as the steady-state sweeper runs.
 
 ## Success Criteria
 
