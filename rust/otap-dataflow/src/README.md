@@ -18,7 +18,7 @@ cargo run --release -- -p configs/otlp-otlp.yaml
 cargo run --release -- --num-cores 4
 
 # Run with both custom config and cores
-cargo run --release -- -p configs/otlp-otlp.json --num-cores 8
+cargo run --release -- -p configs/otlp-otlp.yaml --num-cores 8
 
 # Get help
 cargo run --release -- --help

@@ -64,6 +64,8 @@ where
     let mut events = EventsRecordBatchBuilder::new();
     let mut links = LinksRecordBatchBuilder::new();
 
+    let mut total_span_count = 0;
+
     // First, we traverse the view collecting the trace data into our RecordBatch builders.
 
     #[allow(clippy::explicit_counter_loop)]
@@ -95,7 +97,9 @@ where
         }
 
         for scope_spans in resource_spans.scopes() {
-            spans.append_schema_url_n(scope_spans.schema_url(), scope_spans.spans().count());
+            let span_count = scope_spans.spans().count();
+            total_span_count += span_count;
+            spans.append_schema_url_n(scope_spans.schema_url(), span_count);
             if let Some(scope) = scope_spans.scope() {
                 for kv in scope.attributes() {
                     scope_attrs.append_parent_id(&curr_scope_id);
@@ -145,12 +149,14 @@ where
                 spans.append_dropped_events_count(Some(span.dropped_events_count()));
                 spans.append_dropped_links_count(Some(span.dropped_links_count()));
 
-                spans
-                    .status
-                    .append_code(span.status().map(|s| s.status_code()));
-
-                if let Some(status) = span.status() {
-                    spans.status.append_status_message(status.message());
+                if let Some(status) = &span.status() {
+                    let code = status.status_code();
+                    let message = status.message();
+                    spans.status.append_code((code != 0).then_some(code));
+                    spans.status.append_status_message(message);
+                } else {
+                    spans.status.append_code(None);
+                    spans.status.append_status_message(None)
                 }
 
                 for event in span.events() {
@@ -200,6 +206,12 @@ where
             .ok_or(Error::U16OverflowError)?;
     }
 
+    // If there are no spans, return empty batch (all None record batches).
+    // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
+    if total_span_count == 0 {
+        return Ok(OtapArrowRecords::Traces(Traces::default()));
+    }
+
     // Then we build up an OTAP Batch from the RecordBatch builders....
 
     let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
@@ -235,6 +247,8 @@ where
     let mut curr_log_id = 0;
     let mut logs = LogsRecordBatchBuilder::new();
     let mut log_attrs = AttributesRecordBatchBuilder::<u16>::new();
+
+    let mut total_log_count = 0;
 
     for (curr_resource_id, resource_logs) in logs_view.resources().enumerate() {
         let curr_resource_id = curr_resource_id as u16;
@@ -468,6 +482,7 @@ where
                 .append_dropped_attributes_count_n(scope_dropped_attributes_count, scope_log_count);
 
             resource_log_count += scope_log_count;
+            total_log_count += scope_log_count;
             curr_scope_id = curr_scope_id
                 .checked_add(1)
                 .ok_or(Error::U16OverflowError)?;
@@ -479,6 +494,12 @@ where
             .append_schema_url_n(resource_schema_url, resource_log_count);
         logs.resource
             .append_dropped_attributes_count_n(resource_dropped_attrs_count, resource_log_count);
+    }
+
+    // If there are no log records, return empty batch (all None record batches).
+    // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
+    if total_log_count == 0 {
+        return Ok(OtapArrowRecords::Logs(Logs::default()));
     }
 
     let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
@@ -570,7 +591,7 @@ where
     Ok(())
 }
 
-// A helper function to centralize handling `Exemplar` data since we use it in several places.
+/// A helper function to centralize handling `Exemplar` data since we use it in several places.
 fn append_exemplar<View>(
     exemplar: &mut ExemplarsRecordBatchBuilder,
     exemplar_view: &View,
@@ -930,6 +951,12 @@ where
         curr_resource_id = curr_resource_id
             .checked_add(1)
             .ok_or(Error::U16OverflowError)?;
+    }
+
+    // If there are no metrics, return empty batch (all None record batches).
+    // See: https://github.com/open-telemetry/opentelemetry-proto/issues/598
+    if curr_metric_id == 0 {
+        return Ok(OtapArrowRecords::Metrics(Metrics::default()));
     }
 
     let mut otap_batch = OtapArrowRecords::Metrics(Metrics::default());
