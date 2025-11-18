@@ -15,12 +15,12 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BooleanArray, PrimitiveArray, PrimitiveBuilder,
-        RecordBatch, StructArray, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
+        PrimitiveBuilder, RecordBatch, StructArray, UInt16Array,
     },
     buffer::{MutableBuffer, ScalarBuffer},
     compute::{SortColumn, SortOptions, and, take_record_batch},
-    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt16Type, UInt32Type},
+    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
 };
 
 use crate::{
@@ -658,26 +658,12 @@ pub fn remap_parent_ids(
     let parent_id_col = record_batch.column(field_idx);
     let new_parent_ids = match remapping {
         RemappedParentIds::UInt16(ids) => {
-            let parent_id_col = parent_id_col
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .ok_or_else(|| Error::InvalidListArray {
-                    expect_oneof: vec![DataType::UInt16],
-                    actual: parent_id_col.data_type().clone(),
-                })?;
-            Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
+            remap_parent_id_col_maybe_dict::<UInt16Type>(parent_id_col, ids)
         }
         RemappedParentIds::UInt32(ids) => {
-            let parent_id_col = parent_id_col
-                .as_any()
-                .downcast_ref::<UInt32Array>()
-                .ok_or_else(|| Error::InvalidListArray {
-                    expect_oneof: vec![DataType::UInt32],
-                    actual: parent_id_col.data_type().clone(),
-                })?;
-            Arc::new(remap_parent_id_col(parent_id_col, ids)?) as ArrayRef
+            remap_parent_id_col_maybe_dict::<UInt32Type>(parent_id_col, ids)
         }
-    };
+    }?;
 
     let new_columns = record_batch.columns().iter().enumerate().map(|(i, col)| {
         if i == field_idx {
@@ -692,6 +678,87 @@ pub fn remap_parent_ids(
     // length as the replacement
     Ok(RecordBatch::try_new(schema, new_columns.collect())
         .expect("could not create new record batch"))
+}
+
+/// apply parent ID remappings to column that is possibly a dictionary, or is otherwise a native
+/// array. If the column is a dictionary, then the remappings will be applied to the dictionary
+/// values which are expected to be of type T
+fn remap_parent_id_col_maybe_dict<T: ArrowPrimitiveType>(
+    parent_ids: &ArrayRef,
+    remapped_ids: &[T::Native],
+) -> Result<ArrayRef> {
+    match parent_ids.data_type() {
+        DataType::Dictionary(k, v) => {
+            // ensure the values in the dictionary are the correct type
+            if v.as_ref() != &T::DATA_TYPE {
+                return Err(Error::InvalidListArray {
+                    expect_oneof: vec![T::DATA_TYPE],
+                    actual: v.as_ref().clone(),
+                });
+            }
+
+            match k.as_ref() {
+                DataType::UInt8 => {
+                    // safety - we've checked the datatype
+                    let dict_arr = parent_ids
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                        .expect("can cast to datatype");
+
+                    // safety - we've already checked the datatype of the values type above
+                    let values = dict_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<T>>()
+                        .expect("can cast to datatype");
+
+                    Ok(Arc::new(DictionaryArray::new(
+                        dict_arr.keys().clone(),
+                        Arc::new(remap_parent_id_col(values, remapped_ids)?),
+                    )))
+                }
+                DataType::UInt16 => {
+                    // safety - we've checked the datatype
+                    let dict_arr = parent_ids
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                        .expect("can cast to datatype");
+
+                    // safety - we've already checked the datatype of the values type above
+                    let values = dict_arr
+                        .values()
+                        .as_any()
+                        .downcast_ref::<PrimitiveArray<T>>()
+                        .expect("can cast to datatype");
+
+                    Ok(Arc::new(DictionaryArray::new(
+                        dict_arr.keys().clone(),
+                        Arc::new(remap_parent_id_col(values, remapped_ids)?),
+                    )))
+                }
+                bad_key_type => Err(Error::UnsupportedDictionaryKeyType {
+                    expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                    actual: bad_key_type.clone(),
+                }),
+            }
+        }
+        data_type if data_type == &T::DATA_TYPE => {
+            // safety: we've already checked that the array is of the type we're casting to
+            let parent_id_col = parent_ids
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .expect("parent id cols are primitive");
+            Ok(Arc::new(remap_parent_id_col(parent_id_col, remapped_ids)?) as ArrayRef)
+        }
+        bad_data_type => Err(Error::InvalidListArray {
+            actual: bad_data_type.clone(),
+            expect_oneof: vec![
+                T::DATA_TYPE.clone(),
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(T::DATA_TYPE.clone())),
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(T::DATA_TYPE.clone())),
+            ],
+        }),
+    }
 }
 
 fn remap_parent_id_col<T: ArrowPrimitiveType>(
@@ -1267,7 +1334,7 @@ mod test {
     use arrow::{
         array::{
             FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StructArray,
-            TimestampNanosecondArray, UInt8Array, UInt16Array,
+            TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
         },
         datatypes::{Field, Fields, TimeUnit},
     };
