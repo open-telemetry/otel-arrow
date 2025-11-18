@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Check for a label and fail if it's not found (so it's more visible in the PR checks list).
+  # Check for a label and skip gracefully if it's not found.
   # If the label is found, set an output that the perf test job will use to know it needs to run.
   label-check:
     name: Preflight Check for Label
