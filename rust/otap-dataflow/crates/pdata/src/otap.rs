@@ -19,6 +19,10 @@ use crate::{
 };
 
 pub mod batching;
+
+#[cfg(test)]
+pub mod batching_tests;
+
 /// filter support for the filter processor
 pub mod filter;
 pub mod groups;

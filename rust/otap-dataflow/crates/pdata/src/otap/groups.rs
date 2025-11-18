@@ -900,29 +900,41 @@ fn generic_concatenate<const N: usize>(
 
     let mut current = Vec::new();
     let mut current_batch_length = 0;
-    for batches in batches {
-        let emit_new_batch = max_output_batch
-            .map(|max_output_batch| {
-                (current_batch_length + batch_length(&batches)) as u64 > max_output_batch.get()
-            })
-            .unwrap_or(false);
-        if emit_new_batch && !current.is_empty() {
-            reindex(&mut current, allowed_payloads)?;
-            result.push(generic_schemaless_concatenate(&mut current)?);
+
+    for input in batches {
+        let blen = batch_length(&input);
+
+        if !current.is_empty() && size_over_limit(max_output_batch, current_batch_length + blen) {
+            concatenate_emitter(&mut current, allowed_payloads, &mut result)?;
             current_batch_length = 0;
-            assert_all_empty(&current);
-            current.clear();
         }
-        current_batch_length += batch_length(&batches);
-        current.push(batches);
+
+        current_batch_length += blen;
+        current.push(input);
     }
 
     if !current.is_empty() {
-        reindex(&mut current, allowed_payloads)?;
-        result.push(generic_schemaless_concatenate(&mut current)?);
-        assert_all_empty(&current);
+        concatenate_emitter(&mut current, allowed_payloads, &mut result)?;
     }
     Ok(result)
+}
+
+fn concatenate_emitter<const N: usize>(
+    current: &mut Vec<[Option<RecordBatch>; N]>,
+    allowed_payloads: &[ArrowPayloadType],
+    result: &mut Vec<[Option<RecordBatch>; N]>,
+) -> Result<()> {
+    reindex(current, allowed_payloads)?;
+    result.push(generic_schemaless_concatenate(current)?);
+    assert_all_empty(current);
+    current.clear();
+    Ok(())
+}
+
+fn size_over_limit(max_output_batch: Option<NonZeroU64>, size: usize) -> bool {
+    max_output_batch
+        .map(|limit| size as u64 > limit.get())
+        .unwrap_or(false)
 }
 
 fn generic_schemaless_concatenate<const N: usize>(
@@ -1030,6 +1042,7 @@ fn reindex<const N: usize>(
     Ok(())
 }
 
+/// R
 fn reindex_record_batch(
     rb: RecordBatch,
     column_name: &'static str,

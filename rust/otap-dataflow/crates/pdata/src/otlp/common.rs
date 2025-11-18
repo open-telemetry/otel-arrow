@@ -1054,7 +1054,7 @@ mod test {
     /// OpenTelemetry data may contain "empty envelopes". This checks that
     /// they encode to an empty OTAP encoding.
     fn assert_empty_batch(msg: OtlpProtoMessage) {
-        let encoded = encode_otlp(&msg);
+        let encoded = otlp_to_otap(&msg);
         assert_eq!(encoded.batch_length(), 0, "Expected an empty batch");
     }
 
