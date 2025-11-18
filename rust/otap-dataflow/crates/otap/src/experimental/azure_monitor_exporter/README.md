@@ -115,7 +115,7 @@ grpcurl -plaintext \
   localhost:4317 \
   opentelemetry.proto.collector.logs.v1.LogsService/Export
 
-# Option C: Configure your instrumented app to send to localhost:4317
+# Option C: Configure your instrumented app to send OTLP Logs to localhost:4317
 ```
 
 ## Schema Mapping
