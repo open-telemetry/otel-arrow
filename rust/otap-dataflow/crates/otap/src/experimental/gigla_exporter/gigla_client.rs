@@ -55,8 +55,6 @@ impl GigLaClient {
         }
     }
 
-    // TODO: Remove print_stdout after logging is set up
-    #[allow(clippy::print_stdout)]
     /// Creates a new GigLA client instance from the configuration.
     ///
     /// # Arguments
@@ -88,6 +86,8 @@ impl GigLaClient {
         })
     }
 
+    // TODO: Remove print_stdout after logging is set up
+    #[allow(clippy::print_stdout)]
     /// Creates the appropriate credential based on the authentication method in config.
     ///
     /// # Arguments
@@ -96,37 +96,40 @@ impl GigLaClient {
     /// # Returns
     /// * `Ok(Arc<dyn TokenCredential>)` - The configured credential
     /// * `Err(String)` - Error message if credential creation fails
-    fn create_credential(auth_config: &crate::experimental::gigla_exporter::config::AuthConfig) -> Result<Arc<dyn TokenCredential>, String> {
+    fn create_credential(
+        auth_config: &crate::experimental::gigla_exporter::config::AuthConfig,
+    ) -> Result<Arc<dyn TokenCredential>, String> {
         match auth_config.method {
             AuthMethod::ManagedIdentity => {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
                 if let Some(client_id) = &auth_config.client_id {
                     // User-assigned managed identity
-                    eprintln!("Using user-assigned managed identity with client_id: {client_id}");
+                    println!("Using user-assigned managed identity with client_id: {client_id}");
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
                 } else {
                     // System-assigned managed identity
-                    eprintln!("Using system-assigned managed identity");
+                    println!("Using system-assigned managed identity");
                     // user_assigned_id remains None for system-assigned
                 }
 
                 let credential = ManagedIdentityCredential::new(Some(options))
                     .map_err(|e| format!("Failed to create managed identity credential: {e}"))?;
-                
+
                 Ok(credential as Arc<dyn TokenCredential>)
             }
             AuthMethod::Development => {
-                eprintln!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
+                println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
                 // DeveloperToolsCredential tries Azure CLI and Azure Developer CLI
-                let credential = DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                    .map_err(|e| {
-                        format!(
-                            "Failed to create developer tools credential: {e}. \
+                let credential =
+                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
+                        .map_err(|e| {
+                            format!(
+                                "Failed to create developer tools credential: {e}. \
                             Ensure Azure CLI or Azure Developer CLI is installed and logged in"
-                        )
-                    })?;
-                
+                            )
+                        })?;
+
                 Ok(credential as Arc<dyn TokenCredential>)
             }
         }
@@ -362,5 +365,56 @@ mod tests {
             .send(vec![serde_json::json!({"foo": "bar"})])
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn test_create_credential_managed_identity_system_assigned() {
+        use crate::experimental::gigla_exporter::config::AuthConfig;
+
+        let auth_config = AuthConfig {
+            method: AuthMethod::ManagedIdentity,
+            client_id: None,
+            scope: "https://monitor.azure.com/.default".to_string(),
+        };
+
+        let result = GigLaClient::create_credential(&auth_config);
+        assert!(
+            result.is_ok(),
+            "Should successfully create system-assigned managed identity credential"
+        );
+    }
+
+    #[test]
+    fn test_create_credential_managed_identity_user_assigned() {
+        use crate::experimental::gigla_exporter::config::AuthConfig;
+
+        let auth_config = AuthConfig {
+            method: AuthMethod::ManagedIdentity,
+            client_id: Some("test-client-id-12345".to_string()),
+            scope: "https://monitor.azure.com/.default".to_string(),
+        };
+
+        let result = GigLaClient::create_credential(&auth_config);
+        assert!(
+            result.is_ok(),
+            "Should successfully create user-assigned managed identity credential"
+        );
+    }
+
+    #[test]
+    fn test_create_credential_development() {
+        use crate::experimental::gigla_exporter::config::AuthConfig;
+
+        let auth_config = AuthConfig {
+            method: AuthMethod::Development,
+            client_id: None,
+            scope: "https://monitor.azure.com/.default".to_string(),
+        };
+
+        let result = GigLaClient::create_credential(&auth_config);
+        assert!(
+            result.is_ok(),
+            "Should successfully create developer tools credential"
+        );
     }
 }
