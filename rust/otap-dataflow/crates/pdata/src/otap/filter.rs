@@ -511,14 +511,16 @@ fn apply_filter(
     payload: &mut OtapArrowRecords,
     payload_type: ArrowPayloadType,
     filter: &BooleanArray,
-) -> Result<()> {
+) -> Result<(u64, u64)> {
     let record_batch = payload
         .get(payload_type)
         .ok_or_else(|| Error::RecordBatchNotFound { payload_type })?;
+    let num_rows_before = record_batch.num_rows() as u64;
     let filtered_record_batch = arrow::compute::filter_record_batch(record_batch, filter)
         .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
+    let num_rows_after = filtered_record_batch.num_rows() as u64;
     payload.set(payload_type, filtered_record_batch);
-    Ok(())
+    Ok((num_rows_before, num_rows_after))
 }
 
 /// update_child_record_batch_filter() takes an child record batch, with it's respective filter

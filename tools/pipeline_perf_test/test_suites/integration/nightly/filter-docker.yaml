@@ -1,4 +1,4 @@
-name: Nightly - Backpressure
+name: Nightly - Filter
 components:
   load-generator:
     deployment:
@@ -75,7 +75,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: "nightly_backpressure"
+        result_dir: "nightly_filter"
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
@@ -83,7 +83,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: "nightly_backpressure"
+        result_dir: "nightly_filter"
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap

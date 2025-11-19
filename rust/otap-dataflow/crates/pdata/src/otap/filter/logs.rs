@@ -103,7 +103,10 @@ impl LogFilter {
     }
 
     /// take a logs payload and return the filtered result
-    pub fn filter(&self, mut logs_payload: OtapArrowRecords) -> Result<OtapArrowRecords> {
+    pub fn filter(
+        &self,
+        mut logs_payload: OtapArrowRecords,
+    ) -> Result<(OtapArrowRecords, u64, u64)> {
         let (resource_attr_filter, log_record_filter, log_attr_filter) = if let Some(include_config) =
             &self.include
             && let Some(exclude_config) = &self.exclude
@@ -136,7 +139,13 @@ impl LogFilter {
             include_config.create_filters(&logs_payload, false)?
         } else {
             // both include and exclude is none
-            return Ok(logs_payload);
+            let num_rows = logs_payload
+                .get(ArrowPayloadType::Logs)
+                .ok_or_else(|| Error::RecordBatchNotFound {
+                    payload_type: ArrowPayloadType::Logs,
+                })?
+                .num_rows() as u64;
+            return Ok((logs_payload, num_rows, num_rows));
         };
 
         let (log_record_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -146,17 +155,17 @@ impl LogFilter {
             log_attr_filter,
         )?;
 
-        apply_filter(
+        let (log_rows_before, log_rows_after) = apply_filter(
             &mut logs_payload,
             ArrowPayloadType::Logs,
             &log_record_filter,
         )?;
 
         for (payload_type, filter) in child_record_batch_filters {
-            apply_filter(&mut logs_payload, payload_type, &filter)?;
+            let (_, _) = apply_filter(&mut logs_payload, payload_type, &filter)?;
         }
 
-        Ok(logs_payload)
+        Ok((logs_payload, log_rows_before, log_rows_after))
     }
 
     /// this function takes the filters for each record batch and makes sure that incomplete

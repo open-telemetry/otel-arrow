@@ -99,31 +99,3 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
-  - name: OTLP-FILTER-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-filter-otlp.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otlp
-  - name: OTLP-FILTER-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-filter-otap.yaml
-        loadgen_exporter_type: otlp
-        backend_receiver_type: otap
-  - name: OTAP-FILTER-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-filter-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
-  - name: OTAP-FILTER-OTLP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-filter-otlp.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otlp
