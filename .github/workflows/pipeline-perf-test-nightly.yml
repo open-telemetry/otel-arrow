@@ -86,7 +86,7 @@ jobs:
           run: |
             cd tools/pipeline_perf_test
             python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/backpressure-docker.yaml
-        
+
         - name: Run filter performance test log suite
           run: |
             cd tools/pipeline_perf_test
@@ -218,7 +218,7 @@ jobs:
               auto-push: true
               save-data-file: true
 
-          - name: Update filter benchmark data 
+          - name: Update filter benchmark data
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
             with:
               tool: "customSmallerIsBetter"

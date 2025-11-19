@@ -100,13 +100,11 @@ impl local::Processor<OtapPdata> for FilterProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::Control(control) => {
-                match control {
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => {
-                        _ = metrics_reporter.report(&mut self.metrics);
-                    }
-                    _ => {}
+                if let NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } = control
+                {
+                    _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Ok(())
             }

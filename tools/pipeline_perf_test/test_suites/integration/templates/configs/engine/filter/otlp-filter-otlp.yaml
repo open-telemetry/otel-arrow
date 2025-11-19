@@ -52,7 +52,7 @@ nodes:
           severity_number: null
           bodies: []
         log_record: []
-  
+
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otlp:exporter"
