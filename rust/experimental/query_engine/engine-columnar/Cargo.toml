@@ -10,4 +10,12 @@ rust-version.workspace = true
 
 [dependencies]
 arrow = { workspace = true }
+async-trait = { workspace = true }
+datafusion = { workspace = true }
 thiserror = { workspace = true }
+
+# workspace dependencies
+otap-df-pdata = { path = "../../../otap-dataflow/crates/pdata" }
+data_engine_expressions = { path = "../expressions" }
+
+
