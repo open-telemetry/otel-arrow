@@ -12,13 +12,13 @@ cargo build --release
 cargo run --release
 
 # Run with custom configuration file
-cargo run --release -- -p configs/otlp-otlp.json
+cargo run --release -- -p configs/otlp-otlp.yaml
 
 # Run with custom core count
 cargo run --release -- --num-cores 4
 
 # Run with both custom config and cores
-cargo run --release -- -p configs/otlp-otlp.json --num-cores 8
+cargo run --release -- -p configs/otlp-otlp.yaml --num-cores 8
 
 # Get help
 cargo run --release -- --help
