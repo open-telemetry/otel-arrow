@@ -1,0 +1,73 @@
+# rust/otap-dataflow/crates/otap/src/experimental/azure_monitor_exporter/otlp-ame.yaml
+# Azure Monitor Exporter Configuration for AKS with Managed Identity
+#
+# This configuration is designed for running in AKS with workload identity
+# or managed identity enabled.
+#
+# Prerequisites:
+# 1. Enable managed identity on your AKS cluster
+# 2. Assign the managed identity appropriate permissions to the DCR
+# 3. Deploy this configuration to your AKS cluster
+
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  otlp-receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - azure-monitor-exporter
+        dispatch_strategy: round_robin
+    config:
+      # Listen on all interfaces in container
+      listening_addr: "0.0.0.0:4317"
+
+  azure-monitor-exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:azuremonitor:exporter"
+    config:
+      # API configuration - Update with your actual values
+      api:
+        dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
+        stream_name: "Custom-MyTable_CL"
+        dcr: "dcr-abc123"
+        schema:
+          resource_mapping:
+            "service.name": "ServiceName"
+            "service.version": "ServiceVersion"
+            "k8s.pod.name": "PodName"
+            "k8s.namespace.name": "Namespace"
+            "k8s.deployment.name": "Deployment"
+            "k8s.node.name": "NodeName"
+          scope_mapping:
+            "otel.library.name": "InstrumentationLibrary"
+            "otel.library.version": "InstrumentationVersion"
+          log_record_mapping:
+            "body": "Message"
+            "severity_text": "SeverityText"
+            "severity_number": "SeverityNumber"
+            "time_unix_nano": "TimeGenerated"
+            "attributes": "Properties"
+            "trace_id": "TraceId"
+            "span_id": "SpanId"
+          disable_schema_mapping: false
+
+      # Authentication configuration for AKS
+      auth:
+        # Use managed identity for AKS workloads
+        method: "managedidentity"  # or "msi"
+
+        # For user-assigned managed identity (common in AKS)
+        # Get this from your AKS managed identity configuration
+        client_id: "YOUR-USER-ASSIGNED-IDENTITY-CLIENT-ID"
+
+        # For system-assigned managed identity (less common in AKS)
+        # Comment out the client_id field above
+
+        # OAuth scope for Azure Monitor
+        scope: "https://monitor.azure.com/.default"
