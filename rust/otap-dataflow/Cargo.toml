@@ -80,7 +80,7 @@ nix = { version = "0.30.0", features = ["process", "signal"] }
 num_enum = "0.7"
 object_store = "0.12.3"
 once_cell = "1.20.2"
-opentelemetry-proto = { version = "0.31", default-features = false} #TODO - use it from submodule instead of crate(?)
+opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"]} #TODO - use it from submodule instead of crate(?)
 parking_lot = "0.12.4"
 paste = "1"
 parquet = { version = "57.0", default-features = false, features = ["arrow", "async", "object_store"]}
@@ -134,6 +134,14 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
 
+# Azure Monnitor Exporter
+azure_identity = "0.30.0"
+flate2 = "1.1.5"
+reqwest = "0.12.24"
+azure_core = "0.30.1"
+time = "0.3.44"
+wiremock = "0.6.5"
+
 [features]
 default = []
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
@@ -142,6 +150,7 @@ unchecked-arithmetic = []
 # Experimental exporters (opt-in)
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
+azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
 
 [workspace.lints.rust]
 # General compatibility lints
@@ -221,3 +230,4 @@ inherits = "release"
 debug = true  # Or 2 for full debug info
 strip = "none" # Keep symbols and debug info
 panic = "unwind"
+
