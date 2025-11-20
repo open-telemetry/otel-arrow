@@ -3,3 +3,5 @@
 
 pub mod error;
 pub mod pipeline;
+
+mod table;

@@ -10,8 +10,11 @@ rust-version.workspace = true
 
 [dependencies]
 arrow = { workspace = true }
+async-stream = { workspace = true }
 async-trait = { workspace = true }
 datafusion = { workspace = true }
+futures-core = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }
 
 # workspace dependencies

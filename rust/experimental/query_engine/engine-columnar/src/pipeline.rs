@@ -13,10 +13,14 @@ use data_engine_expressions::PipelineExpression;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
+use datafusion::physical_plan::common::collect;
+use datafusion::physical_plan::{execute_stream, ExecutionPlan};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::OtapArrowRecords;
 
 use crate::error::Result;
 use crate::pipeline::planner::PipelinePlanner;
+use crate::table::RecordBatchStreamProvider;
 
 mod planner;
 
@@ -70,6 +74,63 @@ pub trait PipelineStage {
         otap_batch: OtapArrowRecords,
         task_context: Arc<TaskContext>,
     ) -> Result<OtapArrowRecords>;
+}
+
+pub struct DataFusionPipelineStage {
+    /// TODO comment
+    payload_type: ArrowPayloadType,
+
+    /// TODO comment
+    record_batch_stream: Arc<RecordBatchStreamProvider>,
+
+    /// TODO comment
+    execution_plan: Arc<dyn ExecutionPlan>,
+}
+
+#[async_trait]
+impl PipelineStage  for DataFusionPipelineStage {
+    async fn adapt(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        _session_context: &SessionContext,
+        _config_options: &ConfigOptions,
+    ) -> Result<()> {
+        let rb = match otap_batch.get(self.payload_type) {
+            Some(rb) => rb,
+            None => {
+                // TODO need to handle if we expect there to be a record batch and it's None
+                todo!()
+            }
+        };
+        
+        // TODO we also need to validate the schema here to ensure it's the same as the expected
+        // schema. If not, we may need to make some modifications to the plan
+
+        self.record_batch_stream.update_batch(rb.clone());
+        Ok(())
+    }
+
+        async fn execute(
+            &self,
+            otap_batch: OtapArrowRecords,
+            task_context: Arc<TaskContext>,
+        ) -> Result<OtapArrowRecords> {
+            // TODO no unwrap
+            let stream = execute_stream(self.execution_plan.clone(), task_context).unwrap();
+            let batches = collect(stream).await.unwrap();
+
+            match batches.len() {
+                0 => {
+                    // TODO
+                },
+                1 => {
+                    let new_rb = batches[0];
+                }
+            }
+
+            todo!()
+        }
+    
 }
 
 /// A compiled pipeline ready for execution. Contains all the state needed for execution
