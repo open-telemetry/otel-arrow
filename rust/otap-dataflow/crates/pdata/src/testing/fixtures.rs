@@ -13,7 +13,7 @@ use crate::proto::opentelemetry::logs::v1::{
 };
 use crate::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-    ScopeMetrics, Sum, metric::Data, number_data_point::Value as NumberValue,
+    ScopeMetrics, Sum,
 };
 use crate::proto::opentelemetry::resource::v1::Resource;
 use crate::proto::opentelemetry::trace::v1::{
@@ -778,12 +778,18 @@ pub fn metrics_multiple_sums_no_resource() -> MetricsData {
 /// itself by appending N copies of the messages returned below. Its
 /// test coverage will improve with more variation here.
 pub struct DataGenerator {
+    limit: usize,
+    count: usize,
     time_value: u64,
 }
 
-impl Default for DataGenerator {
-    fn default() -> Self {
+impl DataGenerator {
+    /// Generate N 'limit' number of items
+    pub fn new(limit: usize) -> Self {
         Self {
+            limit,
+            count: 0,
+
             // One million nanoseconds past the UTC epoch.
             time_value: 1_000_000_000_000_000,
         }
@@ -797,6 +803,18 @@ impl DataGenerator {
         // add one second
         self.time_value += 1_000_000_000;
         val
+    }
+
+    /// True if this generator can still produce points.
+    fn has_points(&self) -> bool {
+        self.count < self.limit
+    }
+
+    /// Consume N points.
+    fn consume(&mut self, n: usize) -> usize {
+        let take = n.min(self.limit - self.count);
+        self.count += take;
+        take
     }
 
     /// Generate test OTLP logs data
@@ -890,73 +908,75 @@ impl DataGenerator {
     /// Generate test OTLP metrics data at a timestamp offset
     #[must_use]
     pub fn generate_metrics(&mut self) -> MetricsData {
+        let mut v = Vec::new();
+
+        while self.has_points() {
+            v.push(
+                Metric::build()
+                    .name("gauge1")
+                    .description("First gauge")
+                    .unit("1")
+                    .data_gauge(Gauge::new(self.build_gauge_data(3)))
+                    .finish(),
+            );
+
+            if self.has_points() {
+                v.push(
+                    Metric::build()
+                        .name("gauge2")
+                        .description("Second gauge")
+                        .unit("By")
+                        .data_gauge(Gauge::new(self.build_gauge_data(2)))
+                        .finish(),
+                );
+            }
+            if self.has_points() {
+                v.push(
+                    Metric::build()
+                        .name("sum1")
+                        .description("A sum")
+                        .unit("1")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Delta,
+                            true,
+                            self.build_sum_data(1),
+                        ))
+                        .finish(),
+                );
+            }
+        }
+
         MetricsData::new(vec![ResourceMetrics::new(
             Resource::build().finish(),
-            vec![ScopeMetrics::new(
-                InstrumentationScope::build().finish(),
-                vec![
-                    Metric {
-                        name: "gauge1".into(),
-                        description: "First gauge".into(),
-                        unit: "1".into(),
-                        metadata: vec![],
-                        data: Some(Data::Gauge(Gauge {
-                            data_points: vec![
-                                NumberDataPoint {
-                                    time_unix_nano: self.timestamp(),
-                                    value: Some(NumberValue::AsDouble(10.0)),
-                                    ..Default::default()
-                                },
-                                NumberDataPoint {
-                                    time_unix_nano: self.timestamp(),
-                                    value: Some(NumberValue::AsDouble(20.0)),
-                                    ..Default::default()
-                                },
-                                NumberDataPoint {
-                                    time_unix_nano: self.timestamp(),
-                                    value: Some(NumberValue::AsDouble(1200.0)),
-                                    ..Default::default()
-                                },
-                            ],
-                        })),
-                    },
-                    Metric {
-                        name: "gauge2".into(),
-                        description: "Second gauge".into(),
-                        unit: "1".into(),
-                        metadata: vec![],
-                        data: Some(Data::Gauge(Gauge {
-                            data_points: vec![
-                                NumberDataPoint {
-                                    time_unix_nano: self.timestamp(),
-                                    value: Some(NumberValue::AsDouble(30.0)),
-                                    ..Default::default()
-                                },
-                                NumberDataPoint {
-                                    time_unix_nano: self.timestamp(),
-                                    value: Some(NumberValue::AsDouble(40.0)),
-                                    ..Default::default()
-                                },
-                            ],
-                        })),
-                    },
-                    Metric {
-                        name: "sum1".into(),
-                        description: "A sum".into(),
-                        unit: "1".into(),
-                        metadata: vec![],
-                        data: Some(Data::Sum(Sum {
-                            data_points: vec![NumberDataPoint {
-                                time_unix_nano: self.timestamp(),
-                                value: Some(NumberValue::AsDouble(50.0)),
-                                ..Default::default()
-                            }],
-                            aggregation_temporality: 1,
-                            is_monotonic: true,
-                        })),
-                    },
-                ],
-            )],
+            vec![ScopeMetrics::new(InstrumentationScope::build().finish(), v)],
         )])
+    }
+
+    fn build_gauge_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
+        (0..self.consume(n))
+            .map(|i| {
+                NumberDataPoint::build()
+                    .value_double(i as f64 * 10.0)
+                    .time_unix_nano(self.timestamp())
+                    .attributes(vec![KeyValue::new("G", AnyValue::new_int(i as i64))])
+                    .finish()
+            })
+            .collect()
+    }
+
+    fn build_sum_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
+        (0..self.consume(n))
+            .map(|i| {
+                NumberDataPoint::build()
+                    .value_int(i as i64 * 100)
+                    .start_time_unix_nano(self.timestamp())
+                    .time_unix_nano(self.timestamp())
+                    .attributes(vec![KeyValue::new(
+                        "S",
+                        AnyValue::new_string(format!("{i}")),
+                    )])
+                    .finish()
+            })
+            .collect()
     }
 }

@@ -46,8 +46,8 @@ fn test_batching(
             // TODO: add testing for oversize-metric data. relax this
             // test helper to identify individual metric point counts
             // and refine the assertion. If metrics, presently: if
-            // batch_len() exceeds the limit, there must contain exactly
-            // one metric (i.e., oversize items cannot be combined).
+            // batch_len() exceeds the limit, there must be exactly
+            // one metric (i.e., oversize metrics must be singletons).
             assert!(
                 batch_len <= max_batch.get() as usize,
                 "batch {} length {} exceeds limit {}",
@@ -72,9 +72,9 @@ fn test_batching(
 
 #[test]
 fn test_simple_batch_logs() {
-    let mut datagen = DataGenerator::default();
     for input_count in 1..=20 {
         for max_output_batch in 3..=5 {
+            let mut datagen = DataGenerator::new(1);
             test_batching(
                 (0..input_count).map(|_| datagen.generate_logs().into()),
                 Some(NonZeroU64::new(max_output_batch).unwrap()),
@@ -85,9 +85,9 @@ fn test_simple_batch_logs() {
 
 #[test]
 fn test_simple_batch_traces() {
-    let mut datagen = DataGenerator::default();
     for input_count in 1..=20 {
         for max_output_batch in 3..=5 {
+            let mut datagen = DataGenerator::new(1);
             test_batching(
                 (0..input_count).map(|_| datagen.generate_traces().into()),
                 Some(NonZeroU64::new(max_output_batch).unwrap()),
@@ -98,13 +98,15 @@ fn test_simple_batch_traces() {
 
 #[test]
 fn test_simple_batch_metrics() {
-    let mut datagen = DataGenerator::default();
     for input_count in 1..=20 {
-        for max_output_batch in 3..=5 {
-            test_batching(
-                (0..input_count).map(|_| datagen.generate_metrics().into()),
-                Some(NonZeroU64::new(max_output_batch).unwrap()),
-            );
+        for max_output_batch in 3..=15 {
+            for point_count in 1..=10 {
+                let mut datagen = DataGenerator::new(point_count);
+                test_batching(
+                    (0..input_count).map(|_| datagen.generate_metrics().into()),
+                    Some(NonZeroU64::new(max_output_batch).unwrap()),
+                );
+            }
         }
     }
 }
