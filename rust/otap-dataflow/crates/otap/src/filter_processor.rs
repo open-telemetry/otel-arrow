@@ -122,7 +122,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     }
                     SignalType::Logs => {
                         // get logs
-                        let (filtered_arrow_records, log_signals_consumed, log_signals_sent) = self
+                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) = self
                             .config
                             .log_filters()
                             .filter(arrow_records)
@@ -138,13 +138,13 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 
                         // get logs after
                         self.metrics.log_signals_consumed.add(log_signals_consumed);
-                        self.metrics.log_signals_sent.add(log_signals_sent);
+                        self.metrics.log_signals_filtered.add(log_signals_filtered);
 
                         filtered_arrow_records
                     }
                     SignalType::Traces => {
                         // get spans
-                        let (filtered_arrow_records, span_signals_consumed, span_signals_sent) =
+                        let (filtered_arrow_records, span_signals_consumed, span_signals_filtered) =
                             self.config
                                 .trace_filters()
                                 .filter(arrow_records)
@@ -161,7 +161,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         self.metrics
                             .span_signals_consumed
                             .add(span_signals_consumed);
-                        self.metrics.span_signals_sent.add(span_signals_sent);
+                        self.metrics.span_signals_filtered.add(span_signals_filtered);
 
                         filtered_arrow_records
                     }

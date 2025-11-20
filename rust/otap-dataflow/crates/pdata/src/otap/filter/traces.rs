@@ -176,14 +176,14 @@ impl TraceFilter {
             span_link_attr_filter,
         )?;
 
-        let (span_rows_before, span_rows_after) =
+        let (span_rows_before, span_rows_removed) =
             apply_filter(&mut traces_payload, ArrowPayloadType::Spans, &span_filter)?;
 
         for (payload_type, filter) in child_record_batch_filters {
             let (_, _) = apply_filter(&mut traces_payload, payload_type, &filter)?;
         }
 
-        Ok((traces_payload, span_rows_before, span_rows_after))
+        Ok((traces_payload, span_rows_before, span_rows_removed))
     }
 
     /// this function takes the filters for each record batch and makes sure that incomplete

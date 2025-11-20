@@ -518,9 +518,9 @@ fn apply_filter(
     let num_rows_before = record_batch.num_rows() as u64;
     let filtered_record_batch = arrow::compute::filter_record_batch(record_batch, filter)
         .map_err(|e| Error::ColumnLengthMismatch { source: e })?;
-    let num_rows_after = filtered_record_batch.num_rows() as u64;
+    let num_rows_removed = num_rows_before - (filtered_record_batch.num_rows() as u64);
     payload.set(payload_type, filtered_record_batch);
-    Ok((num_rows_before, num_rows_after))
+    Ok((num_rows_before, num_rows_removed))
 }
 
 /// update_child_record_batch_filter() takes an child record batch, with it's respective filter

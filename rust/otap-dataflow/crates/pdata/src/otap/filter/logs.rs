@@ -155,7 +155,7 @@ impl LogFilter {
             log_attr_filter,
         )?;
 
-        let (log_rows_before, log_rows_after) = apply_filter(
+        let (log_rows_before, log_rows_removed) = apply_filter(
             &mut logs_payload,
             ArrowPayloadType::Logs,
             &log_record_filter,
@@ -165,7 +165,7 @@ impl LogFilter {
             let (_, _) = apply_filter(&mut logs_payload, payload_type, &filter)?;
         }
 
-        Ok((logs_payload, log_rows_before, log_rows_after))
+        Ok((logs_payload, log_rows_before, log_rows_removed))
     }
 
     /// this function takes the filters for each record batch and makes sure that incomplete

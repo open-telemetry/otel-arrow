@@ -16,10 +16,10 @@ pub struct FilterPdataMetrics {
     #[metric(unit = "{span}")]
     pub span_signals_consumed: Counter<u64>,
 
-    /// Number of log signals sent
+    /// Number of log signals filtered
     #[metric(unit = "{log}")]
-    pub log_signals_sent: Counter<u64>,
-    /// Number of span signals sent
+    pub log_signals_filtered: Counter<u64>,
+    /// Number of span signals filtered
     #[metric(unit = "{span}")]
-    pub span_signals_sent: Counter<u64>,
+    pub span_signals_filtered: Counter<u64>,
 }
