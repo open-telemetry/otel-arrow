@@ -14,9 +14,10 @@ nodes:
         dispatch_strategy: round_robin
     config:
       traffic_config:
-        max_signal_count: 1000
-        max_batch_size: 100
-        signals_per_second: 100
+        max_batch_size: 1000
+        signals_per_second: 100000
+        metric_weight: 0
+        trace_weight: 0
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   filter:
@@ -50,6 +51,8 @@ nodes:
           record_attributes:
             - key: gen_ai.system
               value: openai
+            - key: ios.app.state
+              value: active
           severity_texts: []
           severity_number: null
           bodies: []

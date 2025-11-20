@@ -49,6 +49,8 @@ nodes:
           record_attributes:
             - key: gen_ai.system
               value: openai
+            - key: ios.app.state
+              value: active
           severity_texts: []
           severity_number: null
           bodies: []
