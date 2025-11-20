@@ -84,6 +84,173 @@ WAL entries belonging to:
 - The active open segment.
 - A segment whose file/metadata durability has not been confirmed.
 
+#### WAL File Format & Rotation
+
+- **Single append-only file per core**: each persistence instance writes to
+  `wal/quiver.wal`, rolling into numbered siblings (`.1`, `.2`, …) only when
+  rotation triggers as described below. The steady-state design keeps writes
+  sequential for simplicity and page-cache locality.
+- **File header**: fixed-width preamble (`b"QUIVER\0WAL"`), version, and the
+  target segment configuration hash. Concretely the header is
+  `{magic: [u8;10], version: u16, reserved: u16, segment_cfg_hash: [u8;16]}` and
+  is always little-endian. `reserved` must be zero today; we bump `version` for
+  any incompatible encoding change so older binaries can decisively reject files
+  they cannot interpret and newer binaries can interpret the older file format.
+  `segment_cfg_hash` is a 128-bit digest (e.g., truncated
+  BLAKE3) over the adapter-owned layout contract: slot id → payload mappings,
+  per-slot ordering, checksum policy toggles, and any other settings that a
+  particular adapter (OTAP today) uses to interpret RecordBundle payloads. We
+  treat operational knobs such as `segment.target_size`, flush cadence, or
+  retention caps as *out of scope* for the hash so mundane tuning never
+  invalidates an otherwise healthy WAL. On replay a hash mismatch is treated the
+  same as an unknown format version: Quiver refuses to ingest the WAL and asks
+  operators either to finish draining with the previous adapter build or to
+  migrate the data (e.g., replay through the old binary and regenerate segments)
+  before rolling forward.
+- **Framed entries**: every `RecordBundle` append writes a length-prefixed
+  record:
+  - 4-byte little-endian length of the entire entry (header + payloads)
+  - Entry header (`u8 entry_type`, currently `0 = RecordBundle`)
+  - Ingestion timestamp (`i64` nanos UTC) and per-core sequence number
+    (`u64`, monotonically increasing per WAL writer)
+  - Slot bitmap (currently a single `u64`) followed by `slot_count` metadata
+    blocks. Each block contains `payload_type_id: u16`,
+    `schema_fingerprint: [u8;32]`, `row_count: u32`, and
+    `payload_len: u32`.
+  - The slot bitmap tracks which logical `RecordBundle` slots are populated;
+    bit `n` corresponds to slot `n`. Metadata blocks are emitted in ascending
+    slot order for every set bit so the reader can deterministically associate
+    each block with its slot without storing redundant ids.
+  - Pseudo-layout for a `RecordBundle` entry, showing the precise write order
+    (length and CRC fields are not covered by the checksum as noted below):
+
+    ```text
+    // Little-endian, sequential on disk
+    u32 entry_len;                   // prefix (covers header..payload)
+    EntryHeader {
+        u8  entry_type;              // 0 = RecordBundle
+        i64 ingestion_ts_nanos;
+        u64 per_core_sequence;
+        u64 slot_bitmap;             // current encoding fits <= 64 slots
+    }
+    for slot in slots_present(slot_bitmap) {
+        SlotMeta {
+            u16 payload_type_id;
+            [u8;32] schema_fingerprint;
+            u32 row_count;
+            u32 payload_len;        // bytes of following Arrow IPC stream
+        }
+        [u8;payload_len] arrow_payload;  // streaming IPC bytes for the slot
+    }
+    u32 crc32c;                      // trailer; covers EntryHeader..payloads
+    ```
+
+  - Arrow payload blobs are serialized in the **streaming** IPC format. For each
+    populated slot we write exactly one contiguous IPC stream containing the
+    chunk(s) belonging to that `Option<RecordBatch>` value. The blob for a slot
+    immediately follows its metadata block, so the serialized representation of a
+    single `RecordBundle` is `[entry header][slot bitmap][metadata₀][payload₀]
+    [metadata₁][payload₁]…`. Absent slots (bitmap bit cleared) contribute neither
+    metadata nor bytes; they are implicitly `None` when reconstructing the
+    bundle.
+  - Every entry ends with a 4-byte little-endian CRC32C checksum that covers the
+    entry header, bitmap, metadata blocks, and payload bytes (everything except
+    the leading length field and the checksum itself). Replay verifies the CRC
+    before decoding Arrow IPC bytes; a mismatch marks the WAL as corrupted and
+    triggers truncation back to the last known-good offset.
+  - Because the metadata describes the length of every blob, unknown entry
+    types (future versions) can be skipped using the recorded length.
+  - Each WAL append encodes the bundle’s payload chunks once; crash replay
+    decodes those IPC bytes back into `RecordBatch`es before reinserting them
+    into the in-memory segment accumulators.
+- **Replay model**: on startup we scan sequentially, validating the WAL header
+  (preamble bytes + version), then iterating `length -> entry` until EOF. Each
+  entry is parsed, checksum-verified, and dispatched by `entry_type`
+  to rebuild open-segment state. If we encounter a partial entry (e.g., due to
+  a crash mid-write) we truncate the file back to the last successful offset
+  before continuing. Replay stops at the tail once the last partial segment is
+  reconstituted.
+- **Versioning / evolvability**: because the header encodes a version, we can
+  introduce new entry types (e.g., periodic checkpoints) or swap serialization
+  without breaking older data; unknown entry types are skipped using the recorded
+  length. A checkpoint entry (`entry_type = 1`) would embed the current
+  open-segment manifest, `truncate_offset`, and high-water sequence numbers so
+  recovery can jump directly to the latest checkpoint instead of replaying the
+  entire log.
+
+- ##### Truncation & rotation mechanics
+
+- **Track truncate progress**: After a segment finalizes and its metadata + file
+  are flushed, we advance a `truncate_offset` pointer to the first byte belonging
+  to the next entry in the open segment. Think of `truncate_offset` as "the
+  earliest WAL byte still needed for crash recovery." We persist that `u64`
+  (plus a monotonically increasing rotation generation) into a tiny sidecar file
+  (e.g., `wal/truncate.offset`) immediately after advancing it and fsync the
+  sidecar so crash recovery can seek straight to that logical offset without
+  rescanning finalized entries.
+- **Truncate sidecar format**: The sidecar is a fixed 32-byte struct written in
+  little-endian order:
+
+  ```text
+  TruncateSidecar {
+      [u8; 8] magic = b"QUIVER\0T";  // distinguishes from WAL proper
+      u16 version = 1;                // bump if layout changes
+      u16 reserved = 0;
+      u64 truncate_offset;            // first byte still needed in wal/quiver.wal
+      u64 rotation_generation;        // increments each WAL rotation
+      u32 crc32c;                     // covers magic..rotation_generation
+  }
+  ```
+
+  We write updates via `truncate.offset.tmp`: encode the struct, compute the CRC,
+  `pwrite`+`fdatasync`, then `renameat` over the live file so readers see either
+  the old or new offset. On startup we verify the magic, version, and checksum
+  before trusting the recorded offsets; failure falls back to scanning from the
+  beginning of `quiver.wal`.
+- **Probe prefix reclamation**: On startup we test whether the active filesystem
+  supports punching holes out of the current WAL file. Linux builds attempt
+  `fallocate(FALLOC_FL_PUNCH_HOLE)` against a temporary WAL stub while Windows
+  builds issue `FSCTL_SET_ZERO_DATA` on a sparse scratch file. If the probe
+  fails with `EOPNOTSUPP`/`ERROR_INVALID_FUNCTION` we mark the capability as
+  disabled and fall back to rewriting until the process restarts.
+- **Drop reclaimed prefixes**: When support exists—or when the pointer crosses a
+  configurable threshold—we invoke `fallocate(FALLOC_FL_PUNCH_HOLE)` in-place to
+  discard bytes `[header_len, truncate_offset)`, leaving the fixed header (30
+  bytes: magic + version + reserved + cfg hash) intact. On filesystems where hole
+  punching is not supported, we instead perform a rewrite: copy every byte from
+  `truncate_offset` through the current end-of-file into `quiver.wal.new` (using
+  `copy_file_range`/`CopyFile2` where available) while the writer stays paused,
+  then reopen the new file and stream the fixed header back to the front so the
+  layout matches a freshly created WAL. Once the copy completes we fsync the new
+  file, atomically rename it over the original, and resume appends at offset
+  `(header_len) + (old_len - truncate_offset)`. Windows builds rely on
+  `CopyFile2` plus `SetFileInformationByHandle` for the same sequence. This
+  rewrite path preserves the header bytes verbatim, so replay cannot distinguish
+  a rewritten WAL from one that was never hole-punched.
+- **Rotate on size**: `wal.max_size` caps the *aggregate* footprint of the active
+  WAL plus every still-referenced rotated sibling. We keep a running total of the
+  active file and the byte spans tracked for `quiver.wal.N`; when the next append
+  would push the aggregate over the configured cap we rotate immediately: shift
+  older suffixes up, close and rename `wal/quiver.wal` to `quiver.wal.1`, and
+  reopen a fresh `quiver.wal`. Each rotation records the byte span covered by the
+  retired chunk so cleanup can later delete `quiver.wal.N` only after the
+  persisted `truncate_offset` exceeds that span’s upper bound. We never
+  hole-punch rotated files; they are deleted wholesale once fully covered by the
+  durability pointer, avoiding rewrites of large historical blobs while keeping
+  the total WAL footprint bounded by `wal.max_size`. To keep rename churn and
+  per-core directory fan-out predictable we retain at most `wal.max_chunks`
+  files (default `10`, counting the active WAL plus rotated siblings). Operators
+  can override the default. Hitting the chunk cap is treated like hitting the
+  byte cap: the next append that *would* require a rotation instead trips
+  backpressure (or `drop_oldest`, if selected) until either truncation reclaims
+  an older chunk or the limit is raised. We never create an eleventh file in the
+  background because doing so would undermine the predictive bound the knob is
+  meant to provide.
+- **Durability-only dependency**: Because WAL truncation depends solely on segment
+  durability, exporter ACK lag never blocks WAL cleanup; segments themselves
+  remain on disk until subscribers advance, but the WAL only needs to cover the
+  currently open segment.
+
 **Acknowledgement Log (`ack.log`)**: Shared append-only log for subscriber state
 
 - Stores every per-bundle Ack/Nack as `(segment_seq, bundle_index,
