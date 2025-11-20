@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module defines the top-level API for executing data transformation pipelines on
-//! streaming telemetry data in the OTAP columnar data format.
+//! streaming telemetry data in the OTAP columnar format.
 
 use std::sync::Arc;
 
@@ -14,7 +14,6 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
-use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use otap_df_pdata::OtapArrowRecords;
@@ -30,9 +29,9 @@ mod planner;
 ///
 /// Stages are compiled once and reused across multiple execute() calls.
 ///
-/// Various implementations may be backed by a DataFusion [`ExecutionPlan`], but this is not a
-/// strict requirement. Other implementations may simply transform the [`RecordBatch`]s using
-/// arrow compute kernels for example.
+/// Implementations may be backed by a DataFusion [`ExecutionPlan`], but this is not a strict
+/// requirement. Other implementations may, for example, simply transform the [`RecordBatch`]s
+/// using Arrow compute kernels.
 #[async_trait]
 pub trait PipelineStage {
     /// Execute this stage's transformation on the current OTAP batch.
@@ -40,8 +39,8 @@ pub trait PipelineStage {
     /// The implementation may need to inspect the batch to determine if the schema has changed,
     /// or if some optional [`RecordBatch`] for some payload type has changed presence.
     ///
-    /// In the case of changes, some light-weight replanning may be required
-    /// - [`SessionContext`] is available in case the a new logical plan must be created
+    /// In the case of changes, some light-weight replanning may be required.
+    /// - [`SessionContext`] is available for logical planning
     /// - [`ConfigOptions`] are passed in case the re-planning will involve
     ///   [`PhysicalOptimizerRule`s](datafusion::physical_optimizer::optimizer::PhysicalOptimizerRule)
     ///
@@ -55,7 +54,7 @@ pub trait PipelineStage {
 }
 
 pub struct DataFusionPipelineStage {
-    /// Which payload in the OtapArrowRecords this stage reads from and writes to.
+    /// The payload in the OtapArrowRecords this stage reads from and writes to.
     payload_type: ArrowPayloadType,
 
     /// Input source for the execution plan. Updated with new data before each execution
@@ -83,7 +82,7 @@ impl PipelineStage for DataFusionPipelineStage {
                 // present in the OTAP batch. How this is handled depends on the type of operation.
                 // For example, if we're filtering then no action is required because all the
                 // records have already been filtered out. By contrast, if we're inserting an
-                // attribute we may need to create a new empty attributes record batch
+                // attribute we may need to create a new empty attributes RecordBatch
                 return Err(Error::NotYetSupportedError {
                     message: "missing RecordBatch for payload type".into(),
                 });
@@ -92,13 +91,14 @@ impl PipelineStage for DataFusionPipelineStage {
 
         // validate that the schema hasn't changed
         if rb.schema_ref() != self.record_batch_stream.schema() {
-            // TODO we may need to make slight adjustments to the plan here, in cases where
-            // the order of the columns have changed, the presence of optional columns has
-            // changed, or if some columns have changed types. How we'll handle this depends
-            // on the nature of the schema change, and the query plan. For example if columns are
-            // just changing order, we could add a `ProjectionExec`. By contrast if we're filtering
-            // on attributes that are no longer present, we could maybe optimize the query plan
-            // into a simple [`EmptyExec`]
+            // TODO we may need to make slight adjustments to the plan in cases where the order of
+            // the columns have changed, the presence of optional columns has changed, or if some
+            // columns have changed types.
+            //
+            // How we'll handle this depends on the nature of the schema change, and the query plan.
+            // For example if columns are just changing order, we could add a `ProjectionExec`.
+            // By contrast if we're filtering on attributes that are no longer present, we could
+            // possibly optimize the query plan into a simple [`EmptyExec`].
             return Err(Error::NotYetSupportedError {
                 message: "adapting plan for RecordBatch schema change".into(),
             });
@@ -114,9 +114,9 @@ impl PipelineStage for DataFusionPipelineStage {
         // update the OTAP batch
         match batches.len() {
             0 => {
-                // TODO: handle to really handle properly. This would happen if say, a filtering
-                // query returns zero records. The logic we should use is:
-                // - for non root payload type to `None` in `OtapArrowRecords` and also maybe drop
+                // TODO: handle this properly. This would happen if say, a filtering query returns
+                // no records. The logic we should use is:
+                // - for non-root payload type to `None` in `OtapArrowRecords` and also maybe drop
                 //   the ID column on the parent record batch.
                 // - for root payload type, we would just return an empty OtapArrowRecords
                 return Err(Error::NotYetSupportedError {
@@ -143,21 +143,18 @@ pub struct PlannedPipeline {
     /// the stages of the compiled pipeline
     stages: Vec<Box<dyn PipelineStage>>,
 
-    /// DataFusion session context for logical planning during adaptation
+    /// DataFusion session context for logical planning during plan adaptation
     session_context: SessionContext,
 
-    /// Configuration options, copied once during construction to avoid repeated copies
-    /// on the hot path (execution). Passed by reference to stages during adapt_to_schemas.
+    /// Configuration options, for physical plan optimizations during plan adaptation
     config_options: Arc<ConfigOptions>,
 
-    /// Task context for physical execution, created once and reused
+    /// Task context for physical execution
     task_context: Arc<TaskContext>,
 }
 
 impl PlannedPipeline {
     fn new(stages: Vec<Box<dyn PipelineStage>>, session_context: SessionContext) -> Self {
-        // Extract TaskContext and ConfigOptions once during construction (cold path)
-        // These will be passed by reference during execution (hot path)
         let state = session_context.state();
         let task_context = Arc::new(TaskContext::from(&state));
         let config_options = session_context.copied_config().options().clone();
@@ -173,10 +170,10 @@ impl PlannedPipeline {
 
 /// The main entrypoint for transform pipeline execution
 pub struct Pipeline {
-    /// the expression tree (AST) defining this pipeline
+    /// The expression tree (AST) defining this pipeline
     pipeline_definition: PipelineExpression,
 
-    /// the compiled pipeline - this is initialized lazily on the first call to execute
+    /// The compiled pipeline - this is initialized lazily on the first call to execute
     /// as some stages may need to inspect the schema of the data for planning
     planned_pipeline: Option<PlannedPipeline>,
 }
@@ -185,7 +182,7 @@ impl Pipeline {
     /// Execute the pipeline on a batch of telemetry data.
     ///
     /// Any query planning happens during the first call to execute, including setting up any
-    /// datafusion SessionContext, TaskContext, etc. Subsequent calls will not have to redo
+    /// DataFusion SessionContext, TaskContext, etc. Subsequent calls will not have to redo
     /// the full planning, although individual stages may do light re-plannings to adapt to
     /// changing OTAP batch schemas.
     ///
@@ -195,7 +192,7 @@ impl Pipeline {
     /// # Returns
     /// The transformed telemetry data after all stages have executed
     pub async fn execute(&mut self, mut otap_batch: OtapArrowRecords) -> Result<OtapArrowRecords> {
-        // lazily plan the pipeline if not already done so
+        // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
             let mut planner = PipelinePlanner::new();
@@ -204,7 +201,7 @@ impl Pipeline {
             self.planned_pipeline = Some(PlannedPipeline::new(stages, session_ctx));
         }
 
-        // safety: we've already planned the pipeline
+        // safety: we've already planned the pipeline, so expect is safe
         let pipeline = self.planned_pipeline.as_mut().expect("pipeline is planned");
 
         // Execution phase: run the transformations
