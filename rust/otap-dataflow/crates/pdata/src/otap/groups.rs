@@ -360,7 +360,7 @@ fn generic_split<const N: usize>(
                     .filter(|payload| **payload != primary_payload)
                     .copied()
                 {
-                    generic_split_helper(batches, payload, primary_payload, ids, new_batch)?;
+                    parent_child_split(batches, payload, primary_payload, ids, new_batch)?;
                 }
             }
         } else {
@@ -375,7 +375,7 @@ fn generic_split<const N: usize>(
 
 // This is a recursive helper function; the depth of recursion is bounded by parent-child
 // relationships described in `child_payload_types` so we won't blow the stack.
-fn generic_split_helper<const N: usize>(
+fn parent_child_split<const N: usize>(
     input: &mut [Option<RecordBatch>; N],
     payload: ArrowPayloadType,
     primary_payload: ArrowPayloadType,
@@ -407,7 +407,7 @@ fn generic_split_helper<const N: usize>(
             let id = IDSeqs::from_split_cols(&split_table_parts)?;
 
             for child_payload in child_payloads {
-                generic_split_helper(input, *child_payload, primary_payload, &id, output)?;
+                parent_child_split(input, *child_payload, primary_payload, &id, output)?;
             }
         }
 
@@ -871,6 +871,7 @@ fn split_metric_batches<const N: usize>(
 // Sorting `RecordBatch`es!
 // *************************************************************************************************
 
+#[derive(Debug)]
 enum HowToSort {
     SortByParentIdAndId,
     SortById,
@@ -879,18 +880,19 @@ enum HowToSort {
 /// Return a `RecordBatch` lexically sorted by either the `parent_id` column and secondarily by the
 /// `id` column or just by the `id` column.
 fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
+    use HowToSort::*;
+    use arrow::compute::{SortColumn, SortOptions, take};
+
     let (schema, columns, _num_rows) = rb.into_parts();
     let id_column_index = schema.column_with_name(consts::ID).map(|pair| pair.0);
     let parent_id_column_index = schema
         .column_with_name(consts::PARENT_ID)
         .map(|pair| pair.0);
 
-    use arrow::compute::{SortColumn, SortOptions, take};
     let options = Some(SortOptions {
         descending: false,
         nulls_first: true, // We rely on this heavily later on!
     });
-    use HowToSort::*;
     let sort_columns: SmallVec<[SortColumn; 2]> =
         match (how, parent_id_column_index, id_column_index) {
             (SortByParentIdAndId, Some(parent_id), Some(id)) => {
@@ -907,18 +909,25 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
                     },
                 ]
             }
-            (_, None, Some(id)) => {
+            (_, _, Some(id)) => {
+                // Comment reproduced from the call site, explaning why the parent_id
+                // column may be Some(_) or None:
+                //
+                // When `parent` has both ID and PARENT_ID columns, resort by ID. Why? Because
+                // the reindexing code requires that the input be sorted. For all these cases,
+                // we've already reindexed by PARENT_ID in an earlier iteration of this loop.
                 let id_values = columns[id].clone();
                 smallvec::smallvec![SortColumn {
                     values: id_values,
                     options,
                 }]
             }
-            // No id or parent_id columns - nothing to sort, return as-is
-            _ => {
+            (_, None, None) => {
+                // No id or parent_id columns, no sorting required.
                 return RecordBatch::try_new(schema, columns)
                     .map_err(|e| Error::Batching { source: e });
             }
+            _ => unreachable!(),
         };
 
     // safety: [`sort_to_indices`] will only return an error if the passed columns aren't supported
@@ -1093,7 +1102,6 @@ fn reindex<const N: usize>(
     Ok(())
 }
 
-/// R
 fn reindex_record_batch(
     rb: RecordBatch,
     column_name: &'static str,
