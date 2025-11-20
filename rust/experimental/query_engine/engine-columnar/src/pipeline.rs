@@ -13,13 +13,14 @@ use async_trait::async_trait;
 use data_engine_expressions::PipelineExpression;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
+use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
@@ -27,30 +28,23 @@ mod planner;
 
 /// A stage in the OPL pipeline.
 ///
-/// Stages are compiled once and reused across multiple execute() calls. They follow a two-phase
-/// execution model:
+/// Stages are compiled once and reused across multiple execute() calls.
 ///
-/// 1. **Adaptation Phase** (`adapt_to_schemas`): Called before each execution to handle schema
-///    changes. Stages can replan/recompile their internal execution plans if needed.
-///
-/// 2. **Execution Phase** (`execute`): Runs the actual data transformation on the current batch.
-///
-/// Design rationale:
-/// - SessionContext/ConfigOptions are passed to adapt_to_schemas for logical planning and physical
-///   plan optimization
-/// - TaskContext is passed to execute for physical execution
-///
-/// Various implementations can be created such as those backed by a DataFusion plan, and others
-/// which simply transform the [`RecordBatch`]s using arrow compute kernels
+/// Various implementations may be backed by a DataFusion [`ExecutionPlan`], but this is not a
+/// strict requirement. Other implementations may simply transform the [`RecordBatch`]s using
+/// arrow compute kernels for example.
 #[async_trait]
 pub trait PipelineStage {
-    /// Execute this stage's transformation on the current batch.
+    /// Execute this stage's transformation on the current OTAP batch.
     ///
-    /// The stage reads input from and writes output to the OtapContext it captured during planning.
-    /// This method should be immutable - all mutable state changes happen in adapt_to_schemas.
+    /// The implementation may need to inspect the batch to determine if the schema has changed,
+    /// or if some optional [`RecordBatch`] for some payload type has changed presence.
     ///
-    /// # Parameters
-    /// - `task_context`: Runtime context for physical plan execution (memory pools, runtime config, etc.)
+    /// In the case of changes, some light-weight replanning may be required
+    /// - [`SessionContext`] is available in case the a new logical plan must be created
+    /// - [`ConfigOptions`] are passed in case the re-planning will involve
+    ///   [`PhysicalOptimizerRule`s](datafusion::physical_optimizer::optimizer::PhysicalOptimizerRule)
+    ///
     async fn execute(
         &mut self,
         otap_batch: OtapArrowRecords,
@@ -61,13 +55,15 @@ pub trait PipelineStage {
 }
 
 pub struct DataFusionPipelineStage {
-    /// TODO comment
+    /// Which payload in the OtapArrowRecords this stage reads from and writes to.
     payload_type: ArrowPayloadType,
 
-    /// TODO comment
+    /// Input source for the execution plan. Updated with new data before each execution
+    /// to inject the current batch for the payload type into DataFusion's streaming model.
     record_batch_stream: Arc<RecordBatchPartitionStream>,
 
-    /// TODO comment
+    /// The DataFusion query plan to execute. Reads from record_batch_stream and produces
+    /// the transformed output batch.
     execution_plan: Arc<dyn ExecutionPlan>,
 }
 
@@ -83,8 +79,14 @@ impl PipelineStage for DataFusionPipelineStage {
         let rb = match otap_batch.get(self.payload_type) {
             Some(rb) => rb,
             None => {
-                // TODO need to handle if we expect there to be a record batch and it's None
-                todo!()
+                // TODO eventually we'll need to handle when an optional RecordBatch is no longer
+                // present in the OTAP batch. How this is handled depends on the type of operation.
+                // For example, if we're filtering then no action is required because all the
+                // records have already been filtered out. By contrast, if we're inserting an
+                // attribute we may need to create a new empty attributes record batch
+                return Err(Error::NotYetSupportedError {
+                    message: "missing RecordBatch for payload type".into(),
+                });
             }
         };
 
@@ -94,21 +96,28 @@ impl PipelineStage for DataFusionPipelineStage {
         // update the record batch stream to produce the current batch
         self.record_batch_stream.update_batch(rb.clone());
 
-        // TODO no unwrap
-        let stream = execute_stream(self.execution_plan.clone(), task_context).unwrap();
-        let batches = collect(stream).await.unwrap();
+        // execute the physical plan
+        let stream = execute_stream(self.execution_plan.clone(), task_context)?;
+        let batches = collect(stream).await?;
 
+        // update the OTAP batch
         match batches.len() {
             0 => {
-                // TODO
-                todo!("no batches are returned from DatafusionPipelineStage execute")
+                // TODO: handle to really handle properly. This would happen if say, a filtering
+                // query returns zero records. The logic we should use is:
+                // - for non root payload type to `None` in `OtapArrowRecords` and also maybe drop
+                //   the ID column on the parent record batch.
+                // - for root payload type, we would just return an empty OtapArrowRecords
+                return Err(Error::NotYetSupportedError {
+                    message: "queries returning empty result set".into(),
+                });
             }
             1 => {
                 let new_rb = batches.into_iter().next().expect("batches not empty");
                 otap_batch.set(self.payload_type, new_rb)
             }
             _ => {
-                let new_rb = concat_batches(batches[0].schema_ref(), &batches).unwrap();
+                let new_rb = concat_batches(batches[0].schema_ref(), &batches)?;
                 otap_batch.set(self.payload_type, new_rb)
             }
         };
@@ -164,28 +173,10 @@ pub struct Pipeline {
 impl Pipeline {
     /// Execute the pipeline on a batch of telemetry data.
     ///
-    /// # Execution Flow
-    ///
-    /// 1. **First Execution** (Compilation):
-    ///    - Create SessionContext, TaskContext, ConfigOptions
-    ///    - Plan stages using schemas from the input batch
-    ///    - Cache the compiled pipeline
-    ///
-    /// 2. **Every Execution** (including first):
-    ///    - Load input batch into the shared context
-    ///    - **Adaptation Phase**: Call adapt_to_schemas() on each stage
-    ///      - Stages check if schemas changed and replan if needed
-    ///    - **Execution Phase**: Call execute() on each stage
-    ///      - Stages transform data in the context
-    ///    - Extract and return the final result
-    ///
-    /// # Performance Characteristics
-    ///
-    /// - **Cold path (first execution)**: Allocates contexts, plans stages
-    /// - **Hot path (subsequent executions)**:
-    ///   - Zero allocation if schemas unchanged (stages skip replanning)
-    ///   - Per-stage replanning if schemas change
-    ///   - ConfigOptions passed by reference (copied once during compilation)
+    /// Any query planning happens during the first call to execute, including setting up any
+    /// datafusion SessionContext, TaskContext, etc. Subsequent calls will not have to redo
+    /// the full planning, although individual stages may do light re-plannings to adapt to
+    /// changing OTAP batch schemas.
     ///
     /// # Arguments
     /// - `otap_batch`: The input telemetry data to process
@@ -193,15 +184,13 @@ impl Pipeline {
     /// # Returns
     /// The transformed telemetry data after all stages have executed
     pub async fn execute(&mut self, mut otap_batch: OtapArrowRecords) -> Result<OtapArrowRecords> {
-        // Lazy compilation: compile on first execution
+        // lazily plan the pipeline if not already done so
         if self.planned_pipeline.is_none() {
-            // TODO we need to set up the session context correctly here
-            let session_context = SessionContext::new();
-
+            let session_ctx = Self::create_session_context();
             let mut planner = PipelinePlanner::new();
             let stages =
-                planner.plan_stages(&session_context, &self.pipeline_definition, &otap_batch)?;
-            self.planned_pipeline = Some(PlannedPipeline::new(stages, session_context));
+                planner.plan_stages(&session_ctx, &self.pipeline_definition, &otap_batch)?;
+            self.planned_pipeline = Some(PlannedPipeline::new(stages, session_ctx));
         }
 
         // safety: we've already planned the pipeline
@@ -222,31 +211,45 @@ impl Pipeline {
 
         Ok(otap_batch)
     }
+
+    /// setup a new session context with the configuration for planning and executing datafusion
+    /// pipeline stages.
+    fn create_session_context() -> SessionContext {
+        let session_config = SessionConfig::new()
+            // since we're typically executing in a single threaded runtime, it doesn't make sense
+            // to spawn repartition tasks and run things like join and filtering in parallel
+            .with_target_partitions(1)
+            .with_repartition_joins(false)
+            .with_repartition_file_scans(false)
+            .with_repartition_windows(false)
+            .with_repartition_aggregations(false)
+            .with_repartition_sorts(false);
+
+        SessionContext::new_with_config(session_config)
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use arrow::array::{RecordBatch, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
     use data_engine_expressions::PipelineExpression;
-    use datafusion::prelude::{SessionConfig, col, lit};
-    use datafusion::{catalog::streaming::StreamingTable, prelude::SessionContext};
-    use otap_df_pdata::OtapArrowRecords;
-    use otap_df_pdata::otap::Logs;
+    use datafusion::catalog::streaming::StreamingTable;
+    use datafusion::logical_expr::{col, lit};
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::schema::consts;
     use otap_df_pdata::testing::round_trip::encode_logs;
-    use std::sync::Arc;
 
-    use crate::pipeline::{DataFusionPipelineStage, Pipeline, PlannedPipeline};
-    use crate::table::RecordBatchPartitionStream;
+    use super::*;
 
     #[tokio::test]
     async fn test_pipeline_execute() {
-        // TODO - add comments about why the test is written this way
+        // TODO eventually we might want to drive this test from a pipeline expression, which we
+        // can do once we have the query planning implemented. For now, we are manually creating
+        // the `PlannedPipeline` and its `PipelineStage`s and any additional datafusion context
+        // they need
 
         let otap_batch1 = encode_logs(&LogsData::new(vec![ResourceLogs {
             scope_logs: vec![ScopeLogs {
@@ -297,35 +300,18 @@ mod test {
         }]));
 
         let schema = otap_batch1.get(ArrowPayloadType::Logs).unwrap().schema();
-
-        let rb_stream = Arc::new(RecordBatchPartitionStream::new(RecordBatch::new_empty(
-            schema.clone(),
-        )));
+        let rb_stream = Arc::new(RecordBatchPartitionStream::new(schema.clone()));
         let table = StreamingTable::try_new(schema.clone(), vec![rb_stream.clone()]).unwrap();
 
-        let session_config = SessionConfig::new()
-            // since we're always executing in a single threaded runtime, it doesn't make sense
-            // to spawn repartition tasks and run things like join and filtering in parallel
-            .with_target_partitions(1)
-            .with_repartition_joins(false)
-            .with_repartition_file_scans(false)
-            .with_repartition_windows(false)
-            .with_repartition_aggregations(false)
-            .with_repartition_sorts(false);
-        let ctx = SessionContext::new_with_config(session_config);
+        let ctx = Pipeline::create_session_context();
         ctx.register_table("logs", Arc::new(table)).unwrap();
-
-        // let df = ctx
-        //     .table("logs")
-        //     .await
-        //     .unwrap()
-        //     .filter(col("severity_text").eq(lit("ERROR")))
-        //     .unwrap();
-
         let query = ctx
-            .sql("select * from logs where severity_text == 'ERROR'")
+            .table("logs")
             .await
+            .unwrap()
+            .filter(col("severity_text").eq(lit("ERROR")))
             .unwrap();
+
         let state = ctx.state();
         let logical_plan = state.optimize(query.logical_plan()).unwrap();
         let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
@@ -343,10 +329,14 @@ mod test {
             planned_pipeline: Some(planned_pipeline),
         };
 
-        for otap_batch in [otap_batch1, otap_batch2] {
-            let result = pipeline.execute(otap_batch).await.unwrap();
-            let logs_rb = result.get(ArrowPayloadType::Logs).unwrap();
-            arrow::util::pretty::print_batches(&[logs_rb.clone()]).unwrap();
-        }
+        let input1_logs = otap_batch1.get(ArrowPayloadType::Logs).unwrap().clone();
+        let result1 = pipeline.execute(otap_batch1).await.unwrap();
+        let result1_logs = result1.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(result1_logs, &input1_logs.slice(0, 2));
+
+        let input2_logs = otap_batch2.get(ArrowPayloadType::Logs).unwrap().clone();
+        let result2 = pipeline.execute(otap_batch2).await.unwrap();
+        let result2_logs = result2.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(result2_logs, &input2_logs.slice(2, 1));
     }
 }

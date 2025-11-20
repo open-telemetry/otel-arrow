@@ -12,25 +12,38 @@ use datafusion::physical_plan::streaming::PartitionStream;
 use futures_core::Stream;
 use parking_lot::Mutex;
 
+/// A partition stream that serves a single, updateable RecordBatch to DataFusion.
+///
+/// This allows external code to provide new data to a DataFusion ExecutionPlan between
+/// executions. Each call to `execute()` snapshots the current batch.
+///
+/// This implements [`PartitionStream`] which means it can be used alongside
+/// [`StreamingTable`](datafusion::catalog::streaming::StreamingTable) to create execution plans
+/// yielding the updatable current [`RecordBatch`].
 #[derive(Debug)]
 pub(crate) struct RecordBatchPartitionStream {
     schema: SchemaRef,
-    curr_batch: Mutex<RecordBatch>,
+    curr_batch: Mutex<Option<RecordBatch>>,
 }
 
 impl RecordBatchPartitionStream {
-    pub fn new(batch: RecordBatch) -> Self {
-        let schema = batch.schema();
-
+    /// Create a new instance of [`RecordBatchPartitionStream`]
+    // TODO eventually we will use this constructor when planning is implemented
+    #[allow(unused)]
+    pub fn new(schema: SchemaRef) -> Self {
         Self {
             schema,
-            curr_batch: Mutex::new(batch),
+            curr_batch: Mutex::new(None),
         }
     }
 
+    /// Updates the batch that will be returned by future executions.
+    ///
+    /// This does not affect any streams that are currently executing - they'll
+    /// continue to use the batch they captured when execute() was called.
     pub fn update_batch(&self, batch: RecordBatch) {
         let mut guard = self.curr_batch.lock();
-        *guard = batch
+        *guard = Some(batch)
     }
 }
 
@@ -46,16 +59,20 @@ impl PartitionStream for RecordBatchPartitionStream {
     }
 }
 
+/// A stream that yields exactly one RecordBatch then completes.
+///
+/// Used to wrap a single batch for DataFusion's streaming execution model.
+/// The batch is moved out on first poll, subsequent polls return None.
 pub struct OneShotRecordBatchStream {
     schema: SchemaRef,
     record_batch: Option<RecordBatch>,
 }
 
 impl OneShotRecordBatchStream {
-    fn new(schema: SchemaRef, record_batch: RecordBatch) -> Self {
+    fn new(schema: SchemaRef, record_batch: Option<RecordBatch>) -> Self {
         Self {
             schema,
-            record_batch: Some(record_batch),
+            record_batch,
         }
     }
 }
@@ -64,6 +81,7 @@ impl Stream for OneShotRecordBatchStream {
     type Item = datafusion::error::Result<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Take the batch on first poll, return None thereafter
         Poll::Ready(self.get_mut().record_batch.take().map(Ok))
     }
 }

@@ -21,9 +21,8 @@ rust-version = "1.86.0"
 
 [workspace.dependencies]
 arrow = "57"
-async-stream = "0.3.6"
 async-trait = "0.1.88"
-datafusion = { version = "51.0.0", default-features = false, features=["sql"] }
+datafusion = { version = "51.0.0", default-features = false }
 datafusion-functions-nested = "51.0.0"
 bytes = "1.10.1"
 caseless = "0.2.2"
