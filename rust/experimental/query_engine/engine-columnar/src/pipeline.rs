@@ -25,9 +25,10 @@ use crate::table::RecordBatchPartitionStream;
 
 mod planner;
 
-/// A stage in the OPL pipeline.
+/// A stage in the pipeline.
 ///
-/// Stages are compiled once and reused across multiple execute() calls.
+/// Used for the physical execution of one or more pipeline expressions. Stages are compiled
+/// once and reused across multiple execute() calls.
 ///
 /// Implementations may be backed by a DataFusion [`ExecutionPlan`], but this is not a strict
 /// requirement. Other implementations may, for example, simply transform the [`RecordBatch`]s
