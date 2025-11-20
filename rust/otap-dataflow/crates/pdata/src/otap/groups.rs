@@ -21,6 +21,7 @@ use crate::{
     schema::consts,
 };
 use ahash::AHashSet;
+use arrow::array::as_primitive_array;
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
@@ -689,6 +690,12 @@ fn split_non_metric_batches<const N: usize>(
 // batch size in terms of the primary table, but rather in terms of the total count of
 // DataPoints. The one saving grace is that for Metrics and all the DataPoints tables, ID and
 // PARENT_ID columns are not nullable!
+//
+// However, note that we do not split the list of DataPoints within a
+// metric, despite our max_output_batch parameter being a count of
+// items, we are only combining data at the Metric level. This makes
+// it possible that one batch will exceed the batch size, happening
+// when an individual slice of data points exceeds the limit.
 fn split_metric_batches<const N: usize>(
     max_output_batch: NonZeroU64,
     batches: &[[Option<RecordBatch>; N]],
@@ -710,12 +717,28 @@ fn split_metric_batches<const N: usize>(
 
     let mut result = Vec::new();
     let max_output_batch = max_output_batch.get() as usize;
+
+    // Note! this function counts down, carrying a "remaining"
+    // available size in the current batch, which makes it different
+    // from the other similar methods in this file (e.g.,
+    // split_non_metric_batches, generic_concatenate).
+    //
+    // This variable is carried across the for loop and meant to
+    // assist the next stage of batching, generic_concatenate. The
+    // carrying of batch_size_remaining, ensures that as
+    // generic_concatenate iterates through batches in the same order
+    // it can accumulate up to the limit for each output, reproducing
+    // the size which are merely being calculated here in advance.
     let mut batch_size_remaining = max_output_batch;
 
-    for (batch_index, batches) in batches.iter().enumerate() {
-        use arrow::array::as_primitive_array;
+    for (batch_index, batch) in batches.iter().enumerate() {
+        // If zero items, reset. Both branches of this loop subtract from the remaining,
+        // so reset on loop entry.
+        if batch_size_remaining == 0 {
+            batch_size_remaining = max_output_batch;
+        }
 
-        let metrics = batches[METRICS_INDEX]
+        let metrics = batch[METRICS_INDEX]
             .as_ref()
             .expect("we've alredy ensured that every batch has a non-null primary table");
         let metric_ids: &PrimitiveArray<UInt16Type> = as_primitive_array(
@@ -726,101 +749,117 @@ fn split_metric_batches<const N: usize>(
 
         let metric_length = metric_ids.len();
         // SAFETY: indexing here is safe because we've already ensured that all primary tables are
-        // non empty.
+        // non empty. These are sorted so the max will be at the end. (TODO: Explain how we know this.)
         let max_metric_id = metric_ids.values()[metric_length - 1];
-        // These are sorted so the max will be at the end.
 
         // Note that `max_metric_id` can differ from `metric_length` because the values in the ID
-        // column can have gaps.
+        // column can have gaps. TODO: Address a secondary safety issue: we're sizing a vector
+        // to the max_metric_id below, what if the ID range is not contiguous?
+        let batch_len = batch_length(batch);
 
-        let batch_len = batch_length(batches);
+        // If the whole batch fits the available space, take a simple path.
+        if batch_len <= batch_size_remaining {
+            // We know that this batch is small enough to include
+            // whole in the current output.
+            batch_size_remaining -= batch_len;
+            result.push((batch_index, 0..metric_length));
+            continue;
+        }
 
-        // If this batch doesn't fit in remaining space AND we've already used some space,
-        // start a fresh output batch
-        if batch_len > batch_size_remaining && batch_size_remaining < max_output_batch {
+        // Compute a cumulative count of data points by metric in the batch.
+        child_counts.clear();
+        child_counts.resize(max_metric_id as usize + 1, 0);
+        for dpt in DATA_POINTS_TYPES {
+            let child = batch[POSITION_LOOKUP[dpt as usize]].as_ref();
+            // TODO: If the child is None, do we consider it corruption?
+            if let Some(child) = child {
+                let parent_id: &PrimitiveArray<UInt16Type> = as_primitive_array(
+                    child
+                        .column_by_name(consts::PARENT_ID)
+                        .expect("PARENT_ID column should be present"),
+                );
+                for (count, parent_id) in parent_id.values().iter().dedup_with_count() {
+                    let parent_id = *parent_id as usize;
+                    child_counts[parent_id] += count as u64;
+                }
+            }
+        }
+
+        // Compute a cumluative size, for partitioning with below.
+        cumulative_child_counts.clear();
+        cumulative_child_counts.extend(child_counts.iter().scan(0, |accumulator, &element| {
+            *accumulator += element;
+            Some(*accumulator)
+        }));
+        // SAFETY: batch_len <= batch_size_remaining takes branch
+        // above; batch_size_remaining != 0.
+        assert!(!cumulative_child_counts.is_empty());
+
+        // We want to partition `cumulative_child_counts` into chunks where the difference
+        // between the first and last value of each chunk is as close to but less than
+        // the available batch size.
+
+        // We store the last cumulative data point count following each loop iteration.
+        let mut last_cumulative = 0;
+        // We store the position of the first unprocessed Metric.
+        let mut starting_index = 0;
+
+        // If the first metric in the batch doesn't fit in remaining space AND
+        // we've already used some space, start a fresh output batch.
+        let first_count = *cumulative_child_counts.first().expect("not empty") as usize;
+        if first_count > batch_size_remaining && batch_size_remaining < max_output_batch {
             batch_size_remaining = max_output_batch;
         }
 
-        if batch_len <= batch_size_remaining {
-            // We know that this batch is small enough to include whole, so don't bother computing
-            // `cumulative_child_counts`.
-            batch_size_remaining -= batch_len;
-            result.push((batch_index, 0..metric_length));
-            if batch_size_remaining == 0 {
-                batch_size_remaining = max_output_batch;
+        loop {
+            // candidate index is the index of the first metric (in order)
+            // that will not join this batch.
+            let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
+                cum_child_count <= last_cumulative + batch_size_remaining as u64
+            });
+
+            // ending_index is checked: max() below ensures we
+            // make progress, even allowing larger-than-the-limit
+            // metrics to pass unsplit.
+            //
+            // TODO: Support splitting a metric with over-limit
+            // point count.
+            let ending_index = candidate_index.max(starting_index + 1);
+
+            // The partition_point call ensures ending_index is
+            // in-range.
+            debug_assert!(ending_index <= metric_length);
+
+            // We should always make forward progress; we should not
+            // enter the loop when there are no points.
+            debug_assert!(ending_index > starting_index);
+
+            // Record the number of points from this batch iteration,
+            // the position within cumulative_child_counts.
+            let next_cumulative = cumulative_child_counts
+                .get(ending_index - 1)
+                .copied()
+                .expect("index-1 < length");
+            let split_count = next_cumulative - last_cumulative;
+
+            // We have to make progress.
+            debug_assert!(split_count > 0);
+
+            // Emit and update the loop state.
+            result.push((batch_index, starting_index..ending_index));
+            starting_index = ending_index;
+            last_cumulative = next_cumulative;
+
+            // Break the loop after consuming all metrics.
+            if ending_index == metric_length {
+                // The last loop body updates the remaining count.
+                batch_size_remaining = batch_size_remaining.saturating_sub(split_count as usize);
+                break;
             }
-        } else {
-            child_counts.clear();
-            child_counts.resize(max_metric_id as usize + 1, 0);
-            for dpt in DATA_POINTS_TYPES {
-                let child = batches[POSITION_LOOKUP[dpt as usize]].as_ref();
-                if let Some(child) = child {
-                    let parent_id: &PrimitiveArray<UInt16Type> = as_primitive_array(
-                        child
-                            .column_by_name(consts::PARENT_ID)
-                            .expect("PARENT_ID column should be present"),
-                    );
-                    for (count, parent_id) in parent_id.values().iter().dedup_with_count() {
-                        let parent_id = *parent_id as usize;
-                        child_counts[parent_id] += count as u64;
-                    }
-                }
-            }
 
-            cumulative_child_counts.clear();
-            cumulative_child_counts.extend(child_counts.iter().scan(0, |accumulator, &element| {
-                *accumulator += element;
-                Some(*accumulator)
-            }));
-            // A betch of metrics with no data points types should have a batch_length of 0, which
-            // means we should have added the whole thing to the output and never reached this point
-            // in the code.
-            assert!(!cumulative_child_counts.is_empty());
-
-            // We want to partition `cumulative_child_counts` into chunks where the difference
-            // between the first and last value of each chunk is as close to but less than
-            // the available batch size.
-            let mut last_cumulative_child_count = 0;
-            let mut starting_index = 0;
-            loop {
-                let candidate_index = cumulative_child_counts.partition_point(|&cum_child_count| {
-                    cum_child_count < last_cumulative_child_count + batch_size_remaining as u64
-                });
-
-                let ending_index = candidate_index.max(starting_index + 1).min(metric_length);
-
-                // Update for next iteration
-                last_cumulative_child_count = cumulative_child_counts
-                    .get(ending_index - 1)
-                    .copied()
-                    .unwrap_or(
-                        cumulative_child_counts
-                            .last()
-                            .copied()
-                            .expect("non-empty list"),
-                    );
-
-                // We should always make forward progress
-                assert!(ending_index > starting_index);
-
-                result.push((batch_index, starting_index..ending_index));
-                if ending_index >= metric_length {
-                    // Calculate remaining capacity in the last chunk we just emitted
-                    let data_points_in_last_chunk = last_cumulative_child_count
-                        - cumulative_child_counts
-                            .get(starting_index.saturating_sub(1))
-                            .copied()
-                            .unwrap_or(0);
-                    batch_size_remaining = (max_output_batch as u64)
-                        .saturating_sub(data_points_in_last_chunk)
-                        as usize;
-                    break;
-                }
-                starting_index = ending_index;
-                // After emitting the first chunk, subsequent chunks should use max_output_batch
-                batch_size_remaining = max_output_batch;
-            }
-            // Note: No reset here! We've already calculated batch_size_remaining in the loop above.
+            // Continuing means there is a next-metric in this batch
+            // that would exceed the limit.  Start a new batch.
+            batch_size_remaining = max_output_batch;
         }
     }
     Ok(result)
