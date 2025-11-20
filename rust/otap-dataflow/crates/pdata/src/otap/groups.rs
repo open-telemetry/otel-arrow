@@ -752,7 +752,7 @@ fn split_metric_batches<const N: usize>(
 
         let metric_length = metric_ids.len();
         // SAFETY: indexing here is safe because we've already ensured that all primary tables are
-        // non empty. These are sorted so the max will be at the end. (TODO: Explain how we know this.)
+        // non empty. These are sorted so the max will be at the end (in generic_split).
         let max_metric_id = metric_ids.values()[metric_length - 1];
 
         // Note that `max_metric_id` can differ from `metric_length` because the values in the ID
@@ -910,7 +910,7 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
                 ]
             }
             (_, _, Some(id)) => {
-                // Comment reproduced from the call site, explaning why the parent_id
+                // Comment reproduced from the call site, explaining why the parent_id
                 // column may be Some(_) or None:
                 //
                 // When `parent` has both ID and PARENT_ID columns, resort by ID. Why? Because
