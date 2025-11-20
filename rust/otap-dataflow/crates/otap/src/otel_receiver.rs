@@ -3,7 +3,7 @@
 
 //! Experimental receiver that serves OTLP and OTAP endpoints directly on top of the `h2`crate.
 //! This variant keeps all request handling on the current thread so it can integrate with the
-//! thread-per-core runtime without requiring `Send + Sync` futures.
+//! thread-per-core runtime WITHOUT requiring `Send + Sync` futures.
 //!
 //! Design goals:
 //! - Support OTLP and OTAP Arrow over gRPC with minimal dependencies.
@@ -33,10 +33,10 @@ use ack::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, stream::FuturesUnordered};
 use grpc::{
     AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
-    build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
+    ResponseEncoderPool, build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
     parse_grpc_accept_encoding, parse_grpc_encoding,
 };
 use h2::server::{self, SendResponse};
@@ -74,7 +74,7 @@ use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use stream::stream_batch_statuses;
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::{Sleep, sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
@@ -82,6 +82,7 @@ use tonic::transport::server::TcpIncoming;
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otel:receiver";
 
+// OTAP gRPC service paths
 const ARROW_LOGS_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs";
 const ARROW_METRICS_SERVICE: &str =
@@ -89,6 +90,7 @@ const ARROW_METRICS_SERVICE: &str =
 const ARROW_TRACES_SERVICE: &str =
     "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces";
 
+// OTLP gRPC service paths
 const OTLP_LOGS_SERVICE: &str = "/opentelemetry.proto.collector.logs.v1.LogsService/Export";
 const OTLP_METRICS_SERVICE: &str =
     "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
@@ -104,6 +106,8 @@ pub struct Config {
 }
 
 /// Experimental OTEL receiver powered directly by the `h2` crate.
+/// Supports OTLP and OTAP Arrow over gRPC.
+/// No `Send + Sync` bounds on request handlers to integrate with thread-per-core runtime.
 pub struct OtelReceiver {
     config: Config,
     metrics: MetricSet<OtapReceiverMetrics>,
@@ -157,6 +161,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        // ToDo This will be configurable later.
         let admitter = Admitter::new(
             100000,
             self.config.grpc.max_concurrent_streams.unwrap_or(100),
@@ -196,6 +201,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             .fold(ResponseTemplates::new(request_accept_header.clone()), |acc, method| {
                 acc.with_method(method, &request_accept_header)
             });
+        let response_encoders = ResponseEncoderPool::new(&response_methods);
 
         let router = Rc::new(GrpcRequestRouter {
             effect_handler: effect_handler.clone(),
@@ -207,6 +213,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             request_accept_header: request_accept_header.clone(),
             response_methods,
             request_timeout: config.timeout,
+            response_encoders,
             response_templates,
         });
 
@@ -491,7 +498,7 @@ async fn handle_tcp_conn(
         futures::stream::poll_fn(move |cx| http2_conn.as_mut().poll_accept(cx));
     // Drive keepalive ticks through a stream to avoid recreating futures.
     let mut keepalive_stream = KeepaliveStream::new(keepalive);
-    let mut tasks_stream = TaskJoinStream::new();
+    let mut in_flight = FuturesUnordered::new();
     let mut accepting = true;
     let mut idle_spins: u8 = 0;
     let trace_enabled = log::log_enabled!(log::Level::Trace);
@@ -499,14 +506,12 @@ async fn handle_tcp_conn(
 
     loop {
         // Keepalive only armed when idle; piggyback on task stream emptiness.
-        keepalive_stream.set_idle(tasks_stream.is_empty());
+        keepalive_stream.set_idle(in_flight.is_empty());
 
         let next_event = futures::future::poll_fn(|cx| {
-            // Drain completed tasks first.
-            if let Poll::Ready(ev) = Pin::new(&mut tasks_stream).poll_next(cx) {
-                if ev.is_some() {
-                    return Poll::Ready(ev);
-                }
+            // Drain completed tasks first, dropping stream slots.
+            if let Poll::Ready(Some(_)) = Pin::new(&mut in_flight).poll_next(cx) {
+                return Poll::Ready(Some(StreamEvent::Task));
             }
 
             if keepalive_stream.is_active() {
@@ -541,8 +546,7 @@ async fn handle_tcp_conn(
                             AdmitDecision::Admitted(stream_guard) => {
                                 let router = router.clone();
                                 // Keep `stream_guard` alive for the request lifetime.
-                                // Ignore the AbortHandler for now.
-                                tasks_stream.spawn_local(async move {
+                                in_flight.push(async move {
                                     if trace_enabled {
                                         // `request.uri()` is cheap, but we still avoid doing it if TRACE is off.
                                         log::trace!("New H2 stream: {}", request.uri().path());
@@ -595,13 +599,8 @@ async fn handle_tcp_conn(
                     }
                 }
             }
-            Some(StreamEvent::Task(result)) => {
+            Some(StreamEvent::Task) => {
                 idle_spins = 0;
-                if let Err(join_err) = result {
-                    if log::log_enabled!(log::Level::Debug) {
-                        log::debug!("stream task join error: {join_err}");
-                    }
-                }
             }
             None => {
                 idle_spins = idle_spins.saturating_add(1);
@@ -613,7 +612,7 @@ async fn handle_tcp_conn(
         }
 
         // Exit when no more streams will arrive and all tasks are done
-        if !accepting && tasks_stream.is_empty() && !keepalive_stream.is_active() {
+        if !accepting && in_flight.is_empty() && !keepalive_stream.is_active() {
             break;
         }
     }
@@ -697,7 +696,7 @@ enum StreamEvent {
     Accept(Result<(Request<h2::RecvStream>, SendResponse<Bytes>), h2::Error>),
     AcceptClosed,
     Keepalive(Result<(), Http2KeepaliveError>),
-    Task(Result<(), JoinError>),
+    Task,
 }
 
 struct KeepaliveStream {
@@ -783,47 +782,6 @@ impl Stream for KeepaliveStream {
     }
 }
 
-struct TaskJoinStream {
-    tasks: JoinSet<()>,
-    inflight: usize,
-}
-
-impl TaskJoinStream {
-    fn new() -> Self {
-        Self {
-            tasks: JoinSet::new(),
-            inflight: 0,
-        }
-    }
-
-    fn spawn_local(&mut self, fut: impl Future<Output = ()> + 'static) {
-        self.inflight += 1;
-        _ = self.tasks.spawn_local(fut);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.inflight == 0
-    }
-}
-
-impl Stream for TaskJoinStream {
-    type Item = StreamEvent;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        match this.tasks.poll_join_next(cx) {
-            Poll::Ready(Some(res)) => {
-                if this.inflight > 0 {
-                    this.inflight -= 1;
-                }
-                Poll::Ready(Some(StreamEvent::Task(res)))
-            }
-            Poll::Ready(None) => Poll::Pending,
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
 /// Routes each inbound gRPC request to the appropriate OTLP+OTAP signal stream.
 struct GrpcRequestRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
@@ -835,6 +793,7 @@ struct GrpcRequestRouter {
     request_accept_header: HeaderValue,
     response_methods: Vec<CompressionMethod>,
     request_timeout: Option<Duration>,
+    response_encoders: ResponseEncoderPool,
     response_templates: ResponseTemplates,
 }
 
@@ -928,7 +887,7 @@ impl GrpcRequestRouter {
         let encoding = parse_grpc_encoding(request.headers(), &self.request_encodings)?;
         let client_accept = parse_grpc_accept_encoding(request.headers());
         let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
-        let mut response_encoder = GrpcMessageEncoder::new(response_encoding);
+        let mut response_encoder = self.response_encoders.checkout(response_encoding);
         let recv_stream = request.into_body();
         let body = GrpcStreamingBody::new(recv_stream, encoding);
 
@@ -1008,7 +967,7 @@ impl GrpcRequestRouter {
         let encoding = parse_grpc_encoding(&parts.headers, &self.request_encodings)?;
         let client_accept = parse_grpc_accept_encoding(&parts.headers);
         let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
-        let mut response_encoder = GrpcMessageEncoder::new(response_encoding);
+        let mut response_encoder = self.response_encoders.checkout(response_encoding);
         let mut recv_stream = GrpcStreamingBody::new(body, encoding);
         let mut request_timeout = RequestTimeout::new(self.request_timeout);
 

@@ -23,10 +23,12 @@ use http::{HeaderMap, HeaderValue};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use prost::Message;
 use std::collections::VecDeque;
+use std::cell::RefCell;
 use std::future::Future;
 use std::io::{self, Read, Write};
 use std::mem;
 use std::pin::Pin;
+use std::ops::{Deref, DerefMut};
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep};
@@ -35,7 +37,7 @@ use zstd::bulk::{Compressor as ZstdCompressor, Decompressor as ZstdDecompressor}
 
 const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
 /// Floor for compressed buffer allocations to avoid tiny vec growth.
-pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 1024;
+pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8*1024;
 
 /// Parses the client's `grpc-encoding` header and enforces server policy.
 ///
@@ -782,9 +784,9 @@ impl GrpcMessageEncoder {
     pub(crate) fn new(compression: GrpcEncoding) -> Self {
         Self {
             compression,
-            frame_buf: BytesMut::with_capacity(512),
-            message_buf: BytesMut::with_capacity(512),
-            compressed_buf: Vec::new(),
+            frame_buf: BytesMut::with_capacity(4*1024),
+            message_buf: BytesMut::with_capacity(4*1024),
+            compressed_buf: Vec::with_capacity(4*1024),
             zstd: None,
         }
     }
@@ -928,6 +930,90 @@ impl GrpcMessageEncoder {
                 )))
             }
         }
+    }
+}
+
+/// Per-encoding pool of reusable message encoders.
+pub(crate) struct ResponseEncoderPool {
+    inner: RefCell<EncoderSlots>,
+}
+
+struct EncoderSlots {
+    identity: Vec<GrpcMessageEncoder>,
+    zstd: Vec<GrpcMessageEncoder>,
+    gzip: Vec<GrpcMessageEncoder>,
+    deflate: Vec<GrpcMessageEncoder>,
+}
+
+pub(crate) struct EncoderGuard<'a> {
+    encoder: Option<GrpcMessageEncoder>,
+    pool: &'a ResponseEncoderPool,
+    encoding: GrpcEncoding,
+}
+
+impl ResponseEncoderPool {
+    pub(crate) fn new(methods: &[CompressionMethod]) -> Self {
+        let mut slots = EncoderSlots {
+            identity: vec![GrpcMessageEncoder::new(GrpcEncoding::Identity)],
+            zstd: Vec::new(),
+            gzip: Vec::new(),
+            deflate: Vec::new(),
+        };
+        for method in methods {
+            match method {
+                CompressionMethod::Zstd => slots.zstd.push(GrpcMessageEncoder::new(GrpcEncoding::Zstd)),
+                CompressionMethod::Gzip => slots.gzip.push(GrpcMessageEncoder::new(GrpcEncoding::Gzip)),
+                CompressionMethod::Deflate => slots.deflate.push(GrpcMessageEncoder::new(GrpcEncoding::Deflate)),
+            }
+        }
+        Self {
+            inner: RefCell::new(slots),
+        }
+    }
+
+    pub(crate) fn checkout(&self, encoding: GrpcEncoding) -> EncoderGuard<'_> {
+        let mut slots = self.inner.borrow_mut();
+        let encoder = match encoding {
+            GrpcEncoding::Identity => slots.identity.pop(),
+            GrpcEncoding::Zstd => slots.zstd.pop(),
+            GrpcEncoding::Gzip => slots.gzip.pop(),
+            GrpcEncoding::Deflate => slots.deflate.pop(),
+        }
+        .unwrap_or_else(|| GrpcMessageEncoder::new(encoding));
+
+        EncoderGuard {
+            encoder: Some(encoder),
+            pool: self,
+            encoding,
+        }
+    }
+}
+
+impl<'a> Drop for EncoderGuard<'a> {
+    fn drop(&mut self) {
+        if let Some(encoder) = self.encoder.take() {
+            let mut slots = self.pool.inner.borrow_mut();
+            match self.encoding {
+                GrpcEncoding::Identity => slots.identity.push(encoder),
+                GrpcEncoding::Zstd => slots.zstd.push(encoder),
+                GrpcEncoding::Gzip => slots.gzip.push(encoder),
+                GrpcEncoding::Deflate => slots.deflate.push(encoder),
+            }
+        }
+    }
+}
+
+impl<'a> Deref for EncoderGuard<'a> {
+    type Target = GrpcMessageEncoder;
+
+    fn deref(&self) -> &Self::Target {
+        self.encoder.as_ref().expect("encoder should be present")
+    }
+}
+
+impl<'a> DerefMut for EncoderGuard<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.encoder.as_mut().expect("encoder should be present")
     }
 }
 
