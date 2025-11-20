@@ -13,8 +13,8 @@ use std::num::NonZeroU64;
 /// Returns error if not the same signal type.
 pub fn make_output_batches(
     signal: SignalType,
-    records: Vec<OtapArrowRecords>,
     max_output_batch: Option<NonZeroU64>,
+    records: Vec<OtapArrowRecords>,
 ) -> Result<Vec<OtapArrowRecords>> {
     // Separate by signal type and rebatch in one pass
     let mut records = match signal {

@@ -24,7 +24,7 @@ fn test_batching(
         .expect("at least one input")
         .signal_type();
 
-    let outputs_otlp: Vec<_> = make_output_batches(signal_type, inputs_otap, max_output_batch)
+    let outputs_otlp: Vec<_> = make_output_batches(signal_type, max_output_batch, inputs_otap)
         .expect("batching should succeed")
         .iter()
         .map(otap_to_otlp)
