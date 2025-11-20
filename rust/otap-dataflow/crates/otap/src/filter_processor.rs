@@ -122,19 +122,19 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     }
                     SignalType::Logs => {
                         // get logs
-                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) = self
-                            .config
-                            .log_filters()
-                            .filter(arrow_records)
-                            .map_err(|e| {
-                                let source_detail = format_error_sources(&e);
-                                Error::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: format!("Filter error: {e}"),
-                                    source_detail,
-                                }
-                            })?;
+                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) =
+                            self.config
+                                .log_filters()
+                                .filter(arrow_records)
+                                .map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
 
                         // get logs after
                         self.metrics.log_signals_consumed.add(log_signals_consumed);
@@ -161,7 +161,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         self.metrics
                             .span_signals_consumed
                             .add(span_signals_consumed);
-                        self.metrics.span_signals_filtered.add(span_signals_filtered);
+                        self.metrics
+                            .span_signals_filtered
+                            .add(span_signals_filtered);
 
                         filtered_arrow_records
                     }
