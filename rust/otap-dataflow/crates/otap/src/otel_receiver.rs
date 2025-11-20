@@ -23,21 +23,21 @@ mod stream;
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
-use crate::otap_grpc::{GrpcServerSettings, Settings, per_connection_limit};
+use crate::otap_grpc::{per_connection_limit, GrpcServerSettings, Settings};
 use crate::otap_receiver::OtapReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
 use response_templates::ResponseTemplates;
 use ack::{
-    AckCompletionFuture, AckPollResult, AckRegistries, AckRegistry, route_ack_response,
-    route_nack_response,
+    route_ack_response, route_nack_response, AckCompletionFuture, AckPollResult, AckRegistries,
+    AckRegistry,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{FutureExt, Stream, StreamExt, stream::FuturesUnordered};
+use futures::{stream::FuturesUnordered, FutureExt, Stream, StreamExt};
 use grpc::{
-    AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
-    ResponseEncoderPool, build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
-    parse_grpc_accept_encoding, parse_grpc_encoding,
+    build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
+    parse_grpc_accept_encoding, parse_grpc_encoding, AcceptedGrpcEncodings,
+    GrpcStreamingBody, RequestTimeout,
 };
 use h2::server::{self, SendResponse};
 use h2::{Ping, PingPong};
@@ -50,7 +50,7 @@ use otap_df_engine::admitter::{AdmitDecision, Admitter, ConnectionGuard};
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
+use otap_df_engine::error::{format_error_sources, Error, ReceiverErrorKind};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -75,10 +75,11 @@ use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use stream::stream_batch_statuses;
 use tokio::task::JoinSet;
-use tokio::time::{Sleep, sleep};
+use tokio::time::{sleep, Sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
 use tonic::transport::server::TcpIncoming;
+use encoder::{GrpcResponseFrameEncoder, ResponseEncoderPool};
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otel:receiver";
 
@@ -932,11 +933,6 @@ impl GrpcRequestRouter {
 
             match next_item {
                 Some(Ok(status)) => {
-                    // log::info!(
-                    //     "Sending batch status id={} code={}",
-                    //     status.batch_id,
-                    //     status.status_code
-                    // );
                     let bytes = response_encoder.encode(&status)?;
                     if let Err(e) = send_stream.send_data(bytes, false) {
                         log::debug!("send_data failed: {e}");
@@ -1154,7 +1150,7 @@ fn otlp_proto_bytes(signal: SignalType, bytes: Bytes) -> OtlpProtoBytes {
 
 fn encode_otlp_response(
     signal: SignalType,
-    encoder: &mut GrpcMessageEncoder,
+    encoder: &mut GrpcResponseFrameEncoder,
 ) -> Result<Bytes, Status> {
     match signal {
         SignalType::Logs => encoder.encode(&ExportLogsServiceResponse {
@@ -1177,3 +1173,4 @@ mod otlp_tests;
 
 #[cfg(test)]
 mod otap_tests;
+mod encoder;

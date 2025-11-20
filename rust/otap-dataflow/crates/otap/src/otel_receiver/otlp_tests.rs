@@ -170,9 +170,9 @@ fn test_otlp_config_parsing() {
         "tcp_keepalive_retries": 3,
         "transport_concurrency_limit": 256,
         "load_shed": false,
-        "initial_stream_window_size": "4MiB",
-        "initial_connection_window_size": "16MiB",
-        "max_frame_size": "8MiB",
+        "initial_stream_window_size": "8MiB",
+        "initial_connection_window_size": "32MiB",
+        "max_frame_size": "16MiB",
         "max_decoding_message_size": "6MiB",
         "max_concurrent_streams": 1024,
     });
@@ -193,13 +193,13 @@ fn test_otlp_config_parsing() {
     assert!(!receiver.config.grpc.load_shed);
     assert_eq!(
         receiver.config.grpc.initial_stream_window_size,
-        Some(4 * 1024 * 1024)
+        Some(8 * 1024 * 1024)
     );
     assert_eq!(
         receiver.config.grpc.initial_connection_window_size,
-        Some(16 * 1024 * 1024)
+        Some(32 * 1024 * 1024)
     );
-    assert_eq!(receiver.config.grpc.max_frame_size, Some(8 * 1024 * 1024));
+    assert_eq!(receiver.config.grpc.max_frame_size, Some(16 * 1024 * 1024));
     assert_eq!(
         receiver.config.grpc.max_decoding_message_size,
         Some(6 * 1024 * 1024)
