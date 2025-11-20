@@ -41,6 +41,9 @@ yanked = "warn"
 # output a note when they are encountered.
 ignore = [
     #"RUSTSEC-0000-0000",
+    
+    # serde_cbor is a transitive dependency of otap_dataflow_pdata
+    { id="RUSTSEC-2021-0127", reason="`serde_cbor` is archived, but current implementation meets needs" },
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories
