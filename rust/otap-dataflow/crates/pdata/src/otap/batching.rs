@@ -16,18 +16,20 @@ pub fn make_output_batches(
     max_output_batch: Option<NonZeroU64>,
     records: Vec<OtapArrowRecords>,
 ) -> Result<Vec<OtapArrowRecords>> {
-    // Separate by signal type and rebatch in one pass
+    // Separate by signal type.
     let mut records = match signal {
         SignalType::Logs => RecordsGroup::separate_logs(records),
         SignalType::Metrics => RecordsGroup::separate_metrics(records),
         SignalType::Traces => RecordsGroup::separate_traces(records),
     }?;
 
-    // Rebatch: iterate through inputs once, building maximally-full output batches
+    // Split large batches so they can be reassembled into
+    // limited-size batches.
     if let Some(limit) = max_output_batch {
         records = records.split(limit)?;
     }
 
+    // Join batches in sequence.
     records = records.concatenate(max_output_batch)?;
 
     Ok(records.into_otap_arrow_records())

@@ -166,6 +166,9 @@ impl RecordsGroup {
     }
 
     /// Merge `RecordBatch`es together so that they're no bigger than `max_output_batch`.
+    ///
+    /// TODO: The maximum is optional, but there is usually an ID- or
+    /// PARENT_ID-width that imposes some kind of limit.
     pub(crate) fn concatenate(self, max_output_batch: Option<NonZeroU64>) -> Result<Self> {
         Ok(match self {
             RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_concatenate(

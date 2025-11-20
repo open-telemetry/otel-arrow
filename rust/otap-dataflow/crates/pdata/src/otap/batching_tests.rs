@@ -34,7 +34,20 @@ fn test_batching(
     if let Some(max_batch) = max_output_batch {
         for (i, output) in outputs_otlp.iter().enumerate() {
             let batch_len = output.batch_length();
+
+            // Not empty.
             assert_ne!(batch_len, 0usize);
+
+            // Note that the following assertion would fail if any
+            // individual Metric contains more than max_batch.  The
+            // current test fixtures used here do not have no more
+            // than three data points, hence we test with limit 3..5.
+            //
+            // TODO: add testing for oversize-metric data. relax this
+            // test helper to identify individual metric point counts
+            // and refine the assertion. If metrics, presently: if
+            // batch_len() exceeds the limit, there must contain exactly
+            // one metric (i.e., oversize items cannot be combined).
             assert!(
                 batch_len <= max_batch.get() as usize,
                 "batch {} length {} exceeds limit {}",
