@@ -178,7 +178,7 @@ WAL entries belonging to:
   recovery can jump directly to the latest checkpoint instead of replaying the
   entire log.
 
-- ##### Truncation & rotation mechanics
+##### Truncation & rotation mechanics
 
 - **Track truncate progress**: After a segment finalizes and its metadata + file
   are flushed, we advance a `truncate_offset` pointer to the first byte belonging
