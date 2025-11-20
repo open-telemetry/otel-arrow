@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arrow::array::RecordBatch;
@@ -13,18 +13,18 @@ use futures_core::Stream;
 use parking_lot::Mutex;
 
 #[derive(Debug)]
-pub struct RecordBatchStreamProvider {
+pub(crate) struct RecordBatchPartitionStream {
     schema: SchemaRef,
-    curr_batch: Mutex<RecordBatch>
+    curr_batch: Mutex<RecordBatch>,
 }
 
-impl RecordBatchStreamProvider {
-    fn new(batch: RecordBatch) -> Self {
+impl RecordBatchPartitionStream {
+    pub fn new(batch: RecordBatch) -> Self {
         let schema = batch.schema();
 
         Self {
             schema,
-            curr_batch: Mutex::new(batch)
+            curr_batch: Mutex::new(batch),
         }
     }
 
@@ -34,7 +34,7 @@ impl RecordBatchStreamProvider {
     }
 }
 
-impl PartitionStream for RecordBatchStreamProvider {
+impl PartitionStream for RecordBatchPartitionStream {
     fn schema(&self) -> &SchemaRef {
         &self.schema
     }
@@ -48,7 +48,7 @@ impl PartitionStream for RecordBatchStreamProvider {
 
 pub struct OneShotRecordBatchStream {
     schema: SchemaRef,
-    record_batch: Option<RecordBatch>
+    record_batch: Option<RecordBatch>,
 }
 
 impl OneShotRecordBatchStream {

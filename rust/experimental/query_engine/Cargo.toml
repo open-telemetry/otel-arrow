@@ -38,3 +38,4 @@ regex = "1.11.1"
 serde_json = "1.0.140"
 sha2 = "0.10.8"
 thiserror = "2.0.12"
+tokio = { version = "1", features = ["full"] }
