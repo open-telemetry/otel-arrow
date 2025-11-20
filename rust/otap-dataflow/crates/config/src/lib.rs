@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+pub mod byte_units;
 pub mod engine;
 pub mod error;
 pub mod health;

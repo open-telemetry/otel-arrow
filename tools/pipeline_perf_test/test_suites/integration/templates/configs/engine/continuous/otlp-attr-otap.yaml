@@ -6,7 +6,7 @@ settings:
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    plugin_urn: "urn:otel:otel:receiver"
     out_ports:
       out_port:
         destinations:

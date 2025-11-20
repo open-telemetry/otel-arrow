@@ -35,6 +35,7 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 
+pub mod admitter;
 mod attributes;
 pub mod config;
 pub mod context;

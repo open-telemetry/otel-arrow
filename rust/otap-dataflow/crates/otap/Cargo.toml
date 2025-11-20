@@ -29,16 +29,22 @@ serde_with = { workspace = true }
 serde_json = { workspace = true }
 slotmap = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 linkme = { workspace = true }
 uuid.workspace = true
 weaver_forge.workspace = true
 weaver_common.workspace = true
 tonic = { workspace = true }
 tonic-middleware = { workspace = true }
+h2 = { workspace = true }
+zstd = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
 smallvec = { workspace = true }
 bitflags = { workspace = true }
+bytes = { workspace = true }
+parking_lot = { workspace = true }
+flate2 = { workspace = true }
 
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }

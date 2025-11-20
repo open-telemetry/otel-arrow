@@ -20,3 +20,4 @@ serde_yaml = { workspace = true }
 miette = { workspace = true }
 urn = { workspace = true }
 schemars = { workspace = true }
+byte-unit = { workspace = true }

@@ -37,7 +37,7 @@ impl MetricsReporter {
 
     /// Report multivariate metrics and reset the metrics if successful.
     pub fn report<M: MetricSetHandler + 'static>(
-        &mut self,
+        &self,
         metrics: &mut MetricSet<M>,
     ) -> Result<(), Error> {
         if !metrics.needs_flush() {

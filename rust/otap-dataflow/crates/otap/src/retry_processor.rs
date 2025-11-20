@@ -632,9 +632,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                     }
                     Ok(())
                 }
-                NodeControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                } => metrics_reporter
+                NodeControlMsg::CollectTelemetry { metrics_reporter } => metrics_reporter
                     .report(&mut self.metrics)
                     .map_err(|e| Error::InternalError {
                         message: e.to_string(),
