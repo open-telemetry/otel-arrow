@@ -18,8 +18,7 @@ use parking_lot::Mutex;
 /// executions. Each call to `execute()` snapshots the current batch.
 ///
 /// This implements [`PartitionStream`] which means it can be used alongside
-/// [`StreamingTable`](datafusion::catalog::streaming::StreamingTable) to create execution plans
-/// yielding the updatable current [`RecordBatch`].
+/// [`StreamingTable`](datafusion::catalog::streaming::StreamingTable).
 #[derive(Debug)]
 pub(crate) struct RecordBatchPartitionStream {
     schema: SchemaRef,
@@ -28,7 +27,7 @@ pub(crate) struct RecordBatchPartitionStream {
 
 impl RecordBatchPartitionStream {
     /// Create a new instance of [`RecordBatchPartitionStream`]
-    // TODO eventually we will use this constructor when planning is implemented
+    // TODO remove allow(unused) eventually this is constructed during planning
     #[allow(unused)]
     pub fn new(schema: SchemaRef) -> Self {
         Self {
@@ -39,8 +38,8 @@ impl RecordBatchPartitionStream {
 
     /// Updates the batch that will be returned by future executions.
     ///
-    /// This does not affect any streams that are currently executing - they'll
-    /// continue to use the batch they captured when execute() was called.
+    /// This does not affect any streams that are currently executing - they'll continue to use the
+    /// batch they captured when execute() was called.
     pub fn update_batch(&self, batch: RecordBatch) {
         let mut guard = self.curr_batch.lock();
         *guard = Some(batch)
@@ -61,8 +60,8 @@ impl PartitionStream for RecordBatchPartitionStream {
 
 /// A stream that yields exactly one RecordBatch then completes.
 ///
-/// Used to wrap a single batch for DataFusion's streaming execution model.
-/// The batch is moved out on first poll, subsequent polls return None.
+/// Used to wrap a single batch for DataFusion's streaming execution model. The batch is moved out
+/// on first poll, subsequent polls return None.
 pub struct OneShotRecordBatchStream {
     schema: SchemaRef,
     record_batch: Option<RecordBatch>,

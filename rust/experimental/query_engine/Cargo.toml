@@ -23,7 +23,6 @@ rust-version = "1.86.0"
 arrow = "57"
 async-trait = "0.1.88"
 datafusion = { version = "51.0.0", default-features = false }
-datafusion-functions-nested = "51.0.0"
 bytes = "1.10.1"
 caseless = "0.2.2"
 chrono = "0.4.41"

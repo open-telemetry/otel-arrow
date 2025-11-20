@@ -3,8 +3,6 @@
 
 //! This module defines the top-level API for executing data transformation pipelines on
 //! streaming telemetry data in the OTAP columnar data format.
-//!
-// TODO example
 
 use std::sync::Arc;
 
@@ -16,6 +14,8 @@ use datafusion::execution::TaskContext;
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::common::collect;
+use datafusion::physical_plan::projection::ProjectionExec;
+use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -90,8 +90,19 @@ impl PipelineStage for DataFusionPipelineStage {
             }
         };
 
-        // TODO we also need to validate the schema here to ensure it's the same as the expected
-        // schema. If not, we may need to make some modifications to the plan
+        // validate that the schema hasn't changed
+        if rb.schema_ref() != self.record_batch_stream.schema() {
+            // TODO we may need to make slight adjustments to the plan here, in cases where
+            // the order of the columns have changed, the presence of optional columns has
+            // changed, or if some columns have changed types. How we'll handle this depends
+            // on the nature of the schema change, and the query plan. For example if columns are
+            // just changing order, we could add a `ProjectionExec`. By contrast if we're filtering
+            // on attributes that are no longer present, we could maybe optimize the query plan
+            // into a simple [`EmptyExec`]
+            return Err(Error::NotYetSupportedError {
+                message: "adapting plan for RecordBatch schema change".into(),
+            });
+        }
 
         // update the record batch stream to produce the current batch
         self.record_batch_stream.update_batch(rb.clone());
