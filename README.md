@@ -221,9 +221,9 @@ For more details, see the following [benchmark results](docs/benchmarks.md) page
 For information about contributing to the project see:
 [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-We meet every other Thursday at 8AM PT. The meeting is subject to change
-depending on contributors'
-availability. Check the [OpenTelemetry community
+We meet alternating between Tuesday at 4:00 PM PT and Thursday at 8:00 AM PT.
+The meeting is subject to change depending on contributors' availability. Check
+the [OpenTelemetry community
 calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calendar)
 for specific dates and for Zoom meeting links.
 

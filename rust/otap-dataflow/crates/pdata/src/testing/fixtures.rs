@@ -160,6 +160,20 @@ pub fn logs_with_empty_log_records() -> LogsData {
     )])
 }
 
+/// LogRecord whose body is an empty string
+#[must_use]
+pub fn logs_with_body_empty_string() -> LogsData {
+    LogsData::new(vec![ResourceLogs::new(
+        Resource::build().finish(),
+        vec![ScopeLogs::new(
+            InstrumentationScope::build()
+                .name("scope".to_string())
+                .finish(),
+            vec![LogRecord::build().body(AnyValue::new_string("")).finish()],
+        )],
+    )])
+}
+
 /// Multiple log records with no resource
 #[must_use]
 pub fn logs_multiple_records_no_resource() -> LogsData {
