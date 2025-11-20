@@ -31,7 +31,7 @@ use ack::{
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{FutureExt, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use grpc::{
     AcceptedGrpcEncodings, GrpcMessageEncoder, GrpcStreamingBody, RequestTimeout,
     build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
@@ -63,14 +63,16 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServic
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::ops::Add;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use stream::stream_batch_statuses;
-use tokio::task::JoinSet;
+use tokio::task::{JoinError, JoinSet};
 use tokio::time::{Sleep, sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
@@ -405,49 +407,76 @@ async fn handle_tcp_conn(
     if log::log_enabled!(log::Level::Trace) {
         log::trace!("H2 handshake established");
     }
-    let mut keepalive = Http2Keepalive::new(
+    let keepalive = Http2Keepalive::new(
         http2_conn.ping_pong(),
         keepalive_interval,
         keepalive_timeout,
     );
 
-    let mut stream_tasks: JoinSet<()> = JoinSet::new();
+    // Drive accepts through a stream so we keep wakers alive across polls.
+    let mut http2_conn = Box::pin(http2_conn);
+    let mut accept_stream =
+        futures::stream::poll_fn(move |cx| http2_conn.as_mut().poll_accept(cx));
+    // Drive keepalive ticks through a stream to avoid recreating futures.
+    let mut keepalive_stream = KeepaliveStream::new(keepalive);
+    let mut tasks_stream = TaskJoinStream::new();
     let mut accepting = true;
+    let mut idle_spins: u8 = 0;
+    let trace_enabled = log::log_enabled!(log::Level::Trace);
+    let debug_enabled = log::log_enabled!(log::Level::Debug);
 
     loop {
-        if let Some(ka) = keepalive.as_mut() {
-            ka.update_idle_state(stream_tasks.is_empty());
-        }
-        let keepalive_armed = keepalive.as_ref().is_some_and(Http2Keepalive::is_armed);
+        // Keepalive only armed when idle; piggyback on task stream emptiness.
+        keepalive_stream.set_idle(tasks_stream.is_empty());
 
-        // Drain completed stream tasks without awaiting.
-        // This is outside the select! to avoid cancelling a pending accept or keepalive.
-        while let Some(res) = stream_tasks.join_next().now_or_never().flatten() {
-            if let Err(join_err) = res {
-                if log::log_enabled!(log::Level::Debug) {
-                    log::debug!("stream task join error: {join_err}");
+        let next_event = futures::future::poll_fn(|cx| {
+            // Drain completed tasks first.
+            if let Poll::Ready(ev) = Pin::new(&mut tasks_stream).poll_next(cx) {
+                if ev.is_some() {
+                    return Poll::Ready(ev);
                 }
             }
-        }
 
-        tokio::select! {
-            // Accept next H2 stream while accepting
-            result = http2_conn.accept(), if accepting => {
+            if keepalive_stream.is_active() {
+                if let Poll::Ready(ev) = Pin::new(&mut keepalive_stream).poll_next(cx) {
+                    return Poll::Ready(ev);
+                }
+            }
+
+            if accepting {
+                match Pin::new(&mut accept_stream).poll_next(cx) {
+                    Poll::Ready(Some(res)) => {
+                        return Poll::Ready(Some(StreamEvent::Accept(res)));
+                    }
+                    Poll::Ready(None) => {
+                        return Poll::Ready(Some(StreamEvent::AcceptClosed));
+                    }
+                    Poll::Pending => {}
+                }
+            }
+
+            Poll::Pending
+        })
+        .await;
+
+        match next_event {
+            Some(StreamEvent::Accept(result)) => {
+                idle_spins = 0;
                 match result {
-                    Some(Ok((request, respond))) => {
+                    Ok((request, respond)) => {
                         // Try to open a *stream* on this connection.
                         match tcp_conn_guard.try_open_stream() {
                             AdmitDecision::Admitted(stream_guard) => {
                                 let router = router.clone();
                                 // Keep `stream_guard` alive for the request lifetime.
                                 // Ignore the AbortHandler for now.
-                                _ = stream_tasks.spawn_local(async move {
-                                    if log::log_enabled!(log::Level::Trace) {
+                                tasks_stream.spawn_local(async move {
+                                    if trace_enabled {
                                         // `request.uri()` is cheap, but we still avoid doing it if TRACE is off.
                                         log::trace!("New H2 stream: {}", request.uri().path());
                                     }
                                     if let Err(status) = router.route_grpc_request(request, respond).await {
-                                        if log::log_enabled!(log::Level::Debug) {
+                                        if debug_enabled {
                                             log::debug!("Request failed: {}", status);
                                         }
                                     }
@@ -475,19 +504,16 @@ async fn handle_tcp_conn(
                             }
                         }
                     }
-                    Some(Err(err)) => return Err(err),
-                    None => accepting = false,
+                    Err(err) => return Err(err),
                 }
             }
-
-            keepalive_result = async {
-                if let Some(ka) = keepalive.as_mut() {
-                    ka.poll_tick().await
-                } else {
-                    unreachable!("keepalive polled without being armed");
-                }
-            }, if keepalive_armed => {
-                match keepalive_result {
+            Some(StreamEvent::AcceptClosed) => {
+                idle_spins = 0;
+                accepting = false;
+            }
+            Some(StreamEvent::Keepalive(result)) => {
+                idle_spins = 0;
+                match result {
                     Ok(()) => {}
                     Err(err) => {
                         if log::log_enabled!(log::Level::Debug) {
@@ -497,20 +523,26 @@ async fn handle_tcp_conn(
                     }
                 }
             }
+            Some(StreamEvent::Task(result)) => {
+                idle_spins = 0;
+                if let Err(join_err) = result {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("stream task join error: {join_err}");
+                    }
+                }
+            }
+            None => {
+                idle_spins = idle_spins.saturating_add(1);
+                if idle_spins >= 2 {
+                    tokio::task::yield_now().await;
+                    idle_spins = 0;
+                }
+            }
         }
 
         // Exit when no more streams will arrive and all tasks are done
-        if !accepting && stream_tasks.is_empty() {
+        if !accepting && tasks_stream.is_empty() && !keepalive_stream.is_active() {
             break;
-        }
-    }
-
-    // Drain in-flight stream tasks
-    while let Some(res) = stream_tasks.join_next().await {
-        if let Err(join_err) = res {
-            if log::log_enabled!(log::Level::Debug) {
-                log::debug!("stream task join error: {join_err}");
-            }
         }
     }
 
@@ -585,6 +617,137 @@ impl fmt::Display for Http2KeepaliveError {
         match self {
             Self::Timeout => write!(f, "keepalive timeout waiting for PONG"),
             Self::Ping(err) => write!(f, "keepalive ping failed: {err}"),
+        }
+    }
+}
+
+enum StreamEvent {
+    Accept(Result<(Request<h2::RecvStream>, SendResponse<Bytes>), h2::Error>),
+    AcceptClosed,
+    Keepalive(Result<(), Http2KeepaliveError>),
+    Task(Result<(), JoinError>),
+}
+
+struct KeepaliveStream {
+    keepalive: Option<Http2Keepalive>,
+    tick: Option<KeepaliveTick>,
+    idle: bool,
+    idle_streak: u8,
+}
+
+type KeepaliveTick =
+    Pin<Box<dyn Future<Output = (Result<(), Http2KeepaliveError>, Http2Keepalive)> + 'static>>;
+
+impl KeepaliveStream {
+    fn new(keepalive: Option<Http2Keepalive>) -> Self {
+        Self {
+            keepalive,
+            tick: None,
+            idle: true,
+            idle_streak: 0,
+        }
+    }
+
+    fn set_idle(&mut self, idle: bool) {
+        self.idle = idle;
+        if !idle {
+            // Drop any pending tick so the next idle cycle re-arms from scratch.
+            self.tick = None;
+            self.idle_streak = 0;
+        } else {
+            self.idle_streak = self.idle_streak.saturating_add(1);
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        self.keepalive.is_some() || self.tick.is_some()
+    }
+}
+
+impl Stream for KeepaliveStream {
+    type Item = StreamEvent;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        if !this.is_active() {
+            return Poll::Pending;
+        }
+
+        loop {
+            if let Some(tick) = this.tick.as_mut() {
+                match tick.as_mut().poll(cx) {
+                    Poll::Ready((res, ka)) => {
+                        this.tick = None;
+                        this.keepalive = Some(ka);
+                        return Poll::Ready(Some(StreamEvent::Keepalive(res)));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            let Some(mut ka) = this.keepalive.take() else {
+                return Poll::Pending;
+            };
+
+            if !this.idle || this.idle_streak < 2 {
+                this.keepalive = Some(ka);
+                return Poll::Pending;
+            }
+
+            ka.update_idle_state(true);
+            if ka.is_armed() {
+                this.tick = Some(Box::pin(async move {
+                    let res = ka.poll_tick().await;
+                    (res, ka)
+                }));
+                // Poll the newly created tick in the same call.
+                continue;
+            } else {
+                this.keepalive = Some(ka);
+                return Poll::Pending;
+            }
+        }
+    }
+}
+
+struct TaskJoinStream {
+    tasks: JoinSet<()>,
+    inflight: usize,
+}
+
+impl TaskJoinStream {
+    fn new() -> Self {
+        Self {
+            tasks: JoinSet::new(),
+            inflight: 0,
+        }
+    }
+
+    fn spawn_local(&mut self, fut: impl Future<Output = ()> + 'static) {
+        self.inflight += 1;
+        _ = self.tasks.spawn_local(fut);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inflight == 0
+    }
+}
+
+impl Stream for TaskJoinStream {
+    type Item = StreamEvent;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.tasks.poll_join_next(cx) {
+            Poll::Ready(Some(res)) => {
+                if this.inflight > 0 {
+                    this.inflight -= 1;
+                }
+                Poll::Ready(Some(StreamEvent::Task(res)))
+            }
+            Poll::Ready(None) => Poll::Pending,
+            Poll::Pending => Poll::Pending,
         }
     }
 }
