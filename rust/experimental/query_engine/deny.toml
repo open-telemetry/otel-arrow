@@ -41,7 +41,7 @@ yanked = "warn"
 # output a note when they are encountered.
 ignore = [
     #"RUSTSEC-0000-0000",
-    
+    { id="RUSTSEC-2024-0436", reason="unmaintained `paste` crate is a dependency of datafusion"},
     # serde_cbor is a transitive dependency of otap_dataflow_pdata
     { id="RUSTSEC-2021-0127", reason="`serde_cbor` is archived, but current implementation meets needs" },
 ]
