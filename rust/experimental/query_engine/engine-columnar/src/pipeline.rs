@@ -234,7 +234,11 @@ mod test {
     use otap_df_pdata::OtapArrowRecords;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
     use otap_df_pdata::schema::consts;
+    use otap_df_pdata::testing::round_trip::encode_logs;
     use std::sync::Arc;
 
     use crate::pipeline::{DataFusionPipelineStage, Pipeline, PlannedPipeline};
@@ -244,10 +248,55 @@ mod test {
     async fn test_pipeline_execute() {
         // TODO - add comments about why the test is written this way
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
-            Field::new(consts::EVENT_NAME, DataType::Utf8, true),
-        ]));
+        let otap_batch1 = encode_logs(&LogsData::new(vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord {
+                        severity_text: "ERROR".into(),
+                        event_name: "1".into(),
+                        ..Default::default()
+                    },
+                    LogRecord {
+                        severity_text: "ERROR".into(),
+                        event_name: "2".into(),
+                        ..Default::default()
+                    },
+                    LogRecord {
+                        severity_text: "WARN".into(),
+                        event_name: "3".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]));
+
+        let otap_batch2 = encode_logs(&LogsData::new(vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord {
+                        severity_text: "DEBUG".into(),
+                        event_name: "4".into(),
+                        ..Default::default()
+                    },
+                    LogRecord {
+                        severity_text: "TRACE".into(),
+                        event_name: "5".into(),
+                        ..Default::default()
+                    },
+                    LogRecord {
+                        severity_text: "ERROR".into(),
+                        event_name: "6".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]));
+
+        let schema = otap_batch1.get(ArrowPayloadType::Logs).unwrap().schema();
 
         let rb_stream = Arc::new(RecordBatchPartitionStream::new(RecordBatch::new_empty(
             schema.clone(),
@@ -266,15 +315,19 @@ mod test {
         let ctx = SessionContext::new_with_config(session_config);
         ctx.register_table("logs", Arc::new(table)).unwrap();
 
-        let df = ctx
-            .table("logs")
-            .await
-            .unwrap()
-            .filter(col("severity_text").eq(lit("ERROR")))
-            .unwrap();
+        // let df = ctx
+        //     .table("logs")
+        //     .await
+        //     .unwrap()
+        //     .filter(col("severity_text").eq(lit("ERROR")))
+        //     .unwrap();
 
+        let query = ctx
+            .sql("select * from logs where severity_text == 'ERROR'")
+            .await
+            .unwrap();
         let state = ctx.state();
-        let logical_plan = state.optimize(df.logical_plan()).unwrap();
+        let logical_plan = state.optimize(query.logical_plan()).unwrap();
         let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
 
         let stage = DataFusionPipelineStage {
@@ -289,28 +342,6 @@ mod test {
             pipeline_definition: PipelineExpression::default(),
             planned_pipeline: Some(planned_pipeline),
         };
-
-        let logs_rb1 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from_iter_values(["ERROR", "INFO", "WARN"])),
-                Arc::new(StringArray::from_iter_values(["1", "2", "3"])),
-            ],
-        )
-        .unwrap();
-        let mut otap_batch1 = OtapArrowRecords::Logs(Logs::default());
-        otap_batch1.set(ArrowPayloadType::Logs, logs_rb1);
-
-        let logs_rb2 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from_iter_values(["ERROR", "ERROR", "WARN"])),
-                Arc::new(StringArray::from_iter_values(["4", "5", "6"])),
-            ],
-        )
-        .unwrap();
-        let mut otap_batch2 = OtapArrowRecords::Logs(Logs::default());
-        otap_batch2.set(ArrowPayloadType::Logs, logs_rb2);
 
         for otap_batch in [otap_batch1, otap_batch2] {
             let result = pipeline.execute(otap_batch).await.unwrap();
