@@ -16,7 +16,8 @@
 //! ToDo Add support for Unix domain sockets as a transport option.
 
 mod ack;
-mod grpc;
+pub(crate) mod grpc;
+mod response_templates;
 mod stream;
 
 use crate::OTAP_RECEIVER_FACTORIES;
@@ -25,6 +26,7 @@ use crate::otap_grpc::common;
 use crate::otap_grpc::{GrpcServerSettings, Settings, per_connection_limit};
 use crate::otap_receiver::OtapReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
+use response_templates::ResponseTemplates;
 use ack::{
     AckCompletionFuture, AckPollResult, AckRegistries, AckRegistry, route_ack_response,
     route_nack_response,
@@ -188,6 +190,12 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         let request_encodings = AcceptedGrpcEncodings::from_methods(&request_encoding_methods);
         let request_accept_header = build_accept_encoding_header(&request_encoding_methods);
         let response_methods = config.response_compression_methods();
+        let response_templates = response_methods
+            .iter()
+            .copied()
+            .fold(ResponseTemplates::new(request_accept_header.clone()), |acc, method| {
+                acc.with_method(method, &request_accept_header)
+            });
 
         let router = Rc::new(GrpcRequestRouter {
             effect_handler: effect_handler.clone(),
@@ -196,9 +204,10 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             traces_ack_registry,
             max_in_flight_per_connection: max_in_flight,
             request_encodings,
-            request_accept_header,
+            request_accept_header: request_accept_header.clone(),
             response_methods,
             request_timeout: config.timeout,
+            response_templates,
         });
 
         let cancel_token = CancellationToken::new();
@@ -209,54 +218,76 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
 
         // log::info!("OTAP H2 receiver starting on {}", config.listening_addr);
 
-        tokio::select! {
-            biased;
-            ctrl_msg_result = async {
-                loop {
-                    match ctrl_msg_recv.recv().await {
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            // log::info!("OTAP H2 receiver received shutdown signal");
-                            cancel_token.cancel();
-                            let snapshot = self.metrics.snapshot();
-                            _ = telemetry_cancel_handle.cancel().await;
-                            return Ok(TerminalState::new(deadline, [snapshot]));
-                        }
-                        Ok(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
-                            _ = metrics_reporter.report(&mut self.metrics);
-                        }
-                        Ok(NodeControlMsg::Ack(ack)) => {
-                            let resp = route_ack_response(&ack_registries, ack);
-                            common::handle_route_response(
-                                resp,
-                                &mut self.metrics,
-                                |metrics| metrics.acks_sent.inc(),
-                                |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
-                            );
-                        }
-                        Ok(NodeControlMsg::Nack(nack)) => {
-                            let resp = route_nack_response(&ack_registries, nack);
-                            common::handle_route_response(
-                                resp,
-                                &mut self.metrics,
-                                |metrics| metrics.nacks_sent.inc(),
-                                |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
-                            );
-                        }
-                        Err(e) => return Err(Error::ChannelRecvError(e)),
-                        _ => {}
+        enum StartEvent {
+            Ctrl(Result<TerminalState, Error>),
+            Server(Result<(), io::Error>),
+        }
+
+        let ctrl_fut = Box::pin(async {
+            loop {
+                match ctrl_msg_recv.recv().await {
+                    Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                        // log::info!("OTAP H2 receiver received shutdown signal");
+                        let snapshot = self.metrics.snapshot();
+                        _ = telemetry_cancel_handle.cancel().await;
+                        return Ok(TerminalState::new(deadline, [snapshot]));
                     }
+                    Ok(NodeControlMsg::CollectTelemetry { metrics_reporter }) => {
+                        _ = metrics_reporter.report(&mut self.metrics);
+                    }
+                    Ok(NodeControlMsg::Ack(ack)) => {
+                        let resp = route_ack_response(&ack_registries, ack);
+                        common::handle_route_response(
+                            resp,
+                            &mut self.metrics,
+                            |metrics| metrics.acks_sent.inc(),
+                            |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
+                        );
+                    }
+                    Ok(NodeControlMsg::Nack(nack)) => {
+                        let resp = route_nack_response(&ack_registries, nack);
+                        common::handle_route_response(
+                            resp,
+                            &mut self.metrics,
+                            |metrics| metrics.nacks_sent.inc(),
+                            |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
+                        );
+                    }
+                    Err(e) => return Err(Error::ChannelRecvError(e)),
+                    _ => {}
                 }
-            } => {
+            }
+        });
+
+        let server_fut = Box::pin(run_grpc_server(
+            &mut incoming,
+            config,
+            router,
+            cancel_token.clone(),
+            admitter.clone(),
+        ));
+
+        let server_done;
+        let mut ctrl_fut = ctrl_fut;
+        let mut server_fut = server_fut;
+
+        let event = futures::future::poll_fn(|cx| {
+            if let Poll::Ready(res) = ctrl_fut.as_mut().poll(cx) {
+                return Poll::Ready(StartEvent::Ctrl(res));
+            }
+            if let Poll::Ready(res) = server_fut.as_mut().poll(cx) {
+                return Poll::Ready(StartEvent::Server(res));
+            }
+            Poll::Pending
+        })
+        .await;
+
+        match event {
+            StartEvent::Ctrl(ctrl_msg_result) => {
+                cancel_token.cancel();
                 return ctrl_msg_result;
             }
-
-            server_result = run_grpc_server(
-                &mut incoming,
-                config,
-                router,
-                cancel_token.clone(),
-                admitter.clone(),
-            ) => {
+            StartEvent::Server(server_result) => {
                 if let Err(error) = server_result {
                     log::error!("OTEL H2 receiver server loop failed: {error}");
                     let source_detail = format_error_sources(&error);
@@ -267,7 +298,18 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
                         source_detail,
                     });
                 }
+                server_done = true;
             }
+        }
+
+        drop(ctrl_fut);
+        drop(server_fut);
+
+        if server_done {
+            return Ok(TerminalState::new(
+                Instant::now().add(Duration::from_secs(1)),
+                [self.metrics],
+            ));
         }
 
         Ok(TerminalState::new(
@@ -302,6 +344,7 @@ async fn run_grpc_server(
     let mut tcp_conn_tasks: JoinSet<()> = JoinSet::new();
     let mut accepting = true;
     let h2_builder = build_h2_builder(&grpc_config);
+    let mut cancel_wait = Box::pin(cancel.cancelled());
 
     loop {
         // Drain completed connection tasks without awaiting.
@@ -314,14 +357,46 @@ async fn run_grpc_server(
             }
         }
 
-        tokio::select! {
-            // 1) Cancellation: stop accepting and break to drain
-            _ = cancel.cancelled() => break,
+        enum ServerEvent {
+            Cancel,
+            Accept(Result<tokio::net::TcpStream, io::Error>),
+            IncomingClosed,
+        }
 
-            // 2) Accept next TCP connection while accepting (and under cap, if any)
-            res = incoming.next(), if accepting => {
+        let event = futures::future::poll_fn(|cx| {
+            if cancel_wait.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(ServerEvent::Cancel);
+            }
+
+            if !tcp_conn_tasks.is_empty() {
+                if let Poll::Ready(Some(res)) = tcp_conn_tasks.poll_join_next(cx) {
+                    if let Err(join_err) = res {
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("H2 connection task join error: {join_err}");
+                        }
+                    }
+                    // Continue polling for other events this tick.
+                }
+            }
+
+            if accepting {
+                match StreamExt::poll_next_unpin(incoming, cx) {
+                    Poll::Ready(Some(res)) => return Poll::Ready(ServerEvent::Accept(res)),
+                    Poll::Ready(None) => return Poll::Ready(ServerEvent::IncomingClosed),
+                    Poll::Pending => {}
+                }
+            }
+
+            Poll::Pending
+        })
+        .await;
+
+        match event {
+            ServerEvent::Cancel => break,
+            ServerEvent::IncomingClosed => accepting = false,
+            ServerEvent::Accept(res) => {
                 match res {
-                    Some(Ok(tcp_conn)) => {
+                    Ok(tcp_conn) => {
                         // Admit a connection before spawning the task.
                         match admitter.try_admit_connection() {
                             AdmitDecision::Admitted(conn_guard) => {
@@ -367,10 +442,7 @@ async fn run_grpc_server(
                             }
                         }
                     }
-                    Some(Err(err)) => return Err(err),
-                    None => {
-                        accepting = false;
-                    }
+                    Err(err) => return Err(err),
                 }
             }
         }
@@ -763,6 +835,7 @@ struct GrpcRequestRouter {
     request_accept_header: HeaderValue,
     response_methods: Vec<CompressionMethod>,
     request_timeout: Option<Duration>,
+    response_templates: ResponseTemplates,
 }
 
 impl GrpcRequestRouter {
@@ -974,7 +1047,7 @@ impl GrpcRequestRouter {
             otlp_proto_bytes(signal, request_bytes).into(),
         );
 
-        let wait_token = if let Some(state) = ack_registry.clone() {
+        let wait_token = if let Some(state) = ack_registry.as_ref() {
             match state.allocate() {
                 Some(token) => {
                     self.effect_handler.subscribe_to(
@@ -982,7 +1055,7 @@ impl GrpcRequestRouter {
                         token.to_calldata(),
                         &mut otap_pdata,
                     );
-                    Some((state, token))
+                    Some((state.clone(), token))
                 }
                 None => {
                     respond_with_error(
@@ -1044,16 +1117,10 @@ impl GrpcRequestRouter {
             }
         }
 
-        let mut response_builder = Response::builder()
-            .status(HttpStatusCode::OK)
-            .header("content-type", "application/grpc")
-            .header("grpc-accept-encoding", self.request_accept_header.clone());
-        if let Some(token) = grpc_encoding_token(response_encoding) {
-            response_builder = response_builder.header("grpc-encoding", token);
-        }
-        let response = response_builder
-            .body(())
-            .map_err(|e| Status::internal(format!("failed to build response: {e}")))?;
+        let response = self
+            .response_templates
+            .get_ok(CompressionMethod::from_grpc_encoding(response_encoding))
+            .ok_or_else(|| Status::internal("failed to build response"))?;
         let mut send_stream = respond
             .send_response(response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;

@@ -27,6 +27,7 @@ use std::future::Future;
 use std::io::{self, Read, Write};
 use std::mem;
 use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep};
 use tonic::Status; // ToDo remove this dependency to get rid of tonic in otap crate
@@ -203,7 +204,7 @@ pub(crate) fn negotiate_response_encoding(
 
 #[derive(Clone, Copy, Debug)]
 /// Supported compression algorithms for the OTAP receiver responses.
-pub(crate) enum GrpcEncoding {
+pub enum GrpcEncoding {
     /// No compression.
     Identity,
     /// Zstd compression.
@@ -950,45 +951,11 @@ impl RequestTimeout {
         }
     }
 
-    /// Arms the timeout if a duration has been configured.
-    fn arm(&mut self) {
-        if let Some(duration) = self.duration {
-            if self.sleep.is_none() {
-                self.sleep = Some(Box::pin(sleep(duration)));
-            }
-        }
-    }
-
-    /// Resets the timeout back to `now + duration`.
-    fn reset(&mut self) {
-        if let (Some(duration), Some(sleep)) = (self.duration, self.sleep.as_mut()) {
-            sleep.as_mut().reset(TokioInstant::now() + duration);
-        }
-    }
-
     pub(crate) async fn next_with<S, T>(&mut self, stream: &mut S) -> Result<Option<T>, ()>
     where
         S: Stream<Item = T> + Unpin,
     {
-        match self.duration {
-            None => Ok(stream.next().await),
-            Some(_) => {
-                self.arm();
-                let sleep = self
-                    .sleep
-                    .as_mut()
-                    .expect("sleep must be armed when timeout is configured");
-                tokio::select! {
-                    // Timeout fired first: signal the caller to abort the request.
-                    _ = sleep.as_mut() => Err(()),
-                    // Stream yielded before the deadline; reset and pass the item through.
-                    item = stream.next() => {
-                        self.reset();
-                        Ok(item)
-                    }
-                }
-            }
-        }
+        futures::future::poll_fn(|cx| self.poll_next_with(cx, stream)).await
     }
 
     /// Awaits the provided future while enforcing the configured timeout.
@@ -996,22 +963,71 @@ impl RequestTimeout {
     where
         F: Future<Output = T>,
     {
-        match self.duration {
-            None => Ok(future.await),
-            Some(_) => {
-                self.arm();
-                let sleep = self
-                    .sleep
-                    .as_mut()
-                    .expect("sleep must be armed when timeout is configured");
-                let mut future = Box::pin(future);
-                tokio::select! {
-                    _ = sleep.as_mut() => Err(()),
-                    result = future.as_mut() => {
-                        self.reset();
-                        Ok(result)
-                    }
+        futures::pin_mut!(future);
+        futures::future::poll_fn(|cx| self.poll_with_future(cx, future.as_mut())).await
+    }
+
+    pub(crate) fn poll_next_with<S, T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        stream: &mut S,
+    ) -> Poll<Result<Option<T>, ()>>
+    where
+        S: Stream<Item = T> + Unpin,
+    {
+        if self.duration.is_none() {
+            return StreamExt::poll_next_unpin(stream, cx).map(Ok);
+        }
+
+        self.ensure_sleep();
+        if let Some(sleep) = self.sleep.as_mut() {
+            if sleep.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(()));
+            }
+        }
+
+        match StreamExt::poll_next_unpin(stream, cx) {
+            Poll::Ready(item) => {
+                if let (Some(duration), Some(sleep)) = (self.duration, self.sleep.as_mut()) {
+                    sleep.as_mut().reset(TokioInstant::now() + duration);
                 }
+                Poll::Ready(Ok(item))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    pub(crate) fn poll_with_future<T>(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut future: Pin<&mut impl Future<Output = T>>,
+    ) -> Poll<Result<T, ()>> {
+        if self.duration.is_none() {
+            return future.as_mut().poll(cx).map(Ok);
+        }
+
+        self.ensure_sleep();
+        if let Some(sleep) = self.sleep.as_mut() {
+            if sleep.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(Err(()));
+            }
+        }
+
+        match future.as_mut().poll(cx) {
+            Poll::Ready(out) => {
+                if let (Some(duration), Some(sleep)) = (self.duration, self.sleep.as_mut()) {
+                    sleep.as_mut().reset(TokioInstant::now() + duration);
+                }
+                Poll::Ready(Ok(out))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn ensure_sleep(&mut self) {
+        if let Some(duration) = self.duration {
+            if self.sleep.is_none() {
+                self.sleep = Some(Box::pin(sleep(duration)));
             }
         }
     }

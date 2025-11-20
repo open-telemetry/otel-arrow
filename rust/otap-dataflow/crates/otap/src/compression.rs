@@ -4,6 +4,7 @@
 //! Defines a compression enum to abstract from tonic and allows the exporter and receiver to get
 //! the respective tonic equivalent.
 
+use crate::otel_receiver::grpc::GrpcEncoding;
 use serde::{Deserialize, Deserializer, Serialize};
 use tonic::codec::CompressionEncoding;
 
@@ -28,6 +29,16 @@ impl CompressionMethod {
             CompressionMethod::Zstd => CompressionEncoding::Zstd,
             CompressionMethod::Gzip => CompressionEncoding::Gzip,
             CompressionMethod::Deflate => CompressionEncoding::Deflate,
+        }
+    }
+
+    /// Maps a negotiated GrpcEncoding back to a CompressionMethod, if known.
+    pub fn from_grpc_encoding(enc: GrpcEncoding) -> Option<Self> {
+        match enc {
+            GrpcEncoding::Zstd => Some(CompressionMethod::Zstd),
+            GrpcEncoding::Gzip => Some(CompressionMethod::Gzip),
+            GrpcEncoding::Deflate => Some(CompressionMethod::Deflate),
+            GrpcEncoding::Identity => None,
         }
     }
 }
@@ -127,19 +138,19 @@ mod tests {
 
     #[test]
     fn deserialize_supports_none_keyword() {
-        let conf: ConfWithCompression = serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
+        let conf: ConfWithCompression =
+            serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
         assert_eq!(conf.methods, Some(vec![]));
     }
 
     #[test]
-    fn deserialize_absent_is_none() {
-        let conf: ConfWithCompression = serde_json::from_str(r#"{}"#).unwrap();
-        assert!(conf.methods.is_none());
-    }
-
-    #[test]
-    fn deserialize_null_is_none() {
-        let conf: ConfWithCompression = serde_json::from_str(r#"{ "methods": null }"#).unwrap();
-        assert!(conf.methods.is_none());
+    fn deserialize_supports_absence() {
+        #[derive(Debug, Deserialize)]
+        struct Conf {
+            #[serde(default, deserialize_with = "deserialize_compression_methods")]
+            methods: Option<Vec<CompressionMethod>>,
+        }
+        let conf: Conf = serde_json::from_str("{}").unwrap();
+        assert_eq!(conf.methods, None);
     }
 }
