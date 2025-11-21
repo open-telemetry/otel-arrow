@@ -101,7 +101,7 @@ same concurrency/ACK handling.
   the per-core runtime. This avoids cross-thread synchronization and matches the
   "thread-per-core" approach of the overall engine.
 - Compression handling lives in `grpc.rs` (`GrpcStreamingBody` and
-  `GrpcMessageEncoder`). Zstd allocates long-lived encoder/decoder instances per
+  `GrpcResponseFrameEncoder`). Zstd allocates long-lived encoder/decoder instances per
   stream, while gzip/deflate instantiate per-frame decoders because they are
   lightweight.
 - `stream.rs` contains the core state machine (`StatusStreamState`) that keeps a

@@ -36,10 +36,8 @@ impl ResponseTemplates {
             CompressionMethod::Deflate => grpc::GrpcEncoding::Deflate,
         };
         if let Some(token) = grpc_encoding_token(encoding) {
-            let encoded = build_ok_response(
-                accept_header.clone(),
-                Some(HeaderValue::from_static(token)),
-            );
+            let encoded =
+                build_ok_response(accept_header.clone(), Some(HeaderValue::from_static(token)));
             self.ok_encoded.push((method, encoded));
         }
         self

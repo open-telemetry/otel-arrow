@@ -13,6 +13,7 @@
 //! tailored to the single-threaded OTAP runtime.
 
 use crate::compression::CompressionMethod;
+use crate::otel_receiver::status::Status;
 use async_trait::async_trait;
 use bytes::{Buf, Bytes, BytesMut};
 use flate2::read::{GzDecoder, ZlibDecoder};
@@ -22,17 +23,38 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use prost::Message;
 use std::collections::VecDeque;
 use std::future::Future;
-use std::io::{self, Read};
+use std::io::{self, Write};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
-use tokio::time::{sleep, Instant as TokioInstant, Sleep};
-use tonic::Status; // ToDo remove this dependency to get rid of tonic in otap crate
+use tokio::time::{Instant as TokioInstant, Sleep, sleep};
 use zstd::bulk::Decompressor as ZstdDecompressor;
 
 const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
 /// Floor for compressed buffer allocations to avoid tiny vec growth.
-pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8*1024;
+pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8 * 1024;
+
+#[cfg(feature = "unsafe-optimizations")]
+#[inline]
+fn set_bytes_len(buf: &mut BytesMut, len: usize) {
+    if buf.capacity() < len {
+        buf.reserve(len - buf.capacity());
+    }
+    // SAFETY: caller ensures bytes are fully overwritten before use.
+    #[allow(unsafe_code)]
+    unsafe {
+        buf.set_len(len)
+    }
+}
+
+#[cfg(not(feature = "unsafe-optimizations"))]
+#[inline]
+fn set_bytes_len(buf: &mut BytesMut, len: usize) {
+    if buf.capacity() < len {
+        buf.reserve(len - buf.capacity());
+    }
+    buf.resize(len, 0);
+}
 
 /// Parses the client's `grpc-encoding` header and enforces server policy.
 ///
@@ -365,7 +387,7 @@ pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
     /// codecs (gzip/deflate) are recreated per frame because their constructors are cheap and hold
     /// no reusable state.
     zstd: Option<ZstdDecompressor<'static>>,
-    decompressed_buf: Vec<u8>,
+    decompressed_buf: BytesMut,
 }
 
 #[derive(Clone, Copy)]
@@ -514,7 +536,7 @@ where
             finished: false,
             encoding,
             zstd: None,
-            decompressed_buf: Vec::new(),
+            decompressed_buf: BytesMut::new(),
         }
     }
 
@@ -598,7 +620,7 @@ where
     }
 
     /// Dispatches to the appropriate decompressor for the negotiated encoding.
-    fn decompress(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+    fn decompress(&mut self, payload: Bytes) -> Result<Bytes, Status> {
         match self.encoding {
             GrpcEncoding::Identity => {
                 log::error!("Received compressed frame but grpc-encoding=identity");
@@ -613,22 +635,15 @@ where
     /// Performs a zstd decode, growing the buffer as needed.
     /// Complexity: amortized O(n) over the payload size because each retry doubles
     /// the buffer.
-    fn decompress_zstd(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+    fn decompress_zstd(&mut self, payload: Bytes) -> Result<Bytes, Status> {
         // Lazily create the decoder once per stream, since this is costly.
         self.ensure_zstd_decompressor()?;
-        let mut required_capacity = self
-            .decompressed_buf
-            .capacity()
-            .max(payload.len().saturating_mul(2))
-            .max(MIN_DECOMPRESSED_CAPACITY);
+        self.reserve_decompressed_capacity(payload.len());
+        let mut required_capacity = self.decompressed_buf.capacity();
 
         loop {
             // Grow the scratch buffer until it can hold the entire frame.
-            if self.decompressed_buf.capacity() < required_capacity {
-                self.decompressed_buf
-                    .reserve(required_capacity - self.decompressed_buf.capacity());
-            }
-            self.decompressed_buf.clear();
+            set_bytes_len(&mut self.decompressed_buf, required_capacity);
             let result = {
                 // Safe because `ensure_zstd_decompressor` guarantees the option is populated.
                 let decompressor = self
@@ -636,10 +651,13 @@ where
                     .as_mut()
                     .expect("zstd decompressor is ensured above for this single-threaded path");
                 // Decompress directly into the reusable scratch buffer to avoid reallocations.
-                decompressor.decompress_to_buffer(payload.as_ref(), &mut self.decompressed_buf)
+                decompressor.decompress_to_buffer(payload.as_ref(), self.decompressed_buf.as_mut())
             };
             match result {
-                Ok(_) => return Ok(self.decompressed_buf.as_slice()),
+                Ok(written) => {
+                    self.decompressed_buf.truncate(written);
+                    return Ok(self.decompressed_buf.split().freeze());
+                }
                 Err(err) => {
                     let err_msg = err.to_string();
                     if err.kind() == io::ErrorKind::Other
@@ -650,10 +668,12 @@ where
                             log::error!("zstd decompression failed: required buffer overflow");
                             Status::internal("zstd decompression failed: output too large")
                         })?;
+                        self.decompressed_buf.clear();
                         continue;
                     }
                     // Any other error is terminal for this frame.
                     log::error!("zstd decompression failed: {err_msg}");
+                    self.decompressed_buf.clear();
                     return Err(Status::internal(format!(
                         "zstd decompression failed: {err_msg}"
                     )));
@@ -662,32 +682,30 @@ where
         }
     }
 
-    /// Performs a gzip inflate into the scratch buffer.
-    fn decompress_gzip(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+    /// Performs a gzip inflate into the scratch buffer via streaming decoder.
+    fn decompress_gzip(&mut self, payload: Bytes) -> Result<Bytes, Status> {
         self.reserve_decompressed_capacity(payload.len());
         self.decompressed_buf.clear();
         let mut decoder = GzDecoder::new(payload.as_ref());
-        let _ = decoder
-            .read_to_end(&mut self.decompressed_buf)
-            .map_err(|err| {
-                log::error!("gzip decompression failed: {err}");
-                Status::internal(format!("gzip decompression failed: {err}"))
-            })?;
-        Ok(self.decompressed_buf.as_slice())
+        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf);
+        _ = io::copy(&mut decoder, &mut writer).map_err(|err| {
+            log::error!("gzip decompression failed: {err}");
+            Status::internal(format!("gzip decompression failed: {err}"))
+        })?;
+        Ok(self.decompressed_buf.split().freeze())
     }
 
-    /// Performs a deflate inflate into the scratch buffer.
-    fn decompress_deflate(&mut self, payload: Bytes) -> Result<&[u8], Status> {
+    /// Performs a deflate inflate into the scratch buffer via streaming decoder.
+    fn decompress_deflate(&mut self, payload: Bytes) -> Result<Bytes, Status> {
         self.reserve_decompressed_capacity(payload.len());
         self.decompressed_buf.clear();
         let mut decoder = ZlibDecoder::new(payload.as_ref());
-        let _ = decoder
-            .read_to_end(&mut self.decompressed_buf)
-            .map_err(|err| {
-                log::error!("deflate decompression failed: {err}");
-                Status::internal(format!("deflate decompression failed: {err}"))
-            })?;
-        Ok(self.decompressed_buf.as_slice())
+        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf);
+        _ = io::copy(&mut decoder, &mut writer).map_err(|err| {
+            log::error!("deflate decompression failed: {err}");
+            Status::internal(format!("deflate decompression failed: {err}"))
+        })?;
+        Ok(self.decompressed_buf.split().freeze())
     }
 
     /// Lazily creates the zstd decompressor the first time it is needed.
@@ -707,6 +725,27 @@ where
                 )))
             }
         }
+    }
+}
+
+struct BytesMutWriter<'a> {
+    buffer: &'a mut BytesMut,
+}
+
+impl<'a> BytesMutWriter<'a> {
+    fn new(buffer: &'a mut BytesMut) -> Self {
+        Self { buffer }
+    }
+}
+
+impl Write for BytesMutWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -752,14 +791,15 @@ impl<S> GrpcStreamingBody<S>
 where
     S: BodyStream + Unpin + 'static,
 {
-    /// Returns the next raw gRPC frame payload, copying when compression is enabled.
+    /// Returns the next raw gRPC frame payload. Compressed messages reuse the decompression
+    /// scratch buffer and hand back a `Bytes` view without an extra copy.
     pub(crate) async fn next_message_bytes(&mut self) -> Result<Option<Bytes>, Status> {
         let Some((compressed, payload)) = self.next_payload().await? else {
             return Ok(None);
         };
         if compressed {
             let bytes = self.decompress(payload)?;
-            Ok(Some(Bytes::copy_from_slice(bytes)))
+            Ok(Some(bytes))
         } else {
             Ok(Some(payload))
         }
@@ -872,6 +912,7 @@ impl RequestTimeout {
 mod tests {
     use super::*;
     use crate::compression::CompressionMethod;
+    use crate::otel_receiver::encoder::GrpcResponseFrameEncoder;
     use async_trait::async_trait;
     use bytes::{BufMut, Bytes, BytesMut};
     use flate2::Compression;
@@ -889,7 +930,6 @@ mod tests {
     use tokio::time::Duration;
     use tokio_stream::wrappers::UnboundedReceiverStream;
     use zstd::bulk::Compressor as ZstdCompressor;
-    use crate::otel_receiver::encoder::GrpcResponseFrameEncoder;
 
     fn base_headers() -> HeaderMap {
         let mut headers = HeaderMap::new();

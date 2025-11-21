@@ -3,18 +3,36 @@
 
 //! gRPC response frame encoder with optional compression.
 
-use std::cell::RefCell;
-use std::{io, mem};
-use std::io::Write;
-use std::ops::{Deref, DerefMut};
-use bytes::{BufMut, Bytes, BytesMut};
-use zstd::bulk::Compressor as ZstdCompressor;
-use prost::Message;
-use tonic::Status;
-use flate2::write::{GzEncoder, ZlibEncoder};
-use flate2::Compression;
 use crate::compression::CompressionMethod;
 use crate::otel_receiver::grpc::{GrpcEncoding, MIN_COMPRESSED_CAPACITY};
+use crate::otel_receiver::status::Status;
+use bytes::{BufMut, Bytes, BytesMut};
+use flate2::Compression;
+use flate2::write::{GzEncoder, ZlibEncoder};
+use prost::Message;
+use std::cell::RefCell;
+use std::io::{self, Write};
+use std::mem;
+use std::ops::{Deref, DerefMut};
+use zstd::bulk::Compressor as ZstdCompressor;
+
+#[cfg(feature = "unsafe-optimizations")]
+#[inline]
+fn set_vec_len(buf: &mut Vec<u8>, len: usize) {
+    // SAFETY: caller guarantees capacity and that bytes are overwritten before read.
+    #[allow(unsafe_code)]
+    unsafe {
+        buf.set_len(len)
+    }
+}
+
+#[cfg(not(feature = "unsafe-optimizations"))]
+#[inline]
+fn set_vec_len(buf: &mut Vec<u8>, len: usize) {
+    if buf.len() != len {
+        buf.resize(len, 0);
+    }
+}
 
 /// Per-encoding pool of reusable response message encoders.
 pub(crate) struct ResponseEncoderPool {
@@ -28,18 +46,33 @@ pub(crate) struct EncoderGuard<'a> {
 }
 
 impl ResponseEncoderPool {
-    pub(crate) fn new(methods: &[CompressionMethod]) -> Self {
+    pub(crate) fn new(methods: &[CompressionMethod], target_encoders: usize) -> Self {
+        let pool_size = target_encoders.max(1);
         let mut slots = EncoderSlots {
-            identity: vec![GrpcResponseFrameEncoder::new(GrpcEncoding::Identity)],
+            identity: Vec::with_capacity(pool_size),
             zstd: Vec::new(),
             gzip: Vec::new(),
             deflate: Vec::new(),
         };
+
+        // Always seed identity encoder(s) since it is universally supported.
+        for _ in 0..pool_size {
+            slots
+                .identity
+                .push(GrpcResponseFrameEncoder::new(GrpcEncoding::Identity));
+        }
+
         for method in methods {
-            match method {
-                CompressionMethod::Zstd => slots.zstd.push(GrpcResponseFrameEncoder::new(GrpcEncoding::Zstd)),
-                CompressionMethod::Gzip => slots.gzip.push(GrpcResponseFrameEncoder::new(GrpcEncoding::Gzip)),
-                CompressionMethod::Deflate => slots.deflate.push(GrpcResponseFrameEncoder::new(GrpcEncoding::Deflate)),
+            let (vec, encoding) = match method {
+                CompressionMethod::Zstd => (&mut slots.zstd, GrpcEncoding::Zstd),
+                CompressionMethod::Gzip => (&mut slots.gzip, GrpcEncoding::Gzip),
+                CompressionMethod::Deflate => (&mut slots.deflate, GrpcEncoding::Deflate),
+            };
+            if vec.is_empty() {
+                vec.reserve(pool_size);
+            }
+            for _ in vec.len()..pool_size {
+                vec.push(GrpcResponseFrameEncoder::new(encoding));
             }
         }
         Self {
@@ -55,7 +88,7 @@ impl ResponseEncoderPool {
             GrpcEncoding::Gzip => slots.gzip.pop(),
             GrpcEncoding::Deflate => slots.deflate.pop(),
         }
-            .unwrap_or_else(|| GrpcResponseFrameEncoder::new(encoding));
+        .unwrap_or_else(|| GrpcResponseFrameEncoder::new(encoding));
 
         EncoderGuard {
             encoder: Some(encoder),
@@ -117,7 +150,7 @@ impl GrpcResponseFrameEncoder {
             compression,
             frame_buf: BytesMut::with_capacity(512),
             message_buf: BytesMut::with_capacity(512),
-            compressed_buf: Vec::new(),     // By default gRPC responses are uncompressed
+            compressed_buf: Vec::new(), // By default gRPC responses are uncompressed
             zstd: None,
         }
     }
@@ -180,9 +213,11 @@ impl GrpcResponseFrameEncoder {
         let mut required_capacity = payload.len().max(MIN_COMPRESSED_CAPACITY);
         loop {
             // Make sure the scratch buffer is large enough for the next attempt.
-            if self.compressed_buf.len() != required_capacity {
-                self.compressed_buf.resize(required_capacity, 0);
+            if self.compressed_buf.capacity() < required_capacity {
+                self.compressed_buf
+                    .reserve(required_capacity - self.compressed_buf.capacity());
             }
+            set_vec_len(&mut self.compressed_buf, required_capacity);
             let result = {
                 // Safe because `ensure_zstd_encoder` guarantees we have an encoder.
                 let encoder = self.zstd.as_mut().expect("zstd encoder must exist");
@@ -220,9 +255,7 @@ impl GrpcResponseFrameEncoder {
             encoder
                 .write_all(payload)
                 .and_then(|_| encoder.try_finish())
-                .map_err(|err| {
-                    Status::internal(format!("gzip compression failed: {err}"))
-                })?;
+                .map_err(|err| Status::internal(format!("gzip compression failed: {err}")))?;
         }
         Ok(())
     }
@@ -235,9 +268,7 @@ impl GrpcResponseFrameEncoder {
             encoder
                 .write_all(payload)
                 .and_then(|_| encoder.try_finish())
-                .map_err(|err| {
-                    Status::internal(format!("deflate compression failed: {err}"))
-                })?;
+                .map_err(|err| Status::internal(format!("deflate compression failed: {err}")))?;
         }
         Ok(())
     }
@@ -252,11 +283,9 @@ impl GrpcResponseFrameEncoder {
                 self.zstd = Some(encoder);
                 Ok(())
             }
-            Err(err) => {
-                Err(Status::internal(format!(
-                    "failed to initialize zstd compressor: {err}"
-                )))
-            }
+            Err(err) => Err(Status::internal(format!(
+                "failed to initialize zstd compressor: {err}"
+            ))),
         }
     }
 }

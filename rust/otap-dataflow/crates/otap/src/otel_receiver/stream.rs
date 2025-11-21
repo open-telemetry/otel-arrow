@@ -19,6 +19,7 @@ use super::ack::{
     AckPollResult, AckRegistry, AckToken, nack_status, overloaded_status, success_status,
 };
 use super::grpc::RequestStream;
+use crate::otel_receiver::status::Status;
 use crate::pdata::{Context, OtapPdata};
 use futures::Stream;
 use futures::future::{LocalBoxFuture, poll_fn};
@@ -33,7 +34,6 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
-use tonic::Status;
 
 /// Builds the stream of OTAP batch statuses for a single gRPC request.
 pub(crate) fn stream_batch_statuses<S, T, F>(
@@ -441,6 +441,7 @@ mod tests {
     use crate::otap_mock::create_otap_batch;
     use crate::otel_receiver::ack::{AckRegistry, AckToken};
     use crate::otel_receiver::grpc::RequestStream;
+    use crate::otel_receiver::status::Status;
     use crate::pdata::OtapPdata;
     use async_trait::async_trait;
     use futures::StreamExt;
@@ -459,7 +460,6 @@ mod tests {
     use std::collections::{HashMap, HashSet, VecDeque};
     use tokio::task::yield_now;
     use tokio::time::Duration;
-    use tonic::Status;
 
     struct FakeArrowStream {
         batches: VecDeque<BatchArrowRecords>,

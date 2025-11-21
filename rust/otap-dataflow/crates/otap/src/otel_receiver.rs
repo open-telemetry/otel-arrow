@@ -18,26 +18,26 @@
 mod ack;
 pub(crate) mod grpc;
 mod response_templates;
+mod status;
 mod stream;
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
-use crate::otap_grpc::{per_connection_limit, GrpcServerSettings, Settings};
+use crate::otap_grpc::{GrpcServerSettings, Settings, per_connection_limit};
 use crate::otap_receiver::OtapReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
-use response_templates::ResponseTemplates;
 use ack::{
-    route_ack_response, route_nack_response, AckCompletionFuture, AckPollResult, AckRegistries,
-    AckRegistry,
+    AckCompletionFuture, AckPollResult, AckRegistries, AckRegistry, route_ack_response,
+    route_nack_response,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{stream::FuturesUnordered, FutureExt, Stream, StreamExt};
+use encoder::{EncoderGuard, GrpcResponseFrameEncoder, ResponseEncoderPool};
+use futures::{FutureExt, Stream, StreamExt, stream::FuturesUnordered};
 use grpc::{
-    build_accept_encoding_header, grpc_encoding_token, negotiate_response_encoding,
-    parse_grpc_accept_encoding, parse_grpc_encoding, AcceptedGrpcEncodings,
-    GrpcStreamingBody, RequestTimeout,
+    AcceptedGrpcEncodings, GrpcStreamingBody, RequestTimeout, build_accept_encoding_header,
+    negotiate_response_encoding, parse_grpc_accept_encoding, parse_grpc_encoding,
 };
 use h2::server::{self, SendResponse};
 use h2::{Ping, PingPong};
@@ -50,7 +50,7 @@ use otap_df_engine::admitter::{AdmitDecision, Admitter, ConnectionGuard};
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::{format_error_sources, Error, ReceiverErrorKind};
+use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -63,7 +63,9 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceR
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
 use otap_df_telemetry::metrics::MetricSet;
+use response_templates::ResponseTemplates;
 use serde::Deserialize;
+use status::Status;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -75,11 +77,9 @@ use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use stream::stream_batch_statuses;
 use tokio::task::JoinSet;
-use tokio::time::{sleep, Sleep};
+use tokio::time::{Sleep, sleep};
 use tokio_util::sync::CancellationToken;
-use tonic::Status;
 use tonic::transport::server::TcpIncoming;
-use encoder::{GrpcResponseFrameEncoder, ResponseEncoderPool};
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otel:receiver";
 
@@ -196,13 +196,12 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         let request_encodings = AcceptedGrpcEncodings::from_methods(&request_encoding_methods);
         let request_accept_header = build_accept_encoding_header(&request_encoding_methods);
         let response_methods = config.response_compression_methods();
-        let response_templates = response_methods
-            .iter()
-            .copied()
-            .fold(ResponseTemplates::new(request_accept_header.clone()), |acc, method| {
-                acc.with_method(method, &request_accept_header)
-            });
-        let response_encoders = ResponseEncoderPool::new(&response_methods);
+        let response_templates = response_methods.iter().copied().fold(
+            ResponseTemplates::new(request_accept_header.clone()),
+            |acc, method| acc.with_method(method, &request_accept_header),
+        );
+        let encoder_pool_capacity = settings.max_concurrent_requests.max(1);
+        let response_encoders = ResponseEncoderPool::new(&response_methods, encoder_pool_capacity);
 
         let router = Rc::new(GrpcRequestRouter {
             effect_handler: effect_handler.clone(),
@@ -224,14 +223,12 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        // log::info!("OTAP H2 receiver starting on {}", config.listening_addr);
-
         enum StartEvent {
             Ctrl(Result<TerminalState, Error>),
             Server(Result<(), io::Error>),
         }
 
-        let ctrl_fut = Box::pin(async {
+        let control_loop = Box::pin(async {
             loop {
                 match ctrl_msg_recv.recv().await {
                     Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
@@ -267,7 +264,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             }
         });
 
-        let server_fut = Box::pin(run_grpc_server(
+        let grpc_loop = Box::pin(run_grpc_server(
             &mut incoming,
             config,
             router,
@@ -275,11 +272,10 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             admitter.clone(),
         ));
 
-        let server_done;
-        let mut ctrl_fut = ctrl_fut;
-        let mut server_fut = server_fut;
+        let mut ctrl_fut = control_loop;
+        let mut server_fut = grpc_loop;
 
-        let event = futures::future::poll_fn(|cx| {
+        let server_done = futures::future::poll_fn(|cx| {
             if let Poll::Ready(res) = ctrl_fut.as_mut().poll(cx) {
                 return Poll::Ready(StartEvent::Ctrl(res));
             }
@@ -290,7 +286,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         })
         .await;
 
-        match event {
+        let server_done = match server_done {
             StartEvent::Ctrl(ctrl_msg_result) => {
                 cancel_token.cancel();
                 return ctrl_msg_result;
@@ -306,9 +302,9 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
                         source_detail,
                     });
                 }
-                server_done = true;
+                true
             }
-        }
+        };
 
         drop(ctrl_fut);
         drop(server_fut);
@@ -377,11 +373,9 @@ async fn run_grpc_server(
             }
 
             if !tcp_conn_tasks.is_empty() {
-                if let Poll::Ready(Some(res)) = tcp_conn_tasks.poll_join_next(cx) {
-                    if let Err(join_err) = res {
-                        if log::log_enabled!(log::Level::Debug) {
-                            log::debug!("H2 connection task join error: {join_err}");
-                        }
+                if let Poll::Ready(Some(Err(join_err))) = tcp_conn_tasks.poll_join_next(cx) {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("H2 connection task join error: {join_err}");
                     }
                     // Continue polling for other events this tick.
                 }
@@ -435,7 +429,9 @@ async fn run_grpc_server(
                             AdmitDecision::Busy => {
                                 // Soft backpressure: do not spawn; let the kernel backlog absorb.
                                 if log::log_enabled!(log::Level::Trace) {
-                                    log::trace!("Connection admission busy; pausing accepts briefly");
+                                    log::trace!(
+                                        "Connection admission busy; pausing accepts briefly"
+                                    );
                                 }
                                 drop(tcp_conn);
                                 // Yield to avoid a tight loop.
@@ -495,8 +491,7 @@ async fn handle_tcp_conn(
 
     // Drive accepts through a stream so we keep wakers alive across polls.
     let mut http2_conn = Box::pin(http2_conn);
-    let mut accept_stream =
-        futures::stream::poll_fn(move |cx| http2_conn.as_mut().poll_accept(cx));
+    let mut accept_stream = futures::stream::poll_fn(move |cx| http2_conn.as_mut().poll_accept(cx));
     // Drive keepalive ticks through a stream to avoid recreating futures.
     let mut keepalive_stream = KeepaliveStream::new(keepalive);
     let mut in_flight = FuturesUnordered::new();
@@ -524,7 +519,7 @@ async fn handle_tcp_conn(
             if accepting {
                 match Pin::new(&mut accept_stream).poll_next(cx) {
                     Poll::Ready(Some(res)) => {
-                        return Poll::Ready(Some(StreamEvent::Accept(res)));
+                        return Poll::Ready(Some(StreamEvent::Accept(Box::new(res))));
                     }
                     Poll::Ready(None) => {
                         return Poll::Ready(Some(StreamEvent::AcceptClosed));
@@ -540,7 +535,7 @@ async fn handle_tcp_conn(
         match next_event {
             Some(StreamEvent::Accept(result)) => {
                 idle_spins = 0;
-                match result {
+                match *result {
                     Ok((request, respond)) => {
                         // Try to open a *stream* on this connection.
                         match tcp_conn_guard.try_open_stream() {
@@ -552,7 +547,9 @@ async fn handle_tcp_conn(
                                         // `request.uri()` is cheap, but we still avoid doing it if TRACE is off.
                                         log::trace!("New H2 stream: {}", request.uri().path());
                                     }
-                                    if let Err(status) = router.route_grpc_request(request, respond).await {
+                                    if let Err(status) =
+                                        router.route_grpc_request(request, respond).await
+                                    {
                                         if debug_enabled {
                                             log::debug!("Request failed: {}", status);
                                         }
@@ -565,9 +562,7 @@ async fn handle_tcp_conn(
                                 // Per-connection stream capacity is full: reply immediately.
                                 respond_with_error(
                                     respond,
-                                    Status::resource_exhausted(
-                                        "stream capacity exhausted",
-                                    ),
+                                    Status::resource_exhausted("stream capacity exhausted"),
                                     &router.request_accept_header,
                                 );
                             }
@@ -694,7 +689,7 @@ impl fmt::Display for Http2KeepaliveError {
 }
 
 enum StreamEvent {
-    Accept(Result<(Request<h2::RecvStream>, SendResponse<Bytes>), h2::Error>),
+    Accept(Box<Result<(Request<h2::RecvStream>, SendResponse<Bytes>), h2::Error>>),
     AcceptClosed,
     Keepalive(Result<(), Http2KeepaliveError>),
     Task,
@@ -798,7 +793,30 @@ struct GrpcRequestRouter {
     response_templates: ResponseTemplates,
 }
 
+struct RequestContext<'a> {
+    request_encoding: grpc::GrpcEncoding,
+    response: Response<()>,
+    response_encoder: EncoderGuard<'a>,
+}
+
 impl GrpcRequestRouter {
+    fn prepare_request<'a>(&'a self, headers: &HeaderMap) -> Result<RequestContext<'a>, Status> {
+        let request_encoding = parse_grpc_encoding(headers, &self.request_encodings)?;
+        let client_accept = parse_grpc_accept_encoding(headers);
+        let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
+        let response = self
+            .response_templates
+            .get_ok(CompressionMethod::from_grpc_encoding(response_encoding))
+            .ok_or_else(|| Status::internal("failed to build response"))?;
+        let response_encoder = self.response_encoders.checkout(response_encoding);
+
+        Ok(RequestContext {
+            request_encoding,
+            response,
+            response_encoder,
+        })
+    }
+
     async fn route_grpc_request(
         self: Rc<Self>,
         request: Request<h2::RecvStream>,
@@ -885,12 +903,9 @@ impl GrpcRequestRouter {
     where
         T: OtapBatchStore + 'static,
     {
-        let encoding = parse_grpc_encoding(request.headers(), &self.request_encodings)?;
-        let client_accept = parse_grpc_accept_encoding(request.headers());
-        let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
-        let mut response_encoder = self.response_encoders.checkout(response_encoding);
+        let mut ctx = self.prepare_request(request.headers())?;
         let recv_stream = request.into_body();
-        let body = GrpcStreamingBody::new(recv_stream, encoding);
+        let body = GrpcStreamingBody::new(recv_stream, ctx.request_encoding);
 
         let mut status_stream = stream_batch_statuses::<GrpcStreamingBody, T, _>(
             body,
@@ -900,18 +915,8 @@ impl GrpcRequestRouter {
             self.max_in_flight_per_connection,
         );
 
-        let mut response_builder = Response::builder()
-            .status(HttpStatusCode::OK)
-            .header("content-type", "application/grpc")
-            .header("grpc-accept-encoding", self.request_accept_header.clone());
-        if let Some(token) = grpc_encoding_token(response_encoding) {
-            response_builder = response_builder.header("grpc-encoding", token);
-        }
-        let response = response_builder
-            .body(())
-            .map_err(|e| Status::internal(format!("failed to build response: {e}")))?;
         let mut send_stream = respond
-            .send_response(response, false)
+            .send_response(ctx.response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
 
         let mut request_timeout = RequestTimeout::new(self.request_timeout);
@@ -933,7 +938,7 @@ impl GrpcRequestRouter {
 
             match next_item {
                 Some(Ok(status)) => {
-                    let bytes = response_encoder.encode(&status)?;
+                    let bytes = ctx.response_encoder.encode(&status)?;
                     if let Err(e) = send_stream.send_data(bytes, false) {
                         log::debug!("send_data failed: {e}");
                         return Ok(());
@@ -960,11 +965,8 @@ impl GrpcRequestRouter {
         ack_registry: Option<AckRegistry>,
     ) -> Result<(), Status> {
         let (parts, body) = request.into_parts();
-        let encoding = parse_grpc_encoding(&parts.headers, &self.request_encodings)?;
-        let client_accept = parse_grpc_accept_encoding(&parts.headers);
-        let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
-        let mut response_encoder = self.response_encoders.checkout(response_encoding);
-        let mut recv_stream = GrpcStreamingBody::new(body, encoding);
+        let mut ctx = self.prepare_request(&parts.headers)?;
+        let mut recv_stream = GrpcStreamingBody::new(body, ctx.request_encoding);
         let mut request_timeout = RequestTimeout::new(self.request_timeout);
 
         let request_bytes = match request_timeout
@@ -1072,15 +1074,11 @@ impl GrpcRequestRouter {
             }
         }
 
-        let response = self
-            .response_templates
-            .get_ok(CompressionMethod::from_grpc_encoding(response_encoding))
-            .ok_or_else(|| Status::internal("failed to build response"))?;
         let mut send_stream = respond
-            .send_response(response, false)
+            .send_response(ctx.response, false)
             .map_err(|e| Status::internal(format!("failed to send response headers: {e}")))?;
 
-        let payload = encode_otlp_response(signal, &mut response_encoder)?;
+        let payload = encode_otlp_response(signal, &mut ctx.response_encoder)?;
         if let Err(e) = send_stream.send_data(payload, false) {
             log::debug!("send_data failed: {e}");
             return Ok(());
@@ -1171,6 +1169,6 @@ mod test_common;
 #[cfg(test)]
 mod otlp_tests;
 
+mod encoder;
 #[cfg(test)]
 mod otap_tests;
-mod encoder;

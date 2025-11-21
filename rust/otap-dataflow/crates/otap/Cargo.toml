@@ -77,6 +77,8 @@ opentelemetry-proto = { workspace = true, optional = true }
 experimental-exporters = []
 # Experimental exporters
 geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
+# Opt-in unsafe micro-optimizations used in the OTEL receiver hot path.
+unsafe-optimizations = []
 
 [dev-dependencies]
 flume = { workspace = true }

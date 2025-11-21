@@ -33,6 +33,7 @@ impl CompressionMethod {
     }
 
     /// Maps a negotiated GrpcEncoding back to a CompressionMethod, if known.
+    #[must_use]
     pub fn from_grpc_encoding(enc: GrpcEncoding) -> Option<Self> {
         match enc {
             GrpcEncoding::Zstd => Some(CompressionMethod::Zstd),
@@ -138,8 +139,7 @@ mod tests {
 
     #[test]
     fn deserialize_supports_none_keyword() {
-        let conf: ConfWithCompression =
-            serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
+        let conf: ConfWithCompression = serde_json::from_str(r#"{ "methods": "none" }"#).unwrap();
         assert_eq!(conf.methods, Some(vec![]));
     }
 

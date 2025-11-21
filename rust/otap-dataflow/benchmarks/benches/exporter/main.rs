@@ -413,7 +413,7 @@ fn bench_exporter(c: &mut Criterion) {
             |b, otap_signals| {
                 b.to_async(&rt).iter(|| async {
                     // start perf exporter
-                    let config = Config::new(1000, 0.3, true, true, true, true, true);
+                    let config = Config::new(1000, 0.3, true, true, true, true, true, false);
                     let exporter_config = ExporterConfig::new("perf_exporter");
                     let node_config =
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
@@ -473,7 +473,7 @@ fn bench_exporter(c: &mut Criterion) {
             |b, otap_signals| {
                 b.to_async(&rt).iter(|| async {
                     // start perf exporter
-                    let config = Config::new(1000, 0.3, false, false, false, false, false);
+                    let config = Config::new(1000, 0.3, false, false, false, false, false, false);
                     let exporter_config = ExporterConfig::new("perf_exporter");
                     let node_config =
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
