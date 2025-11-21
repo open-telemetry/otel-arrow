@@ -52,12 +52,18 @@ const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 /// to emulate the new exporterhelper batch sender.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Flush current batch when this count is reached (min).
+    /// Flush current batch when this count is reached, as a
+    /// minimum. Measures the number of items (logs: records, traces:
+    /// spans, metrics: data points). When pending data reaches this
+    /// threshold a new batch will form and be sent.
     #[serde(default = "default_send_batch_size")]
     pub send_batch_size: Option<NonZeroUsize>,
-    /// Flush current batch when this count is reached (max).
+
+    /// Optionally limit batch sizes to an upper bound. Measured in
+    /// items, as described for send_batch_size.
     #[serde(default = "default_send_batch_max_size")]
     pub send_batch_max_size: Option<NonZeroUsize>,
+
     /// Flush non-empty batches on this interval, which may be 0 for
     /// immediate flush or None for no timeout.
     #[serde(with = "humantime_serde", default = "default_timeout_duration")]
@@ -69,6 +75,7 @@ fn default_send_batch_size() -> Option<NonZeroUsize> {
 }
 
 fn default_send_batch_max_size() -> Option<NonZeroUsize> {
+    // No upper-bound
     None
 }
 
@@ -89,22 +96,23 @@ impl Default for Config {
 impl Config {
     /// Validates the configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        // At least one size is set.
         if self.send_batch_size.or(self.send_batch_max_size).is_none() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "send_batch_max_size or send_batch_size must be set".into(),
             });
         }
 
-        if let Some(max_size) = self.send_batch_max_size {
-            if let Some(batch_size) = self.send_batch_size {
-                if max_size < batch_size {
-                    return Err(ConfigError::InvalidUserConfig {
-                        error: format!(
-                            "send_batch_max_size ({}) must be >= send_batch_size ({}) or unset",
-                            max_size, batch_size,
-                        ),
-                    });
-                }
+        // If both sizes are set, check max_size is >= the batch_size.
+        if let (Some(max_size), Some(batch_size)) = (self.send_batch_max_size, self.send_batch_size)
+        {
+            if max_size < batch_size {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "send_batch_max_size ({}) must be >= send_batch_size ({}) or unset",
+                        max_size, batch_size,
+                    ),
+                });
             }
         }
 
@@ -123,20 +131,22 @@ struct BatchSignals {
 /// Per-signal buffer state
 #[derive(Default)]
 struct SignalBuffer {
+    /// Pending input for the next call to otap_df_pdata::otap::make_output_batches.
     pending: Vec<OtapArrowRecords>,
 
     /// A count defined by batch_length(), number of spans, log records, or metric data points.
     items: usize,
 }
 
-/// Local (!Send) OTAP batch processor
-pub struct OtapBatchProcessor {
+/// Local (!Send) batch processor
+pub struct BatchProcessor {
     config: Config,
     signals: BatchSignals,
     lower_limit: NonZeroUsize,
-    metrics: MetricSet<OtapBatchProcessorMetrics>,
+    metrics: MetricSet<BatchProcessorMetrics>,
 }
 
+/// There are three reasons to flush.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum FlushReason {
     Size,
@@ -144,11 +154,10 @@ enum FlushReason {
     Shutdown,
 }
 
-/// Minimal, essential metrics for the OTAP batch processor, plus observability for
-/// timer flush decisions.
+/// Minimal, essential metrics for the batch processor.
 #[metric_set(name = "otap.processor.batch")]
 #[derive(Debug, Default, Clone)]
-pub struct OtapBatchProcessorMetrics {
+pub struct BatchProcessorMetrics {
     /// Total items consumed for logs signal
     #[metric(unit = "{item}")]
     consumed_items_logs: Counter<u64>,
@@ -159,15 +168,42 @@ pub struct OtapBatchProcessorMetrics {
     #[metric(unit = "{item}")]
     consumed_items_traces: Counter<u64>,
 
+    /// Total batches consumed for logs signal
+    #[metric(unit = "{item}")]
+    consumed_batches_logs: Counter<u64>,
+    /// Total batches consumed for metrics signal
+    #[metric(unit = "{item}")]
+    consumed_batches_metrics: Counter<u64>,
+    /// Total batches consumed for traces signal
+    #[metric(unit = "{item}")]
+    consumed_batches_traces: Counter<u64>,
+
+    /// Total items produced for logs signal
+    #[metric(unit = "{item}")]
+    produced_items_logs: Counter<u64>,
+    /// Total items produced for metrics signal
+    #[metric(unit = "{item}")]
+    produced_items_metrics: Counter<u64>,
+    /// Total items produced for traces signal
+    #[metric(unit = "{item}")]
+    produced_items_traces: Counter<u64>,
+
+    /// Total batches produced for logs signal
+    #[metric(unit = "{item}")]
+    produced_batches_logs: Counter<u64>,
+    /// Total batches produced for metrics signal
+    #[metric(unit = "{item}")]
+    produced_batches_metrics: Counter<u64>,
+    /// Total batches produced for traces signal
+    #[metric(unit = "{item}")]
+    produced_batches_traces: Counter<u64>,
+
     /// Number of flushes triggered by size threshold (all signals)
     #[metric(unit = "{flush}")]
     flushes_size: Counter<u64>,
     /// Number of flushes triggered by timer (all signals)
     #[metric(unit = "{flush}")]
     flushes_timer: Counter<u64>,
-    /// Number of flushes triggered by shutdown (all signals)
-    #[metric(unit = "{flush}")]
-    flushes_shutdown: Counter<u64>,
 
     /// Number of messages dropped due to conversion failures
     #[metric(unit = "{msg}")]
@@ -178,33 +214,10 @@ pub struct OtapBatchProcessorMetrics {
     /// Number of empty records dropped
     #[metric(unit = "{msg}")]
     dropped_empty_records: Counter<u64>,
-    /// Number of split requests issued to upstream batching
-    #[metric(unit = "{event}")]
-    split_requests: Counter<u64>,
-
-    /// Timer-triggered flushes that were performed for logs
-    #[metric(unit = "{flush}")]
-    timer_flush_performed_logs: Counter<u64>,
-    /// Timer-triggered flushes that were performed for metrics
-    #[metric(unit = "{flush}")]
-    timer_flush_performed_metrics: Counter<u64>,
-    /// Timer-triggered flushes that were performed for traces
-    #[metric(unit = "{flush}")]
-    timer_flush_performed_traces: Counter<u64>,
-
-    /// Timer-triggered flushes that were skipped for logs (below threshold)
-    #[metric(unit = "{event}")]
-    timer_flush_skipped_logs: Counter<u64>,
-    /// Timer-triggered flushes that were skipped for metrics (below threshold)
-    #[metric(unit = "{event}")]
-    timer_flush_skipped_metrics: Counter<u64>,
-    /// Timer-triggered flushes that were skipped for traces (below threshold)
-    #[metric(unit = "{event}")]
-    timer_flush_skipped_traces: Counter<u64>,
 }
 
-fn nzu_to_nz64(nz: NonZeroUsize) -> NonZeroU64 {
-    NonZeroU64::new(nz.get() as u64).expect("nonzero")
+fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
+    nz.map(|nz| NonZeroU64::new(nz.get() as u64).expect("nonzero"))
 }
 
 async fn log_batching_failed(
@@ -219,13 +232,13 @@ async fn log_batching_failed(
         .await;
 }
 
-impl OtapBatchProcessor {
+impl BatchProcessor {
     /// Parse JSON config and build the processor instance with the provided metrics set.
     /// This function does not wrap the processor into a ProcessorWrapper so callers can
     /// preserve the original NodeUserConfig (including out_ports/default_out_port).
     pub fn build_from_json(
         cfg: &Value,
-        metrics: MetricSet<OtapBatchProcessorMetrics>,
+        metrics: MetricSet<BatchProcessorMetrics>,
     ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(cfg.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -241,7 +254,7 @@ impl OtapBatchProcessor {
             .or(config.send_batch_size)
             .expect("valid");
 
-        Ok(OtapBatchProcessor {
+        Ok(BatchProcessor {
             config,
             signals: BatchSignals::default(),
             lower_limit,
@@ -256,7 +269,7 @@ impl OtapBatchProcessor {
         node: NodeId,
         cfg: &Value,
         proc_cfg: &ProcessorConfig,
-        metrics: MetricSet<OtapBatchProcessorMetrics>,
+        metrics: MetricSet<BatchProcessorMetrics>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let proc = Self::build_from_json(cfg, metrics)?;
         let user_config = Arc::new(NodeUserConfig::new_processor_config(
@@ -295,9 +308,18 @@ impl OtapBatchProcessor {
 
         // Increment consumed_items for the appropriate signal
         match signal {
-            SignalType::Logs => self.metrics.consumed_items_logs.add(items as u64),
-            SignalType::Metrics => self.metrics.consumed_items_metrics.add(items as u64),
-            SignalType::Traces => self.metrics.consumed_items_traces.add(items as u64),
+            SignalType::Logs => {
+                self.metrics.consumed_items_logs.add(items as u64);
+                self.metrics.consumed_batches_logs.add(1);
+            }
+            SignalType::Metrics => {
+                self.metrics.consumed_items_metrics.add(items as u64);
+                self.metrics.consumed_batches_metrics.add(1);
+            }
+            SignalType::Traces => {
+                self.metrics.consumed_items_traces.add(items as u64);
+                self.metrics.consumed_batches_traces.add(1);
+            }
         }
 
         let buffer = match signal {
@@ -342,81 +364,70 @@ impl OtapBatchProcessor {
         match reason {
             FlushReason::Size => self.metrics.flushes_size.inc(),
             FlushReason::Timer => self.metrics.flushes_timer.inc(),
-            FlushReason::Shutdown => self.metrics.flushes_shutdown.inc(),
+            FlushReason::Shutdown => {}
         }
 
-        if let Some(upper_limit) = self.config.send_batch_max_size {
-            self.metrics.split_requests.inc();
+        let limit = self.config.send_batch_max_size;
+        let mut output_batches = match make_output_batches(signal, nzu_to_nz64(limit), input) {
+            Ok(v) => v,
+            Err(e) => {
+                self.metrics.batching_errors.inc();
+                log_batching_failed(effect, signal, &e).await;
+                return Err(EngineError::InternalError {
+                    message: e.to_string(),
+                });
+            }
+        };
 
-            let mut output_batches =
-                match make_output_batches(signal, Some(nzu_to_nz64(upper_limit)), input) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.metrics.batching_errors.inc();
-                        log_batching_failed(effect, signal, &e).await;
-                        return Err(EngineError::InternalError {
-                            message: e.to_string(),
-                        });
-                    }
-                };
+        // If size-triggered and we requested splitting (max is Some), re-buffer the last partial
+        // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
+        if limit.is_some() && reason == FlushReason::Size && !output_batches.is_empty() {
+            if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
+                let threshold = self.lower_limit.get();
+                if last_items < threshold {
+                    let remainder = output_batches.pop().expect("last exists");
+                    buffer.items = last_items;
+                    buffer.pending.push(remainder);
+                }
+            }
+        }
 
-            // If size-triggered and we requested splitting (max is Some), re-buffer the last partial
-            // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-            if reason == FlushReason::Size && !output_batches.is_empty() {
-                if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
-                    let threshold = self.lower_limit.get();
-                    if last_items < threshold {
-                        let remainder = output_batches.pop().expect("last exists");
-                        buffer.items = last_items;
-                        buffer.pending.push(remainder);
-                    }
+        for records in output_batches.into_iter() {
+            let items = records.batch_length();
+            let pdata = OtapPdata::new_todo_context(records.into());
+
+            // Increment produced_items for the appropriate signal
+            match signal {
+                SignalType::Logs => {
+                    self.metrics.produced_items_logs.add(items as u64);
+                    self.metrics.produced_batches_logs.add(1);
+                }
+                SignalType::Metrics => {
+                    self.metrics.produced_items_metrics.add(items as u64);
+                    self.metrics.produced_batches_metrics.add(1);
+                }
+                SignalType::Traces => {
+                    self.metrics.produced_items_traces.add(items as u64);
+                    self.metrics.produced_batches_traces.add(1);
                 }
             }
 
-            for records in output_batches.into_iter() {
-                let pdata = OtapPdata::new_todo_context(records.into());
-                effect.send_message(pdata).await?;
-            }
-        } else {
-            // No split requested (safe path)
-            if input.len() > 1 {
-                // Coalesce upstream only when there are multiple records to merge
-                let output_batches = match make_output_batches(signal, None, input) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.metrics.batching_errors.inc();
-                        log_batching_failed(effect, signal, &e).await;
-                        Vec::new()
-                    }
-                };
-                for records in output_batches.into_iter() {
-                    let pdata = OtapPdata::new_todo_context(records.into());
-                    effect.send_message(pdata).await?;
-                }
-            } else {
-                // Single record: forward as-is (avoids upstream edge-cases)
-                for records in input.into_iter() {
-                    let pdata = OtapPdata::new_todo_context(records.into());
-                    effect.send_message(pdata).await?;
-                }
-            }
+            effect.send_message(pdata).await?;
         }
 
         Ok(())
     }
 }
 
-/// Factory function to create an OTAP batch processor
+/// Factory function to create a batch processor.
 pub fn create_otap_batch_processor(
     pipeline_ctx: otap_df_engine::context::PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let metrics = pipeline_ctx.register_metrics::<OtapBatchProcessorMetrics>();
-    let proc = OtapBatchProcessor::build_from_json(&node_config.config, metrics)?;
-    // IMPORTANT: preserve the original node_config so engine wiring (out_ports/default_out_port)
-    // remains intact.
+    let metrics = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
+    let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -426,7 +437,7 @@ pub fn create_otap_batch_processor(
 }
 
 #[async_trait(?Send)]
-impl local::Processor<OtapPdata> for OtapBatchProcessor {
+impl local::Processor<OtapPdata> for BatchProcessor {
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -439,41 +450,32 @@ impl local::Processor<OtapPdata> for OtapBatchProcessor {
                         // Flush on timer only when thresholds were crossed and buffers are non-empty
                         if !self.signals.logs.pending.is_empty() {
                             if self.signals.logs.items >= self.lower_limit.get() {
-                                self.metrics.timer_flush_performed_logs.inc();
                                 self.flush_signal_impl(
                                     SignalType::Logs,
                                     effect,
                                     FlushReason::Timer,
                                 )
                                 .await?;
-                            } else {
-                                self.metrics.timer_flush_skipped_logs.inc();
                             }
                         }
                         if !self.signals.metrics.pending.is_empty() {
                             if self.signals.metrics.items >= self.lower_limit.get() {
-                                self.metrics.timer_flush_performed_metrics.inc();
                                 self.flush_signal_impl(
                                     SignalType::Metrics,
                                     effect,
                                     FlushReason::Timer,
                                 )
                                 .await?;
-                            } else {
-                                self.metrics.timer_flush_skipped_metrics.inc();
                             }
                         }
                         if !self.signals.traces.pending.is_empty() {
                             if self.signals.traces.items >= self.lower_limit.get() {
-                                self.metrics.timer_flush_performed_traces.inc();
                                 self.flush_signal_impl(
                                     SignalType::Traces,
                                     effect,
                                     FlushReason::Timer,
                                 )
                                 .await?;
-                            } else {
-                                self.metrics.timer_flush_skipped_traces.inc();
                             }
                         }
                         Ok(())
@@ -622,20 +624,20 @@ mod test_helpers {
         proc_cfg: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let handle = otap_df_telemetry::registry::MetricsRegistryHandle::default();
-        let metrics: MetricSet<OtapBatchProcessorMetrics> =
+        let metrics: MetricSet<BatchProcessorMetrics> =
             handle.register(otap_df_telemetry::testing::EmptyAttributes());
-        OtapBatchProcessor::from_config(node, cfg, proc_cfg, metrics)
+        BatchProcessor::from_config(node, cfg, proc_cfg, metrics)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::OtapBatchProcessorMetrics;
+    use super::BatchProcessorMetrics;
     use super::test_helpers::{
         from_config, logs_record_with_n_entries, one_metric_record, one_trace_record,
     };
     use super::*;
-    use super::{Config, OTAP_BATCH_PROCESSOR_URN, OtapBatchProcessor};
+    use super::{BatchProcessor, Config, OTAP_BATCH_PROCESSOR_URN};
     use crate::pdata::OtapPdata;
     use otap_df_config::PipelineGroupId;
     use otap_df_config::PipelineId;
@@ -735,7 +737,7 @@ mod tests {
             0,
             0,
         );
-        let metrics_set = pipeline_ctx.register_metrics::<OtapBatchProcessorMetrics>();
+        let metrics_set = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
 
         // Build processor with metrics injected (no behavior change)
         let cfg = json!({
@@ -745,7 +747,7 @@ mod tests {
         });
         let processor_config = ProcessorConfig::new("otap_batch_telemetry_test");
         let node = test_node(processor_config.name.clone());
-        let proc = OtapBatchProcessor::from_config(node, &cfg, &processor_config, metrics_set)
+        let proc = BatchProcessor::from_config(node, &cfg, &processor_config, metrics_set)
             .expect("proc from config with metrics");
 
         // Start test runtime and concurrently run metrics collection loop

@@ -16,6 +16,11 @@ pub fn make_output_batches(
     max_output_batch: Option<NonZeroU64>,
     records: Vec<OtapArrowRecords>,
 ) -> Result<Vec<OtapArrowRecords>> {
+    // If <= 1 batch input, do not re-batch.
+    if records.len() <= 1 {
+        return Ok(records);
+    }
+
     // Separate by signal type.
     let mut records = match signal {
         SignalType::Logs => RecordsGroup::separate_logs(records),
