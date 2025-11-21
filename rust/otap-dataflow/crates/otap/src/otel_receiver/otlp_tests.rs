@@ -152,7 +152,7 @@ fn test_otlp_config_parsing() {
     );
     assert_eq!(
         receiver.config.grpc.initial_connection_window_size,
-        Some(32 * 1024 * 1024)
+        Some(24 * 1024 * 1024)
     );
     assert_eq!(receiver.config.grpc.max_frame_size, Some(16 * 1024));
     assert_eq!(

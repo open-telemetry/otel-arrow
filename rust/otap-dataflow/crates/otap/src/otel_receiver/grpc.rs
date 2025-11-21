@@ -610,12 +610,45 @@ where
     }
 
     /// Makes sure the scratch buffer is large enough for the decoded payload.
-    /// Complexity: amortized O(1) thanks to the doubling strategy.
+    /// Includes heuristics to shrink the buffer if it remains excessively large
+    /// for small payloads, preventing memory leaks in long-lived connections.
     fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
-        let required_capacity = payload_len.saturating_mul(2).max(MIN_DECOMPRESSED_CAPACITY);
-        if self.decompressed_buf.capacity() < required_capacity {
-            self.decompressed_buf
-                .reserve(required_capacity - self.decompressed_buf.capacity());
+        let current_capacity = self.decompressed_buf.capacity();
+
+        // 1. Growth Path (Hot Path)
+        // If we need more space, grow exponentially to amortize allocation costs.
+        if current_capacity < payload_len {
+            let required = payload_len
+                .saturating_sub(current_capacity)
+                .max(current_capacity); // Double the capacity (exponential growth)
+
+            self.decompressed_buf.reserve(required);
+            return;
+        }
+
+        // 2. Shrink Path (Cold Path - Optimization)
+        // Only trigger if:
+        // - The buffer is empty.
+        // - We are holding a large amount of memory (e.g. > 4MB).
+        // - The current requirement is tiny compared to capacity (e.g. < 1/8th).
+        const EXCESSIVE_MEMORY_THRESHOLD: usize = 4 * 1024 * 1024; // 4MB
+
+        if self.decompressed_buf.is_empty()
+            && current_capacity > EXCESSIVE_MEMORY_THRESHOLD
+            && payload_len < (current_capacity / 8)
+        {
+            // Shrink to a "Safe Baseline" (e.g. 1MB). This prevents thrashing
+            // if the traffic fluctuates between 10KB and 800KB.
+            const BASELINE_CAPACITY: usize = 1024 * 1024; // 1MB
+
+            // We allocate a new buffer. The old one is dropped, releasing memory to the OS/Allocator.
+            // We take the max of payload_len and Baseline to ensure we cover the current packet.
+            let new_capacity = std::cmp::max(payload_len, BASELINE_CAPACITY);
+
+            // Only proceed if we are actually saving significant memory
+            if new_capacity < (current_capacity / 2) {
+                self.decompressed_buf = BytesMut::with_capacity(new_capacity);
+            }
         }
     }
 

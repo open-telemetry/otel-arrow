@@ -102,7 +102,7 @@ pub struct GrpcServerSettings {
     pub initial_stream_window_size: Option<u32>,
 
     /// Initial HTTP/2 connection window size, in bytes.
-    /// Accepts plain integers or suffixed strings such as `32MiB`. Defaults to 32MiB, giving room
+    /// Accepts plain integers or suffixed strings such as `32MiB`. Defaults to 24MiB, giving room
     /// for several simultaneous large streams; adjust using the same trade-offs as the stream
     /// window but applied per connection.
     #[serde(
@@ -277,7 +277,7 @@ fn default_initial_stream_window_size() -> Option<u32> {
 }
 
 fn default_initial_connection_window_size() -> Option<u32> {
-    Some(32 * 1024 * 1024)
+    Some(24 * 1024 * 1024)
 }
 
 fn default_max_frame_size() -> Option<u32> {

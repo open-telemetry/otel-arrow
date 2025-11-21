@@ -50,41 +50,62 @@ pub(crate) struct AckRegistry {
 }
 
 /// We pre-allocate a boxed slice of slots so indices remain stable and
-/// `AckToken` can cheaply refer to one.  `free_stack` is a simple LIFO of
-/// currently unused slot indices: allocate = `pop()`, complete/cancel =
-/// `push()`.  Because the registry is tiny and single-threaded, this gives us
-/// O(1) operations with minimal bookkeeping.
+/// `AckToken` can cheaply refer to one.
+/// `head_free` points to the index of the first available slot in the intrusive list.
 struct AckRegistryInner {
     slots: Box<[AckSlot]>,
-    free_stack: Vec<usize>,
+    head_free: Option<usize>,
 }
 
 impl AckRegistry {
     pub(crate) fn new(max_size: usize) -> Self {
         let mut slots = Vec::with_capacity(max_size);
-        for _ in 0..max_size {
-            slots.push(AckSlot::new());
+
+        // Initialize the intrusive list.
+        // Each slot points to the next one: 0 -> 1 -> 2 ...
+        // The last slot points to None.
+        for i in 0..max_size {
+            let next_free = if i < max_size - 1 { Some(i + 1) } else { None };
+            slots.push(AckSlot {
+                generation: 0,
+                state: SlotState::Free { next_free },
+            });
         }
-        let mut free_stack = Vec::with_capacity(max_size);
-        for idx in (0..max_size).rev() {
-            free_stack.push(idx);
-        }
+
+        let head_free = if max_size > 0 { Some(0) } else { None };
+
         Self {
             inner: Rc::new(RefCell::new(AckRegistryInner {
                 slots: slots.into_boxed_slice(),
-                free_stack,
+                head_free,
             })),
         }
     }
 
     /// Attempts to allocate a free slot, returning its token on success.
+    /// O(1) operation: pops from the head of the intrusive linked list.
     pub(crate) fn allocate(&self) -> Option<AckToken> {
         let mut inner = self.inner.borrow_mut();
-        let slot_index = inner.free_stack.pop()?;
+
+        // Check if we have any free slots available
+        let slot_index = inner.head_free?;
+
+        // 1. Extract the next pointer from the current free slot.
+        // We peek at the slot state. We CANNOT hold 'slot' mutable ref here while writing to head_free later.
+        let next_free = match &inner.slots[slot_index].state {
+            SlotState::Free { next_free } => *next_free,
+            _ => unreachable!("Corrupted AckRegistry: head_free pointed to a non-free slot"),
+        };
+
+        // 2. Update the head pointer.
+        inner.head_free = next_free;
+
+        // 3. Initialize the slot for use.
+        // Now we can borrow 'slots' mutably again.
         let slot = &mut inner.slots[slot_index];
-        debug_assert!(matches!(slot.state, SlotState::Free));
         slot.generation = slot.generation.wrapping_add(1);
         slot.state = SlotState::Waiting(WaitingSlot::new());
+
         Some(AckToken {
             slot_index,
             generation: slot.generation,
@@ -94,85 +115,115 @@ impl AckRegistry {
     /// Marks the slot as completed with the provided outcome, waking any waiter.
     pub(crate) fn complete(&self, token: AckToken, result: Result<(), String>) -> RouteResponse {
         let mut inner = self.inner.borrow_mut();
+
         let Some(slot) = inner.slots.get_mut(token.slot_index) else {
             return RouteResponse::Invalid;
         };
+
         if slot.generation != token.generation {
             return RouteResponse::Expired;
         }
+
         match &mut slot.state {
             SlotState::Waiting(waiting) => {
                 waiting.outcome = match result {
                     Ok(()) => AckOutcome::Ack,
                     Err(reason) => AckOutcome::Nack(reason),
                 };
+                // Wake the future waiting on this slot
                 if let Some(waker) = waiting.waker.take() {
                     waker.wake();
                 }
                 RouteResponse::Sent
             }
-            SlotState::Free => RouteResponse::Expired,
+            // If it's free, the token is definitely expired/invalid
+            SlotState::Free { .. } => RouteResponse::Expired,
         }
     }
 
     /// Polls the slot, registering the waker if it is still pending.
-    ///
-    /// This simply inspects the slot outcome and, when still pending, stores the
-    /// current task’s waker so the eventual `complete` call can wake the same
-    /// future. The returned `AckPollResult` drives the higher-level
-    /// `AckWaitFuture` to emit the correct `BatchStatus`.
+    /// If the slot is finished (Ack/Nack), it returns Ready and immediately frees the slot
+    /// back to the intrusive list.
     pub(crate) fn poll_slot(
         &self,
         token: AckToken,
         cx: &mut TaskContext<'_>,
     ) -> Poll<AckPollResult> {
         let mut inner = self.inner.borrow_mut();
-        let Some(slot) = inner.slots.get_mut(token.slot_index) else {
-            return Poll::Ready(AckPollResult::Cancelled);
-        };
-        if slot.generation != token.generation {
-            return Poll::Ready(AckPollResult::Cancelled);
-        }
-        match &mut slot.state {
-            SlotState::Waiting(waiting) => match &mut waiting.outcome {
-                AckOutcome::Pending => {
-                    let replace = match &waiting.waker {
-                        Some(existing) => !existing.will_wake(cx.waker()),
-                        None => true,
-                    };
-                    if replace {
-                        waiting.waker = Some(cx.waker().clone());
+
+        // 1. Check the state of the slot.
+        // We scope this block so the mutable borrow of `inner.slots` ends before we call `free_slot_inner`.
+        let result_to_process = {
+            let slot = match inner.slots.get_mut(token.slot_index) {
+                Some(s) => s,
+                None => return Poll::Ready(AckPollResult::Cancelled),
+            };
+
+            if slot.generation != token.generation {
+                return Poll::Ready(AckPollResult::Cancelled);
+            }
+
+            match &mut slot.state {
+                SlotState::Free { .. } => return Poll::Ready(AckPollResult::Cancelled),
+                SlotState::Waiting(waiting) => match &mut waiting.outcome {
+                    AckOutcome::Pending => {
+                        // Still pending: update waker and return.
+                        let replace = match &waiting.waker {
+                            Some(existing) => !existing.will_wake(cx.waker()),
+                            None => true,
+                        };
+                        if replace {
+                            waiting.waker = Some(cx.waker().clone());
+                        }
+                        return Poll::Pending;
                     }
-                    Poll::Pending
-                }
-                AckOutcome::Ack => {
-                    slot.state = SlotState::Free;
-                    inner.free_stack.push(token.slot_index);
-                    Poll::Ready(AckPollResult::Ack)
-                }
-                AckOutcome::Nack(reason) => {
-                    let reason = mem::take(reason);
-                    slot.state = SlotState::Free;
-                    inner.free_stack.push(token.slot_index);
-                    Poll::Ready(AckPollResult::Nack(reason))
-                }
-            },
-            SlotState::Free => Poll::Ready(AckPollResult::Cancelled),
+                    // Completed: Return the result so we can free outside this block.
+                    AckOutcome::Ack => Ok(()),
+                    AckOutcome::Nack(reason) => Err(mem::take(reason)),
+                },
+            }
+        };
+
+        // 2. If we are here, the slot is done (Ack or Nack). We must free it.
+        // The previous borrow of `inner.slots` (via `slot`) is dropped.
+        Self::free_slot_inner(&mut inner, token.slot_index);
+
+        match result_to_process {
+            Ok(()) => Poll::Ready(AckPollResult::Ack),
+            Err(reason) => Poll::Ready(AckPollResult::Nack(reason)),
         }
     }
 
     /// Cancels the slot if it is still waiting (e.g. drop without completion).
     pub(crate) fn cancel(&self, token: AckToken) {
         let mut inner = self.inner.borrow_mut();
-        if let Some(slot) = inner.slots.get_mut(token.slot_index) {
+
+        // 1. Check if we need to free.
+        // We use a read-only check first to avoid conflicts, though we hold `mut inner` anyway.
+        // The key is that we don't hold a reference to `slots` when calling `free_slot_inner`.
+        let should_free = if let Some(slot) = inner.slots.get(token.slot_index) {
             if slot.generation != token.generation {
-                return;
+                false
+            } else {
+                matches!(slot.state, SlotState::Waiting(_))
             }
-            if matches!(slot.state, SlotState::Waiting(_)) {
-                slot.state = SlotState::Free;
-                inner.free_stack.push(token.slot_index);
-            }
+        } else {
+            false
+        };
+
+        if should_free {
+            Self::free_slot_inner(&mut inner, token.slot_index);
         }
+    }
+
+    /// Helper: transitions a slot at `index` to Free and pushes it onto the head
+    /// of the free list (LIFO).
+    fn free_slot_inner(inner: &mut AckRegistryInner, index: usize) {
+        let old_head = inner.head_free;
+        inner.slots[index].state = SlotState::Free {
+            next_free: old_head,
+        };
+        inner.head_free = Some(index);
     }
 }
 
@@ -222,18 +273,9 @@ struct AckSlot {
     state: SlotState,
 }
 
-impl AckSlot {
-    fn new() -> Self {
-        Self {
-            generation: 0,
-            state: SlotState::Free,
-        }
-    }
-}
-
-/// Tracks whether a slot is unused or actively waiting.
+/// Tracks whether a slot is unused (pointing to next free) or actively waiting.
 enum SlotState {
-    Free,
+    Free { next_free: Option<usize> },
     Waiting(WaitingSlot),
 }
 
