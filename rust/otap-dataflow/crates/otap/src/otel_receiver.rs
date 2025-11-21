@@ -727,10 +727,9 @@ impl Http2Keepalive {
     /// If the PING does not complete within the configured timeout this returns an error
     /// and the connection is closed.
     async fn poll_tick(&mut self) -> Result<(), Http2KeepaliveError> {
-        let mut sleeper = self
-            .sleep
-            .take()
-            .expect("keepalive polled without being armed");
+        let Some(mut sleeper) = self.sleep.take() else {
+            return Err(Http2KeepaliveError::Timeout);
+        };
         sleeper.as_mut().await;
         self.sleep = Some(Box::pin(sleep(self.interval)));
 

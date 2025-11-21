@@ -126,31 +126,33 @@ impl AckRegistry {
 
     /// Marks the slot as completed with the provided outcome, waking any waiter.
     pub(crate) fn complete(&self, token: AckToken, result: Result<(), String>) -> RouteResponse {
-        let mut inner = self.inner.borrow_mut();
+        let waker_opt = {
+            let mut inner = self.inner.borrow_mut();
+            let Some(slot) = inner.slots.get_mut(token.slot_index) else {
+                return RouteResponse::Invalid;
+            };
 
-        let Some(slot) = inner.slots.get_mut(token.slot_index) else {
-            return RouteResponse::Invalid;
+            if slot.generation != token.generation {
+                return RouteResponse::Expired;
+            }
+
+            match &mut slot.state {
+                SlotState::Waiting(waiting) => {
+                    waiting.outcome = match result {
+                        Ok(()) => AckOutcome::Ack,
+                        Err(reason) => AckOutcome::Nack(reason),
+                    };
+                    waiting.waker.take()
+                }
+                SlotState::Free { .. } => return RouteResponse::Expired,
+            }
         };
 
-        if slot.generation != token.generation {
-            return RouteResponse::Expired;
+        if let Some(waker) = waker_opt {
+            waker.wake();
         }
 
-        match &mut slot.state {
-            SlotState::Waiting(waiting) => {
-                waiting.outcome = match result {
-                    Ok(()) => AckOutcome::Ack,
-                    Err(reason) => AckOutcome::Nack(reason),
-                };
-                // Wake the future waiting on this slot
-                if let Some(waker) = waiting.waker.take() {
-                    waker.wake();
-                }
-                RouteResponse::Sent
-            }
-            // If it's free, the token is definitely expired/invalid
-            SlotState::Free { .. } => RouteResponse::Expired,
-        }
+        RouteResponse::Sent
     }
 
     /// Polls the slot, registering the waker if it is still pending.

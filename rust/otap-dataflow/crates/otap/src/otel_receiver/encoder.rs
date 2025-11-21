@@ -51,7 +51,8 @@ pub(crate) struct EncoderGuard<'a> {
 
 impl ResponseEncoderPool {
     pub(crate) fn new(methods: &[CompressionMethod], target_encoders: usize) -> Self {
-        let pool_size = target_encoders.max(1);
+        const MAX_ENCODERS: usize = 1024;
+        let pool_size = target_encoders.clamp(1, MAX_ENCODERS);
         let mut slots = EncoderSlots {
             identity: Vec::with_capacity(pool_size),
             zstd: Vec::new(),
