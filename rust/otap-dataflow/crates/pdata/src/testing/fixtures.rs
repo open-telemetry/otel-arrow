@@ -12,12 +12,12 @@ use crate::proto::opentelemetry::logs::v1::{
     LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
 };
 use crate::proto::opentelemetry::metrics::v1::{
-    AggregationTemporality, Metric, MetricsData, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-    Sum,
+    AggregationTemporality, Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+    ScopeMetrics, Sum,
 };
 use crate::proto::opentelemetry::resource::v1::Resource;
 use crate::proto::opentelemetry::trace::v1::{
-    ResourceSpans, ScopeSpans, Span, Status, TracesData, span::SpanKind,
+    ResourceSpans, ScopeSpans, Span, Status, TracesData, span::SpanKind, status::StatusCode,
 };
 
 //
@@ -765,4 +765,206 @@ pub fn metrics_multiple_sums_no_resource() -> MetricsData {
             ],
         )],
     )])
+}
+
+/// Generator for test data.
+///
+/// TODO: This is a placeholder, only varies timestamp_offset; add
+/// more variation, use realistic schemas, deterministic randomness.
+///
+/// Note: see go/pkg/datagen for a Go package with similar goals.
+///
+/// Note: otap/batching_tests.rs uses these functions to exercise
+/// itself by appending N copies of the messages returned below. Its
+/// test coverage will improve with more variation here.
+pub struct DataGenerator {
+    limit: usize,
+    count: usize,
+    time_value: u64,
+}
+
+impl DataGenerator {
+    /// Generate N 'limit' number of items
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            count: 0,
+
+            // One million nanoseconds past the UTC epoch.
+            time_value: 1_000_000_000_000_000,
+        }
+    }
+}
+
+impl DataGenerator {
+    /// Return a unique test timestamp.
+    fn timestamp(&mut self) -> u64 {
+        let val = self.time_value;
+        // add one second
+        self.time_value += 1_000_000_000;
+        val
+    }
+
+    /// Consume N points.
+    fn consume(&mut self, n: usize) -> usize {
+        let take = n.min(self.limit - self.count);
+        self.count += take;
+        take
+    }
+
+    /// Generate test OTLP logs data
+    #[must_use]
+    pub fn generate_logs(&mut self) -> LogsData {
+        LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("scope".to_string())
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(self.timestamp())
+                                .observed_time_unix_nano(self.timestamp())
+                                .severity_number(SeverityNumber::Info as i32)
+                                .finish(),
+                        ],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("scope2".to_string())
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(self.timestamp())
+                                .observed_time_unix_nano(self.timestamp())
+                                .severity_number(SeverityNumber::Error as i32)
+                                .finish(),
+                        ],
+                    ),
+                ],
+            ),
+            ResourceLogs::new(
+                Resource::build().finish(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope".to_string())
+                        .finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(self.timestamp())
+                            .observed_time_unix_nano(self.timestamp())
+                            .severity_number(SeverityNumber::Info as i32)
+                            .finish(),
+                    ],
+                )],
+            ),
+        ])
+    }
+
+    /// Generate test OTLP traces data
+    #[must_use]
+    pub fn generate_traces(&mut self) -> TracesData {
+        TracesData::new(vec![ResourceSpans::new(
+            Resource::build().finish(),
+            vec![ScopeSpans::new(
+                InstrumentationScope::build().finish(),
+                vec![
+                    Span::build()
+                        .trace_id(vec![0u8; 16])
+                        .span_id(vec![1u8; 8])
+                        .name("span0".to_string())
+                        .start_time_unix_nano(self.timestamp())
+                        .end_time_unix_nano(self.timestamp())
+                        .status(Status::new(StatusCode::Ok, "ok"))
+                        .finish(),
+                    Span::build()
+                        .trace_id(vec![0u8; 16])
+                        .span_id(vec![2u8; 8])
+                        .name("span1".to_string())
+                        .start_time_unix_nano(self.timestamp())
+                        .end_time_unix_nano(self.timestamp())
+                        .status(Status::new(StatusCode::Ok, "ok"))
+                        .finish(),
+                    Span::build()
+                        .trace_id(vec![0u8; 16])
+                        .span_id(vec![3u8; 8])
+                        .name("span2".to_string())
+                        .start_time_unix_nano(self.timestamp())
+                        .end_time_unix_nano(self.timestamp())
+                        .status(Status::new(StatusCode::Ok, "ok"))
+                        .finish(),
+                ],
+            )],
+        )])
+    }
+
+    /// Generate test OTLP metrics data at a timestamp offset
+    #[must_use]
+    pub fn generate_metrics(&mut self) -> MetricsData {
+        // TODO: @@@
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().finish(),
+                vec![
+                    Metric::build()
+                        .name("gauge1")
+                        .description("First gauge")
+                        .unit("1")
+                        .data_gauge(Gauge::new(self.build_gauge_data(3)))
+                        .finish(),
+                    Metric::build()
+                        .name("gauge2")
+                        .description("Second gauge")
+                        .unit("By")
+                        .data_gauge(Gauge::new(self.build_gauge_data(2)))
+                        .finish(),
+                    Metric::build()
+                        .name("sum1")
+                        .description("A sum")
+                        .unit("1")
+                        .data_sum(Sum::new(
+                            AggregationTemporality::Delta,
+                            true,
+                            self.build_sum_data(1),
+                        ))
+                        .finish(),
+                ],
+            )],
+        )])
+    }
+
+    fn build_gauge_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
+        (0..self.consume(n))
+            .map(|i| {
+                NumberDataPoint::build()
+                    .value_double(i as f64 * 10.0)
+                    .time_unix_nano(self.timestamp())
+                    // TODO: this will break a test
+                    // .attributes(vec![KeyValue::new("G", AnyValue::new_int(i as i64))])
+                    .finish()
+            })
+            .collect()
+    }
+
+    fn build_sum_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
+        (0..self.consume(n))
+            .map(|i| {
+                NumberDataPoint::build()
+                    .value_double(i as f64 * 10.0)
+                    .time_unix_nano(self.timestamp())
+                    // TODO: this will break a test
+                    // .value_int(i as i64 * 100)
+                    // .start_time_unix_nano(self.timestamp())
+                    // .attributes(vec![KeyValue::new(
+                    //     "S",
+                    //     AnyValue::new_string(format!("{i}")),
+                    // )])
+                    .finish()
+            })
+            .collect()
+    }
 }
