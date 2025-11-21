@@ -412,6 +412,7 @@ Quiver writes separate Arrow streams for every `(slot, schema)` combination
 and uses the batch manifest to link each bundle back to the correct stream
 chunks when reading segment files.
 
+<!-- markdownlint-disable MD013 -->
 ```mermaid
 graph TD
   subgraph Streams[Segment Streams]
@@ -437,27 +438,30 @@ graph TD
   M2 --> SA2
   M2 --> SR1
 ```
+<!-- markdownlint-enable MD013 -->
 
-Each stream holds the serialized Arrow `RecordBatch` messages for a particular
-`(slot, schema)` fingerprint. The manifest references those batches by stream
-id and chunk index so the reader can reassemble the original `RecordBundle`
-values.
+Each stream holds the serialized Arrow `RecordBatch` messages for a
+particular `(slot, schema)` fingerprint. The manifest references those
+batches by stream id and chunk index so the reader can reassemble the
+original `RecordBundle` values.
 
 ### Multi-Schema Segment Format
 
-Quiver segments are containers around Arrow IPC streams plus a manifest that
-describes how those streams reassemble back into the `RecordBundle`
+Quiver segments are containers around Arrow IPC streams plus a manifest
+that describes how those streams reassemble back into the `RecordBundle`
 abstraction used by the embedding pipeline.
 
 #### Envelope Overview
 
 - The segment header contains two primary sections:
-  - `stream_directory`: one entry per `(payload_type, schema_signature)` pairing
-    with stream id, payload kind (Logs, LogAttrs, ScopeAttrs, ResourceAttrs,
-    etc.), schema fingerprint, byte offset, and byte length.
-  - `batch_manifest`: ordered entries for every `OtapArrowRecords` that arrived
-    while the segment was open. Each manifest row lists, per payload slot,
-    `stream_id` + `chunk_index` pairs pointing back into the directory.
+  - `stream_directory`: one entry per `(payload_type, schema_signature)`
+    pairing with stream id, payload kind (Logs, LogAttrs, ScopeAttrs,
+    ResourceAttrs, etc.), schema fingerprint, byte offset, and byte
+    length.
+  - `batch_manifest`: ordered entries for every `OtapArrowRecords` that
+    arrived while the segment was open. Each manifest row lists, per
+    payload slot, `stream_id` + `chunk_index` pairs pointing back into the
+    directory.
 - Writers reuse a stream id whenever a payload arrives with the same schema
   fingerprint; schema evolution during the segment allocates a new stream id.
 - No control records are serialized; the manifest fully describes the replay
@@ -622,8 +626,10 @@ before deletion.
 Metrics:
 
 ```text
-quiver.subscriber.dropped_bundles_total    # increments per subscriber per dropped bundle
-quiver.segment.dropped_total               # unique segments that lost bundles pre-ack
+quiver.subscriber.dropped_bundles_total    # increments per subscriber per
+                                           # dropped bundle
+quiver.segment.dropped_total               # unique segments that lost
+                                           # bundles pre-ack
 ```
 
 Operators that require strict delivery semantics (never convert missing data to
@@ -677,7 +683,8 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
-      response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
+      # Required: channel buffer capacity (number of messages)
+      response_stream_channel_size: 256
 
   otap_receiver:
     kind: receiver
@@ -689,7 +696,8 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4318"
-      response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
+      # Required: channel buffer capacity (number of messages)
+      response_stream_channel_size: 256
 
   persistence:
     kind: processor
@@ -701,7 +709,8 @@ nodes:
           - otlp_exporter
         dispatch_strategy: round_robin
     config:
-      path: ./quiver_data  # Platform-appropriate persistent storage location
+      # Platform-appropriate persistent storage location
+      path: ./quiver_data
       segment:
         target_size: 32MB
       wal:
@@ -710,7 +719,8 @@ nodes:
       retention:
         max_retain_after_ingestion_hours: 72
         size_cap: 500GB
-        size_cap_policy: drop_oldest  # or backpressure
+        # or backpressure
+        size_cap_policy: drop_oldest
 
   otap_exporter:
     kind: exporter
@@ -725,7 +735,8 @@ nodes:
     plugin_urn: "urn:otel:otlp:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
-      # timeout: "15s"  # Optional: timeout for RPC requests
+      # Optional: timeout for RPC requests
+      # timeout: "15s"
 ```
 
 ### Example: Dual Exporters with Completion Tracking
@@ -746,12 +757,18 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
 1. On every Ack/Nack Quiver appends a record to the shared acknowledgement log:
 
   ```text
-  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0  subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0  subscriber=otlp_exporter     ack
-  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1  subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1  subscriber=otlp_exporter     ack
-  ts=2025-11-10T18:22:09Z  segment=seg-120  bundle=2  subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:10Z  segment=seg-120  bundle=2  subscriber=otlp_exporter     ack
+  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0
+    subscriber=parquet_exporter  ack
+  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0
+    subscriber=otlp_exporter     ack
+  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1
+    subscriber=parquet_exporter  ack
+  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1
+    subscriber=otlp_exporter     ack
+  ts=2025-11-10T18:22:09Z  segment=seg-120  bundle=2
+    subscriber=parquet_exporter  ack
+  ts=2025-11-10T18:22:10Z  segment=seg-120  bundle=2
+    subscriber=otlp_exporter     ack
   ```
 
 1. Once every subscriber has acknowledged bundle `0..=2` for `seg-120`, the
