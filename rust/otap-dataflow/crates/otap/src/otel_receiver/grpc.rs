@@ -25,12 +25,13 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io::{self, Write};
 use std::pin::Pin;
+use std::rc::Rc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep};
-use zstd::bulk::Decompressor as ZstdDecompressor;
+use zstd::bulk::Decompressor;
+use crate::otel_receiver::GrpcRequestRouter;
 
-const MIN_DECOMPRESSED_CAPACITY: usize = 8 * 1024;
 /// Floor for compressed buffer allocations to avoid tiny vec growth.
 pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8 * 1024;
 
@@ -382,11 +383,8 @@ pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
     current_frame: Option<FrameHeader>,
     finished: bool,
     encoding: GrpcEncoding,
-    /// Cached zstd decompressor; zstd initialisation is expensive, so reusing the same instance per
-    /// stream avoids repeated allocations and lets us grow the scratch buffer incrementally. Flate
-    /// codecs (gzip/deflate) are recreated per frame because their constructors are cheap and hold
-    /// no reusable state.
-    zstd: Option<ZstdDecompressor<'static>>,
+    /// Shared reference to router so we can reach the pooled decompressor
+    router: Rc<GrpcRequestRouter>,
     decompressed_buf: BytesMut,
 }
 
@@ -519,8 +517,8 @@ impl Buf for FrameBuf {
 }
 
 impl GrpcStreamingBody<H2BodyStream> {
-    pub(crate) fn new(recv: h2::RecvStream, encoding: GrpcEncoding) -> Self {
-        Self::with_stream(H2BodyStream::new(recv), encoding)
+    pub(crate) fn new(recv: h2::RecvStream, encoding: GrpcEncoding, router: Rc<GrpcRequestRouter>) -> Self {
+        Self::with_stream(H2BodyStream::new(recv), encoding, router)
     }
 }
 
@@ -528,15 +526,15 @@ impl<S> GrpcStreamingBody<S>
 where
     S: BodyStream,
 {
-    pub(crate) fn with_stream(recv: S, encoding: GrpcEncoding) -> Self {
+    fn with_stream(recv: S, encoding: GrpcEncoding, router: Rc<GrpcRequestRouter>) -> Self {
         Self {
             recv,
             buffer: ChunkBuffer::new(),
             current_frame: None,
             finished: false,
             encoding,
-            zstd: None,
-            decompressed_buf: BytesMut::new(),
+            router,
+            decompressed_buf: BytesMut::with_capacity(128 * 1024),
         }
     }
 
@@ -669,47 +667,43 @@ where
     /// Complexity: amortized O(n) over the payload size because each retry doubles
     /// the buffer.
     fn decompress_zstd(&mut self, payload: Bytes) -> Result<Bytes, Status> {
-        // Lazily create the decoder once per stream, since this is costly.
-        self.ensure_zstd_decompressor()?;
         self.reserve_decompressed_capacity(payload.len());
+
         let mut required_capacity = self.decompressed_buf.capacity();
 
         loop {
-            // Grow the scratch buffer until it can hold the entire frame.
             set_bytes_len(&mut self.decompressed_buf, required_capacity);
-            let result = {
-                // Safe because `ensure_zstd_decompressor` guarantees the option is populated.
-                let decompressor = self
-                    .zstd
-                    .as_mut()
-                    .expect("zstd decompressor is ensured above for this single-threaded path");
-                // Decompress directly into the reusable scratch buffer to avoid reallocations.
-                decompressor.decompress_to_buffer(payload.as_ref(), self.decompressed_buf.as_mut())
-            };
+            let buffer = &mut self.decompressed_buf[..];
+
+            // Take ownership of the shared decompressor for the duration of this call to avoid
+            // overlapping borrows on `self`.
+            let mut slot = self.router.zstd_decompressor.borrow_mut();
+            let mut decompressor = slot
+                .take()
+                .unwrap_or_else(|| Decompressor::new().expect("failed to initialize zstd decompressor"));
+            drop(slot);
+
+            let result = decompressor.decompress_to_buffer(payload.as_ref(), buffer);
+
+            // Return the decompressor to the pool for reuse.
+            *self.router.zstd_decompressor.borrow_mut() = Some(decompressor);
+
             match result {
                 Ok(written) => {
                     self.decompressed_buf.truncate(written);
                     return Ok(self.decompressed_buf.split().freeze());
                 }
-                Err(err) => {
-                    let err_msg = err.to_string();
-                    if err.kind() == io::ErrorKind::Other
-                        && err_msg.contains("Destination buffer is too small")
+                Err(err)
+                if err.kind() == io::ErrorKind::Other
+                    && err.to_string().contains("Destination buffer is too small") =>
                     {
-                        // Double the capacity and retry when the destination buffer overflowed.
                         required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
-                            log::error!("zstd decompression failed: required buffer overflow");
                             Status::internal("zstd decompression failed: output too large")
                         })?;
-                        self.decompressed_buf.clear();
-                        continue;
+                        // No clear() needed – we overwrote the whole buffer with set_len
                     }
-                    // Any other error is terminal for this frame.
-                    log::error!("zstd decompression failed: {err_msg}");
-                    self.decompressed_buf.clear();
-                    return Err(Status::internal(format!(
-                        "zstd decompression failed: {err_msg}"
-                    )));
+                Err(err) => {
+                    return Err(Status::internal(format!("zstd decompression failed: {err}")));
                 }
             }
         }
@@ -739,25 +733,6 @@ where
             Status::internal(format!("deflate decompression failed: {err}"))
         })?;
         Ok(self.decompressed_buf.split().freeze())
-    }
-
-    /// Lazily creates the zstd decompressor the first time it is needed.
-    fn ensure_zstd_decompressor(&mut self) -> Result<(), Status> {
-        if self.zstd.is_some() {
-            return Ok(());
-        }
-        match ZstdDecompressor::new() {
-            Ok(decoder) => {
-                self.zstd = Some(decoder);
-                Ok(())
-            }
-            Err(err) => {
-                log::error!("Failed to construct zstd decompressor: {err}");
-                Err(Status::internal(format!(
-                    "failed to initialize zstd decompressor: {err}"
-                )))
-            }
-        }
     }
 }
 

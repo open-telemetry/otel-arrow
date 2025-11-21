@@ -21,6 +21,7 @@ mod response_templates;
 mod status;
 mod stream;
 
+use std::cell::RefCell;
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
@@ -80,6 +81,7 @@ use tokio::task::JoinSet;
 use tokio::time::{Sleep, sleep};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::server::TcpIncoming;
+use zstd::bulk::Decompressor;
 
 const OTEL_RECEIVER_URN: &str = "urn:otel:otel:receiver";
 
@@ -215,6 +217,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             request_timeout: config.timeout,
             response_encoders,
             response_templates,
+            zstd_decompressor: RefCell::new(None),
         });
 
         let cancel_token = CancellationToken::new();
@@ -779,7 +782,7 @@ impl Stream for KeepaliveStream {
 }
 
 /// Routes each inbound gRPC request to the appropriate OTLP+OTAP signal stream.
-struct GrpcRequestRouter {
+pub(crate) struct GrpcRequestRouter {
     effect_handler: local::EffectHandler<OtapPdata>,
     logs_ack_registry: Option<AckRegistry>,
     metrics_ack_registry: Option<AckRegistry>,
@@ -791,6 +794,8 @@ struct GrpcRequestRouter {
     request_timeout: Option<Duration>,
     response_encoders: ResponseEncoderPool,
     response_templates: ResponseTemplates,
+    // zstd decompressor shared by every streams on this core.
+    zstd_decompressor: RefCell<Option<Decompressor<'static>>>,
 }
 
 struct RequestContext<'a> {
@@ -905,7 +910,7 @@ impl GrpcRequestRouter {
     {
         let mut ctx = self.prepare_request(request.headers())?;
         let recv_stream = request.into_body();
-        let body = GrpcStreamingBody::new(recv_stream, ctx.request_encoding);
+        let body = GrpcStreamingBody::new(recv_stream, ctx.request_encoding, Rc::clone(self));
 
         let mut status_stream = stream_batch_statuses::<GrpcStreamingBody, T, _>(
             body,
@@ -966,7 +971,7 @@ impl GrpcRequestRouter {
     ) -> Result<(), Status> {
         let (parts, body) = request.into_parts();
         let mut ctx = self.prepare_request(&parts.headers)?;
-        let mut recv_stream = GrpcStreamingBody::new(body, ctx.request_encoding);
+        let mut recv_stream = GrpcStreamingBody::new(body, ctx.request_encoding, Rc::clone(self));
         let mut request_timeout = RequestTimeout::new(self.request_timeout);
 
         let request_bytes = match request_timeout
