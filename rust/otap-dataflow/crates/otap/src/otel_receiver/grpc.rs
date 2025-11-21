@@ -32,6 +32,10 @@ use std::time::Duration;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep};
 use zstd::bulk::Decompressor;
 
+// ToDo ideally make these fields on GrpcServerSettings.
+const MAX_GRPC_FRAME_LEN: usize = 64 * 1024 * 1024; // 64 MiB
+const MAX_DECOMPRESSED_LEN: usize = 128 * 1024 * 1024; // 128 MiB
+
 /// Floor for compressed buffer allocations to avoid tiny vec growth.
 pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8 * 1024;
 
@@ -395,6 +399,8 @@ pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
     /// Shared reference to router so we can reach the pooled decompressor
     router: Rc<GrpcRequestRouter>,
     decompressed_buf: BytesMut,
+    // How many bytes we've read from h2 but not yet released.
+    unacked_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -548,6 +554,7 @@ where
             encoding,
             router,
             decompressed_buf: BytesMut::with_capacity(128 * 1024),
+            unacked_bytes: 0,
         }
     }
 
@@ -558,19 +565,53 @@ where
         if self.finished {
             return Ok(());
         }
+
         match self.recv.next_chunk().await {
             Some(Ok(bytes)) => {
-                let chunk_len = bytes.len();
+                let n = bytes.len();
+
+                // We DO NOT release capacity here.
+                // We only track how much we must release later when consumed.
+                self.unacked_bytes = self.unacked_bytes.saturating_add(n);
+
                 self.buffer.push(bytes);
-                if let Err(err) = self.recv.release_capacity(chunk_len) {
-                    log::debug!("release_capacity failed: {err}");
-                }
                 Ok(())
             }
             Some(Err(err)) => Err(Status::internal(format!("stream error: {err}"))),
             None => {
                 self.finished = true;
                 Ok(())
+            }
+        }
+    }
+
+    fn validate_frame_len(len: usize) -> Result<usize, Status> {
+        if len > MAX_GRPC_FRAME_LEN {
+            log::warn!("Rejecting gRPC frame of length {}", len);
+            Err(Status::resource_exhausted("gRPC frame too large"))
+        } else {
+            Ok(len)
+        }
+    }
+
+    /// Returns flow-control credits back to the peer for bytes that were
+    /// actually consumed (header or payload).
+    ///
+    /// This enforces proper HTTP/2 backpressure:
+    /// - We do NOT release capacity when DATA chunks arrive
+    /// - We release only when those bytes have been removed from `ChunkBuffer`
+    fn release_consumed_capacity(&mut self, consumed: usize) {
+        if consumed == 0 || self.unacked_bytes == 0 {
+            return;
+        }
+
+        // Only release as many bytes as we have outstanding.
+        let to_release = consumed.min(self.unacked_bytes);
+        self.unacked_bytes -= to_release;
+
+        if to_release > 0 {
+            if let Err(err) = self.recv.release_capacity(to_release) {
+                log::debug!("release_capacity failed: {err}");
             }
         }
     }
@@ -586,13 +627,19 @@ where
                     self.fill_buffer().await?;
                     continue;
                 }
+
                 let header = self
                     .buffer
                     .split_frame(5)
                     .expect("buffer len checked above")
                     .into_bytes();
+                // We consumed 5 header bytes, account that in flow control
+                self.release_consumed_capacity(5);
+
                 let compressed = header[0] == 1;
-                let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+                let len_u32 = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
+                let len = Self::validate_frame_len(len_u32 as usize)?;
+
                 self.current_frame = Some(FrameHeader {
                     length: len,
                     compressed,
@@ -603,6 +650,8 @@ where
                 if self.buffer.len() < header.length {
                     if self.finished {
                         log::error!("Stream ended before full gRPC frame was received");
+                        // Drop any remaining buffered bytes from flow control point of view
+                        self.release_consumed_capacity(self.unacked_bytes);
                         return Err(Status::internal("truncated gRPC frame"));
                     }
                     self.fill_buffer().await?;
@@ -610,11 +659,14 @@ where
                     continue;
                 }
 
-                let payload = self
+                let buf = self
                     .buffer
                     .split_frame(header.length)
-                    .expect("buffer len checked above")
-                    .into_bytes();
+                    .expect("buffer len checked above");
+
+                // Mark the payload as consumed for flow control
+                self.release_consumed_capacity(header.length);
+                let payload = buf.into_bytes();
                 return Ok(Some((header.compressed, payload)));
             }
         }
@@ -625,14 +677,14 @@ where
     /// for small payloads, preventing memory leaks in long-lived connections.
     fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
         let current_capacity = self.decompressed_buf.capacity();
+        let target = payload_len.min(MAX_DECOMPRESSED_LEN);
 
         // 1. Growth Path (Hot Path)
         // If we need more space, grow exponentially to amortize allocation costs.
-        if current_capacity < payload_len {
-            let required = payload_len
+        if current_capacity < target {
+            let required = target
                 .saturating_sub(current_capacity)
-                .max(current_capacity); // Double the capacity (exponential growth)
-
+                .max(current_capacity.min(MAX_DECOMPRESSED_LEN));
             self.decompressed_buf.reserve(required);
             return;
         }
@@ -681,15 +733,12 @@ where
     /// the buffer.
     fn decompress_zstd(&mut self, payload: Bytes) -> Result<Bytes, Status> {
         self.reserve_decompressed_capacity(payload.len());
-
-        let mut required_capacity = self.decompressed_buf.capacity();
+        let mut required_capacity = self.decompressed_buf.capacity().min(MAX_DECOMPRESSED_LEN);
 
         loop {
             set_bytes_len(&mut self.decompressed_buf, required_capacity);
             let buffer = &mut self.decompressed_buf[..];
 
-            // Take ownership of the shared decompressor for the duration of this call to avoid
-            // overlapping borrows on `self`.
             let mut slot = self.router.zstd_decompressor.borrow_mut();
             let mut decompressor = slot.take().unwrap_or_else(|| {
                 Decompressor::new().expect("failed to initialize zstd decompressor")
@@ -697,12 +746,14 @@ where
             drop(slot);
 
             let result = decompressor.decompress_to_buffer(payload.as_ref(), buffer);
-
             // Return the decompressor to the pool for reuse.
             *self.router.zstd_decompressor.borrow_mut() = Some(decompressor);
 
             match result {
                 Ok(written) => {
+                    if written > MAX_DECOMPRESSED_LEN {
+                        return Err(Status::resource_exhausted("decompressed message too large"));
+                    }
                     self.decompressed_buf.truncate(written);
                     return Ok(self.decompressed_buf.split().freeze());
                 }
@@ -710,10 +761,13 @@ where
                     if err.kind() == io::ErrorKind::Other
                         && err.to_string().contains("Destination buffer is too small") =>
                 {
-                    required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
+                    let next = required_capacity.checked_mul(2).ok_or_else(|| {
                         Status::internal("zstd decompression failed: output too large")
                     })?;
-                    // No clear() needed – we overwrote the whole buffer with set_len
+                    if next > MAX_DECOMPRESSED_LEN {
+                        return Err(Status::resource_exhausted("decompressed message too large"));
+                    }
+                    required_capacity = next;
                 }
                 Err(err) => {
                     return Err(Status::internal(format!(
@@ -729,7 +783,7 @@ where
         self.reserve_decompressed_capacity(payload.len());
         self.decompressed_buf.clear();
         let mut decoder = GzDecoder::new(payload.as_ref());
-        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf);
+        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf, MAX_DECOMPRESSED_LEN);
         _ = io::copy(&mut decoder, &mut writer).map_err(|err| {
             log::error!("gzip decompression failed: {err}");
             Status::internal(format!("gzip decompression failed: {err}"))
@@ -742,7 +796,7 @@ where
         self.reserve_decompressed_capacity(payload.len());
         self.decompressed_buf.clear();
         let mut decoder = ZlibDecoder::new(payload.as_ref());
-        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf);
+        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf, MAX_DECOMPRESSED_LEN);
         _ = io::copy(&mut decoder, &mut writer).map_err(|err| {
             log::error!("deflate decompression failed: {err}");
             Status::internal(format!("deflate decompression failed: {err}"))
@@ -753,18 +807,33 @@ where
 
 struct BytesMutWriter<'a> {
     buffer: &'a mut BytesMut,
+    max: usize,
 }
 
 impl<'a> BytesMutWriter<'a> {
-    fn new(buffer: &'a mut BytesMut) -> Self {
-        Self { buffer }
+    fn new(buffer: &'a mut BytesMut, max: usize) -> Self {
+        Self { buffer, max }
     }
 }
 
 impl Write for BytesMutWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.buffer.extend_from_slice(buf);
-        Ok(buf.len())
+        let remaining = self.max.saturating_sub(self.buffer.len());
+        if remaining == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "decompressed payload exceeds limit",
+            ));
+        }
+        let to_write = remaining.min(buf.len());
+        self.buffer.extend_from_slice(&buf[..to_write]);
+        if to_write < buf.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "decompressed payload exceeds limit",
+            ));
+        }
+        Ok(to_write)
     }
 
     fn flush(&mut self) -> io::Result<()> {
