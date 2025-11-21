@@ -85,6 +85,10 @@ use tonic::transport::server::TcpIncoming;
 /// URN used to register this receiver implementation in the engine.
 const OTEL_RECEIVER_URN: &str = "urn:otel:otel:receiver";
 
+/// Default maximum message size for decoding gRPC messages.
+/// Set `GrpcServerSettings::max_decoding_message_size` to override.
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: u32 = 64 * 1024 * 1024; /* 64MB */
+
 /// Configuration for the experimental OTEL receiver.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -217,6 +221,11 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             response_templates,
             // Shared zstd decompressor used by gRPC bodies on the current core.
             zstd_decompressor: RefCell::new(None),
+            max_decoding_message_size: self
+                .config
+                .grpc
+                .max_decoding_message_size
+                .unwrap_or(DEFAULT_MAX_DECODING_MESSAGE_SIZE),
         });
 
         // Telemetry and cancellation.
@@ -429,19 +438,17 @@ async fn run_grpc_server(
                         AdmitDecision::Admitted(conn_guard) => {
                             let h2_builder = h2_builder.clone();
                             let router = Rc::clone(&grpc_router);
-                            let keepalive_interval = grpc_config.http2_keepalive_interval;
-                            let keepalive_timeout = grpc_config.http2_keepalive_timeout;
 
                             // Each connection holds its admission guard until it finishes.
                             // The AbortHandler from the admitter is currently unused.
+                            let grpc_config = grpc_config.clone();
                             _ = tcp_conn_tasks.spawn_local(async move {
                                 if let Err(err) = handle_tcp_conn(
                                     tcp_conn,
                                     h2_builder,
                                     router,
                                     conn_guard,
-                                    keepalive_interval,
-                                    keepalive_timeout,
+                                    grpc_config,
                                 )
                                 .await
                                 {
@@ -504,19 +511,37 @@ async fn handle_tcp_conn(
     router: Rc<GrpcRequestRouter>,
     // Keeps one connection slot while the connection is alive.
     tcp_conn_guard: ConnectionGuard,
-    keepalive_interval: Option<Duration>,
-    keepalive_timeout: Option<Duration>,
+    grpc_config: Rc<GrpcServerSettings>,
 ) -> Result<(), h2::Error> {
+    //let keepalive_interval: Option<Duration>,
+    //keepalive_timeout: Option<Duration>,
+
     // HTTP/2 handshake.
-    let mut http2_conn = builder.handshake(socket).await?;
+    let mut http2_conn = match tokio::time::timeout(
+        grpc_config.http2_handshake_timeout,
+        builder.handshake(socket),
+    )
+    .await
+    {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(err)) => return Err(err),
+        Err(_) => {
+            // Handshake took too long, drop the connection slot
+            log::debug!(
+                "h2 handshake timed out after {:?}",
+                grpc_config.http2_handshake_timeout
+            );
+            return Ok(());
+        }
+    };
     if log::log_enabled!(log::Level::Trace) {
         log::trace!("h2 handshake established");
     }
 
     let keepalive = Http2Keepalive::new(
         http2_conn.ping_pong(),
-        keepalive_interval,
-        keepalive_timeout,
+        grpc_config.http2_keepalive_interval,
+        grpc_config.http2_keepalive_timeout,
     );
 
     // Wrap the connection in a pinned future so we can build a stream over `poll_accept`.

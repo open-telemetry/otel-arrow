@@ -176,6 +176,12 @@ pub struct GrpcServerSettings {
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+
+    /// Timeout waiting for the initial HTTP/2 handshake. This is to prevent slowloris-style
+    /// attacks from holding connections open indefinitely.
+    /// Defaults to 5s.
+    #[serde(default = "default_http2_handshake_timeout", with = "humantime_serde")]
+    pub http2_handshake_timeout: Duration,
 }
 
 impl GrpcServerSettings {
@@ -300,6 +306,10 @@ const fn default_http2_adaptive_window() -> bool {
     false
 }
 
+fn default_http2_handshake_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
 const fn default_wait_for_result() -> bool {
     // See https://github.com/open-telemetry/otel-arrow/issues/1311
     // This matches the OTel Collector default for wait_for_result, presently.
@@ -326,6 +336,7 @@ impl Default for GrpcServerSettings {
             max_decoding_message_size: default_max_decoding_message_size(),
             http2_keepalive_interval: default_http2_keepalive_interval(),
             http2_keepalive_timeout: default_http2_keepalive_timeout(),
+            http2_handshake_timeout: default_http2_handshake_timeout(),
             max_concurrent_streams: None,
             wait_for_result: default_wait_for_result(),
             timeout: None,

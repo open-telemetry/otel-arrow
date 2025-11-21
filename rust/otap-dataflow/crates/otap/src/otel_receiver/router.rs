@@ -73,6 +73,8 @@ pub(crate) struct GrpcRequestRouter {
     pub(crate) response_templates: ResponseTemplates,
     // zstd decompressor shared by every stream on this core.
     pub(crate) zstd_decompressor: RefCell<Option<Decompressor<'static>>>,
+    /// Maximum decoded message size in bytes (from GrpcServerSettings::max_decoding_message_size)
+    pub(crate) max_decoding_message_size: u32,
 }
 
 /// Per request gRPC context used by the router while serving a single RPC.
@@ -196,7 +198,12 @@ impl GrpcRequestRouter {
     {
         let mut ctx = self.prepare_request(request.headers())?;
         let recv_stream = request.into_body();
-        let body = GrpcStreamingBody::new(recv_stream, ctx.request_encoding, Rc::clone(self));
+        let body = GrpcStreamingBody::new(
+            recv_stream,
+            ctx.request_encoding,
+            Rc::clone(self),
+            self.max_decoding_message_size as usize,
+        );
 
         let mut status_stream = stream_batch_statuses::<GrpcStreamingBody, T, _>(
             body,
@@ -263,7 +270,12 @@ impl GrpcRequestRouter {
     ) -> Result<(), Status> {
         let (parts, body) = request.into_parts();
         let mut ctx = self.prepare_request(&parts.headers)?;
-        let mut recv_stream = GrpcStreamingBody::new(body, ctx.request_encoding, Rc::clone(self));
+        let mut recv_stream = GrpcStreamingBody::new(
+            body,
+            ctx.request_encoding,
+            Rc::clone(self),
+            self.max_decoding_message_size as usize,
+        );
         let mut request_timeout = RequestTimeout::new(self.request_timeout);
 
         let request_bytes = match request_timeout

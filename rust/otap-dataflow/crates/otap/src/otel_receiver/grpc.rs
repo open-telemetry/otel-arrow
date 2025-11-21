@@ -32,10 +32,6 @@ use std::time::Duration;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep};
 use zstd::bulk::Decompressor;
 
-// ToDo ideally make these fields on GrpcServerSettings.
-const MAX_GRPC_FRAME_LEN: usize = 64 * 1024 * 1024; // 64 MiB
-const MAX_DECOMPRESSED_LEN: usize = 128 * 1024 * 1024; // 128 MiB
-
 /// Floor for compressed buffer allocations to avoid tiny vec growth.
 pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8 * 1024;
 
@@ -399,6 +395,8 @@ pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
     /// Shared reference to router so we can reach the pooled decompressor
     router: Rc<GrpcRequestRouter>,
     decompressed_buf: BytesMut,
+    /// Maximum decoded message size in bytes (from GrpcServerSettings::max_decoding_message_size)
+    max_decoding_message_size: usize,
     // How many bytes we've read from h2 but not yet released.
     unacked_bytes: usize,
 }
@@ -536,8 +534,14 @@ impl GrpcStreamingBody<H2BodyStream> {
         recv: h2::RecvStream,
         encoding: GrpcEncoding,
         router: Rc<GrpcRequestRouter>,
+        max_decoding_message_size: usize,
     ) -> Self {
-        Self::with_stream(H2BodyStream::new(recv), encoding, router)
+        Self::with_stream(
+            H2BodyStream::new(recv),
+            encoding,
+            router,
+            max_decoding_message_size,
+        )
     }
 }
 
@@ -545,7 +549,12 @@ impl<S> GrpcStreamingBody<S>
 where
     S: BodyStream,
 {
-    fn with_stream(recv: S, encoding: GrpcEncoding, router: Rc<GrpcRequestRouter>) -> Self {
+    fn with_stream(
+        recv: S,
+        encoding: GrpcEncoding,
+        router: Rc<GrpcRequestRouter>,
+        max_decoding_message_size: usize,
+    ) -> Self {
         Self {
             recv,
             buffer: ChunkBuffer::new(),
@@ -554,6 +563,7 @@ where
             encoding,
             router,
             decompressed_buf: BytesMut::with_capacity(128 * 1024),
+            max_decoding_message_size,
             unacked_bytes: 0,
         }
     }
@@ -568,12 +578,11 @@ where
 
         match self.recv.next_chunk().await {
             Some(Ok(bytes)) => {
-                let n = bytes.len();
+                let chunk_len = bytes.len();
 
                 // We DO NOT release capacity here.
                 // We only track how much we must release later when consumed.
-                self.unacked_bytes = self.unacked_bytes.saturating_add(n);
-
+                self.unacked_bytes = self.unacked_bytes.saturating_add(chunk_len);
                 self.buffer.push(bytes);
                 Ok(())
             }
@@ -585,8 +594,8 @@ where
         }
     }
 
-    fn validate_frame_len(len: usize) -> Result<usize, Status> {
-        if len > MAX_GRPC_FRAME_LEN {
+    fn validate_frame_len(&self, len: usize) -> Result<usize, Status> {
+        if len > self.max_decoding_message_size {
             log::warn!("Rejecting gRPC frame of length {}", len);
             Err(Status::resource_exhausted("gRPC frame too large"))
         } else {
@@ -638,7 +647,7 @@ where
 
                 let compressed = header[0] == 1;
                 let len_u32 = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
-                let len = Self::validate_frame_len(len_u32 as usize)?;
+                let len = self.validate_frame_len(len_u32 as usize)?;
 
                 self.current_frame = Some(FrameHeader {
                     length: len,
@@ -677,14 +686,14 @@ where
     /// for small payloads, preventing memory leaks in long-lived connections.
     fn reserve_decompressed_capacity(&mut self, payload_len: usize) {
         let current_capacity = self.decompressed_buf.capacity();
-        let target = payload_len.min(MAX_DECOMPRESSED_LEN);
+        let target = payload_len.min(self.max_decoding_message_size);
 
         // 1. Growth Path (Hot Path)
         // If we need more space, grow exponentially to amortize allocation costs.
         if current_capacity < target {
             let required = target
                 .saturating_sub(current_capacity)
-                .max(current_capacity.min(MAX_DECOMPRESSED_LEN));
+                .max(current_capacity.min(self.max_decoding_message_size));
             self.decompressed_buf.reserve(required);
             return;
         }
@@ -733,7 +742,10 @@ where
     /// the buffer.
     fn decompress_zstd(&mut self, payload: Bytes) -> Result<Bytes, Status> {
         self.reserve_decompressed_capacity(payload.len());
-        let mut required_capacity = self.decompressed_buf.capacity().min(MAX_DECOMPRESSED_LEN);
+        let mut required_capacity = self
+            .decompressed_buf
+            .capacity()
+            .min(self.max_decoding_message_size);
 
         loop {
             set_bytes_len(&mut self.decompressed_buf, required_capacity);
@@ -751,7 +763,7 @@ where
 
             match result {
                 Ok(written) => {
-                    if written > MAX_DECOMPRESSED_LEN {
+                    if written > self.max_decoding_message_size {
                         return Err(Status::resource_exhausted("decompressed message too large"));
                     }
                     self.decompressed_buf.truncate(written);
@@ -764,7 +776,7 @@ where
                     let next = required_capacity.checked_mul(2).ok_or_else(|| {
                         Status::internal("zstd decompression failed: output too large")
                     })?;
-                    if next > MAX_DECOMPRESSED_LEN {
+                    if next > self.max_decoding_message_size {
                         return Err(Status::resource_exhausted("decompressed message too large"));
                     }
                     required_capacity = next;
@@ -783,7 +795,8 @@ where
         self.reserve_decompressed_capacity(payload.len());
         self.decompressed_buf.clear();
         let mut decoder = GzDecoder::new(payload.as_ref());
-        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf, MAX_DECOMPRESSED_LEN);
+        let mut writer =
+            BytesMutWriter::new(&mut self.decompressed_buf, self.max_decoding_message_size);
         _ = io::copy(&mut decoder, &mut writer).map_err(|err| {
             log::error!("gzip decompression failed: {err}");
             Status::internal(format!("gzip decompression failed: {err}"))
@@ -796,7 +809,8 @@ where
         self.reserve_decompressed_capacity(payload.len());
         self.decompressed_buf.clear();
         let mut decoder = ZlibDecoder::new(payload.as_ref());
-        let mut writer = BytesMutWriter::new(&mut self.decompressed_buf, MAX_DECOMPRESSED_LEN);
+        let mut writer =
+            BytesMutWriter::new(&mut self.decompressed_buf, self.max_decoding_message_size);
         _ = io::copy(&mut decoder, &mut writer).map_err(|err| {
             log::error!("deflate decompression failed: {err}");
             Status::internal(format!("deflate decompression failed: {err}"))
@@ -820,18 +834,12 @@ impl Write for BytesMutWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let remaining = self.max.saturating_sub(self.buffer.len());
         if remaining == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "decompressed payload exceeds limit",
-            ));
+            return Err(io::Error::other("decompressed payload exceeds limit"));
         }
         let to_write = remaining.min(buf.len());
         self.buffer.extend_from_slice(&buf[..to_write]);
         if to_write < buf.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "decompressed payload exceeds limit",
-            ));
+            return Err(io::Error::other("decompressed payload exceeds limit"));
         }
         Ok(to_write)
     }
@@ -1003,6 +1011,7 @@ impl RequestTimeout {
 mod tests {
     use super::*;
     use crate::compression::CompressionMethod;
+    use crate::otel_receiver::DEFAULT_MAX_DECODING_MESSAGE_SIZE;
     use crate::otel_receiver::encoder::{GrpcResponseFrameEncoder, ResponseEncoderPool};
     use crate::otel_receiver::response_templates::ResponseTemplates;
     use crate::pdata::OtapPdata;
@@ -1246,6 +1255,7 @@ mod tests {
             response_encoders,
             response_templates,
             zstd_decompressor: RefCell::new(None),
+            max_decoding_message_size: DEFAULT_MAX_DECODING_MESSAGE_SIZE,
         })
     }
 
@@ -1276,7 +1286,12 @@ mod tests {
                 }
 
                 let (stream, state_handle) = MockRecvStream::new(chunk_queue);
-                let mut body = GrpcStreamingBody::with_stream(stream, encoding, router.clone());
+                let mut body = GrpcStreamingBody::with_stream(
+                    stream,
+                    encoding,
+                    router.clone(),
+                    DEFAULT_MAX_DECODING_MESSAGE_SIZE as usize,
+                );
                 let mut observed_ids = Vec::new();
                 while let Some(batch) = body
                     .next_message()
