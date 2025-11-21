@@ -87,20 +87,19 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
-  # TODO: Enable when wait_for_result support is added to otap receiver
-  # - name: OTAP-FILTER-OTAP
-  #   from_template:
-  #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
-  #     variables:
-  #       result_dir: "nightly_backpressure"
-  #       engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml
-  #       loadgen_exporter_type: otap
-  #       backend_receiver_type: otap
-  # - name: OTAP-FILTER-OTLP
-  #   from_template:
-  #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
-  #     variables:
-  #       result_dir: "nightly_backpressure"
-  #       engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml
-  #       loadgen_exporter_type: otap
-  #       backend_receiver_type: otlp
+  - name: OTAP-FILTER-OTAP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
+      variables:
+        result_dir: "nightly_backpressure"
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+  - name: OTAP-FILTER-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
+      variables:
+        result_dir: "nightly_backpressure"
+        engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp
