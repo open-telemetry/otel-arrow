@@ -74,6 +74,7 @@ fn test_batching(
 fn test_simple_batch_logs() {
     for input_count in 1..=20 {
         for max_output_batch in 3..=5 {
+            // @@@
             let mut datagen = DataGenerator::new(1);
             test_batching(
                 (0..input_count).map(|_| datagen.generate_logs().into()),
@@ -87,6 +88,7 @@ fn test_simple_batch_logs() {
 fn test_simple_batch_traces() {
     for input_count in 1..=20 {
         for max_output_batch in 3..=5 {
+            // @@@
             let mut datagen = DataGenerator::new(1);
             test_batching(
                 (0..input_count).map(|_| datagen.generate_traces().into()),

@@ -922,12 +922,11 @@ fn sort_record_batch(rb: RecordBatch, how: HowToSort) -> Result<RecordBatch> {
                     options,
                 }]
             }
-            (_, None, None) => {
+            (_, _, None) => {
                 // No id or parent_id columns, no sorting required.
                 return RecordBatch::try_new(schema, columns)
                     .map_err(|e| Error::Batching { source: e });
             }
-            _ => unreachable!(),
         };
 
     // safety: [`sort_to_indices`] will only return an error if the passed columns aren't supported

@@ -805,11 +805,6 @@ impl DataGenerator {
         val
     }
 
-    /// True if this generator can still produce points.
-    fn has_points(&self) -> bool {
-        self.count < self.limit
-    }
-
     /// Consume N points.
     fn consume(&mut self, n: usize) -> usize {
         let take = n.min(self.limit - self.count);
@@ -908,30 +903,23 @@ impl DataGenerator {
     /// Generate test OTLP metrics data at a timestamp offset
     #[must_use]
     pub fn generate_metrics(&mut self) -> MetricsData {
-        let mut v = Vec::new();
-
-        while self.has_points() {
-            v.push(
-                Metric::build()
-                    .name("gauge1")
-                    .description("First gauge")
-                    .unit("1")
-                    .data_gauge(Gauge::new(self.build_gauge_data(3)))
-                    .finish(),
-            );
-
-            if self.has_points() {
-                v.push(
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().finish(),
+                vec![
+                    Metric::build()
+                        .name("gauge1")
+                        .description("First gauge")
+                        .unit("1")
+                        .data_gauge(Gauge::new(self.build_gauge_data(3)))
+                        .finish(),
                     Metric::build()
                         .name("gauge2")
                         .description("Second gauge")
                         .unit("By")
                         .data_gauge(Gauge::new(self.build_gauge_data(2)))
                         .finish(),
-                );
-            }
-            if self.has_points() {
-                v.push(
                     Metric::build()
                         .name("sum1")
                         .description("A sum")
@@ -942,13 +930,8 @@ impl DataGenerator {
                             self.build_sum_data(1),
                         ))
                         .finish(),
-                );
-            }
-        }
-
-        MetricsData::new(vec![ResourceMetrics::new(
-            Resource::build().finish(),
-            vec![ScopeMetrics::new(InstrumentationScope::build().finish(), v)],
+                ],
+            )],
         )])
     }
 
