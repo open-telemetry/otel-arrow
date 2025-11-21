@@ -64,7 +64,7 @@ Write path overview:
   Ack/Nack lifecycle.
 
 **WAL Truncation Safety**:
-“Safe” means the WAL entries you are removing are no longer needed for crash
+"Safe" means the WAL entries you are removing are no longer needed for crash
 recovery of segment data. Concretely:
 
 1. All batches up to the boundary of one or more finalized segments have been
@@ -74,7 +74,7 @@ recovery of segment data. Concretely:
   segment.
 3. The segment finalization was successful (no partial/corrupt write detected).
 
-Subscriber ACKs are *not* required for truncation—the segment file is the
+Subscriber ACKs are *not* required for truncation-the segment file is the
 durable source for replay until retention deletes it. Truncation never removes
 WAL entries belonging to:
 
@@ -84,7 +84,7 @@ WAL entries belonging to:
 #### WAL File Format & Rotation
 
 - **Single append-only file per core**: each persistence instance writes to
-  `wal/quiver.wal`, rolling into numbered siblings (`.1`, `.2`, …) only when
+  `wal/quiver.wal`, rolling into numbered siblings (`.1`, `.2`, ...) only when
   rotation triggers as described below. The steady-state design keeps writes
   sequential for simplicity and page-cache locality.
 - **File header**: fixed-width preamble (`b"QUIVER\0WAL"`), version, and the
@@ -94,7 +94,7 @@ WAL entries belonging to:
   any incompatible encoding change so older binaries can decisively reject files
   they cannot interpret and newer binaries can interpret the older file format.
   `segment_cfg_hash` is a 128-bit digest (e.g., truncated
-  BLAKE3) over the adapter-owned layout contract: slot id → payload mappings,
+  BLAKE3) over the adapter-owned layout contract: slot id -> payload mappings,
   per-slot ordering, checksum policy toggles, and any other settings that a
   particular adapter (OTAP today) uses to interpret RecordBundle payloads. We
   treat operational knobs such as `segment.target_size`, flush cadence, or
@@ -146,8 +146,8 @@ WAL entries belonging to:
     populated slot we write exactly one contiguous IPC stream containing the
     chunk(s) belonging to that `Option<RecordBatch>` value. The blob for a slot
     immediately follows its metadata block, so the serialized representation of a
-    single `RecordBundle` is `[entry header][slot bitmap][metadata₀][payload₀]
-    [metadata₁][payload₁]…`. Absent slots (bitmap bit cleared) contribute neither
+    single `RecordBundle` is `[entry header][slot bitmap][metadata0][payload0]
+    [metadata1][payload1]...` Absent slots (bitmap bit cleared) contribute neither
     metadata nor bytes; they are implicitly `None` when reconstructing the
     bundle.
   - Every entry ends with a 4-byte little-endian CRC32C checksum that covers the
@@ -157,7 +157,7 @@ WAL entries belonging to:
     triggers truncation back to the last known-good offset.
   - Because the metadata describes the length of every blob, unknown entry
     types (future versions) can be skipped using the recorded length.
-  - Each WAL append encodes the bundle’s payload chunks once; crash replay
+  - Each WAL append encodes the bundle's payload chunks once; crash replay
     decodes those IPC bytes back into `RecordBatch`es before reinserting them
     into the in-memory segment accumulators.
 - **Replay model**: on startup we scan sequentially, validating the WAL header
@@ -210,8 +210,8 @@ WAL entries belonging to:
   builds issue `FSCTL_SET_ZERO_DATA` on a sparse scratch file. If the probe
   fails with `EOPNOTSUPP`/`ERROR_INVALID_FUNCTION` we mark the capability as
   disabled and fall back to rewriting until the process restarts.
-- **Drop reclaimed prefixes**: When support exists—or when the pointer crosses a
-  configurable threshold—we invoke `fallocate(FALLOC_FL_PUNCH_HOLE)` in-place to
+- **Drop reclaimed prefixes**: When support exists, or when the pointer crosses a
+  configurable threshold, we invoke `fallocate(FALLOC_FL_PUNCH_HOLE)` in-place to
   discard bytes `[header_len, truncate_offset)`, leaving the fixed header (30
   bytes: magic + version + reserved + cfg hash) intact. On filesystems where hole
   punching is not supported, we instead perform a rewrite: copy every byte from
@@ -231,7 +231,7 @@ WAL entries belonging to:
   older suffixes up, close and rename `wal/quiver.wal` to `quiver.wal.1`, and
   reopen a fresh `quiver.wal`. Each rotation records the byte span covered by the
   retired chunk so cleanup can later delete `quiver.wal.N` only after the
-  persisted `truncate_offset` exceeds that span’s upper bound. We never
+  persisted `truncate_offset` exceeds that span's upper bound. We never
   hole-punch rotated files; they are deleted wholesale once fully covered by the
   durability pointer, avoiding rewrites of large historical blobs while keeping
   the total WAL footprint bounded by `wal.max_size`. To keep rename churn and
@@ -252,7 +252,7 @@ WAL entries belonging to:
 
 - Stores every per-bundle Ack/Nack as `(segment_seq, bundle_index,
   subscriber_id, outcome)`
-- Replayed on startup to rebuild each subscriber’s in-flight bundle set and
+- Replayed on startup to rebuild each subscriber's in-flight bundle set and
   advance segment high-water marks once all bundles are acknowledged
 - Enables recovery without per-subscriber WALs
 
@@ -275,17 +275,17 @@ new segments are ready.
 
 **Multi-Subscriber Tracking**: Each subscriber maintains per-segment bundle
 progress; data is deleted only when every subscriber has acknowledged every
-bundle (or retention policy overrides). A subscriber’s high-water mark is the
+bundle (or retention policy overrides). A subscriber's high-water mark is the
 highest contiguous segment whose bundles all have Ack (or dropped) outcomes.
 Out-of-order Acks land in a tiny gap set keyed by `(segment_seq, bundle_index)`
 so the mark never jumps past a missing bundle. Each bundle Ack decrements the
-segment’s outstanding bundle counter; once it reaches zero the segment becomes
+segment's outstanding bundle counter; once it reaches zero the segment becomes
 eligible for deletion.
 
 Ack/Nack events append to a shared log (single WAL keyed by subscriber ID) so
 per-bundle state is replayed after crashes without per-subscriber files. The
 shared log (`ack.log`) lives alongside the main WAL. Periodic checkpoints
-persist each subscriber’s current high-water mark into the metadata index so
+persist each subscriber's current high-water mark into the metadata index so
 recovery can skip directly to the first gap, replaying the log only for recent
 events; bundle gap sets are rebuilt on replay from the same log stream.
 
@@ -355,13 +355,13 @@ Protects processed data; smaller footprint, buffers during downstream outages
   provide its own slot table.
 - **Stream**: The ordered sequence of Arrow IPC messages Quiver writes for a
   `(slot, schema_fingerprint)` pairing inside a segment.
-- **Stream Directory**: The header table that records every stream’s id, slot,
+- **Stream Directory**: The header table that records every stream's id, slot,
   schema fingerprint, byte offset, byte length, and statistics.
 - **Batch Manifest**: The ordered list of `RecordBundle` arrivals. Each entry
   lists the `(stream_id, chunk_index)` to read for every payload slot that was
   present in the bundle.
 - **Adapter**: A thin crate-specific shim that converts between the embedding
-  project’s structs (for OTAP: `OtapArrowRecords`) and Quiver’s generic
+  project's structs (for OTAP: `OtapArrowRecords`) and Quiver's generic
   `RecordBundle` interface.
 
 ### OTAP RecordBundle Primer
@@ -370,7 +370,7 @@ Protects processed data; smaller footprint, buffers during downstream outages
   through the OTAP adapter.
 - Slots correspond to OTAP payload types (`Logs`, `LogAttrs`, `ScopeAttrs`,
   `ResourceAttrs`, etc.).
-- During persistence, each slot’s `RecordBatch` is encoded into a stream
+- During persistence, each slot's `RecordBatch` is encoded into a stream
   whenever it is present.
 
 ```mermaid
@@ -538,7 +538,7 @@ sequenceDiagram
 
 ### OTAP Payload Representation in Quiver
 
-- The otap-dataflow crate provides an adapter that implements Quiver’s
+- The otap-dataflow crate provides an adapter that implements Quiver's
   `RecordBundle` interface on top of `OtapArrowRecords`, mapping slot ids to
   the OTAP payload enum (`Logs`, `LogAttrs`, `ScopeAttrs`, etc.).
 - Each `OtapArrowRecords` value is treated as a bundle of payload-specific
@@ -549,7 +549,7 @@ sequenceDiagram
 - Optional payloads simply do not emit a stream for that batch. Optional
   columns drop from the schema signature; when the column reappears it yields a
   new stream id with the expanded schema.
-- Per-segment dictionaries reset at segment boundaries, matching today’s
+- Per-segment dictionaries reset at segment boundaries, matching today's
   in-memory lifetime: high-cardinality attributes force an early finalize and
   avoid unbounded growth.
 - Segment metadata keeps per-stream statistics (row count, column omit bitmap)
@@ -617,7 +617,7 @@ each outstanding `(segment_seq, bundle_index, subscriber_id)` in `ack.log`
 before deletion.
 
 - `dropped` is treated like an `ack` for advancing the high-water mark (HWM)
-  and immediately removes the bundle from the subscriber’s gap set.
+  and immediately removes the bundle from the subscriber's gap set.
 - HWM only advances across a contiguous run of bundles with `ack` or
   `dropped`; real gaps still block.
 - Without this, deleting a gap bundle would freeze the subscriber's HWM
@@ -750,7 +750,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
 1. Incoming batches append to the WAL and accumulate in the in-memory open
   segment until finalize triggers; then the data is written as `seg-120.arrow`.
 1. Quiver enqueues a notification for `parquet_exporter` and `otlp_exporter`.
-1. Each exporter drains the segment’s three bundles in order and, after
+1. Each exporter drains the segment's three bundles in order and, after
   finishing each bundle, emits `Ack(segment_seq, bundle_index)` (or `Nack`) back
   to Quiver. The consumer-side cursor only advances to the next bundle once the
   acknowledgement for the current bundle is recorded.
@@ -772,7 +772,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   ```
 
 1. Once every subscriber has acknowledged bundle `0..=2` for `seg-120`, the
-  segment’s outstanding bundle count drops to zero and it becomes eligible for
+  segment's outstanding bundle count drops to zero and it becomes eligible for
   eviction according to the retention policy.
 1. During crash recovery Quiver replays the acknowledgement log alongside the
   WAL to restore per-subscriber high-water marks; no per-subscriber WAL files
