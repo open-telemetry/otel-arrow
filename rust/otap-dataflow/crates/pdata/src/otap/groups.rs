@@ -1425,7 +1425,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                 .map_err(|e| Error::Batching { source: e })?
                 .clone(),
             );
-            assert!(field.is_nullable());
+            assert!(field.is_nullable(), "{field:?} should be nullable");
             for missing_batch_index in all_batch_indices.difference(present_batch_indices).copied()
             {
                 if let Some(batch) = batches[missing_batch_index][payload_type_index].take() {

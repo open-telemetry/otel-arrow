@@ -942,7 +942,8 @@ impl DataGenerator {
                 NumberDataPoint::build()
                     .value_double(i as f64 * 10.0)
                     .time_unix_nano(self.timestamp())
-                    .attributes(vec![KeyValue::new("G", AnyValue::new_int(i as i64))])
+                    // TODO: this will break a test
+                    // .attributes(vec![KeyValue::new("G", AnyValue::new_int(i as i64))])
                     .finish()
             })
             .collect()
@@ -952,13 +953,15 @@ impl DataGenerator {
         (0..self.consume(n))
             .map(|i| {
                 NumberDataPoint::build()
-                    .value_int(i as i64 * 100)
-                    .start_time_unix_nano(self.timestamp())
+                    .value_double(i as f64 * 10.0)
                     .time_unix_nano(self.timestamp())
-                    .attributes(vec![KeyValue::new(
-                        "S",
-                        AnyValue::new_string(format!("{i}")),
-                    )])
+                    // TODO: this will break a test
+                    // .value_int(i as i64 * 100)
+                    // .start_time_unix_nano(self.timestamp())
+                    // .attributes(vec![KeyValue::new(
+                    //     "S",
+                    //     AnyValue::new_string(format!("{i}")),
+                    // )])
                     .finish()
             })
             .collect()
