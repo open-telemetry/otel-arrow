@@ -1,7 +1,4 @@
-# Proposal: Quiver - Arrow-Based Persistence for OTAP Dataflow
-
-**Status**: Draft for Discussion  
-**Date**: 2025-11-03
+# Quiver - Arrow-Based Persistence for OTAP Dataflow - Architecture
 
 ## Problem Statement
 
@@ -825,8 +822,3 @@ before the crash are eligible for deletion as soon as the steady-state sweeper r
   safety net and steady-state sweeper - should one take precedence?
 - Failure handling: what safeguards do we need if `ack.log` or metadata become
   corrupted (checksums, repair tools, etc.)?
-
----
-
-**Feedback Welcome**: Please comment on architecture choices, use cases to
-prioritize, or concerns about complexity / performance.
