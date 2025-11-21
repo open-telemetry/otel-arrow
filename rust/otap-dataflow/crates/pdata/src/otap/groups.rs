@@ -1425,6 +1425,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                 .map_err(|e| Error::Batching { source: e })?
                 .clone(),
             );
+            // TODO: This is where the metrics batching tests fail.
             assert!(field.is_nullable(), "{field:?} should be nullable");
             for missing_batch_index in all_batch_indices.difference(present_batch_indices).copied()
             {
