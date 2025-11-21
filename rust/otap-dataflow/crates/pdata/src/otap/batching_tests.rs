@@ -98,7 +98,7 @@ fn test_simple_batch_traces() {
     }
 }
 
-/// TODO: This test is currently broken. Unify() has some issues.
+/// TODO(#1334): This test is currently broken. Unify() has some issues.
 #[test]
 #[ignore]
 fn test_simple_batch_metrics() {
