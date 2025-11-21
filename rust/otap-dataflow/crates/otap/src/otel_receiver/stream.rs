@@ -324,6 +324,11 @@ where
         // in the method and will yield until the local channel accepts the data.
         if let Err(e) = self.effect_handler.send_message(otap_pdata).await {
             error!("Failed to send to pipeline: {e}");
+
+            if let Some((state, token)) = wait_token {
+                state.cancel(token);
+            }
+
             self.finished = true;
             return PreparedBatch::Immediate(StreamStep::Done);
         };

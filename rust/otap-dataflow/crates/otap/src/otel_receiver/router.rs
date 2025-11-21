@@ -340,6 +340,11 @@ impl GrpcRequestRouter {
 
         if let Err(err) = self.effect_handler.send_message(otap_pdata).await {
             log::error!("Failed to send to pipeline: {err}");
+
+            if let Some((state, token)) = wait_token {
+                state.cancel(token);
+            }
+
             respond_with_error(
                 respond,
                 Status::internal("failed to send to pipeline"),
