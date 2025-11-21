@@ -4,7 +4,7 @@ rust:
 go:
 - changed-files:
   - any-glob-to-any-file: 'go/**/*'
-ci/cd:
+ci-repo:
 - changed-files:
   - any-glob-to-any-file: '.github/**/*'
 query-engine:
