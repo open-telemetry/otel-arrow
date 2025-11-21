@@ -19,12 +19,31 @@ use prost::Message as ProstMessage;
 
 /// Transcode a protocol message object to OTAP records.
 #[must_use]
-pub fn encode_otlp(msg: &OtlpProtoMessage) -> OtapArrowRecords {
+pub fn otlp_to_otap(msg: &OtlpProtoMessage) -> OtapArrowRecords {
     match msg {
         OtlpProtoMessage::Logs(logs) => encode_logs(logs),
         OtlpProtoMessage::Metrics(metrics) => encode_metrics(metrics),
         OtlpProtoMessage::Traces(traces) => encode_traces(traces),
     }
+}
+
+/// Transcode OTAP records into a protocol message object.
+#[must_use]
+pub fn otap_to_otlp(otap: &OtapArrowRecords) -> OtlpProtoMessage {
+    let pdata: OtapPayload = otap.clone().into();
+    let otlp_bytes: OtlpProtoBytes = pdata.try_into().expect("convert to OTLP bytes");
+    match otlp_bytes {
+        OtlpProtoBytes::ExportLogsRequest(bytes) => {
+            LogsData::decode(bytes.as_ref()).map(OtlpProtoMessage::Logs)
+        }
+        OtlpProtoBytes::ExportTracesRequest(bytes) => {
+            TracesData::decode(bytes.as_ref()).map(OtlpProtoMessage::Traces)
+        }
+        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+            MetricsData::decode(bytes.as_ref()).map(OtlpProtoMessage::Metrics)
+        }
+    }
+    .expect("decode ok")
 }
 
 //
