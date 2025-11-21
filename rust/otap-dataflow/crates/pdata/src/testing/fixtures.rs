@@ -903,6 +903,7 @@ impl DataGenerator {
     /// Generate test OTLP metrics data at a timestamp offset
     #[must_use]
     pub fn generate_metrics(&mut self) -> MetricsData {
+        // TODO: @@@
         MetricsData::new(vec![ResourceMetrics::new(
             Resource::build().finish(),
             vec![ScopeMetrics::new(

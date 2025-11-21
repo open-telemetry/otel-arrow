@@ -21,11 +21,10 @@ use crate::{
     schema::consts,
 };
 use ahash::AHashSet;
-use arrow::array::as_primitive_array;
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
-        StructArray, UInt16Array, UInt32Array,
+        StructArray, UInt16Array, UInt32Array, as_primitive_array,
     },
     buffer::NullBuffer,
     compute::cast,
