@@ -1030,7 +1030,7 @@ fn generic_schemaless_concatenate<const N: usize>(
         }
     }
 
-    assert_all_empty(&batches);
+    assert_all_empty(batches);
     Ok(result)
 }
 

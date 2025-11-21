@@ -785,6 +785,7 @@ pub struct DataGenerator {
 
 impl DataGenerator {
     /// Generate N 'limit' number of items
+    #[must_use]
     pub fn new(limit: usize) -> Self {
         Self {
             limit,
