@@ -1,11 +1,22 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Prebuilt HTTP response templates for successful unary gRPC responses.
+//
+//! The router reuses these for OTLP exports so we avoid rebuilding the
+//! `content-type`, `grpc-encoding`, and `grpc-accept-encoding` headers
+//! for every call.
+
 use http::{HeaderValue, Response, StatusCode as HttpStatusCode};
 
 use crate::compression::CompressionMethod;
 use crate::otel_receiver::grpc::{self, grpc_encoding_token};
 
-/// Prebuilt response headers for successful unary responses.
+/// Cached HTTP response headers for successful unary responses.
 pub struct ResponseTemplates {
+    /// `ok_plain` is the identity encoding template
     pub ok_plain: Response<()>,
+    /// `ok_encoded` stores one template per configured compression method.
     pub ok_encoded: Vec<(CompressionMethod, Response<()>)>,
 }
 

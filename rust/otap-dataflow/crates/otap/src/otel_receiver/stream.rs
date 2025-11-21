@@ -58,11 +58,12 @@ where
     StatusStream::new(state)
 }
 
-/// Drives an inbound OTAP stream while waiting for ACK/NACK outcomes.
+/// Drives an inbound OTAP stream while waiting for ACK or NACK outcomes.
 ///
-/// Each instance manages a single gRPC request/response pair. It is `!Send`
-/// and lives entirely on the local executor, feeding batches into the pipeline
-/// and yielding `BatchStatus` items as soon as ACK/NACK signals arrive.
+/// Each `StatusStream` instance is bound to a single gRPC stream and lives
+/// entirely on the local executor. It pushes decoded batches into the pipeline
+/// and yields `BatchStatus` responses as soon as the corresponding ACK futures
+/// complete.
 pub(crate) struct StatusStream<S, T, F>
 where
     S: RequestStream + Unpin + 'static,
@@ -163,11 +164,15 @@ where
     }
 }
 
-/// Mutable state carried across polls while the `StatusStream` is active.
+/// Mutable state for a single `StatusStream`.
 ///
-/// Tracks the source stream, the effect handler used to push into the pipeline,
-/// the optional Ack registry, and the set of in-flight ACK wait futures. The
-/// inflight count plus the registry capacity are what enforce backpressure.
+/// Holds:
+/// - the decoded gRPC input stream,
+/// - the local effect handler into the pipeline,
+/// - an optional `AckRegistry` for wait for result mode,
+/// - a bounded set of in flight ACK wait futures, and
+/// - a per connection `max_in_flight` limit that prevents a single client
+///   from monopolizing all wait slots.
 struct StatusStreamState<S, T, F>
 where
     S: RequestStream + Unpin + 'static,
@@ -340,10 +345,9 @@ where
     }
 }
 
-/// Bounded collection of ACK wait futures that enforces inflight limits.
+/// Bounded collection of ACK wait futures that enforces per stream inflight limits.
 ///
-/// All operations are O(1) because we only ever push/pop up to the fixed
-/// capacity and delegate actual polling to `FuturesUnordered`.
+/// All operations are O(1) and polling is delegated to `FuturesUnordered`.
 struct InFlightSet<F> {
     futures: FuturesUnordered<F>,
     capacity: usize,

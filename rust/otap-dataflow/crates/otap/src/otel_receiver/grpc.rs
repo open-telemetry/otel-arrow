@@ -13,6 +13,7 @@
 //! tailored to the single-threaded OTAP runtime.
 
 use crate::compression::CompressionMethod;
+use crate::otel_receiver::GrpcRequestRouter;
 use crate::otel_receiver::status::Status;
 use async_trait::async_trait;
 use bytes::{Buf, Bytes, BytesMut};
@@ -30,7 +31,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::time::{Instant as TokioInstant, Sleep, sleep};
 use zstd::bulk::Decompressor;
-use crate::otel_receiver::GrpcRequestRouter;
 
 /// Floor for compressed buffer allocations to avoid tiny vec growth.
 pub(crate) const MIN_COMPRESSED_CAPACITY: usize = 8 * 1024;
@@ -376,7 +376,16 @@ impl BodyStream for H2BodyStream {
     }
 }
 
-/// Pull-based view over an h2 stream that yields decoded `BatchArrowRecords`.
+/// Pull based view over an h2 stream that yields decoded gRPC frames.
+///
+/// The body:
+/// - reassembles length prefixed frames from arbitrary DATA chunking,
+/// - handles optional request compression, and
+/// - exposes both decoded Arrow payloads (`next_message`) and raw bytes
+///   (`next_message_bytes`) for the OTLP unary path.
+///
+/// It is intentionally `!Send` so it can share a zstd decompressor through
+/// the router on the local executor.
 pub(crate) struct GrpcStreamingBody<S = H2BodyStream> {
     recv: S,
     buffer: ChunkBuffer,
@@ -517,7 +526,11 @@ impl Buf for FrameBuf {
 }
 
 impl GrpcStreamingBody<H2BodyStream> {
-    pub(crate) fn new(recv: h2::RecvStream, encoding: GrpcEncoding, router: Rc<GrpcRequestRouter>) -> Self {
+    pub(crate) fn new(
+        recv: h2::RecvStream,
+        encoding: GrpcEncoding,
+        router: Rc<GrpcRequestRouter>,
+    ) -> Self {
         Self::with_stream(H2BodyStream::new(recv), encoding, router)
     }
 }
@@ -678,9 +691,9 @@ where
             // Take ownership of the shared decompressor for the duration of this call to avoid
             // overlapping borrows on `self`.
             let mut slot = self.router.zstd_decompressor.borrow_mut();
-            let mut decompressor = slot
-                .take()
-                .unwrap_or_else(|| Decompressor::new().expect("failed to initialize zstd decompressor"));
+            let mut decompressor = slot.take().unwrap_or_else(|| {
+                Decompressor::new().expect("failed to initialize zstd decompressor")
+            });
             drop(slot);
 
             let result = decompressor.decompress_to_buffer(payload.as_ref(), buffer);
@@ -694,16 +707,18 @@ where
                     return Ok(self.decompressed_buf.split().freeze());
                 }
                 Err(err)
-                if err.kind() == io::ErrorKind::Other
-                    && err.to_string().contains("Destination buffer is too small") =>
-                    {
-                        required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
-                            Status::internal("zstd decompression failed: output too large")
-                        })?;
-                        // No clear() needed – we overwrote the whole buffer with set_len
-                    }
+                    if err.kind() == io::ErrorKind::Other
+                        && err.to_string().contains("Destination buffer is too small") =>
+                {
+                    required_capacity = required_capacity.checked_mul(2).ok_or_else(|| {
+                        Status::internal("zstd decompression failed: output too large")
+                    })?;
+                    // No clear() needed – we overwrote the whole buffer with set_len
+                }
                 Err(err) => {
-                    return Err(Status::internal(format!("zstd decompression failed: {err}")));
+                    return Err(Status::internal(format!(
+                        "zstd decompression failed: {err}"
+                    )));
                 }
             }
         }
@@ -814,13 +829,12 @@ where
     }
 }
 
-/// Utility wrapper that enforces per-request idle deadlines.
+/// Utility wrapper that enforces per request idle deadlines.
 ///
-/// Each inbound OTAP Arrow request shares the single-threaded runtime with other tasks. To prevent
-/// a stalled client from tying up resources indefinitely, `RequestTimeout` arms a `tokio::time::Sleep`
-/// whenever we poll the status stream and cancels/reset it as soon as new data arrives. If the timer
-/// elapses before the stream yields another item we abort the request with `DEADLINE_EXCEEDED`,
-/// mirroring the behaviour of tonic's server stack.
+/// A timeout is only armed when a duration is configured. On each successful
+/// poll of the wrapped stream or future the timer is reset. If the timer
+/// elapses first, the operation fails with `Err(())` and the caller maps that
+/// to `DEADLINE_EXCEEDED`.
 pub(crate) struct RequestTimeout {
     duration: Option<Duration>,
     sleep: Option<Pin<Box<Sleep>>>,
@@ -920,18 +934,26 @@ impl RequestTimeout {
 mod tests {
     use super::*;
     use crate::compression::CompressionMethod;
-    use crate::otel_receiver::encoder::GrpcResponseFrameEncoder;
+    use crate::otel_receiver::encoder::{GrpcResponseFrameEncoder, ResponseEncoderPool};
+    use crate::otel_receiver::response_templates::ResponseTemplates;
+    use crate::pdata::OtapPdata;
     use async_trait::async_trait;
     use bytes::{BufMut, Bytes, BytesMut};
     use flate2::Compression;
     use flate2::read::{GzDecoder, ZlibDecoder};
     use flate2::write::{GzEncoder, ZlibEncoder};
     use http::{HeaderMap, HeaderValue};
+    use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::local::receiver::EffectHandler as LocalEffectHandler;
+    use otap_df_engine::node::NodeId;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{BatchArrowRecords, BatchStatus};
+    use otap_df_telemetry::reporter::MetricsReporter;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
-    use std::collections::VecDeque;
+    use std::cell::RefCell;
+    use std::collections::{HashMap, VecDeque};
     use std::io::{Read, Write};
+    use std::rc::Rc;
     use std::sync::{Arc, Mutex};
     use tokio::sync::mpsc;
     use tokio::task::yield_now;
@@ -1115,9 +1137,53 @@ mod tests {
         assert_eq!(decompressed, message.encode_to_vec());
     }
 
+    fn test_router() -> Rc<GrpcRequestRouter> {
+        let (ctrl_tx, _) = pipeline_ctrl_msg_channel::<OtapPdata>(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = LocalEffectHandler::new(
+            NodeId {
+                index: 0,
+                name: "grpc-test".into(),
+            },
+            HashMap::new(),
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        let response_methods = vec![
+            CompressionMethod::Zstd,
+            CompressionMethod::Gzip,
+            CompressionMethod::Deflate,
+        ];
+        let request_encodings = AcceptedGrpcEncodings::from_methods(&response_methods);
+        let accept_header = build_accept_encoding_header(&response_methods);
+        let response_encoders = ResponseEncoderPool::new(&response_methods, 1);
+        let response_templates = response_methods.iter().copied().fold(
+            ResponseTemplates::new(accept_header.clone()),
+            |acc, method| acc.with_method(method, &accept_header),
+        );
+
+        Rc::new(GrpcRequestRouter {
+            effect_handler,
+            logs_ack_registry: None,
+            metrics_ack_registry: None,
+            traces_ack_registry: None,
+            max_in_flight_per_connection: 1,
+            request_encodings,
+            request_accept_header: accept_header,
+            response_methods,
+            request_timeout: None,
+            response_encoders,
+            response_templates,
+            zstd_decompressor: RefCell::new(None),
+        })
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn grpc_streaming_body_randomized_frames() {
         async fn run_case(encoding: GrpcEncoding, seed: u64) {
+            let router = test_router();
             let mut rng = StdRng::seed_from_u64(seed);
             for iteration in 0..32 {
                 let frame_count = rng.random_range(1..=8);
@@ -1141,7 +1207,7 @@ mod tests {
                 }
 
                 let (stream, state_handle) = MockRecvStream::new(chunk_queue);
-                let mut body = GrpcStreamingBody::with_stream(stream, encoding);
+                let mut body = GrpcStreamingBody::with_stream(stream, encoding, router.clone());
                 let mut observed_ids = Vec::new();
                 while let Some(batch) = body
                     .next_message()

@@ -34,11 +34,15 @@ fn set_vec_len(buf: &mut Vec<u8>, len: usize) {
     }
 }
 
-/// Per-encoding pool of reusable response message encoders.
+/// Per encoding pool of reusable gRPC response encoders.
+///
+/// Encoders are stored in small vectors keyed by `GrpcEncoding`. This avoids
+/// repeatedly allocating compression buffers on the response hot path.
 pub(crate) struct ResponseEncoderPool {
     inner: RefCell<EncoderSlots>,
 }
 
+/// RAII guard that returns a checked out encoder back to the pool on drop.
 pub(crate) struct EncoderGuard<'a> {
     encoder: Option<GrpcResponseFrameEncoder>,
     pool: &'a ResponseEncoderPool,
@@ -133,7 +137,7 @@ pub(crate) struct EncoderSlots {
     deflate: Vec<GrpcResponseFrameEncoder>,
 }
 
-/// Builds length-prefixed gRPC response frames with optional compression.
+/// Builds length prefixed gRPC response frames with optional compression.
 pub(crate) struct GrpcResponseFrameEncoder {
     compression: GrpcEncoding,
     // Reusable buffer containing the result of the serialization of the response message.

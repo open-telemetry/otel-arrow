@@ -36,14 +36,26 @@ use std::rc::Rc;
 use std::task::{Context as TaskContext, Poll, Waker};
 
 /// Result returned when polling a registry slot for completion.
+///
+/// This is used by both the streaming and unary paths:
+/// - `Ack` means the pipeline processed the batch successfully,
+/// - `Nack(reason)` means it failed with the provided reason, and
+/// - `Cancelled` means the slot was reclaimed without a concrete outcome
+///   (for example because the wait future was dropped).
 pub(crate) enum AckPollResult {
     Ack,
     Nack(String),
     Cancelled,
 }
 
-/// Manages the fixed-size set of wait slots used to correlate ACK/NACK responses.
-/// Relies on `Rc<RefCell<_>>` because it only lives within the single-threaded receiver task.
+/// Fixed size slab of wait slots used to correlate `Ack` and `Nack` control messages
+/// with in flight requests.
+///
+/// The registry:
+/// - lives entirely on the single threaded runtime (`Rc<RefCell<_>>`),
+/// - provides O(1) allocation and free via an intrusive free list, and
+/// - participates directly in backpressure, since `allocate` returns `None`
+///   when the slab is full.
 #[derive(Clone)]
 pub(crate) struct AckRegistry {
     inner: Rc<RefCell<AckRegistryInner>>,
@@ -301,7 +313,10 @@ enum AckOutcome {
     Nack(String),
 }
 
-/// Handle that flows through the pipeline to identify an Ack slot.
+/// Compact handle that identifies a single registry slot.
+///
+/// The token is passed downstream as `CallData` and later reconstructed when
+/// an `Ack` or `Nack` control message arrives.
 #[derive(Clone, Copy)]
 pub(crate) struct AckToken {
     slot_index: usize,

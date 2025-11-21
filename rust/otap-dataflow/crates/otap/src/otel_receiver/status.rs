@@ -8,6 +8,9 @@
 use std::error::Error;
 use std::fmt;
 
+/// Subset of gRPC status codes used by the lightweight OTEL receiver.
+///
+/// This lets us avoid pulling in `tonic` only to represent status values.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StatusCode {

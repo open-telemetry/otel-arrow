@@ -19,15 +19,13 @@
 //!       unsupported compression cases.
 //! ToDo: Add support for Unix domain sockets as a transport option.
 
-
 mod ack;
+mod encoder;
 pub(crate) mod grpc;
 mod response_templates;
 mod status;
 mod stream;
-mod encoder;
 
-use std::cell::RefCell;
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::common;
@@ -73,6 +71,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use response_templates::ResponseTemplates;
 use serde::Deserialize;
 use status::Status;
+use std::cell::RefCell;
 use std::fmt;
 use std::future::Future;
 use std::io;
@@ -312,7 +311,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
         // We manually poll both futures and stop as soon as either finishes.
         let mut control_future = control_loop;
         let mut server_future = grpc_loop;
-        
+
         let first_loop_done = futures::future::poll_fn(|cx| {
             if let Poll::Ready(res) = control_future.as_mut().poll(cx) {
                 return Poll::Ready(DriverEvent::Control(res));
@@ -322,7 +321,7 @@ impl local::Receiver<OtapPdata> for OtelReceiver {
             }
             Poll::Pending
         })
-            .await;
+        .await;
 
         let server_done = match first_loop_done {
             DriverEvent::Control(ctrl_msg_result) => {
@@ -481,9 +480,7 @@ async fn run_grpc_server(
                         AdmitDecision::Busy => {
                             // Soft backpressure: drop the stream so the kernel backlog can absorb spikes.
                             if log::log_enabled!(log::Level::Trace) {
-                                log::trace!(
-                                    "Connection admission busy; pausing accepts briefly"
-                                );
+                                log::trace!("Connection admission busy; pausing accepts briefly");
                             }
                             drop(tcp_conn);
                             // Yield to avoid a tight accept/reject loop.
@@ -550,8 +547,7 @@ async fn handle_tcp_conn(
 
     // Wrap the connection in a pinned future so we can build a stream over `poll_accept`.
     let mut http2_conn = Box::pin(http2_conn);
-    let mut accept_stream =
-        futures::stream::poll_fn(move |cx| http2_conn.as_mut().poll_accept(cx));
+    let mut accept_stream = futures::stream::poll_fn(move |cx| http2_conn.as_mut().poll_accept(cx));
 
     // Keepalive ticks are driven by a custom stream so we reuse timers.
     let mut keepalive_stream = KeepaliveStream::new(keepalive);
@@ -607,10 +603,7 @@ async fn handle_tcp_conn(
                                 let router = router.clone();
                                 in_flight.push(async move {
                                     if trace_enabled {
-                                        log::trace!(
-                                            "New h2 stream: {}",
-                                            request.uri().path()
-                                        );
+                                        log::trace!("New h2 stream: {}", request.uri().path());
                                     }
                                     if let Err(status) =
                                         router.route_grpc_request(request, respond).await
@@ -627,9 +620,7 @@ async fn handle_tcp_conn(
                                 // Per connection stream capacity is full: reply with RESOURCE_EXHAUSTED.
                                 respond_with_error(
                                     respond,
-                                    Status::resource_exhausted(
-                                        "stream capacity exhausted",
-                                    ),
+                                    Status::resource_exhausted("stream capacity exhausted"),
                                     &router.request_accept_header,
                                 );
                             }
@@ -912,8 +903,7 @@ impl GrpcRequestRouter {
     fn prepare_request<'a>(&'a self, headers: &HeaderMap) -> Result<RequestContext<'a>, Status> {
         let request_encoding = parse_grpc_encoding(headers, &self.request_encodings)?;
         let client_accept = parse_grpc_accept_encoding(headers);
-        let response_encoding =
-            negotiate_response_encoding(&self.response_methods, &client_accept);
+        let response_encoding = negotiate_response_encoding(&self.response_methods, &client_accept);
         let response = self
             .response_templates
             .get_ok(CompressionMethod::from_grpc_encoding(response_encoding))
@@ -1017,8 +1007,7 @@ impl GrpcRequestRouter {
     {
         let mut ctx = self.prepare_request(request.headers())?;
         let recv_stream = request.into_body();
-        let body =
-            GrpcStreamingBody::new(recv_stream, ctx.request_encoding, Rc::clone(self));
+        let body = GrpcStreamingBody::new(recv_stream, ctx.request_encoding, Rc::clone(self));
 
         let mut status_stream = stream_batch_statuses::<GrpcStreamingBody, T, _>(
             body,
@@ -1085,8 +1074,7 @@ impl GrpcRequestRouter {
     ) -> Result<(), Status> {
         let (parts, body) = request.into_parts();
         let mut ctx = self.prepare_request(&parts.headers)?;
-        let mut recv_stream =
-            GrpcStreamingBody::new(body, ctx.request_encoding, Rc::clone(self));
+        let mut recv_stream = GrpcStreamingBody::new(body, ctx.request_encoding, Rc::clone(self));
         let mut request_timeout = RequestTimeout::new(self.request_timeout);
 
         let request_bytes = match request_timeout
@@ -1182,9 +1170,7 @@ impl GrpcRequestRouter {
                 AckPollResult::Nack(reason) => {
                     respond_with_error(
                         respond,
-                        Status::unavailable(format!(
-                            "Pipeline processing failed: {reason}"
-                        )),
+                        Status::unavailable(format!("Pipeline processing failed: {reason}")),
                         &self.request_accept_header,
                     );
                     return Ok(());
