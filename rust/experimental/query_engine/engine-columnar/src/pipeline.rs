@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
+mod filter;
 mod planner;
 
 /// A stage in the pipeline.
@@ -180,6 +181,14 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
+    pub fn new(pipeline_definition: PipelineExpression) -> Self {
+        Self {
+            pipeline_definition,
+            planned_pipeline: None,
+        }
+    }
+
     /// Execute the pipeline on a batch of telemetry data.
     ///
     /// Any query planning happens during the first call to execute, including setting up any
@@ -198,7 +207,7 @@ impl Pipeline {
             let session_ctx = Self::create_session_context();
             let mut planner = PipelinePlanner::new();
             let stages =
-                planner.plan_stages(&session_ctx, &self.pipeline_definition, &otap_batch)?;
+                planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
             self.planned_pipeline = Some(PlannedPipeline::new(stages, session_ctx));
         }
 
@@ -243,70 +252,79 @@ mod test {
     use std::sync::Arc;
 
     use data_engine_expressions::PipelineExpression;
+
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
+    use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::testing::round_trip::encode_logs;
+    use otap_df_pdata::testing::round_trip::encode_otlp;
 
     use super::*;
 
+    /// helper function for converting [`LogRecord`]s to [`LogsData`]
+    pub fn to_logs_data(log_records: Vec<LogRecord>) -> LogsData {
+        LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    /// helper function for converting OTLP logs to OTAP batch
+    pub fn to_otap(log_records: Vec<LogRecord>) -> OtapArrowRecords {
+        encode_otlp(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
+    }
+
     #[tokio::test]
-    async fn test_pipeline_execute() {
+    async fn test_pipeline_execute_multi_batch() {
         // TODO eventually we might want to drive this test from a pipeline expression, which we
         // can do once we have the query planning implemented. For now, we are manually creating
         // the `PlannedPipeline` and its `PipelineStage`s and any additional datafusion context
         // they need
 
-        let otap_batch1 = encode_logs(&LogsData::new(vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![
-                    LogRecord {
-                        severity_text: "ERROR".into(),
-                        event_name: "1".into(),
-                        ..Default::default()
-                    },
-                    LogRecord {
-                        severity_text: "ERROR".into(),
-                        event_name: "2".into(),
-                        ..Default::default()
-                    },
-                    LogRecord {
-                        severity_text: "WARN".into(),
-                        event_name: "3".into(),
-                        ..Default::default()
-                    },
-                ],
+        let otap_batch1 = to_otap(vec![
+            LogRecord {
+                severity_text: "ERROR".into(),
+                event_name: "1".into(),
                 ..Default::default()
-            }],
-            ..Default::default()
-        }]));
+            },
+            LogRecord {
+                severity_text: "ERROR".into(),
+                event_name: "2".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "WARN".into(),
+                event_name: "3".into(),
+                ..Default::default()
+            },
+        ]);
 
-        let otap_batch2 = encode_logs(&LogsData::new(vec![ResourceLogs {
-            scope_logs: vec![ScopeLogs {
-                log_records: vec![
-                    LogRecord {
-                        severity_text: "DEBUG".into(),
-                        event_name: "4".into(),
-                        ..Default::default()
-                    },
-                    LogRecord {
-                        severity_text: "TRACE".into(),
-                        event_name: "5".into(),
-                        ..Default::default()
-                    },
-                    LogRecord {
-                        severity_text: "ERROR".into(),
-                        event_name: "6".into(),
-                        ..Default::default()
-                    },
-                ],
+        let otap_batch2 = to_otap(vec![
+            LogRecord {
+                severity_text: "DEBUG".into(),
+                event_name: "4".into(),
                 ..Default::default()
-            }],
-            ..Default::default()
-        }]));
+            },
+            LogRecord {
+                severity_text: "TRACE".into(),
+                event_name: "5".into(),
+                ..Default::default()
+            },
+            LogRecord {
+                severity_text: "ERROR".into(),
+                event_name: "6".into(),
+                ..Default::default()
+            },
+        ]);
 
         let schema = otap_batch1.get(ArrowPayloadType::Logs).unwrap().schema();
         let rb_stream = Arc::new(RecordBatchPartitionStream::new(schema.clone()));

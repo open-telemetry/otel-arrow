@@ -4,6 +4,7 @@
 //! Errors for the columnar query engine.
 
 use arrow::error::ArrowError;
+use data_engine_expressions::QueryLocation;
 use datafusion::error::DataFusionError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -13,6 +14,12 @@ pub enum Error {
     /// Error which the pipeline can return if there was a problem encountered during execution
     #[error("Pipeline execution error: {cause}")]
     ExecutionError { cause: String },
+
+    #[error("Invalid pipeline: {cause} {query_location:?}")]
+    InvalidPipelineError {
+        cause: String,
+        query_location: Option<QueryLocation>,
+    },
 
     /// Error for syntax/query state that should be valid but is not yet supported by this engine
     #[error("Operation not yet supported by columnar engine: {message}")]
