@@ -47,7 +47,7 @@
       "groupName": "github workflow dependencies",
       "matchFileNames": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
       "schedule": [
-        "before 8am on Monday"
+        "before 8am on the first day of the month"
       ]
     },
     {
@@ -57,18 +57,6 @@
       "matchUpdateTypes": ["digest"],
       "schedule": [
         "before 8am on the first day of the month"
-      ]
-    },
-    {
-      // group together all golang package updates
-      // note that these changes often cannot be taken as-is
-      // need to run genotelarrowcol again manually
-      // to properly update collector/cmd/otelarrowcol
-      // grouping them together reduces pain of this manual work
-      "groupName": "golang module dependencies",
-      "matchFileNames": ["go/go.mod"],
-      "schedule": [
-        "before 8am on Monday"
       ]
     },
   ],
