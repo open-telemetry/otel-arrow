@@ -1,0 +1,47 @@
+name: "Tidy Renovate PRs"
+permissions:
+  contents: read
+
+on:
+- pull_request_target
+
+jobs:
+  tidy:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'renovate[bot]' }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: "1.25.4"
+      - name: make genotelarrowcol
+        # This also runs 'go mod tidy' as part of its process
+        run: make genotelarrowcol
+      - name: Create GitHub App token
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
+        id: app-token
+        with:
+          app-id: ${{ vars.OTELBOT_APP_ID }}
+          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
+      - name: Commit changes
+        env:
+          # not using secrets.GITHUB_TOKEN since commits from that token do not trigger workflows
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Configure git for otelbot
+          git config user.name otelbot
+          git config user.email 197425009+otelbot@users.noreply.github.com
+
+          if ! git diff --exit-code; then
+            git add .
+            git commit -m "make genotelarrowcol"
+            gh auth setup-git
+            git push
+          fi
