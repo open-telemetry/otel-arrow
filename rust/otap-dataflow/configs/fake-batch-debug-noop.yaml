@@ -1,3 +1,4 @@
+# Shows the batch processor.
 settings:
   default_pipeline_ctrl_msg_channel_size: 100
   default_node_ctrl_msg_channel_size: 100
@@ -28,8 +29,10 @@ nodes:
           - debug
         dispatch_strategy: round_robin
     config:
+      # At the rate configured above, this will print a batch
+      # every 10 seconds.
       send_batch_size: 1000
-      timeout: 1h
+      timeout: 30s
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
