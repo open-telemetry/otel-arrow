@@ -5,7 +5,7 @@
 //! Batches OtapPdata by count or timer; uses upstream OTAP batching for merge/split.
 
 use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::pdata::OtapPdata;
+use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -13,13 +13,14 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::control::NodeControlMsg;
-use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::batching::make_output_batches;
+use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -28,7 +29,7 @@ use serde_json::Value;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otap:processor:batch";
@@ -136,6 +137,9 @@ struct SignalBuffer {
 
     /// A count defined by batch_length(), number of spans, log records, or metric data points.
     items: usize,
+
+    /// Arrival time of the oldest data.
+    arrival: Option<Instant>,
 }
 
 /// Local (!Send) batch processor
@@ -284,11 +288,15 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
-        self.flush_signal_impl(SignalType::Logs, effect, reason)
+        // We pass None for latest arrival, because this used to force
+        // flush meaning there will be no residual batch.
+        debug_assert!(reason != FlushReason::Size);
+
+        self.flush_signal_impl(SignalType::Logs, effect, Instant::now(), reason)
             .await?;
-        self.flush_signal_impl(SignalType::Metrics, effect, reason)
+        self.flush_signal_impl(SignalType::Metrics, effect, Instant::now(), reason)
             .await?;
-        self.flush_signal_impl(SignalType::Traces, effect, reason)
+        self.flush_signal_impl(SignalType::Traces, effect, Instant::now(), reason)
             .await
     }
 
@@ -322,22 +330,36 @@ impl BatchProcessor {
             }
         }
 
+        let timeout = self.config.timeout;
+
         let buffer = match signal {
             SignalType::Logs => &mut self.signals.logs,
             SignalType::Metrics => &mut self.signals.metrics,
             SignalType::Traces => &mut self.signals.traces,
         };
 
+        let mut arrival: Option<Instant> = None;
+        if buffer.items == 0 {
+            let now = Instant::now();
+            arrival = Some(now);
+            if let Some(timeout) = timeout {
+                buffer.set_arrival(signal, now, timeout, effect).await?;
+            }
+        }
         buffer.items += items;
         buffer.pending.push(rec);
 
-        let should_flush = buffer.items >= self.lower_limit.get();
-
-        if should_flush {
-            self.flush_signal_impl(signal, effect, FlushReason::Size)
-                .await
-        } else {
+        // Flush based on size when the batch is minimally filled.
+        if buffer.items < self.lower_limit.get() {
             Ok(())
+        } else {
+            self.flush_signal_impl(
+                signal,
+                effect,
+                arrival.unwrap_or_else(Instant::now),
+                FlushReason::Size,
+            )
+            .await
         }
     }
 
@@ -346,6 +368,7 @@ impl BatchProcessor {
         &mut self,
         signal: SignalType,
         effect: &mut local::EffectHandler<OtapPdata>,
+        now: Instant,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
         let buffer = match signal {
@@ -354,12 +377,21 @@ impl BatchProcessor {
             SignalType::Traces => &mut self.signals.traces,
         };
 
-        buffer.items = 0;
-
-        let input = std::mem::take(&mut buffer.pending);
-        if input.is_empty() {
+        // If the input is empty.
+        if buffer.pending.is_empty() {
             return Ok(());
         }
+        // If the timer was called too soon.
+        if reason == FlushReason::Timer
+            && now.duration_since(buffer.arrival.expect("timer"))
+                < self.config.timeout.expect("timer")
+        {
+            return Ok(());
+        }
+
+        let input = std::mem::take(&mut buffer.pending);
+
+        buffer.items = 0;
 
         match reason {
             FlushReason::Size => self.metrics.flushes_size.inc(),
@@ -379,15 +411,19 @@ impl BatchProcessor {
             }
         };
 
-        // If size-triggered and we requested splitting (max is Some), re-buffer the last partial
+        // If size-triggered and we requested splitting (limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-        if limit.is_some() && reason == FlushReason::Size && !output_batches.is_empty() {
+        if reason == FlushReason::Size && limit.is_some() && !output_batches.is_empty() {
             if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
-                let threshold = self.lower_limit.get();
-                if last_items < threshold {
+                if last_items < self.lower_limit.get() {
                     let remainder = output_batches.pop().expect("last exists");
+
+                    // We use the latest arrival time as the new arrival for timeout purposes.
                     buffer.items = last_items;
                     buffer.pending.push(remainder);
+                    if let Some(timeout) = self.config.timeout {
+                        buffer.set_arrival(signal, now, timeout, effect).await?;
+                    }
                 }
             }
         }
@@ -444,62 +480,30 @@ impl local::Processor<OtapPdata> for BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         match msg {
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::TimerTick { .. } => {
-                        // Flush on timer only when thresholds were crossed and buffers are non-empty
-                        if !self.signals.logs.pending.is_empty() {
-                            if self.signals.logs.items >= self.lower_limit.get() {
-                                self.flush_signal_impl(
-                                    SignalType::Logs,
-                                    effect,
-                                    FlushReason::Timer,
-                                )
-                                .await?;
-                            }
-                        }
-                        if !self.signals.metrics.pending.is_empty() {
-                            if self.signals.metrics.items >= self.lower_limit.get() {
-                                self.flush_signal_impl(
-                                    SignalType::Metrics,
-                                    effect,
-                                    FlushReason::Timer,
-                                )
-                                .await?;
-                            }
-                        }
-                        if !self.signals.traces.pending.is_empty() {
-                            if self.signals.traces.items >= self.lower_limit.get() {
-                                self.flush_signal_impl(
-                                    SignalType::Traces,
-                                    effect,
-                                    FlushReason::Timer,
-                                )
-                                .await?;
-                            }
-                        }
-                        Ok(())
-                    }
-                    NodeControlMsg::Config { .. } => Ok(()),
-                    NodeControlMsg::Shutdown { .. } => {
-                        // Flush and shutdown
-                        self.flush_current(effect, FlushReason::Shutdown).await?;
-                        effect.info(LOG_MSG_SHUTTING_DOWN).await;
-                        Ok(())
-                    }
-                    NodeControlMsg::CollectTelemetry {
-                        mut metrics_reporter,
-                    } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
-                        EngineError::InternalError {
-                            message: e.to_string(),
-                        }
-                    }),
-                    NodeControlMsg::DelayedData { .. } => {
-                        unreachable!("unused");
-                    }
-                    NodeControlMsg::Ack { .. } | NodeControlMsg::Nack { .. } => Ok(()),
+            Message::Control(ctrl) => match ctrl {
+                NodeControlMsg::Config { .. } => Ok(()),
+                NodeControlMsg::Shutdown { .. } => {
+                    self.flush_current(effect, FlushReason::Shutdown).await?;
+                    effect.info(LOG_MSG_SHUTTING_DOWN).await;
+                    Ok(())
                 }
-            }
+                NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                    EngineError::InternalError {
+                        message: e.to_string(),
+                    }
+                }),
+                NodeControlMsg::DelayedData { data, .. } => {
+                    let signal = data.signal_type();
+                    self.flush_signal_impl(signal, effect, Instant::now(), FlushReason::Timer)
+                        .await?;
+                    Ok(())
+                }
+                NodeControlMsg::TimerTick { .. }
+                | NodeControlMsg::Ack { .. }
+                | NodeControlMsg::Nack { .. } => unreachable!(),
+            },
             Message::PData(request) => {
                 let signal_type = request.signal_type();
 
@@ -517,6 +521,38 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 }
             }
         }
+    }
+}
+
+impl SignalBuffer {
+    async fn set_arrival(
+        &mut self,
+        signal: SignalType,
+        now: Instant,
+        timeout: Duration,
+        effect: &mut local::EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        self.arrival = Some(now);
+
+        let wakeup: OtapPayload = match signal {
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(vec![]),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(vec![]),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(vec![]),
+        }
+        .into();
+
+        effect
+            .delay_data(
+                now + timeout,
+                Box::new(OtapPdata::new(Context::default(), wakeup)),
+            )
+            .await
+            .map_err(|_| EngineError::ProcessorError {
+                processor: effect.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "could not set one-shot timer".into(),
+                source_detail: "".into(),
+            })
     }
 }
 
@@ -756,8 +792,6 @@ mod tests {
         let validation = phase.run_test(|mut ctx| async move {
             // 1) Process a logs record. Current encoder path yields 0 rows for logs in this scenario,
             // so the processor treats it as empty and increments dropped_empty_records.
-            // TODO(telemetry-logs-rows): Once otel-arrow-rust encodes non-empty logs batches (or
-            // OtapArrowRecords::batch_length handles logs), switch assertions to consumed_items_logs.
             let pdata_logs: OtapPdata =
                 OtapPdata::new_default(logs_record_with_n_entries(3).into());
             ctx.process(Message::PData(pdata_logs))
@@ -821,8 +855,9 @@ mod tests {
                         }
                     }
                 });
-                // Wait until traces are observed (positive path), logs may still be seen as empty.
-                if get_metric(&map, "consumed_items_traces") >= 1 {
+                // Wait until traces and logs are observed.
+                if get_metric(&map, "consumed_items_traces") >= 1 &&
+                    get_metric(&map, "consumed_items_logs") >= 1 {
                     break;
                 }
                 sleep(Duration::from_millis(10)).await;
@@ -842,9 +877,18 @@ mod tests {
             let traces_rows = get_metric(&map, "consumed_items_traces");
             assert!(traces_rows >= 1);
 
-            // Logs path (current): likely dropped as empty; timer flush should be skipped
-            assert_eq!(get_metric(&map, "flushes_timer"), 0);
-            assert!(get_metric(&map, "timer_flush_skipped_logs") >= 1);
+            let logs_rows = get_metric(&map, "consumed_batches_logs");
+            assert!(logs_rows >= 1);
+
+            assert!(get_metric(&map, "flushes_timer") >= 1);
+
+            // Produced counts
+            assert!(get_metric(&map, "produced_batches_logs") >= 1);
+            assert!(get_metric(&map, "produced_items_logs") >= 1);
+
+            assert!(get_metric(&map, "produced_batches_traces") >= 1);
+            assert!(get_metric(&map, "produced_items_traces") >= 1);
+
             // Logs may either be processed (rows counted) or dropped as empty depending on encoder/test data.
             let logs_rows = get_metric(&map, "consumed_items_logs");
             let dropped_empty = get_metric(&map, "dropped_empty_records");
