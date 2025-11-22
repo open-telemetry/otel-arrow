@@ -597,47 +597,100 @@ mod tests {
     use otap_df_pdata::testing::fixtures::DataGenerator;
     use otap_df_pdata::testing::round_trip::otap_to_otlp;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use serde_json::Value;
     use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// Helper to create test pipeline context
-    fn create_test_pipeline_context() -> otap_df_engine::context::PipelineContext {
+    fn create_test_pipeline_context() -> (
+        otap_df_engine::context::PipelineContext,
+        MetricsRegistryHandle,
+    ) {
         let metrics_registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry);
-        controller_ctx.pipeline_context_with(
+        let controller_ctx = ControllerContext::new(metrics_registry.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
             PipelineGroupId::from("test_group".to_string()),
             PipelineId::from("test_pipeline".to_string()),
             0,
             0,
-        )
+        );
+        (pipeline_ctx, metrics_registry)
     }
 
-    /// Helper to create a batch processor from config
-    fn create_test_batch_processor(config: Value) -> ProcessorWrapper<OtapPdata> {
-        let pipeline_ctx = create_test_pipeline_context();
+    /// Helper to set up a test runtime with batch processor
+    fn setup_test_runtime(
+        cfg: Value,
+    ) -> (
+        MetricsRegistryHandle,
+        otap_df_telemetry::reporter::MetricsReporter,
+        otap_df_engine::testing::processor::TestPhase<OtapPdata>,
+    ) {
+        let rt = TestRuntime::new();
+        let metrics_registry = rt.metrics_registry();
+        let metrics_reporter = rt.metrics_reporter();
+
+        // Create processor using TestRuntime's registry
+        let controller = ControllerContext::new(metrics_registry.clone());
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
-        node_config.config = config;
+        node_config.config = cfg;
         let proc_config = ProcessorConfig::new("batch");
+        let proc =
+            create_otap_batch_processor(pipeline_ctx, node, Arc::new(node_config), &proc_config)
+                .expect("create processor");
 
-        create_otap_batch_processor(pipeline_ctx, node, Arc::new(node_config), &proc_config)
-            .expect("create processor")
+        let phase = rt.set_processor(proc);
+
+        (metrics_registry, metrics_reporter, phase)
+    }
+
+    /// Helper to verify consumed and produced item metrics
+    fn verify_item_metrics(
+        metrics_registry: &MetricsRegistryHandle,
+        signal: SignalType,
+        expected_items: usize,
+    ) {
+        let mut consumed_items = 0u64;
+        let mut produced_items = 0u64;
+        let mut consumed_batches = 0u64;
+        let mut produced_batches = 0u64;
+
+        metrics_registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == "otap.processor.batch" {
+                for (field, value) in iter {
+                    match (signal, field.name) {
+                        (SignalType::Logs, "consumed.items.logs") => consumed_items = value,
+                        (SignalType::Logs, "produced.items.logs") => produced_items = value,
+                        (SignalType::Traces, "consumed.items.traces") => consumed_items = value,
+                        (SignalType::Traces, "produced.items.traces") => produced_items = value,
+                        (SignalType::Logs, "consumed.batches.logs") => consumed_batches = value,
+                        (SignalType::Logs, "produced.batches.logs") => produced_batches = value,
+                        (SignalType::Traces, "consumed.batches.traces") => consumed_batches = value,
+                        (SignalType::Traces, "produced.batches.traces") => produced_batches = value,
+                        _ => {}
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            consumed_items as usize, expected_items,
+            "consumed_items metric must match"
+        );
+        assert_eq!(
+            produced_items as usize, expected_items,
+            "produced_items metric must match"
+        );
+        assert!(produced_batches != 0, "produced_batches != 0");
+        assert!(consumed_batches != 0, "consumed_batches != 0");
     }
 
     #[test]
     fn test_factory_config_ports() {
         // Build a pipeline context to register metrics
-        let registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(registry.clone());
-        let pipeline_ctx = controller_ctx.pipeline_context_with(
-            PipelineGroupId::from("g".to_string()),
-            PipelineId::from("p".to_string()),
-            0,
-            0,
-        );
+        let (pipeline_ctx, _registry) = create_test_pipeline_context();
 
         // Prepare a NodeUserConfig with an out_port and a default_out_port
         let mut nuc = NodeUserConfig::with_user_config(
@@ -726,11 +779,11 @@ mod tests {
             "timeout": "1s"
         });
 
-        let proc = create_test_batch_processor(cfg);
-        let rt = TestRuntime::new();
-        let phase = rt.set_processor(proc);
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
 
         let inputs_otlp: Vec<_> = inputs_otlp.collect();
+        let signal = inputs_otlp[0].signal_type();
+        let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
 
         phase
             .run_test(move |mut ctx| async move {
@@ -789,9 +842,22 @@ mod tests {
                     .collect();
                 assert_equivalent(&inputs_otlp, &all_outputs);
 
+                // Trigger telemetry collection
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+
                 controller_task.abort();
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_| async move {
+                // Allow metrics to be reported
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify metrics
+                verify_item_metrics(&metrics_registry, signal, input_item_count);
+            });
     }
 
     #[test]
@@ -814,9 +880,10 @@ mod tests {
             "timeout": "50ms"
         });
 
-        let proc = create_test_batch_processor(cfg);
-        let rt = TestRuntime::new();
-        let phase = rt.set_processor(proc);
+        let signal = input_otlp.signal_type();
+        let input_item_count = input_otlp.batch_length();
+
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
 
         phase
             .run_test(move |mut ctx| async move {
@@ -855,12 +922,25 @@ mod tests {
                     let output_rec: OtapArrowRecords =
                         emitted[0].clone().payload().try_into().unwrap();
                     let output_otlp = otap_to_otlp(&output_rec);
-                    assert_equivalent(&vec![input_otlp], &vec![output_otlp]);
+                    assert_equivalent(&vec![input_otlp.clone()], &vec![output_otlp.clone()]);
+
+                    // Trigger telemetry collection
+                    ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                        metrics_reporter,
+                    }))
+                    .await
+                    .expect("collect telemetry");
                 } else {
                     panic!("Expected DelayData");
                 }
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_| async move {
+                // Allow metrics to be reported
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify metrics
+                verify_item_metrics(&metrics_registry, signal, input_item_count);
+            });
     }
 
     #[test]
@@ -883,11 +963,11 @@ mod tests {
             "timeout": "1s"
         });
 
-        let proc = create_test_batch_processor(cfg);
-        let rt = TestRuntime::new();
-        let phase = rt.set_processor(proc);
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
 
         let inputs_otlp: Vec<_> = inputs_otlp.collect();
+        let signal = inputs_otlp[0].signal_type();
+        let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
 
         phase
             .run_test(move |mut ctx| async move {
@@ -941,9 +1021,22 @@ mod tests {
                     .collect();
                 assert_equivalent(&inputs_otlp, &all_outputs);
 
+                // Trigger telemetry collection
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+
                 controller_task.abort();
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_| async move {
+                // Allow metrics to be reported
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify metrics
+                verify_item_metrics(&metrics_registry, signal, input_item_count);
+            });
     }
 
     #[test]
@@ -966,11 +1059,11 @@ mod tests {
             "timeout": "1s"
         });
 
-        let proc = create_test_batch_processor(cfg);
-        let rt = TestRuntime::new();
-        let phase = rt.set_processor(proc);
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
 
         let inputs_otlp: Vec<_> = inputs_otlp.collect();
+        let signal = inputs_otlp[0].signal_type();
+        let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
 
         phase
             .run_test(move |mut ctx| async move {
@@ -1026,9 +1119,22 @@ mod tests {
                     .collect();
                 assert_equivalent(&inputs_otlp, &all_outputs);
 
+                // Trigger telemetry collection
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+
                 controller_task.abort();
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_| async move {
+                // Allow metrics to be reported
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify metrics
+                verify_item_metrics(&metrics_registry, signal, input_item_count);
+            });
     }
 
     #[test]

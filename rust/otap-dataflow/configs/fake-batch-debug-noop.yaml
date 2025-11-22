@@ -32,7 +32,8 @@ nodes:
       # At the rate configured above, this will print a batch
       # every 10 seconds.
       send_batch_size: 1000
-      timeout: 30s
+      # This interrupts it, so we expect around 300.
+      timeout: 3s
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
