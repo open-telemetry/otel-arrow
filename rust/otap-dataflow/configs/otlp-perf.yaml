@@ -6,19 +6,22 @@ settings:
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    plugin_urn: "urn:otel:otel:receiver"
     out_ports:
       out_port:
         destinations:
           - perf
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4318"
+      listening_addr: "127.0.0.1:4328"
+      request_compression: none
+      timeout: "10s"
   perf:
     kind: exporter
     plugin_urn: "urn:otel:otap:perf:exporter"
     config:
       frequency: 1000
+      display_throughput: true
       cpu_usage: false
       mem_usage: false
       disk_usage: false

@@ -6,18 +6,20 @@ settings:
 nodes:
   receiver:
     kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    plugin_urn: "urn:otel:otel:receiver"
     out_ports:
       out_port:
         destinations:
           - exporter
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4317"
+      listening_addr: "127.0.0.1:4327"
+      request_compression: none
       # timeout: "30s"  # Optional: timeout for RPC requests
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otlp:exporter"
     config:
-      grpc_endpoint: "http://127.0.0.1:4318"
+      grpc_endpoint: "http://127.0.0.1:4328"
+      #compression_method: zstd
       # timeout: "15s"  # Optional: timeout for RPC requests
