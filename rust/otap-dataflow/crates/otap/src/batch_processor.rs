@@ -125,9 +125,8 @@ impl Config {
             }
             if self.send_batch_max_size.is_none() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "send_batch_max_size required for split-only (no timeout) configuration"
-                    ),
+                    error: "send_batch_max_size required for split-only (no timeout) configuration"
+                        .into(),
                 });
             }
         }
@@ -941,7 +940,9 @@ mod tests {
                     let output_rec: OtapArrowRecords =
                         emitted[0].clone().payload().try_into().unwrap();
                     let output_otlp = otap_to_otlp(&output_rec);
-                    assert_equivalent(&vec![input_otlp.clone()], &vec![output_otlp.clone()]);
+
+                    use std::slice::from_ref;
+                    assert_equivalent(from_ref(&input_otlp), from_ref(&output_otlp));
 
                     // Trigger telemetry collection
                     ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
