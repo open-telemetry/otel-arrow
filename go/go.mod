@@ -6,7 +6,7 @@ toolchain go1.24.5
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
-	github.com/apache/arrow-go/v18 v18.2.0
+	github.com/apache/arrow-go/v18 v18.4.1
 	github.com/axiomhq/hyperloglog v0.2.5
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/dustin/go-humanize v1.0.1
