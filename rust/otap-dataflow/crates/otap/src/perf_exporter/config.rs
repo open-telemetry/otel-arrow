@@ -24,7 +24,7 @@ pub struct Config {
     #[serde(default = "default_cpu_usage")]
     cpu_usage: bool,
 
-    #[serde(default = "default_mem_usage")]
+    #[serde(default = "default_mem_usage", alias = "memory_usage")]
     mem_usage: bool,
 
     #[serde(default = "default_disk_usage")]

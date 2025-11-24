@@ -24,9 +24,7 @@ pub struct GrpcServerSettings {
     /// and deflate (in that preference order).
     #[serde(
         default,
-        deserialize_with = "compression::deserialize_compression_methods",
-        alias = "compression_method",
-        alias = "request_compression_method"
+        deserialize_with = "compression::deserialize_compression_methods"
     )]
     pub request_compression: Option<Vec<CompressionMethod>>,
 
@@ -262,15 +260,15 @@ const fn default_tcp_nodelay() -> bool {
     true
 }
 
-fn default_tcp_keepalive() -> Option<Duration> {
+const fn default_tcp_keepalive() -> Option<Duration> {
     Some(Duration::from_secs(45))
 }
 
-fn default_tcp_keepalive_interval() -> Option<Duration> {
+const fn default_tcp_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(15))
 }
 
-fn default_tcp_keepalive_retries() -> Option<u32> {
+const fn default_tcp_keepalive_retries() -> Option<u32> {
     Some(5)
 }
 
@@ -278,27 +276,27 @@ const fn default_load_shed() -> bool {
     true
 }
 
-fn default_initial_stream_window_size() -> Option<u32> {
+const fn default_initial_stream_window_size() -> Option<u32> {
     Some(8 * 1024 * 1024)
 }
 
-fn default_initial_connection_window_size() -> Option<u32> {
+const fn default_initial_connection_window_size() -> Option<u32> {
     Some(24 * 1024 * 1024)
 }
 
-fn default_max_frame_size() -> Option<u32> {
+const fn default_max_frame_size() -> Option<u32> {
     Some(16 * 1024)
 }
 
-fn default_max_decoding_message_size() -> Option<u32> {
+const fn default_max_decoding_message_size() -> Option<u32> {
     Some(4 * 1024 * 1024)
 }
 
-fn default_http2_keepalive_interval() -> Option<Duration> {
+const fn default_http2_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(30))
 }
 
-fn default_http2_keepalive_timeout() -> Option<Duration> {
+const fn default_http2_keepalive_timeout() -> Option<Duration> {
     Some(Duration::from_secs(10))
 }
 
@@ -306,7 +304,7 @@ const fn default_http2_adaptive_window() -> bool {
     false
 }
 
-fn default_http2_handshake_timeout() -> Duration {
+const fn default_http2_handshake_timeout() -> Duration {
     Duration::from_secs(5)
 }
 
@@ -341,5 +339,62 @@ impl Default for GrpcServerSettings {
             wait_for_result: default_wait_for_result(),
             timeout: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compression::{CompressionMethod, DEFAULT_COMPRESSION_METHODS};
+    use tonic::codec::CompressionEncoding;
+
+    #[test]
+    fn defaults_match_expected_compression() {
+        let settings = GrpcServerSettings::default();
+
+        assert_eq!(
+            settings.request_compression_methods(),
+            DEFAULT_COMPRESSION_METHODS.to_vec()
+        );
+        assert!(settings.response_compression_methods().is_empty());
+        assert_eq!(settings.preferred_response_compression(), None);
+    }
+
+    #[test]
+    fn response_compression_prefers_first_entry() {
+        let settings = GrpcServerSettings {
+            response_compression: Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            settings.preferred_response_compression(),
+            Some(CompressionMethod::Gzip)
+        );
+        assert_eq!(
+            settings.response_compression_methods(),
+            vec![CompressionMethod::Gzip, CompressionMethod::Zstd]
+        );
+    }
+
+    #[test]
+    fn build_settings_carries_core_limits_and_compression() {
+        let settings = GrpcServerSettings {
+            max_concurrent_requests: 42,
+            wait_for_result: true,
+            max_decoding_message_size: Some(8 * 1024 * 1024),
+            request_compression: Some(vec![CompressionMethod::Deflate]),
+            response_compression: Some(vec![CompressionMethod::Deflate]),
+            ..Default::default()
+        };
+
+        let built = settings.build_settings();
+        assert_eq!(built.max_concurrent_requests, 42);
+        assert!(built.wait_for_result);
+        assert_eq!(built.max_decoding_message_size, Some(8 * 1024 * 1024));
+
+        let (req, resp) = settings.compression_encodings();
+        assert!(req.is_enabled(CompressionEncoding::Deflate));
+        assert!(resp.is_enabled(CompressionEncoding::Deflate));
     }
 }

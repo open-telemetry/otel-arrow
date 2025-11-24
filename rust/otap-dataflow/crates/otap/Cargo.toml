@@ -45,6 +45,8 @@ bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
 flate2 = { workspace = true }
+nix = { workspace = true }
+jemalloc-ctl = { workspace = true, optional = true }
 
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
@@ -79,6 +81,7 @@ experimental-exporters = []
 geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
 # Opt-in unsafe micro-optimizations used in the OTEL receiver hot path.
 unsafe-optimizations = []
+jemalloc-metrics = ["dep:jemalloc-ctl"]
 
 [dev-dependencies]
 flume = { workspace = true }

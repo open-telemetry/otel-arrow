@@ -40,12 +40,14 @@ use crate::{
     pdata::{Context, OtapPdata},
 };
 
+pub mod client_settings;
 pub mod common;
 pub mod middleware;
 pub mod otlp;
-pub mod receiver_settings;
+pub mod server_settings;
 
-pub use receiver_settings::GrpcServerSettings;
+pub use client_settings::GrpcClientSettings;
+pub use server_settings::GrpcServerSettings;
 
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]

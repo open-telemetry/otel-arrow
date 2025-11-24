@@ -22,7 +22,7 @@ nodes:
     config:
       frequency: 1000
       display_throughput: true
-      cpu_usage: false
-      mem_usage: false
+      cpu_usage: true
+      mem_usage: true
       disk_usage: false
       io_usage: false

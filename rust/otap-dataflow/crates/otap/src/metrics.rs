@@ -55,26 +55,47 @@ pub struct ExporterPDataMetrics {
 
 impl ExporterPDataMetrics {
     pub fn inc_consumed(&mut self, st: SignalType) {
-        match st {
-            SignalType::Metrics => self.metrics_consumed.inc(),
-            SignalType::Logs => self.logs_consumed.inc(),
-            SignalType::Traces => self.traces_consumed.inc(),
-        }
+        self.add_consumed(st, 1);
     }
 
     pub fn inc_exported(&mut self, st: SignalType) {
-        match st {
-            SignalType::Metrics => self.metrics_exported.inc(),
-            SignalType::Logs => self.logs_exported.inc(),
-            SignalType::Traces => self.traces_exported.inc(),
-        }
+        self.add_exported(st, 1);
     }
 
     pub fn inc_failed(&mut self, st: SignalType) {
+        self.add_failed(st, 1);
+    }
+
+    pub fn add_consumed(&mut self, st: SignalType, count: u64) {
+        if count == 0 {
+            return;
+        }
         match st {
-            SignalType::Metrics => self.metrics_failed.inc(),
-            SignalType::Logs => self.logs_failed.inc(),
-            SignalType::Traces => self.traces_failed.inc(),
+            SignalType::Metrics => self.metrics_consumed.add(count),
+            SignalType::Logs => self.logs_consumed.add(count),
+            SignalType::Traces => self.traces_consumed.add(count),
+        }
+    }
+
+    pub fn add_exported(&mut self, st: SignalType, count: u64) {
+        if count == 0 {
+            return;
+        }
+        match st {
+            SignalType::Metrics => self.metrics_exported.add(count),
+            SignalType::Logs => self.logs_exported.add(count),
+            SignalType::Traces => self.traces_exported.add(count),
+        }
+    }
+
+    pub fn add_failed(&mut self, st: SignalType, count: u64) {
+        if count == 0 {
+            return;
+        }
+        match st {
+            SignalType::Metrics => self.metrics_failed.add(count),
+            SignalType::Logs => self.logs_failed.add(count),
+            SignalType::Traces => self.traces_failed.add(count),
         }
     }
 }

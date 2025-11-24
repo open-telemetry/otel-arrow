@@ -7,6 +7,7 @@
 //! dynamic dispatch.
 
 use crate::attributes::AttributeSetHandler;
+use crate::descriptor::Instrument;
 use crate::descriptor::MetricsDescriptor;
 use crate::descriptor::MetricsField;
 use crate::metrics::{MetricSet, MetricSetHandler};
@@ -207,20 +208,28 @@ impl MetricsRegistry {
             entry
                 .metric_values
                 .iter_mut()
-                .zip(metrics_values)
-                .for_each(|(e, v)| {
-                    #[cfg(feature = "unchecked-arithmetic")]
-                    {
-                        // SAFETY: Metric values are expected to be well-behaved and not overflow
-                        // in typical telemetry scenarios. This is a performance optimization for
-                        // hot path metric accumulation.
-                        *e = e.wrapping_add(*v);
-                    }
-                    #[cfg(not(feature = "unchecked-arithmetic"))]
-                    {
-                        *e += v;
-                    }
-                });
+                .zip(metrics_values.iter().copied())
+                .zip(entry.metrics_descriptor.metrics.iter())
+                .for_each(
+                    |((current_value, new_value), field)| match field.instrument {
+                        Instrument::Gauge => {
+                            *current_value = new_value;
+                        }
+                        Instrument::Counter | Instrument::UpDownCounter | Instrument::Histogram => {
+                            #[cfg(feature = "unchecked-arithmetic")]
+                            {
+                                // SAFETY: Metric values are expected to be well-behaved and not overflow
+                                // in typical telemetry scenarios. This is a performance optimization for
+                                // hot path metric accumulation.
+                                *current_value = current_value.wrapping_add(new_value);
+                            }
+                            #[cfg(not(feature = "unchecked-arithmetic"))]
+                            {
+                                *current_value += new_value;
+                            }
+                        }
+                    },
+                );
         } else {
             // TODO: consider logging missing key
         }
@@ -440,6 +449,59 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct GaugeMetricSet {
+        values: Vec<u64>,
+    }
+
+    impl GaugeMetricSet {
+        fn new() -> Self {
+            Self { values: vec![0, 0] }
+        }
+    }
+
+    impl Default for GaugeMetricSet {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    static GAUGE_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "gauge_metrics",
+        metrics: &[
+            MetricsField {
+                name: "counter",
+                unit: "1",
+                brief: "Counter field",
+                instrument: Instrument::Counter,
+            },
+            MetricsField {
+                name: "gauge",
+                unit: "1",
+                brief: "Gauge field",
+                instrument: Instrument::Gauge,
+            },
+        ],
+    };
+
+    impl MetricSetHandler for GaugeMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &GAUGE_METRICS_DESCRIPTOR
+        }
+
+        fn snapshot_values(&self) -> Vec<u64> {
+            self.values.clone()
+        }
+
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(|v| *v = 0);
+        }
+
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&v| v != 0)
+        }
+    }
+
+    #[derive(Debug)]
     struct MockAttributeSet {
         // Store the attribute values as owned data that we can return references to
         attribute_values: Vec<AttributeValue>,
@@ -518,6 +580,27 @@ mod tests {
         });
 
         assert_eq!(accumulated_values, vec![15, 35]);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_overwrites_gauge() {
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+
+        let metric_set: MetricSet<GaugeMetricSet> = handle.register(attrs);
+        let metrics_key = metric_set.key;
+
+        handle.accumulate_snapshot(metrics_key, &[5, 100]);
+        handle.accumulate_snapshot(metrics_key, &[7, 50]);
+
+        let mut accumulated_values = Vec::new();
+        handle.visit_metrics_and_reset(|_desc, _attrs, iter| {
+            for (field, value) in iter {
+                accumulated_values.push((field.name, value));
+            }
+        });
+
+        assert_eq!(accumulated_values, vec![("counter", 12), ("gauge", 50)]);
     }
 
     #[test]

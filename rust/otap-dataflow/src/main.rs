@@ -4,6 +4,9 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
+#[cfg(feature = "jemalloc-allocator")]
+use jemallocator::Jemalloc;
+#[cfg(not(feature = "jemalloc-allocator"))]
 use mimalloc_rust::*;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
@@ -12,8 +15,13 @@ use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 
+#[cfg(feature = "jemalloc-allocator")]
 #[global_allocator]
-static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL_ALLOC: Jemalloc = Jemalloc;
+
+#[cfg(not(feature = "jemalloc-allocator"))]
+#[global_allocator]
+static GLOBAL_ALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
 #[derive(Parser)]
 #[command(
