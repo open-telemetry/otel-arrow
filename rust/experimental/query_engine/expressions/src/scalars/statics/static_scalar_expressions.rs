@@ -174,6 +174,30 @@ impl Expression for StaticScalarExpression {
             StaticScalarExpression::TimeSpan(_) => "StaticScalar(TimeSpan)",
         }
     }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            StaticScalarExpression::Array(a) => {
+                writeln!(f, "Array: {}", Value::Array(a))
+            }
+            StaticScalarExpression::Boolean(b) => writeln!(f, "Bool: {}", b.get_value()),
+            StaticScalarExpression::Constant(c) => {
+                writeln!(f, "Constant(Copy)")?;
+                writeln!(f, "{indent}├── Id: {}", c.get_constant_id())?;
+                write!(f, "{indent}└── ")?;
+                c.get_value().fmt_with_indent(f, indent)?;
+                Ok(())
+            }
+            StaticScalarExpression::DateTime(d) => writeln!(f, "DateTime: {}", Value::DateTime(d)),
+            StaticScalarExpression::Double(d) => writeln!(f, "Double: {}", d.get_value()),
+            StaticScalarExpression::Integer(i) => writeln!(f, "Integer: {}", i.get_value()),
+            StaticScalarExpression::Map(m) => writeln!(f, "Map: {}", Value::Map(m)),
+            StaticScalarExpression::Null(_) => writeln!(f, "Null"),
+            StaticScalarExpression::Regex(r) => writeln!(f, "Regex: {:?}", r.get_value().as_str()),
+            StaticScalarExpression::String(s) => writeln!(f, "String: {:?}", s.get_value()),
+            StaticScalarExpression::TimeSpan(t) => writeln!(f, "TimeSpan: {}", Value::TimeSpan(t)),
+        }
+    }
 }
 
 impl AsStaticValue for StaticScalarExpression {

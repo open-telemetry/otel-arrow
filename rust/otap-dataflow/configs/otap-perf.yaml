@@ -1,5 +1,6 @@
 settings:
-  default_control_channel_size: 100
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
 
 nodes:
@@ -13,7 +14,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4318"
-      message_size: 256
+      response_stream_channel_size: 256
   perf:
     kind: exporter
     plugin_urn: "urn:otel:otap:perf:exporter"

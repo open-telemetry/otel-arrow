@@ -1,3 +1,10 @@
+coverage:
+  status:
+    project: # Overall repo coverage
+      default:
+        target: auto # Increase
+        threshold: 0.1% # Allow small fluctuation
+
 comment:
   layout: "header, diff, flags, components"
 
@@ -7,13 +14,6 @@ component_management:
       name: "otap-dataflow"
       paths:
         - "rust/otap-dataflow/"
-    - component_id: "otel_arrow_rust"
-      name: "otel-arrow-rust"
-      paths:
-        - "rust/otel-arrow-rust/"
-      ignore:
-        - "rust/otel-arrow-rust/src/pdata/otlp/derive/"
-        - "rust/otel-arrow-rust/src/pdata/otlp/model/"
     - component_id: "query_abstraction"
       name: "query_abstraction"
       paths:

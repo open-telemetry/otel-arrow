@@ -26,7 +26,6 @@ jobs:
       matrix:
         folder:
           - otap-dataflow
-          - otel-arrow-rust
           - experimental/query_abstraction
           - experimental/query_engine
     runs-on: ubuntu-latest
@@ -37,11 +36,11 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: stable
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@f63c33fd96cc1e69a29bafd06541cf28588b43a4 # v2.58.21
+        uses: taiki-e/install-action@537c30d2b45cc3aa3fb35e2bbcfb61ef93fd6f02 # v2.62.52
         with:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
@@ -50,7 +49,7 @@ jobs:
         run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@fdcc8476540edceab3de004e990f80d881c6cc00 # v5.5.0
+        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
@@ -62,7 +61,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -73,7 +71,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: nightly
           components: rustfmt
@@ -87,7 +85,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -98,7 +95,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: stable
           components: clippy
@@ -113,7 +110,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -124,7 +120,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: stable
       - name: advisories
@@ -158,7 +154,6 @@ jobs:
       matrix:
         folder:
         - otap-dataflow
-        - otel-arrow-rust
         - experimental/query_abstraction
         - experimental/query_engine
     runs-on: ubuntu-latest
@@ -169,7 +164,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: stable
       - name: cargo doc ${{ matrix.folder }}
@@ -190,7 +185,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
+      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: stable
       - name: cargo xtask ${{ matrix.folder }}

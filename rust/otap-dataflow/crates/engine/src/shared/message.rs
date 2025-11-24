@@ -83,4 +83,13 @@ impl<T> SharedReceiver<T> {
             }
         }
     }
+
+    /// Returns `true` if the channel is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            SharedReceiver::MpscReceiver(receiver) => receiver.is_empty(),
+            SharedReceiver::MpmcReceiver(receiver) => receiver.is_empty(),
+        }
+    }
 }

@@ -1,9 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{
-    Expression, LogicalExpression, QueryLocation, SummaryDataExpression, TransformExpression,
-};
+use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataExpression {
@@ -15,6 +13,19 @@ pub enum DataExpression {
 
     /// Transform data expression.
     Transform(TransformExpression),
+}
+
+impl DataExpression {
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        match self {
+            DataExpression::Discard(d) => d.try_fold(scope),
+            DataExpression::Summary(s) => s.try_fold(scope),
+            DataExpression::Transform(t) => t.try_fold(scope),
+        }
+    }
 }
 
 impl Expression for DataExpression {
@@ -31,6 +42,14 @@ impl Expression for DataExpression {
             DataExpression::Discard(_) => "DataExpression(Discard)",
             DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
+        }
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        match self {
+            DataExpression::Discard(d) => d.fmt_with_indent(f, indent),
+            DataExpression::Summary(s) => s.fmt_with_indent(f, indent),
+            DataExpression::Transform(t) => t.fmt_with_indent(f, indent),
         }
     }
 }
@@ -58,6 +77,22 @@ impl DiscardDataExpression {
     pub fn get_predicate(&self) -> Option<&LogicalExpression> {
         self.predicate.as_ref()
     }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        if let Some(p) = &mut self.predicate
+            && let Some(b) = p.try_resolve_static(scope)?
+            && b
+        {
+            // Note: If predicate evaluates to static true we can clear it as
+            // everything will be discarded by default.
+            self.predicate = None
+        }
+
+        Ok(())
+    }
 }
 
 impl Expression for DiscardDataExpression {
@@ -67,5 +102,18 @@ impl Expression for DiscardDataExpression {
 
     fn get_name(&self) -> &'static str {
         "DiscardDataExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Discard")?;
+        match self.predicate.as_ref() {
+            None => writeln!(f, "{indent}└── Predicate: None")?,
+            Some(p) => {
+                writeln!(f, "{indent}└── Predicate:")?;
+                write!(f, "{indent}    └── ")?;
+                p.fmt_with_indent(f, format!("{indent}        ").as_str())?;
+            }
+        }
+        Ok(())
     }
 }

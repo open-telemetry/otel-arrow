@@ -33,13 +33,17 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::{Error, TypedError};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
+use crate::error::{Error, ReceiverErrorKind, TypedError};
 use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -56,7 +60,7 @@ pub trait Receiver<PData> {
         self: Box<Self>,
         ctrl_chan: ControlChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A channel for receiving control messages (in a Send environment).
@@ -87,7 +91,7 @@ impl<PData> ControlChannel<PData> {
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore,
+    core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
@@ -107,9 +111,10 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
-        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender,
+        pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id);
+        let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
 
         // Determine and cache the default sender
@@ -154,9 +159,11 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
+                source_detail: String::new(),
             })),
         }
     }
@@ -175,10 +182,12 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ReceiverError {
                 receiver: self.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.receiver_id()
                 ),
+                source_detail: String::new(),
             })),
         }
     }
@@ -209,8 +218,25 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Reports metrics collected by the receiver.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.

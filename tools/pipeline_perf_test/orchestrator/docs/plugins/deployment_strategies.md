@@ -75,6 +75,10 @@ components:
 
 - StepContext
 
+**Installs Default Hooks:**
+
+- EnsureProcess
+
 **Description:**
 
 ```python

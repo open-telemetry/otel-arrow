@@ -32,15 +32,19 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
-use crate::effect_handler::{EffectHandlerCore, TimerCancelHandle};
-use crate::error::{Error, TypedError};
+use crate::control::{AckMsg, NackMsg};
+use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
+use crate::error::{Error, ProcessorErrorKind, TypedError};
 use crate::local::message::LocalSender;
 use crate::message::Message;
 use crate::node::NodeId;
 use async_trait::async_trait;
 use otap_df_config::PortName;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
@@ -86,7 +90,7 @@ pub trait Processor<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the processor.
     /// Supports multiple named output ports.
@@ -103,8 +107,9 @@ impl<PData> EffectHandler<PData> {
         node_id: NodeId,
         msg_senders: HashMap<PortName, LocalSender<PData>>,
         default_port: Option<PortName>,
+        metrics_reporter: MetricsReporter,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id);
+        let core = EffectHandlerCore::new(node_id, metrics_reporter);
 
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {
@@ -152,9 +157,11 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error:
                     "Ambiguous default out port: multiple ports connected and no default configured"
                         .to_string(),
+                source_detail: String::new(),
             })),
         }
     }
@@ -178,10 +185,12 @@ impl<PData> EffectHandler<PData> {
                 .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::ProcessorError {
                 processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
                 error: format!(
                     "Unknown out port '{port_name}' for node {}",
                     self.processor_id()
                 ),
+                source_detail: String::new(),
             })),
         }
     }
@@ -201,8 +210,46 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
+    }
+
+    /// Starts a cancellable periodic telemetry timer that emits CollectTelemetry.
+    pub async fn start_periodic_telemetry(
+        &self,
+        duration: Duration,
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
+        self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
+    }
+
+    /// Delay data.
+    pub async fn delay_data(&self, when: Instant, data: Box<PData>) -> Result<(), PData> {
+        self.core.delay_data(when, data).await
+    }
+
+    /// Reports metrics collected by the processor.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.
@@ -232,7 +279,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
         eh.send_message_to("b", 42).await.unwrap();
 
         // Ensure only 'b' received
@@ -250,7 +298,8 @@ mod tests {
         let mut senders = HashMap::new();
         let _ = senders.insert("only".into(), LocalSender::MpscSender(tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -265,7 +314,13 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, Some("a".into()));
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("a".into()),
+            metrics_reporter,
+        );
 
         eh.send_message(11).await.unwrap();
 
@@ -286,7 +341,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -313,7 +369,8 @@ mod tests {
         let _ = senders.insert("a".into(), LocalSender::MpscSender(a_tx));
         let _ = senders.insert("b".into(), LocalSender::MpscSender(b_tx));
 
-        let eh = EffectHandler::new(test_node("proc"), senders, None);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

@@ -49,12 +49,16 @@ impl MapValue for Resource {
         key == "Attributes"
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
+    fn get(&self, key: &str) -> Option<&dyn AsValue> {
+        self.get_static(key).unwrap().map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
         if key == "Attributes" {
-            return Some(&self.attributes);
+            return Ok(Some(&self.attributes));
         }
 
-        None
+        Ok(None)
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
@@ -81,13 +85,17 @@ impl MapValue for InstrumentationScope {
         matches!(key, "Attributes" | "Name" | "Version")
     }
 
-    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)> {
-        match key {
+    fn get(&self, key: &str) -> Option<&dyn AsValue> {
+        self.get_static(key).unwrap().map(|v| v as &dyn AsValue)
+    }
+
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
+        Ok(match key {
             "Attributes" => Some(&self.attributes),
             "Name" => self.name.as_ref().map(|v| v as &dyn AsStaticValue),
             "Version" => self.version.as_ref().map(|v| v as &dyn AsStaticValue),
             _ => None,
-        }
+        })
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {

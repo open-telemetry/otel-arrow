@@ -9,45 +9,37 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-mimalloc = "0.1.47"
-otap-df-otap = { path="../crates/otap"}
+mimalloc-rust.workspace = true
+otap-df-otap = { path = "../crates/otap" }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
-mimalloc = "0.1.46"
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 otap-df-engine = { path = "../crates/engine"}
-otap-df-otlp = { path="../crates/otlp"}
 otap-df-telemetry = { path="../crates/telemetry"}
-otap-df-pdata-views = { path="../crates/pdata-views", features = ["bench"]}
-otap-df-syslog-cef = { path="../crates/syslog_cef_receiver"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
-otel-arrow-rust = { path = "../../otel-arrow-rust"}
-fluke-hpack = "0.3.1"
-futures-channel = "0.3"
-futures = "0.3.31"
-flume = "0.11.1"
-core_affinity = "0.8.3"
-local-sync = "0.1.1"
-async-unsync = "0.3.0"
-unsync = "0.1.2"
-tonic = "0.13.1"
-portpicker = "0.1.1"
-prost = "0.13"
-tokio-stream = "0.1.17"
+otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
+
+fluke-hpack.workspace = true
+futures-channel.workspace = true
+futures.workspace = true
+flume.workspace = true
+core_affinity.workspace = true
+local-sync.workspace = true
+async-unsync.workspace = true
+unsync.workspace = true
+portpicker.workspace = true
+tokio-stream.workspace = true
+
 [lints]
 workspace = true
-
-[[bench]]
-name = "otlp"
-harness = false
-
-[[bench]]
-name = "config"
-harness = false
 
 [[bench]]
 name = "channel"
@@ -66,11 +58,23 @@ name = "pdata_views"
 harness = false
 
 [[bench]]
-name = "retry_processor"
+name = "syslog_cef_receiver"
 harness = false
 
 [[bench]]
-name = "syslog_cef_receiver"
+name = "otlp_bytes"
+harness = false
+
+[[bench]]
+name = "materialize_parent_id"
+harness = false
+
+[[bench]]
+name = "attribute_transform"
+harness = false
+
+[[bench]]
+name = "item_count"
 harness = false
 
 [profile.bench]

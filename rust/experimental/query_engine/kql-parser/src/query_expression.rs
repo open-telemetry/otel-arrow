@@ -16,7 +16,7 @@ pub(crate) fn parse_query(
 ) -> Result<PipelineExpression, Vec<ParserError>> {
     let mut errors = Vec::new();
 
-    let mut state = ParserState::new_with_options(query, options);
+    let state = ParserState::new_with_options(query, options);
 
     let parse_result = KqlPestParser::parse(Rule::query, query);
 
@@ -70,22 +70,34 @@ pub(crate) fn parse_query(
                             let mut scalar = s.get_source().clone();
 
                             if let ScalarExpression::Static(s) = scalar {
-                                state.push_constant(name, s)
+                                state.push_constant(name, s);
                             } else {
-                                match scalar.try_resolve_static(
+                                let c = match scalar.try_resolve_static(
                                     &state.get_pipeline().get_resolution_scope(),
                                 ) {
                                     Ok(Some(ResolvedStaticScalarExpression::Computed(s))) => {
-                                        state.push_constant(name, s)
+                                        Some(s)
                                     }
                                     Ok(Some(
                                         ResolvedStaticScalarExpression::FoldEligibleReference(s),
-                                    )) => state.push_constant(name, s.clone()),
+                                    )) => Some(s.clone()),
                                     Ok(None)
                                     | Ok(Some(ResolvedStaticScalarExpression::Reference(_))) => {
+                                        None
+                                    }
+                                    Err(e) => {
+                                        errors.push((&e).into());
+                                        continue;
+                                    }
+                                };
+
+                                match c {
+                                    Some(c) => {
+                                        state.push_constant(name, c);
+                                    }
+                                    None => {
                                         state.push_global_variable(name, scalar);
                                     }
-                                    Err(e) => errors.push((&e).into()),
                                 }
                             }
 
@@ -134,14 +146,14 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
             let errors = parse_query(input, Default::default()).unwrap_err();
 
-            if expected_id.is_some() {
+            if let Some(expected_id) = expected_id {
                 if let ParserError::QueryLanguageDiagnostic {
                     location: _,
                     diagnostic_id: id,
                     message: msg,
                 } = &errors[0]
                 {
-                    assert_eq!(expected_id.unwrap(), *id);
+                    assert_eq!(expected_id, *id);
                     assert_eq!(expected_msg, msg);
                 } else {
                     panic!("Expected QueryLanguageDiagnostic");
@@ -272,6 +284,7 @@ mod tests {
                         QueryLocation::new_fake(),
                         ValueType::Integer,
                         0,
+                        ValueAccessor::new(),
                     )),
                     MutableValueExpression::Source(SourceScalarExpression::new(
                         QueryLocation::new_fake(),
@@ -301,6 +314,7 @@ mod tests {
                                 QueryLocation::new_fake(),
                                 ValueType::String,
                                 1,
+                                ValueAccessor::new(),
                             )),
                         ]),
                     )),

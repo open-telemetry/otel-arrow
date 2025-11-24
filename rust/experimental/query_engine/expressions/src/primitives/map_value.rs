@@ -12,7 +12,13 @@ pub trait MapValue: Debug {
 
     fn contains_key(&self, key: &str) -> bool;
 
-    fn get(&self, key: &str) -> Option<&(dyn AsStaticValue + 'static)>;
+    fn get(&self, key: &str) -> Option<&dyn AsValue>;
+
+    // Note: Used to update the RefCell borrow when accessing sub-elements of
+    // the source or variables which use interior mutability. In maps that
+    // have dynamic elements a string message will be returned indicating lack
+    // of support for this method
+    fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String>;
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool;
 

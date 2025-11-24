@@ -4,6 +4,7 @@
 //! Errors for the controller crate.
 
 use miette::Diagnostic;
+use otap_df_config::pipeline_group::CoreAllocation;
 
 /// Errors that can occur in the controller crate.
 #[derive(thiserror::Error, Debug, Diagnostic)]
@@ -19,6 +20,10 @@ pub enum Error {
     /// An error originating from the admin module.
     #[error("Admin module error: {0}")]
     AdminError(#[from] otap_df_admin::error::Error),
+
+    /// Observed state module error.
+    #[error("Observed state error: {0}")]
+    ObservedStateError(#[from] otap_df_state::error::Error),
 
     /// Telemetry system error.
     #[error("Telemetry error: {0}")]
@@ -45,6 +50,17 @@ pub enum Error {
     /// Failed to enumerate available CPU cores on this platform.
     #[error("Failed to get available CPU cores (core detection unavailable on this platform)")]
     CoreDetectionUnavailable,
+
+    /// Invalid or out-of-bounds requested CPU core ID allocation.
+    #[error("Invalid core ID allocation [{alloc}]. Available core IDs: {available:?}")]
+    InvalidCoreAllocation {
+        /// Invalid of out-of-bounds CPU core ID allocation.
+        alloc: CoreAllocation,
+        /// Error message.
+        message: String,
+        /// The available CPU core IDs detected on this system.
+        available: Vec<usize>,
+    },
 
     /// Core affinity error.
     #[error("Failed to set core affinity for thread {thread_id} to core {core_id}: {message}")]

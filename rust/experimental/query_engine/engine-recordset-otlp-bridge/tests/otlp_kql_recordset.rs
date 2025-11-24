@@ -23,7 +23,8 @@ fn test_project_keep() {
 
     let query = "source\n | project-keep key*";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -60,7 +61,8 @@ fn test_project_away() {
 
     let query = "source\n | project-away key*";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -96,7 +98,8 @@ fn test_summarize_count_only() {
 
     let query = "source | summarize Count = count()";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -150,7 +153,8 @@ fn test_summarize_count_and_group_by() {
 
     let query = "source | summarize Count = count() by Body";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -229,7 +233,8 @@ fn test_summarize_count_and_group_by_with_bin() {
 
     let query = "source | summarize Count = count() by Timestamp=bin(Timestamp, 1d)";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -308,7 +313,8 @@ fn test_summarize_with_pipeline() {
 
     let query = "let BatchTime = now(); source | summarize Count = count() by Body | where Count > 1 | extend ProcessedTime = now(), BatchTime = BatchTime";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -373,7 +379,8 @@ fn test_strlen_function() {
 
     let query = "source\n | extend name_length = strlen(EventName), text_length = strlen(text)";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -411,6 +418,51 @@ fn test_strlen_function() {
 }
 
 #[test]
+fn test_strcat_function() {
+    let log = LogRecord::new()
+        .with_event_name("_name_".into())
+        .with_attribute(
+            "text",
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "_value_".into(),
+            ))),
+        );
+
+    let mut request = ExportLogsServiceRequest::new().with_resource_logs(
+        ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
+    );
+
+    let query = "source\n | extend a = strcat('hello', EventName, text, Unknown)";
+
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
+
+    let engine = RecordSetEngine::new_with_options(
+        RecordSetEngineOptions::new()
+            .with_diagnostic_level(RecordSetEngineDiagnosticLevel::Verbose),
+    );
+
+    let results = process_records(&pipeline, &engine, &mut request);
+
+    assert_eq!(results.included_records.len(), 1);
+    assert_eq!(results.dropped_records.len(), 0);
+
+    let log = results.included_records.first().unwrap().get_record();
+
+    let attributes = log.attributes.get_values();
+    assert_eq!(
+        attributes.get("a").map(|v| v.to_value().to_string()),
+        Some(
+            AnyValue::Native(OtlpAnyValue::StringValue(StringValueStorage::new(
+                "hello_name__value_".into()
+            )))
+            .to_value()
+            .to_string()
+        )
+    );
+}
+
+#[test]
 fn test_replace_string_function() {
     let log = LogRecord::new()
         .with_event_name("A magic trick can turn a cat into a dog".into())
@@ -430,7 +482,8 @@ fn test_replace_string_function() {
      modified_name = replace_string(EventName, "cat", "hamster"),
      modified_text = replace_string(text, "hello", "hi")"#;
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()
@@ -487,6 +540,7 @@ fn test_substring_function() {
 
         let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(
             format!("source | extend e = {statement}").as_str(),
+            None,
         )
         .unwrap();
 
@@ -530,6 +584,7 @@ fn test_coalesce_function() {
 
         let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(
             format!("source | extend e = {statement}").as_str(),
+            None,
         )
         .unwrap();
 
@@ -578,7 +633,8 @@ fn test_now_global_variable() {
 
     let query = "let batch_start_time = now();\nsource\n | extend batch_start = batch_start_time, record_start = now()";
 
-    let pipeline = data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query).unwrap();
+    let pipeline =
+        data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
 
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new()

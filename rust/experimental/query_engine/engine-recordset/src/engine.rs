@@ -3,7 +3,7 @@
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::{Debug, Display, Write},
     marker::PhantomData,
 };
@@ -136,12 +136,31 @@ where
             None,
         );
 
+        if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
+            for (constant_id, constant) in self.pipeline.get_constants().iter().enumerate() {
+                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    constant,
+                    format!("Constant defined with id '{constant_id}'"),
+                ));
+            }
+        }
+
         for init in initializations {
             match init {
-                PipelineInitialization::SetGlobalVariable { name, value } => {
-                    let value = execute_scalar_expression(&execution_context, value)?;
+                PipelineInitialization::SetGlobalVariable {
+                    name,
+                    value: scalar,
+                } => {
+                    let value = execute_scalar_expression(&execution_context, scalar)?;
 
                     self.global_variables.borrow_mut().set(name, value);
+
+                    execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar,
+                        || format!("Global variable defined with name '{name}'"),
+                    );
                 }
             }
         }
@@ -200,16 +219,6 @@ where
             attached_records,
             Some(record),
         );
-
-        if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
-            for (constant_id, constant) in self.pipeline.get_constants().iter().enumerate() {
-                execution_context.add_diagnostic(RecordSetEngineDiagnostic::new(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    constant,
-                    format!("Constant defined with id '{constant_id}'"),
-                ));
-            }
-        }
 
         process_record(execution_context, self.pipeline.get_expressions())
     }
@@ -479,26 +488,46 @@ fn format_diagnostics(
             r.cmp(&l)
         });
 
-        let mut line = String::new();
-        line.push_str(query_line);
+        let mut diagnostics = Vec::with_capacity(messages.len());
+        let mut columns = HashSet::new();
+
         for message in messages {
-            line.push('\n');
+            let mut diagnostic = String::new();
+
             let (_, column) = message
                 .get_expression()
                 .get_query_location()
                 .get_line_and_column_numbers();
 
-            line.push_str(&" ".repeat(column + 7));
-            line.push('[');
-            line.push_str(message.get_diagnostic_level().get_name());
-            line.push_str("] ");
-            line.push_str(message.get_expression().get_name());
-            line.push_str(": ");
-            line.push_str(message.get_message());
+            diagnostic.push_str(&" ".repeat(column + 7));
+            diagnostic.push_str("| [");
+            diagnostic.push_str(message.get_diagnostic_level().get_name());
+            diagnostic.push_str("] ");
+            diagnostic.push_str(message.get_expression().get_name());
+            diagnostic.push_str(": ");
+            diagnostic.push_str(message.get_message());
+
+            diagnostics.push((column, diagnostic));
+
+            columns.insert(column);
         }
+
+        let mut line = String::new();
+        line.push_str(query_line);
+        for (diagnostic_column, mut diagnostic) in diagnostics {
+            line.push('\n');
+            for column in &columns {
+                if diagnostic_column > *column {
+                    diagnostic.replace_range(column + 7..column + 8, "|");
+                }
+            }
+            line.push_str(&diagnostic);
+        }
+
         if line_number > 1 {
             f.write_char('\n')?;
         }
+
         write!(f, "ln {line_number:>3}: {line}")?;
         line_number += 1;
     }

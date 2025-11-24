@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use otel_arrow_rust::{
+use otap_df_pdata::{
     otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::get_schema_metadata,
 };
@@ -89,8 +89,8 @@ pub mod test {
 
     use arrow::array::{ArrayRef, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
-    use otel_arrow_rust::otap::Logs;
-    use otel_arrow_rust::{
+    use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::{
         otap::OtapArrowRecords, proto::opentelemetry::arrow::v1::ArrowPayloadType,
     };
     use std::sync::Arc;
