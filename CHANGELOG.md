@@ -17,7 +17,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 - Upgrade to v0.140.0/v0.140.1/v1.46.0 of collector dependencies.
   - Note: Collector-Contrib dependencies were [released at
     v0.140.1](https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.140.1)
-    due to some release process failures. [#1470](https://github.com/open-telemetry/otel-arrow/pull/1470)
+    due to some release process failures.
+    [#1470](https://github.com/open-telemetry/otel-arrow/pull/1470)
 
 ## [0.45.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.45.0) - 2025-11-11
 
