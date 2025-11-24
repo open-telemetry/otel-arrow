@@ -344,7 +344,7 @@ impl BatchProcessor {
         buffer.pending.push(rec);
 
         // Flush based on size when the batch reaches the lower limit.
-        if buffer.items < self.lower_limit.get() {
+        if self.config.timeout.is_some() && buffer.items < self.lower_limit.get() {
             Ok(())
         } else {
             self.flush_signal_impl(
@@ -379,8 +379,8 @@ impl BatchProcessor {
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
-            && now.duration_since(buffer.arrival.expect("timer"))
-                < self.config.timeout.expect("timer")
+            && let Some(timeout) = self.config.timeout
+            && now.duration_since(buffer.arrival.expect("timer")) < timeout
         {
             return Ok(());
         }
