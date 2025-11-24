@@ -77,6 +77,10 @@ harness = false
 name = "item_count"
 harness = false
 
+[[bench]]
+name = "otap_logs_view"
+harness = false
+
 [profile.bench]
 opt-level = 3
 debug = false
