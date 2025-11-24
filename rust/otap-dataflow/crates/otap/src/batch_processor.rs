@@ -68,7 +68,7 @@ pub struct Config {
     /// Flush non-empty batches on this interval, which may be 0 for
     /// immediate flush or None for no timeout.
     #[serde(with = "humantime_serde", default = "default_timeout_duration")]
-    pub timeout: Option<Duration>,
+    pub timeout: Duration,
 }
 
 fn default_send_batch_size() -> Option<NonZeroUsize> {
@@ -80,8 +80,8 @@ fn default_send_batch_max_size() -> Option<NonZeroUsize> {
     None
 }
 
-fn default_timeout_duration() -> Option<Duration> {
-    Some(Duration::from_millis(DEFAULT_TIMEOUT_MS))
+fn default_timeout_duration() -> Duration {
+    Duration::from_millis(DEFAULT_TIMEOUT_MS)
 }
 
 impl Default for Config {
@@ -117,7 +117,8 @@ impl Config {
             }
         }
 
-        if self.timeout.is_none() {
+        // Zero-timeout is a valid split-only configuration.
+        if self.timeout == Duration::ZERO {
             if let Some(batch_size) = self.send_batch_size {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!("send_batch_size ({}) requires a timeout", batch_size),
@@ -350,7 +351,7 @@ impl BatchProcessor {
         if buffer.items == 0 {
             let now = Instant::now();
             arrival = Some(now);
-            if let Some(timeout) = timeout {
+            if timeout != Duration::ZERO {
                 buffer.set_arrival(signal, now, timeout, effect).await?;
             }
         }
@@ -358,7 +359,7 @@ impl BatchProcessor {
         buffer.pending.push(rec);
 
         // Flush based on size when the batch reaches the lower limit.
-        if self.config.timeout.is_some() && buffer.items < self.lower_limit.get() {
+        if self.config.timeout != Duration::ZERO && buffer.items < self.lower_limit.get() {
             Ok(())
         } else {
             self.flush_signal_impl(
@@ -393,8 +394,8 @@ impl BatchProcessor {
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
-            && let Some(timeout) = self.config.timeout
-            && now.duration_since(buffer.arrival.expect("timer")) < timeout
+            && self.config.timeout != Duration::ZERO
+            && now.duration_since(buffer.arrival.expect("timer")) < self.config.timeout
         {
             return Ok(());
         }
@@ -425,7 +426,7 @@ impl BatchProcessor {
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-        if let Some(timeout) = self.config.timeout
+        if self.config.timeout != Duration::ZERO
             && reason == FlushReason::Size
             && upper_limit.is_some()
             && !output_batches.is_empty()
@@ -437,7 +438,9 @@ impl BatchProcessor {
                     // We use the latest arrival time as the new arrival for timeout purposes.
                     buffer.items = last_items;
                     buffer.pending.push(remainder);
-                    buffer.set_arrival(signal, now, timeout, effect).await?;
+                    buffer
+                        .set_arrival(signal, now, self.config.timeout, effect)
+                        .await?;
                 }
             }
         }
@@ -752,7 +755,7 @@ mod tests {
         let cfg = Config {
             send_batch_size: NonZeroUsize::new(100),
             send_batch_max_size: NonZeroUsize::new(200),
-            timeout: Some(Duration::from_millis(100)),
+            timeout: Duration::from_millis(100),
         };
         assert!(cfg.validate().is_ok());
 
@@ -760,7 +763,7 @@ mod tests {
         let cfg = Config {
             send_batch_size: NonZeroUsize::new(100),
             send_batch_max_size: None,
-            timeout: Some(Duration::from_millis(100)),
+            timeout: Duration::from_millis(100),
         };
         assert!(cfg.validate().is_ok());
 
@@ -768,7 +771,15 @@ mod tests {
         let cfg = Config {
             send_batch_size: None,
             send_batch_max_size: NonZeroUsize::new(200),
-            timeout: Some(Duration::from_millis(100)),
+            timeout: Duration::from_millis(100),
+        };
+        assert!(cfg.validate().is_ok());
+
+        // Split-only: OK
+        let cfg = Config {
+            send_batch_size: None,
+            send_batch_max_size: NonZeroUsize::new(100),
+            timeout: Duration::ZERO,
         };
         assert!(cfg.validate().is_ok());
 
@@ -776,7 +787,7 @@ mod tests {
         let cfg = Config {
             send_batch_size: None,
             send_batch_max_size: None,
-            timeout: Some(Duration::from_millis(100)),
+            timeout: Duration::from_millis(100),
         };
         assert!(cfg.validate().is_err());
 
@@ -784,7 +795,15 @@ mod tests {
         let cfg = Config {
             send_batch_size: NonZeroUsize::new(200),
             send_batch_max_size: NonZeroUsize::new(100),
-            timeout: Some(Duration::from_millis(100)),
+            timeout: Duration::from_millis(100),
+        };
+        assert!(cfg.validate().is_err());
+
+        // lower-bound without timeout: ERROR
+        let cfg = Config {
+            send_batch_size: NonZeroUsize::new(200),
+            send_batch_max_size: NonZeroUsize::new(100),
+            timeout: Duration::ZERO,
         };
         assert!(cfg.validate().is_err());
     }
@@ -1170,7 +1189,7 @@ mod tests {
         let cfg = json!({
             "send_batch_size": null,
             "send_batch_max_size": 2,
-            "timeout": null,
+            "timeout": "0s",
         });
 
         let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
