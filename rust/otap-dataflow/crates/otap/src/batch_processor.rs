@@ -117,6 +117,21 @@ impl Config {
             }
         }
 
+        if self.timeout.is_none() {
+            if let Some(batch_size) = self.send_batch_size {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!("send_batch_size ({}) requires a timeout", batch_size),
+                });
+            }
+            if self.send_batch_max_size.is_none() {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "send_batch_max_size required for split-only (no timeout) configuration"
+                    ),
+                });
+            }
+        }
+
         Ok(())
     }
 }
@@ -396,8 +411,9 @@ impl BatchProcessor {
         }
 
         let count = input.len();
-        let limit = self.config.send_batch_max_size;
-        let mut output_batches = match make_output_batches(signal, nzu_to_nz64(limit), input) {
+        let upper_limit = self.config.send_batch_max_size;
+        let mut output_batches = match make_output_batches(signal, nzu_to_nz64(upper_limit), input)
+        {
             Ok(v) => v,
             Err(e) => {
                 self.metrics.batching_errors.add(count as u64);
@@ -408,9 +424,13 @@ impl BatchProcessor {
             }
         };
 
-        // If size-triggered and we requested splitting (limit is Some), re-buffer the last partial
+        // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-        if reason == FlushReason::Size && limit.is_some() && !output_batches.is_empty() {
+        if let Some(timeout) = self.config.timeout
+            && reason == FlushReason::Size
+            && upper_limit.is_some()
+            && !output_batches.is_empty()
+        {
             if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
                 if last_items < self.lower_limit.get() {
                     let remainder = output_batches.pop().expect("last exists");
@@ -418,9 +438,7 @@ impl BatchProcessor {
                     // We use the latest arrival time as the new arrival for timeout purposes.
                     buffer.items = last_items;
                     buffer.pending.push(remainder);
-                    if let Some(timeout) = self.config.timeout {
-                        buffer.set_arrival(signal, now, timeout, effect).await?;
-                    }
+                    buffer.set_arrival(signal, now, timeout, effect).await?;
                 }
             }
         }
@@ -1144,5 +1162,109 @@ mod tests {
     fn test_concatenate_logs() {
         let mut datagen = DataGenerator::new(1);
         test_concatenate((0..4).map(|_| datagen.generate_logs().into()));
+    }
+
+    /// Generic test helper for split-only mode (no timeout, no send_batch_size)
+    fn test_split_only(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
+        let cfg = json!({
+            "send_batch_size": null,
+            "send_batch_max_size": 2,
+            "timeout": null,
+        });
+
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
+
+        let inputs_otlp: Vec<_> = inputs_otlp.collect();
+        let signal = inputs_otlp[0].signal_type();
+        let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+
+                let controller_task = tokio::spawn(async move {
+                    while let Ok(msg) = pipeline_rx.recv().await {
+                        if let PipelineControlMsg::DelayData { .. } = msg {}
+                    }
+                });
+
+                for input_otlp in &inputs_otlp {
+                    let otap_records = match input_otlp {
+                        OtlpProtoMessage::Traces(t) => encode_spans_otap_batch(t).expect("encode"),
+                        OtlpProtoMessage::Logs(l) => encode_logs_otap_batch(l).expect("encode"),
+                        OtlpProtoMessage::Metrics(_) => panic!("metrics not supported"),
+                    };
+                    let pdata = OtapPdata::new_default(otap_records.into());
+                    ctx.process(Message::PData(pdata)).await.expect("process");
+                }
+
+                // With no send_batch_size and no timeout, flushes immediately on every input
+                // With send_batch_max_size=2, each 3-item input splits to [2, 1]
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
+
+                let batch_sizes: Vec<usize> = emitted
+                    .iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                        rec.batch_length()
+                    })
+                    .collect();
+                assert_eq!(
+                    batch_sizes,
+                    vec![2, 1, 2, 1],
+                    "split pattern without rebuffering"
+                );
+
+                // Shutdown should have nothing remaining (all flushed)
+                ctx.process(Message::Control(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_millis(100),
+                    reason: "test".into(),
+                }))
+                .await
+                .expect("shutdown");
+
+                let final_emitted = ctx.drain_pdata().await;
+                assert_eq!(final_emitted.len(), 0, "no remaining data");
+
+                // Verify equivalence
+                let all_outputs: Vec<OtlpProtoMessage> = emitted
+                    .into_iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.payload().try_into().unwrap();
+                        otap_to_otlp(&rec)
+                    })
+                    .collect();
+                assert_equivalent(&inputs_otlp, &all_outputs);
+
+                // Trigger telemetry collection
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+
+                controller_task.abort();
+            })
+            .validate(move |_| async move {
+                // Allow metrics to be reported
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify metrics
+                verify_item_metrics(&metrics_registry, signal, input_item_count);
+            });
+    }
+
+    #[test]
+    fn test_split_only_traces() {
+        let mut datagen = DataGenerator::new(1);
+        test_split_only((0..2).map(|_| datagen.generate_traces().into()));
+    }
+
+    #[test]
+    fn test_split_only_logs() {
+        let mut datagen = DataGenerator::new(1);
+        test_split_only((0..2).map(|_| datagen.generate_logs().into()));
     }
 }
