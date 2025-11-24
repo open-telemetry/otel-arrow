@@ -80,7 +80,7 @@ const fn default_send_batch_max_size() -> Option<NonZeroUsize> {
     None
 }
 
-fn default_timeout_duration() -> Duration {
+const fn default_timeout_duration() -> Duration {
     Duration::from_millis(DEFAULT_TIMEOUT_MS)
 }
 
