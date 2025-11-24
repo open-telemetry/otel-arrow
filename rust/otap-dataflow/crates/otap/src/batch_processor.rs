@@ -385,7 +385,7 @@ impl BatchProcessor {
             return Ok(());
         }
 
-        let input = std::mem::take(&mut buffer.pending);
+        let input = buffer.pending.drain(..).collect::<Vec<_>>();
 
         buffer.items = 0;
 
