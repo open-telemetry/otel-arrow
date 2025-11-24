@@ -133,6 +133,7 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
+byte-unit = "5.2.0"
 
 # Azure Monnitor Exporter
 azure_identity = "0.30.0"
@@ -230,4 +231,3 @@ inherits = "release"
 debug = true  # Or 2 for full debug info
 strip = "none" # Keep symbols and debug info
 panic = "unwind"
-
