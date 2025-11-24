@@ -1608,12 +1608,12 @@ mod tests {
 
         // Create OtapArrowRecords
         let mut otap_records = OtapArrowRecords::Logs(Default::default());
-        otap_records.set(crate::otap::PayloadType::Logs, logs_batch.clone());
+        otap_records.set(ArrowPayloadType::Logs, logs_batch.clone());
         otap_records.set(
-            crate::otap::PayloadType::ResourceAttrs,
+            ArrowPayloadType::ResourceAttrs,
             resource_attrs.clone(),
         );
-        otap_records.set(crate::otap::PayloadType::LogAttrs, log_attrs.clone());
+        otap_records.set(ArrowPayloadType::LogAttrs, log_attrs.clone());
 
         // Test TryFrom implementation
         let logs_view = OtapLogsView::try_from(&otap_records)
