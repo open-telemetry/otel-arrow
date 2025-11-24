@@ -71,7 +71,7 @@ pub struct Config {
     pub timeout: Duration,
 }
 
-fn default_send_batch_size() -> Option<NonZeroUsize> {
+const fn default_send_batch_size() -> Option<NonZeroUsize> {
     NonZeroUsize::new(DEFAULT_SEND_BATCH_SIZE)
 }
 
