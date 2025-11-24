@@ -969,6 +969,11 @@ mod test {
         test_logs_round_trip(logs_with_empty_log_records());
     }
 
+    #[test]
+    fn test_logs_with_body_empty_string() {
+        test_logs_round_trip(logs_with_body_empty_string());
+    }
+
     //
     // Traces Tests
     //
@@ -1054,7 +1059,7 @@ mod test {
     /// OpenTelemetry data may contain "empty envelopes". This checks that
     /// they encode to an empty OTAP encoding.
     fn assert_empty_batch(msg: OtlpProtoMessage) {
-        let encoded = encode_otlp(&msg);
+        let encoded = otlp_to_otap(&msg);
         assert_eq!(encoded.batch_length(), 0, "Expected an empty batch");
     }
 

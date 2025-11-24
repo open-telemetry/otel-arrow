@@ -364,14 +364,15 @@ impl OtapBatchProcessor {
                 let max = requested_split_max(&input, max_val);
                 if let Some(max_nz) = max {
                     self.metrics.split_requests.inc();
-                    let mut output_batches = match make_output_batches(Some(max_nz), input) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            self.metrics.batching_errors.inc();
-                            log_batching_failed(effect, SIG_LOGS, &e).await;
-                            Vec::new()
-                        }
-                    };
+                    let mut output_batches =
+                        match make_output_batches(SignalType::Logs, Some(max_nz), input) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.metrics.batching_errors.inc();
+                                log_batching_failed(effect, SIG_LOGS, &e).await;
+                                Vec::new()
+                            }
+                        };
 
                     // If size-triggered and we requested splitting (max is Some), re-buffer the last partial
                     // output if it is smaller than the configured max. Timer/Shutdown flush everything.
@@ -407,14 +408,15 @@ impl OtapBatchProcessor {
                     // No split requested (safe path)
                     if input.len() > 1 {
                         // Coalesce upstream only when there are multiple records to merge
-                        let output_batches = match make_output_batches(None, input) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                self.metrics.batching_errors.inc();
-                                log_batching_failed(effect, SIG_LOGS, &e).await;
-                                Vec::new()
-                            }
-                        };
+                        let output_batches =
+                            match make_output_batches(SignalType::Logs, None, input) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    self.metrics.batching_errors.inc();
+                                    log_batching_failed(effect, SIG_LOGS, &e).await;
+                                    Vec::new()
+                                }
+                            };
                         for records in output_batches {
                             let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
@@ -462,14 +464,15 @@ impl OtapBatchProcessor {
                 let max = requested_split_max(&input, max_val);
                 if let Some(max_nz) = max {
                     self.metrics.split_requests.inc();
-                    let mut output_batches = match make_output_batches(Some(max_nz), input) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            self.metrics.batching_errors.inc();
-                            log_batching_failed(effect, SIG_METRICS, &e).await;
-                            Vec::new()
-                        }
-                    };
+                    let mut output_batches =
+                        match make_output_batches(SignalType::Metrics, Some(max_nz), input) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.metrics.batching_errors.inc();
+                                log_batching_failed(effect, SIG_METRICS, &e).await;
+                                Vec::new()
+                            }
+                        };
 
                     let mut rebuffered = false;
                     if reason == FlushReason::Size && !output_batches.is_empty() {
@@ -502,14 +505,15 @@ impl OtapBatchProcessor {
                     // No split requested (safe path)
                     if input.len() > 1 {
                         // Coalesce upstream only when there are multiple records to merge
-                        let output_batches = match make_output_batches(None, input) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                self.metrics.batching_errors.inc();
-                                log_batching_failed(effect, SIG_METRICS, &e).await;
-                                Vec::new()
-                            }
-                        };
+                        let output_batches =
+                            match make_output_batches(SignalType::Metrics, None, input) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    self.metrics.batching_errors.inc();
+                                    log_batching_failed(effect, SIG_METRICS, &e).await;
+                                    Vec::new()
+                                }
+                            };
                         for records in output_batches {
                             let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
@@ -557,14 +561,15 @@ impl OtapBatchProcessor {
                 let max = requested_split_max(&input, max_val);
                 if let Some(max_nz) = max {
                     self.metrics.split_requests.inc();
-                    let mut output_batches = match make_output_batches(Some(max_nz), input) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            self.metrics.batching_errors.inc();
-                            log_batching_failed(effect, SIG_TRACES, &e).await;
-                            Vec::new()
-                        }
-                    };
+                    let mut output_batches =
+                        match make_output_batches(SignalType::Traces, Some(max_nz), input) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.metrics.batching_errors.inc();
+                                log_batching_failed(effect, SIG_TRACES, &e).await;
+                                Vec::new()
+                            }
+                        };
 
                     let mut rebuffered = false;
                     if reason == FlushReason::Size && !output_batches.is_empty() {
@@ -597,14 +602,15 @@ impl OtapBatchProcessor {
                     // No split requested (safe path)
                     if input.len() > 1 {
                         // Coalesce upstream only when there are multiple records to merge
-                        let output_batches = match make_output_batches(None, input) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                self.metrics.batching_errors.inc();
-                                log_batching_failed(effect, SIG_TRACES, &e).await;
-                                Vec::new()
-                            }
-                        };
+                        let output_batches =
+                            match make_output_batches(SignalType::Traces, None, input) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    self.metrics.batching_errors.inc();
+                                    log_batching_failed(effect, SIG_TRACES, &e).await;
+                                    Vec::new()
+                                }
+                            };
                         for records in output_batches {
                             let pdata = OtapPdata::new_todo_context(records.into());
                             effect.send_message(pdata).await?;
@@ -971,7 +977,6 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1512,57 +1517,6 @@ mod tests {
         validation.validate(|_vctx| async move {});
     }
 
-    // Test constants for batching smoke tests
-    #[test]
-    #[ignore = "upstream-batching-bug"]
-    // NOTE: Validates cross-signal partitioning and expected row totals.
-    fn test_make_output_batches_partitions_and_splits() {
-        // Build mixed input: 3 traces (1 row each), 2 metrics (1 dp each), interleaved
-        let input = vec![
-            one_trace_record(),
-            one_metric_record(),
-            one_trace_record(),
-            one_metric_record(),
-            one_trace_record(),
-        ];
-
-        // Request no split to validate partitioning only
-        let outputs = make_output_batches(None, input).expect("batching ok");
-
-        // Expect 2 outputs: one metrics (2 rows), one traces (3 rows)
-        let mut metrics_batches = 0usize;
-        let mut traces_batches = 0usize;
-        let mut total_metrics_rows = 0usize;
-        let mut total_traces_rows = 0usize;
-
-        for out in &outputs {
-            match out {
-                OtapArrowRecords::Metrics(_) => {
-                    metrics_batches += 1;
-                    let rb = out
-                        .get(ArrowPayloadType::UnivariateMetrics)
-                        .expect("metrics rb");
-                    assert!(rb.num_rows() > 0, "metrics batch must be non-empty");
-                    total_metrics_rows += rb.num_rows();
-                }
-                OtapArrowRecords::Traces(_) => {
-                    traces_batches += 1;
-                    let rb = out.get(ArrowPayloadType::Spans).expect("spans rb");
-                    assert!(rb.num_rows() > 0, "traces batch must be non-empty");
-                    total_traces_rows += rb.num_rows();
-                }
-                OtapArrowRecords::Logs(_) => {
-                    panic!("unexpected logs batch in outputs");
-                }
-            }
-        }
-
-        assert_eq!(metrics_batches, 1, "expected one metrics output");
-        assert_eq!(traces_batches, 1, "expected one traces output");
-        assert_eq!(total_metrics_rows, 2, "expected two metric rows total");
-        assert_eq!(total_traces_rows, 3, "expected three trace rows total");
-    }
-
     // TODO: Add a positive-path test that simulates a size-triggered split leaving
     // a small remainder in the buffer, and assert that a subsequent TimerTick
     // flushes that remainder (dirty flag remains set). Crafting this requires
@@ -1616,6 +1570,46 @@ mod tests {
                 0,
                 "timer should not flush when no remainder and no new threshold crossing"
             );
+        });
+
+        validation.validate(|_vctx| async move {});
+    }
+
+    #[test]
+    fn test_metrics_batching_with_split() {
+        // Test that metrics can be properly batched and split
+        let cfg = json!({
+            "send_batch_size": 2,
+            "send_batch_max_size": 2,
+            "timeout": "10ms"
+        });
+        let processor_config = ProcessorConfig::new("otap_batch_metrics_test");
+        let test_rt = TestRuntime::new();
+        let node = test_node(processor_config.name.clone());
+        let proc = from_config(node, &cfg, &processor_config).expect("proc from config");
+
+        let phase = test_rt.set_processor(proc);
+
+        let validation = phase.run_test(|mut ctx| async move {
+            // Process two metric records to trigger flush
+            let pdata1 = OtapPdata::new_default(one_metric_record().into());
+            ctx.process(Message::PData(pdata1))
+                .await
+                .expect("process metric 1");
+
+            let pdata2 = OtapPdata::new_default(one_metric_record().into());
+            ctx.process(Message::PData(pdata2))
+                .await
+                .expect("process metric 2");
+
+            let emitted = ctx.drain_pdata().await;
+            assert_eq!(emitted.len(), 1, "metrics should flush at threshold");
+
+            // Verify the batched output is metrics
+            let first = emitted.into_iter().next().unwrap().payload();
+            let first_rec: OtapArrowRecords = first.try_into().unwrap();
+            assert!(matches!(first_rec, OtapArrowRecords::Metrics(_)));
+            assert_eq!(2, first_rec.batch_length());
         });
 
         validation.validate(|_vctx| async move {});
