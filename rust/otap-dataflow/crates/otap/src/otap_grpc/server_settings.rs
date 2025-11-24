@@ -24,9 +24,7 @@ pub struct GrpcServerSettings {
     /// and deflate (in that preference order).
     #[serde(
         default,
-        deserialize_with = "compression::deserialize_compression_methods",
-        alias = "compression_method",
-        alias = "request_compression_method"
+        deserialize_with = "compression::deserialize_compression_methods"
     )]
     pub request_compression: Option<Vec<CompressionMethod>>,
 
@@ -34,8 +32,7 @@ pub struct GrpcServerSettings {
     /// request list when explicitly configured via the legacy `compression_method` option.
     #[serde(
         default,
-        deserialize_with = "compression::deserialize_compression_methods",
-        alias = "response_compression_method"
+        deserialize_with = "compression::deserialize_compression_methods"
     )]
     pub response_compression: Option<Vec<CompressionMethod>>,
 
