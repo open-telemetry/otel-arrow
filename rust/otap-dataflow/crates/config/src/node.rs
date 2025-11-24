@@ -59,6 +59,9 @@ pub struct NodeUserConfig {
     /// Note: A pre-validation step using a JSON schema or protobuf could be added to the
     /// management plane to ensure that the configuration is valid.
     #[serde(default)]
+    // The serde_json::Value serializes to an invalid schema as far as the kubernetes api is concerned.
+    // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
+    #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
 }
 
@@ -182,5 +185,22 @@ impl NodeUserConfig {
     /// Sets the default output port name used by this node when no explicit port is specified.
     pub fn set_default_out_port<P: Into<PortName>>(&mut self, port: P) {
         self.default_out_port = Some(port.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_user_config_minimal_valid() {
+        let json = r#"{
+            "kind": "receiver",
+            "plugin_urn": "urn:example:receiver",
+            "out_ports": {}
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(matches!(cfg.kind, NodeKind::Receiver));
+        assert!(cfg.out_ports.is_empty());
     }
 }

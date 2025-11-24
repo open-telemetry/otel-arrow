@@ -1,9 +1,3 @@
-# Rust specific
-/target
-**/*.rs.bk
-Cargo.lock
-bench-log
-
 # Just
 just.zsh
 

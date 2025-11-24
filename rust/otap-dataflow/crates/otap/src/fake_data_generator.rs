@@ -5,32 +5,45 @@
 //! Note: This receiver will be replaced in the future with a more sophisticated implementation.
 //!
 
-use crate::pdata::{OtapPdata, OtlpProtoBytes};
-use crate::{OTAP_RECEIVER_FACTORIES, pdata};
+use crate::OTAP_RECEIVER_FACTORIES;
+use crate::fake_data_generator::config::Config;
+use crate::fake_data_generator::fake_signal::{
+    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
+};
+use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
-use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal};
-use otap_df_otlp::fake_signal_receiver::fake_signal::{
-    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
-};
-use otap_df_otlp::fake_signal_receiver::metrics::FakeSignalReceiverMetrics;
+use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
-use prost::{EncodeError, Message};
+use prost::Message;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant, sleep};
 use weaver_forge::registry::ResolvedRegistry;
 
+pub mod attributes;
+/// allows the user to configure their fake signal receiver
+pub mod config;
+/// provides the fake signal with fake data
+pub mod fake_data;
+/// generates fake signals for the receiver to emit
+pub mod fake_signal;
+/// fake signal metrics implementation
+pub mod metrics;
+
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator:receiver";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
@@ -92,7 +105,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<TerminalState, Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
         let registry = self
@@ -100,7 +113,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             .get_registry()
             .map_err(|err| Error::ReceiverError {
                 receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
                 error: err,
+                source_detail: String::new(),
             })?;
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
@@ -126,9 +141,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                         }) => {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
-                        Ok(NodeControlMsg::Shutdown {..}) => {
-                            // ToDo: add proper deadline function
-                            break;
+                        Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
+                            return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         },
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -156,9 +170,12 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             }
                         }
                         Err(e) => {
+                            let source_detail = format_error_sources(&e);
                             return Err(Error::ReceiverError {
                                 receiver: effect_handler.receiver_id(),
-                                error: e.to_string()
+                                kind: ReceiverErrorKind::Other,
+                                error: e.to_string(),
+                                source_detail,
                             });
                         }
                     }
@@ -167,8 +184,6 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
 
             }
         }
-        //Exit event loop
-        Ok(())
     }
 }
 
@@ -207,7 +222,7 @@ async fn generate_signal(
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
                     .send_message(
-                        OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry))
+                        OtlpProtoMessage::Metrics(fake_otlp_metrics(max_batch_size, registry))
                             .try_into()?,
                     )
                     .await?;
@@ -219,11 +234,13 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
-                        OTLPSignal::Metrics(fake_otlp_metrics(remaining_count, registry))
+                        OtlpProtoMessage::Metrics(fake_otlp_metrics(remaining_count, registry))
                             .try_into()?,
                     )
                     .await?;
@@ -237,7 +254,7 @@ async fn generate_signal(
         {
             effect_handler
                 .send_message(
-                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                    OtlpProtoMessage::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
                         .try_into()?,
                 )
                 .await?;
@@ -249,7 +266,7 @@ async fn generate_signal(
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
                     .send_message(
-                        OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry))
+                        OtlpProtoMessage::Traces(fake_otlp_traces(max_batch_size, registry))
                             .try_into()?,
                     )
                     .await?;
@@ -260,11 +277,13 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
-                        OTLPSignal::Traces(fake_otlp_traces(remaining_count, registry))
+                        OtlpProtoMessage::Traces(fake_otlp_traces(remaining_count, registry))
                             .try_into()?,
                     )
                     .await?;
@@ -276,7 +295,7 @@ async fn generate_signal(
         if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
             effect_handler
                 .send_message(
-                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                    OtlpProtoMessage::Traces(fake_otlp_traces(trace_count_remainder, registry))
                         .try_into()?,
                 )
                 .await?;
@@ -288,7 +307,8 @@ async fn generate_signal(
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
                     .send_message(
-                        OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                        OtlpProtoMessage::Logs(fake_otlp_logs(max_batch_size, registry))
+                            .try_into()?,
                     )
                     .await?;
                 current_count += max_batch_size as u64;
@@ -298,11 +318,14 @@ async fn generate_signal(
                         .try_into()
                         .map_err(|_| Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Other,
                             error: "failed to convert u64 to usize".to_string(),
+                            source_detail: String::new(),
                         })?;
                 effect_handler
                     .send_message(
-                        OTLPSignal::Logs(fake_otlp_logs(remaining_count, registry)).try_into()?,
+                        OtlpProtoMessage::Logs(fake_otlp_logs(remaining_count, registry))
+                            .try_into()?,
                     )
                     .await?;
                 // no more signals we have reached the max
@@ -313,7 +336,8 @@ async fn generate_signal(
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             effect_handler
                 .send_message(
-                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                    OtlpProtoMessage::Logs(fake_otlp_logs(log_count_remainder, registry))
+                        .try_into()?,
                 )
                 .await?;
             current_count += log_count_remainder as u64;
@@ -325,14 +349,15 @@ async fn generate_signal(
         for _ in 0..metric_count_split {
             effect_handler
                 .send_message(
-                    OTLPSignal::Metrics(fake_otlp_metrics(max_batch_size, registry)).try_into()?,
+                    OtlpProtoMessage::Metrics(fake_otlp_metrics(max_batch_size, registry))
+                        .try_into()?,
                 )
                 .await?;
         }
         if metric_count_remainder > 0 {
             effect_handler
                 .send_message(
-                    OTLPSignal::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                    OtlpProtoMessage::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
                         .try_into()?,
                 )
                 .await?;
@@ -342,14 +367,15 @@ async fn generate_signal(
         for _ in 0..trace_count_split {
             effect_handler
                 .send_message(
-                    OTLPSignal::Traces(fake_otlp_traces(max_batch_size, registry)).try_into()?,
+                    OtlpProtoMessage::Traces(fake_otlp_traces(max_batch_size, registry))
+                        .try_into()?,
                 )
                 .await?;
         }
         if trace_count_remainder > 0 {
             effect_handler
                 .send_message(
-                    OTLPSignal::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                    OtlpProtoMessage::Traces(fake_otlp_traces(trace_count_remainder, registry))
                         .try_into()?,
                 )
                 .await?;
@@ -359,14 +385,15 @@ async fn generate_signal(
         for _ in 0..log_count_split {
             effect_handler
                 .send_message(
-                    OTLPSignal::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
+                    OtlpProtoMessage::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
                 )
                 .await?;
         }
         if log_count_remainder > 0 {
             effect_handler
                 .send_message(
-                    OTLPSignal::Logs(fake_otlp_logs(log_count_remainder, registry)).try_into()?,
+                    OtlpProtoMessage::Logs(fake_otlp_logs(log_count_remainder, registry))
+                        .try_into()?,
                 )
                 .await?;
         }
@@ -374,28 +401,24 @@ async fn generate_signal(
 
     Ok(())
 }
-impl TryFrom<OTLPSignal> for OtapPdata {
+
+impl TryFrom<OtlpProtoMessage> for OtapPdata {
     type Error = Error;
 
-    fn try_from(value: OTLPSignal) -> Result<Self, Self::Error> {
-        let map_error = |e: EncodeError| {
-            Error::from(pdata::error::Error::ConversionError {
-                error: format!("error encoding protobuf: {e}"),
-            })
-        };
+    fn try_from(value: OtlpProtoMessage) -> Result<Self, Self::Error> {
         let mut bytes = vec![];
         Ok(match value {
-            OTLPSignal::Logs(logs_data) => {
-                logs_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportLogsRequest(bytes).into()
+            OtlpProtoMessage::Logs(logs_data) => {
+                logs_data.encode(&mut bytes)?;
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
             }
-            OTLPSignal::Metrics(metrics_data) => {
-                metrics_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportMetricsRequest(bytes).into()
+            OtlpProtoMessage::Metrics(metrics_data) => {
+                metrics_data.encode(&mut bytes)?;
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
             }
-            OTLPSignal::Traces(trace_data) => {
-                trace_data.encode(&mut bytes).map_err(map_error)?;
-                OtlpProtoBytes::ExportTracesRequest(bytes).into()
+            OtlpProtoMessage::Traces(trace_data) => {
+                trace_data.encode(&mut bytes)?;
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
             }
         })
     }
@@ -405,6 +428,7 @@ impl TryFrom<OTLPSignal> for OtapPdata {
 mod tests {
     use super::*;
 
+    use crate::fake_data_generator::config::{Config, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -412,12 +436,12 @@ mod tests {
         receiver::{NotSendValidateContext, TestContext, TestRuntime},
         test_node,
     };
-    use otap_df_otlp::fake_signal_receiver::config::{Config, OTLPSignal, TrafficConfig};
+    use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogsData;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
-    use otel_arrow_rust::proto::opentelemetry::logs::v1::LogsData;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::MetricsData;
-    use otel_arrow_rust::proto::opentelemetry::metrics::v1::metric::Data;
-    use otel_arrow_rust::proto::opentelemetry::trace::v1::TracesData;
     use std::future::Future;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep};
@@ -434,10 +458,12 @@ mod tests {
     const MAX_SIGNALS: u64 = 3;
     const MAX_BATCH: usize = 30;
 
-    impl From<OtapPdata> for OTLPSignal {
+    impl From<OtapPdata> for OtlpProtoMessage {
         fn from(value: OtapPdata) -> Self {
-            let otlp_bytes: OtlpProtoBytes =
-                value.try_into().expect("can convert signal to otlp bytes");
+            let otlp_bytes: OtlpProtoBytes = value
+                .payload()
+                .try_into()
+                .expect("can convert signal to otlp bytes");
             match otlp_bytes {
                 OtlpProtoBytes::ExportLogsRequest(bytes) => {
                     Self::Logs(LogsData::decode(bytes.as_ref()).expect("can decode bytes"))
@@ -460,7 +486,7 @@ mod tests {
                 // wait for the scenario to finish running
                 sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
                 // send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(0), "Test")
+                ctx.send_shutdown(std::time::Instant::now(), "Test")
                     .await
                     .expect("Failed to send Shutdown");
             })
@@ -476,7 +502,7 @@ mod tests {
                 // check that messages have been sent through the effect_handler
                 while let Ok(received_signal) = ctx.recv().await {
                     match received_signal.into() {
-                        OTLPSignal::Metrics(metric) => {
+                        OtlpProtoMessage::Metrics(metric) => {
                             // loop and check count
                             let resource_count = metric.resource_metrics.len();
                             assert!(resource_count == RESOURCE_COUNT);
@@ -547,7 +573,7 @@ mod tests {
                                 }
                             }
                         }
-                        OTLPSignal::Traces(span) => {
+                        OtlpProtoMessage::Traces(span) => {
                             let resource_count = span.resource_spans.len();
                             assert!(resource_count == RESOURCE_COUNT);
                             for resource in span.resource_spans.iter() {
@@ -591,7 +617,7 @@ mod tests {
                                 }
                             }
                         }
-                        OTLPSignal::Logs(log) => {
+                        OtlpProtoMessage::Logs(log) => {
                             let resource_count = log.resource_logs.len();
                             assert!(resource_count == RESOURCE_COUNT);
                             for resource in log.resource_logs.iter() {
@@ -677,7 +703,7 @@ mod tests {
 
                 while let Ok(received_signal) = ctx.recv().await {
                     match received_signal.into() {
-                        OTLPSignal::Metrics(metric) => {
+                        OtlpProtoMessage::Metrics(metric) => {
                             // loop and check count
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {
@@ -686,7 +712,7 @@ mod tests {
                                 }
                             }
                         }
-                        OTLPSignal::Traces(span) => {
+                        OtlpProtoMessage::Traces(span) => {
                             for resource in span.resource_spans.iter() {
                                 for scope in resource.scope_spans.iter() {
                                     received_messages += scope.spans.len();
@@ -694,7 +720,7 @@ mod tests {
                                 }
                             }
                         }
-                        OTLPSignal::Logs(log) => {
+                        OtlpProtoMessage::Logs(log) => {
                             for resource in log.resource_logs.iter() {
                                 for scope in resource.scope_logs.iter() {
                                     received_messages += scope.log_records.len();
@@ -757,7 +783,7 @@ mod tests {
 
                 while let Ok(received_signal) = ctx.recv().await {
                     match received_signal.into() {
-                        OTLPSignal::Metrics(metric) => {
+                        OtlpProtoMessage::Metrics(metric) => {
                             // loop and check count
                             for resource in metric.resource_metrics.iter() {
                                 for scope in resource.scope_metrics.iter() {
@@ -766,7 +792,7 @@ mod tests {
                                 }
                             }
                         }
-                        OTLPSignal::Traces(span) => {
+                        OtlpProtoMessage::Traces(span) => {
                             for resource in span.resource_spans.iter() {
                                 for scope in resource.scope_spans.iter() {
                                     received_messages += scope.spans.len();
@@ -774,7 +800,7 @@ mod tests {
                                 }
                             }
                         }
-                        OTLPSignal::Logs(log) => {
+                        OtlpProtoMessage::Logs(log) => {
                             for resource in log.resource_logs.iter() {
                                 for scope in resource.scope_logs.iter() {
                                     received_messages += scope.log_records.len();

@@ -7,13 +7,29 @@ use pest::iterators::Pair;
 
 use crate::{Rule, scalar_expression::parse_scalar_expression};
 
-pub(crate) fn parse_array_concat_expression(
+pub(crate) fn parse_array_unary_expressions(
+    array_unary_expressions_rule: Pair<Rule>,
+    scope: &dyn ParserScope,
+) -> Result<ScalarExpression, ParserError> {
+    let rule = array_unary_expressions_rule.into_inner().next().unwrap();
+
+    match rule.as_rule() {
+        Rule::array_concat_expression => parse_array_concat_expression(rule, scope),
+        _ => panic!("Unexpected rule in array_unary_expressions: {rule}"),
+    }
+}
+
+fn parse_array_concat_expression(
     array_concat_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError> {
     let query_location = to_query_location(&array_concat_expression_rule);
 
-    let array_concat_rules = array_concat_expression_rule.into_inner();
+    let array_concat_rules = array_concat_expression_rule
+        .into_inner()
+        .next()
+        .unwrap() // Note: We expect first rule to be scalar_list_expression
+        .into_inner();
 
     let mut values = Vec::new();
 
@@ -53,16 +69,26 @@ mod tests {
 
     #[test]
     fn test_parse_array_concat_expression() {
-        let run_test_success = |input: &str, expected: ScalarExpression| {
+        let run_test_success = |input: &str,
+                                expected_parsed: ScalarExpression,
+                                expected_static: ScalarExpression| {
             println!("Testing: {input}");
 
             let state = ParserState::new(input);
 
             let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
 
-            let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+            let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
-            assert_eq!(expected, expression);
+            assert_eq!(expected_parsed, expression);
+
+            let pipeline = state.get_pipeline();
+
+            expression
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+
+            assert_eq!(expected_static, expression)
         };
 
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
@@ -85,7 +111,6 @@ mod tests {
             }
         };
 
-        // Note: Inner json expression gets folded into a static array.
         run_test_success(
             "array_concat(parse_json('[]'))",
             ScalarExpression::Collection(CollectionScalarExpression::Concat(
@@ -94,18 +119,123 @@ mod tests {
                     ScalarExpression::Collection(CollectionScalarExpression::List(
                         ListScalarExpression::new(
                             QueryLocation::new_fake(),
-                            vec![ScalarExpression::Static(StaticScalarExpression::Array(
-                                ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
+                            vec![ScalarExpression::Parse(ParseScalarExpression::Json(
+                                ParseJsonScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "[]",
+                                        ),
+                                    )),
+                                ),
                             ))],
                         ),
                     )),
                 ),
             )),
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![],
+            ))),
         );
 
-        // Note: Inner json expressions get folded into a static arrays.
         run_test_success(
-            "array_concat(parse_json('[]'), parse_json('[]'))",
+            "array_concat(parse_json('[0,1]'), parse_json('[2,3]'))",
+            ScalarExpression::Collection(CollectionScalarExpression::Concat(
+                CombineScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                ScalarExpression::Parse(ParseScalarExpression::Json(
+                                    ParseJsonScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "[0,1]",
+                                            ),
+                                        )),
+                                    ),
+                                )),
+                                ScalarExpression::Parse(ParseScalarExpression::Json(
+                                    ParseJsonScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "[2,3]",
+                                            ),
+                                        )),
+                                    ),
+                                )),
+                            ],
+                        ),
+                    )),
+                ),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Array(ArrayScalarExpression::new(
+                QueryLocation::new_fake(),
+                vec![
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        2,
+                    )),
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        3,
+                    )),
+                ],
+            ))),
+        );
+
+        // Note: In this test only the parse_json expression gets folded into a constant
+        run_test_success(
+            "array_concat(parse_json('[0,1]'), ArrayKey))",
+            ScalarExpression::Collection(CollectionScalarExpression::Concat(
+                CombineScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Collection(CollectionScalarExpression::List(
+                        ListScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            vec![
+                                ScalarExpression::Parse(ParseScalarExpression::Json(
+                                    ParseJsonScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "[0,1]",
+                                            ),
+                                        )),
+                                    ),
+                                )),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "ArrayKey",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ],
+                        ),
+                    )),
+                ),
+            )),
             ScalarExpression::Collection(CollectionScalarExpression::Concat(
                 CombineScalarExpression::new(
                     QueryLocation::new_fake(),
@@ -114,10 +244,34 @@ mod tests {
                             QueryLocation::new_fake(),
                             vec![
                                 ScalarExpression::Static(StaticScalarExpression::Array(
-                                    ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
+                                    ArrayScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        vec![
+                                            StaticScalarExpression::Integer(
+                                                IntegerScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    0,
+                                                ),
+                                            ),
+                                            StaticScalarExpression::Integer(
+                                                IntegerScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    1,
+                                                ),
+                                            ),
+                                        ],
+                                    ),
                                 )),
-                                ScalarExpression::Static(StaticScalarExpression::Array(
-                                    ArrayScalarExpression::new(QueryLocation::new_fake(), vec![]),
+                                ScalarExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "ArrayKey",
+                                            ),
+                                        )),
+                                    ]),
                                 )),
                             ],
                         ),

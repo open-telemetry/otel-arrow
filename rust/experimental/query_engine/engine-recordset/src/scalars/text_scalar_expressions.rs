@@ -13,7 +13,28 @@ where
     'a: 'c,
     'b: 'c,
 {
-    match text_scalar_expression {
+    let value = match text_scalar_expression {
+        TextScalarExpression::Capture(c) => {
+            match execute_scalar_expression(execution_context, c.get_haystack())?
+                .try_resolve_string()
+            {
+                Ok(s) => {
+                    match Value::capture(
+                        text_scalar_expression.get_query_location(),
+                        &s,
+                        &execute_scalar_expression(execution_context, c.get_pattern())?.to_value(),
+                        &execute_scalar_expression(execution_context, c.get_capture_group())?
+                            .to_value(),
+                    )? {
+                        Some(r) => ResolvedValue::Slice(Slice::String(
+                            StringSlice::from_byte_range(s, r.start, r.end),
+                        )),
+                        None => ResolvedValue::Computed(OwnedValue::Null),
+                    }
+                }
+                Err(_) => ResolvedValue::Computed(OwnedValue::Null),
+            }
+        }
         TextScalarExpression::Concat(c) => {
             match execute_scalar_expression(execution_context, c.get_values_expression())?
                 .try_resolve_array()
@@ -24,6 +45,9 @@ where
                     a.take((..).into(), |_, r| Ok(r), &mut |r: ResolvedValue<'_>| {
                         match r.to_value() {
                             Value::String(v) => s.push_str(v.get_value()),
+                            Value::Null => {
+                                // Note: Null becomes empty string
+                            },
                             v => {
                                 let mut result = None;
                                 v.convert_to_string(&mut |v| {
@@ -37,23 +61,17 @@ where
                         }
                     })?;
 
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        text_scalar_expression,
-                        || format!("Evaluated as: '{s}'"),
-                    );
-
-                    Ok(ResolvedValue::Computed(OwnedValue::String(
-                        StringValueStorage::new(s),
-                    )))
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(s)))
                 }
-                Err(v) => Err(ExpressionError::TypeMismatch(
-                    c.get_values_expression().get_query_location().clone(),
-                    format!(
-                        "Value of '{:?}' type returned by scalar expression was not an array",
-                        v.get_value_type()
-                    ),
-                )),
+                Err(v) => {
+                    return Err(ExpressionError::TypeMismatch(
+                        c.get_values_expression().get_query_location().clone(),
+                        format!(
+                            "Value of '{:?}' type returned by scalar expression was not an array",
+                            v.get_value_type()
+                        ),
+                    ));
+                }
             }
         }
         TextScalarExpression::Join(j) => {
@@ -108,23 +126,17 @@ where
                         }
                     })?;
 
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        text_scalar_expression,
-                        || format!("Evaluated as: '{s}'"),
-                    );
-
-                    Ok(ResolvedValue::Computed(OwnedValue::String(
-                        StringValueStorage::new(s),
-                    )))
+                    ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(s)))
                 }
-                Err(v) => Err(ExpressionError::TypeMismatch(
-                    j.get_values_expression().get_query_location().clone(),
-                    format!(
-                        "Value of '{:?}' type returned by scalar expression was not an array",
-                        v.get_value_type()
-                    ),
-                )),
+                Err(v) => {
+                    return Err(ExpressionError::TypeMismatch(
+                        j.get_values_expression().get_query_location().clone(),
+                        format!(
+                            "Value of '{:?}' type returned by scalar expression was not an array",
+                            v.get_value_type()
+                        ),
+                    ));
+                }
             }
         }
         TextScalarExpression::Replace(r) => {
@@ -135,7 +147,7 @@ where
             let replacement_value =
                 execute_scalar_expression(execution_context, r.get_replacement_expression())?;
 
-            let v = if let Some(result) = Value::replace_matches(
+            if let Some(result) = Value::replace_matches(
                 &haystack_value.to_value(),
                 &needle_value.to_value(),
                 &replacement_value.to_value(),
@@ -156,21 +168,23 @@ where
                     },
                 );
                 ResolvedValue::Computed(OwnedValue::Null)
-            };
-
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                text_scalar_expression,
-                || format!("Evaluated as: '{v}'"),
-            );
-
-            Ok(v)
+            }
         }
-    }
+    };
+
+    execution_context.add_diagnostic_if_enabled(
+        RecordSetEngineDiagnosticLevel::Verbose,
+        text_scalar_expression,
+        || format!("Evaluated as: {value}"),
+    );
+
+    Ok(value)
 }
 
 #[cfg(test)]
 mod tests {
+    use regex::Regex;
+
     use super::*;
 
     #[test]
@@ -642,6 +656,137 @@ mod tests {
                 ),
             )),
             "2, hello, world",
+        );
+    }
+
+    #[test]
+    pub fn text_execute_capture_text_scalar_expression() {
+        fn run_test_success(capture: CaptureTextScalarExpression, expected_value: &str) {
+            let expression = ScalarExpression::Text(TextScalarExpression::Capture(capture));
+
+            let mut test = TestExecutionContext::new();
+
+            let execution_context = test.create_execution_context();
+
+            let actual_value = execute_scalar_expression(&execution_context, &expression).unwrap();
+            assert_eq!(expected_value, actual_value.to_value().to_string().as_str());
+        }
+
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "(\\w*) world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+            "hello",
+        );
+
+        // Note: The regex used here results in multiple captures but only the
+        // first one is returned.
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "(\\w*)"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+            "hello",
+        );
+
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Regex(
+                    RegexScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        Regex::new("(?<name>\\w*) world").unwrap(),
+                    ),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "name"),
+                )),
+            ),
+            "hello",
+        );
+
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello invalid"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "(\\w*) world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+            "null",
+        );
+
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "(\\w*) world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+            "null",
+        );
+
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+            ),
+            "null",
+        );
+
+        run_test_success(
+            CaptureTextScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 0),
+                )),
+            ),
+            "hello world",
         );
     }
 }

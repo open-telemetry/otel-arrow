@@ -41,6 +41,9 @@ yanked = "warn"
 # output a note when they are encountered.
 ignore = [
     #"RUSTSEC-0000-0000",
+    { id="RUSTSEC-2024-0436", reason="unmaintained `paste` crate is a dependency of datafusion"},
+    # serde_cbor is a transitive dependency of otap_dataflow_pdata
+    { id="RUSTSEC-2021-0127", reason="`serde_cbor` is archived, but current implementation meets needs" },
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories
@@ -67,7 +70,10 @@ allow = [
     # TODO: Confirm legal use of Unicode-3.0
     # See https://github.com/open-telemetry/otel-arrow/issues/313
     "Unicode-3.0",
-    "CC0-1.0"
+    "CC0-1.0",
+    "BSD-3-Clause",
+    "ISC",  # Used by the `is_ci`, similar to MIT license
+    "Zlib",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the

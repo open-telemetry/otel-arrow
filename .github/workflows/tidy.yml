@@ -1,0 +1,38 @@
+name: "Tidy Renovate PRs"
+permissions:
+  contents: read
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+jobs:
+  tidy:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    if: ${{ github.actor == 'renovate[bot]' }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: "1.25.4"
+      - name: make genotelarrowcol
+        # This also runs 'go mod tidy' as part of its process
+        run: make genotelarrowcol
+      - name: Commit changes
+        run: |
+          # Configure git for otelbot
+          git config user.name otelbot
+          git config user.email 197425009+otelbot@users.noreply.github.com
+
+          if ! git diff --exit-code; then
+            git add .
+            git commit -m "make genotelarrowcol"
+            git push
+          fi

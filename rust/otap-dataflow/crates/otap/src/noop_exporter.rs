@@ -6,15 +6,16 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use std::sync::Arc;
 
 /// The URN for the noop exporter
@@ -33,7 +34,7 @@ pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
         Ok(ExporterWrapper::local(
-            NoopExporter::from_config()?,
+            NoopExporter {},
             node,
             node_config,
             exporter_config,
@@ -41,29 +42,60 @@ pub static NOOP_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     },
 };
 
-impl NoopExporter {
-    /// create a new instance of the `[NoopExporter]` from json config value
-    pub fn from_config() -> Result<Self, otap_df_config::error::Error> {
-        Ok(Self {})
-    }
-}
-
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for NoopExporter {
     async fn start(
         self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        _effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+        effect_handler: EffectHandler<OtapPdata>,
+    ) -> Result<TerminalState, Error> {
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
+                Message::PData(data) => {
+                    effect_handler.notify_ack(AckMsg::new(data)).await?;
+                }
                 _ => {
                     // do nothing
                 }
             }
         }
 
-        Ok(())
+        Ok(TerminalState::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::*;
+    use otap_df_engine::Interests;
+    use serde_json::json;
+
+    #[test]
+    fn test_noop_exporter_no_subscription() {
+        test_exporter_no_subscription(&NOOP_EXPORTER, json!({}));
+    }
+
+    #[test]
+    fn test_noop_exporter_with_subscription() {
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS,
+            Interests::ACKS,
+        );
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::ACKS | Interests::RETURN_DATA,
+            Interests::ACKS,
+        );
+        test_exporter_with_subscription(
+            &NOOP_EXPORTER,
+            json!({}),
+            Interests::NACKS,
+            Interests::empty(),
+        );
     }
 }

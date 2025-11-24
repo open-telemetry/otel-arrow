@@ -28,9 +28,9 @@ use arrow::array::{
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
-use otel_arrow_rust::otap::OtapArrowRecords;
-use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_rust::schema::{FieldExt, consts};
+use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use otap_df_pdata::schema::{FieldExt, consts};
 
 use super::error::ParquetExporterError;
 

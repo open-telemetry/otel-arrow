@@ -147,7 +147,7 @@ where
     execution_context.add_diagnostic_if_enabled(
         RecordSetEngineDiagnosticLevel::Verbose,
         convert_scalar_expression,
-        || format!("Evaluated as: '{value}'"),
+        || format!("Evaluated as: {value}"),
     );
 
     Ok(value)

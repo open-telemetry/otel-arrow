@@ -25,6 +25,16 @@ impl MetricsReporter {
         Self { metrics_sender }
     }
 
+    /// Create a test instance of this metrics reporter. It returns the reporter and the receiver
+    /// that the reporter will send the metrics to when report is called
+    #[must_use]
+    pub fn create_new_and_receiver(
+        channel_size: usize,
+    ) -> (flume::Receiver<MetricSetSnapshot>, Self) {
+        let (tx, rx) = flume::bounded(channel_size);
+        (rx, Self::new(tx))
+    }
+
     /// Report multivariate metrics and reset the metrics if successful.
     pub fn report<M: MetricSetHandler + 'static>(
         &mut self,
@@ -45,6 +55,15 @@ impl MetricsReporter {
                 // ToDo: We might have to change this behavior depending on how we apply timestamps to these snapshots otherwise we may have a thread report a larger value belonging to a longer interval than others.
                 Ok(())
             }
+            Err(flume::TrySendError::Disconnected(_)) => Err(Error::MetricsChannelClosed),
+        }
+    }
+
+    /// Report an already materialized snapshot.
+    pub fn try_report_snapshot(&self, snapshot: MetricSetSnapshot) -> Result<(), Error> {
+        match self.metrics_sender.try_send(snapshot) {
+            Ok(_) => Ok(()),
+            Err(flume::TrySendError::Full(_)) => Ok(()),
             Err(flume::TrySendError::Disconnected(_)) => Err(Error::MetricsChannelClosed),
         }
     }

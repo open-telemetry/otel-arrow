@@ -33,11 +33,16 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
+use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
+use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -82,22 +87,23 @@ pub trait Exporter<PData> {
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
-    ) -> Result<(), Error>;
+    ) -> Result<TerminalState, Error>;
 }
 
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore,
+    pub(crate) core: EffectHandlerCore<PData>,
     _pd: PhantomData<PData>,
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
+    /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
+    /// reporter.
     #[must_use]
-    pub fn new(node_id: NodeId) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id),
+            core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
         }
     }
@@ -123,7 +129,7 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
-    ) -> Result<TimerCancelHandle, Error> {
+    ) -> Result<TimerCancelHandle<PData>, Error> {
         self.core.start_periodic_timer(duration).await
     }
 
@@ -131,8 +137,33 @@ impl<PData> EffectHandler<PData> {
     pub async fn start_periodic_telemetry(
         &self,
         duration: Duration,
-    ) -> Result<TelemetryTimerCancelHandle, Error> {
+    ) -> Result<TelemetryTimerCancelHandle<PData>, Error> {
         self.core.start_periodic_telemetry(duration).await
+    }
+
+    /// Send an Ack to a node of known-interest.
+    pub async fn route_ack<F>(&self, ack: AckMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(AckMsg<PData>) -> Option<(usize, AckMsg<PData>)>,
+    {
+        self.core.route_ack(ack, cxf).await
+    }
+
+    /// Send a Nack to a node of known-interest.
+    pub async fn route_nack<F>(&self, nack: NackMsg<PData>, cxf: F) -> Result<(), Error>
+    where
+        F: FnOnce(NackMsg<PData>) -> Option<(usize, NackMsg<PData>)>,
+    {
+        self.core.route_nack(nack, cxf).await
+    }
+
+    /// Reports metrics collected by the exporter.
+    #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
+    pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
+        &mut self,
+        metrics: &mut MetricSet<M>,
+    ) -> Result<(), TelemetryError> {
+        self.core.report_metrics(metrics)
     }
 
     // More methods will be added in the future as needed.

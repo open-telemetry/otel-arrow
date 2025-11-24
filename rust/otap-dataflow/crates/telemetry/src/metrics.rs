@@ -41,10 +41,24 @@ impl<M: MetricSetHandler> DerefMut for MetricSet<M> {
     }
 }
 
+impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
+    fn from(val: MetricSet<M>) -> Self {
+        val.snapshot()
+    }
+}
+
 /// Immutable snapshot of a metric set's current values.
 pub struct MetricSetSnapshot {
     pub(crate) key: MetricsKey,
     pub(crate) metrics: Vec<u64>,
+}
+
+impl MetricSetSnapshot {
+    /// get a reference to the metric values
+    #[must_use]
+    pub fn get_metrics(&self) -> &[u64] {
+        &self.metrics
+    }
 }
 
 /// Handler trait implemented by generated metric set structs (see 'metric_set' proc macro).

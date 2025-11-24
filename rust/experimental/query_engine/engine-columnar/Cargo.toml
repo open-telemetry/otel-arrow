@@ -9,5 +9,16 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-arrow = { workspace = true }
+arrow = { workspace = true, features = ["prettyprint"] }
+async-trait = { workspace = true }
+datafusion = { workspace = true }
+futures-core = { workspace = true }
+parking_lot = { workspace = true }
 thiserror = { workspace = true }
+
+otap-df-pdata = { path = "../../../otap-dataflow/crates/pdata" }
+data_engine_expressions = { path = "../expressions" }
+
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 /// Defines the settings of the perf exporter such as what to track
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Time duration after which a perf trace is displayed (default = 1000ms).
     #[serde(default = "default_frequency")]

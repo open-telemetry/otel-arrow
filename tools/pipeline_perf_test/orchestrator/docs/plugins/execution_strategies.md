@@ -49,8 +49,11 @@ components:
       pipeline_perf_loadgen:
         endpoint:  "http://localhost:5001/"
         threads: 1
+        target_rate: 10000
+        tcp_connection_per_thread: false
         body_size: 25
         num_attributes: 2
         attribute_value_size: 15
         batch_size: 10000
+        load_type: otlp
 ```
