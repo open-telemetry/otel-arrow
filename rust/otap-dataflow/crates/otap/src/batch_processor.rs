@@ -212,7 +212,7 @@ pub struct BatchProcessorMetrics {
     /// Number of messages dropped due to conversion failures
     #[metric(unit = "{msg}")]
     dropped_conversion: Counter<u64>,
-    /// Number of batching errors encountered
+    /// Number of batches for which errors encountered
     #[metric(unit = "{error}")]
     batching_errors: Counter<u64>,
     /// Number of empty records dropped
@@ -254,8 +254,8 @@ impl BatchProcessor {
         config.validate()?;
 
         let lower_limit = config
-            .send_batch_max_size
-            .or(config.send_batch_size)
+            .send_batch_size
+            .or(config.send_batch_max_size)
             .expect("valid");
 
         Ok(BatchProcessor {
@@ -395,11 +395,12 @@ impl BatchProcessor {
             FlushReason::Shutdown => {}
         }
 
+        let count = input.len();
         let limit = self.config.send_batch_max_size;
         let mut output_batches = match make_output_batches(signal, nzu_to_nz64(limit), input) {
             Ok(v) => v,
             Err(e) => {
-                self.metrics.batching_errors.inc();
+                self.metrics.batching_errors.add(count as u64);
                 log_batching_failed(effect, signal, &e).await;
                 return Err(EngineError::InternalError {
                     message: e.to_string(),
@@ -774,7 +775,7 @@ mod tests {
     /// Generic test helper for size-based flush
     fn test_size_flush(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
         let cfg = json!({
-            "send_batch_size": 3,
+            "send_batch_size": 4,
             "send_batch_max_size": 5,
             "timeout": "1s"
         });
@@ -1086,19 +1087,20 @@ mod tests {
                     ctx.process(Message::PData(pdata)).await.expect("process");
                 }
 
-                // Should flush when 4th batch brings total to 12 (>= lower_limit of 10)
-                // With max_size=10, expect: batch of 10, then rebuffered remainder of 2
+                // Should flush at 6 and 12 items, i.e., twice.
                 let emitted = ctx.drain_pdata().await;
-                assert_eq!(emitted.len(), 1, "should flush one batch at threshold");
+                assert_eq!(emitted.len(), 2, "should flush two batches at threshold");
 
-                let rec: OtapArrowRecords = emitted[0].clone().payload().try_into().unwrap();
-                assert_eq!(
-                    rec.batch_length(),
-                    10,
-                    "first batch should have 10 items (max_size)"
-                );
+                let records: Vec<_> = emitted
+                    .into_iter()
+                    .map(|d| {
+                        let rec: OtapArrowRecords = d.clone().payload().try_into().unwrap();
+                        assert_eq!(rec.batch_length(), 6);
+                        rec
+                    })
+                    .collect();
 
-                // Shutdown to flush the remaining 2 items
+                // Shutdown before drain
                 ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Instant::now() + Duration::from_millis(100),
                     reason: "test".into(),
@@ -1107,16 +1109,11 @@ mod tests {
                 .expect("shutdown");
 
                 let final_emitted = ctx.drain_pdata().await;
-                assert_eq!(final_emitted.len(), 1, "shutdown flushes remainder");
-
-                let rec2: OtapArrowRecords = final_emitted[0].clone().payload().try_into().unwrap();
-                assert_eq!(rec2.batch_length(), 2, "remainder has 2 items");
+                assert_eq!(final_emitted.len(), 0, "shutdown flushes nothing");
 
                 // Verify equivalence
-                let all_outputs: Vec<OtlpProtoMessage> = vec![rec, rec2]
-                    .into_iter()
-                    .map(|r| otap_to_otlp(&r))
-                    .collect();
+                let all_outputs: Vec<OtlpProtoMessage> =
+                    records.into_iter().map(|r| otap_to_otlp(&r)).collect();
                 assert_equivalent(&inputs_otlp, &all_outputs);
 
                 // Trigger telemetry collection
