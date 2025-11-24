@@ -75,7 +75,7 @@ const fn default_send_batch_size() -> Option<NonZeroUsize> {
     NonZeroUsize::new(DEFAULT_SEND_BATCH_SIZE)
 }
 
-fn default_send_batch_max_size() -> Option<NonZeroUsize> {
+const fn default_send_batch_max_size() -> Option<NonZeroUsize> {
     // No upper-bound
     None
 }
