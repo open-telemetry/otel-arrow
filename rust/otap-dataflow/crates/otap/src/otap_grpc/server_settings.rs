@@ -253,15 +253,15 @@ const fn default_tcp_nodelay() -> bool {
     true
 }
 
-fn default_tcp_keepalive() -> Option<Duration> {
+const fn default_tcp_keepalive() -> Option<Duration> {
     Some(Duration::from_secs(45))
 }
 
-fn default_tcp_keepalive_interval() -> Option<Duration> {
+const fn default_tcp_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(15))
 }
 
-fn default_tcp_keepalive_retries() -> Option<u32> {
+const fn default_tcp_keepalive_retries() -> Option<u32> {
     Some(5)
 }
 
@@ -269,27 +269,27 @@ const fn default_load_shed() -> bool {
     true
 }
 
-fn default_initial_stream_window_size() -> Option<u32> {
+const fn default_initial_stream_window_size() -> Option<u32> {
     Some(8 * 1024 * 1024)
 }
 
-fn default_initial_connection_window_size() -> Option<u32> {
+const fn default_initial_connection_window_size() -> Option<u32> {
     Some(24 * 1024 * 1024)
 }
 
-fn default_max_frame_size() -> Option<u32> {
+const fn default_max_frame_size() -> Option<u32> {
     Some(16 * 1024)
 }
 
-fn default_max_decoding_message_size() -> Option<u32> {
+const fn default_max_decoding_message_size() -> Option<u32> {
     Some(4 * 1024 * 1024)
 }
 
-fn default_http2_keepalive_interval() -> Option<Duration> {
+const fn default_http2_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(30))
 }
 
-fn default_http2_keepalive_timeout() -> Option<Duration> {
+const fn default_http2_keepalive_timeout() -> Option<Duration> {
     Some(Duration::from_secs(10))
 }
 
