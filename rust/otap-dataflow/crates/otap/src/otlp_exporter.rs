@@ -162,6 +162,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // Main loop: 1) finish ready completions, 2) biased wait for either a completion
         // or the next message, 3) dispatch work while respecting the in-flight budget.
         loop {
+            // Backpressure guard: when full and a message is parked, only drain completions.
             if inflight_exports.len() >= max_in_flight && pending_msg.is_some() {
                 if let Some(completed) = inflight_exports.next_completion().await {
                     let client = finalize_completed_export(
@@ -175,7 +176,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 continue;
             }
 
-            while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten() {
+            // Opportunistically drain completions before we park on a recv.
+            while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten()
+            {
                 let client =
                     finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
                         .await;
@@ -454,6 +457,7 @@ fn prepare_otlp_export(
     }
 }
 
+/// Encode an OTAP Arrow batch and enqueue the export task; on encoding failure, emit a Nack.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     otap_batch: OtapArrowRecords,
@@ -657,20 +661,25 @@ impl GrpcClientPool {
         }
     }
 
+    #[inline(always)]
     fn take_logs(&mut self) -> LogsServiceClient<Channel> {
-        self.logs.pop().unwrap_or_else(|| self.make_logs_client())
+        self.logs
+            .pop()
+            .expect("client pool underflow: take_logs called with empty pool")
     }
 
+    #[inline(always)]
     fn take_metrics(&mut self) -> MetricsServiceClient<Channel> {
         self.metrics
             .pop()
-            .unwrap_or_else(|| self.make_metrics_client())
+            .expect("client pool underflow: take_metrics called with empty pool")
     }
 
+    #[inline(always)]
     fn take_traces(&mut self) -> TraceServiceClient<Channel> {
         self.traces
             .pop()
-            .unwrap_or_else(|| self.make_traces_client())
+            .expect("client pool underflow: take_traces called with empty pool")
     }
 
     fn release(&mut self, client: SignalClient) {
