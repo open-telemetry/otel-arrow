@@ -233,8 +233,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let settings = Settings {
             max_concurrent_requests: self.config.max_concurrent_requests,
             wait_for_result: self.config.wait_for_result,
-            accept_compression_encodings: compression,
-            send_compression_encodings: compression,
+            max_decoding_message_size: None, // [lq] will be used in a future PR
+            request_compression_encodings: compression,
+            response_compression_encodings: compression,
         };
 
         let logs_server = LogsServiceServer::new(effect_handler.clone(), &settings);
