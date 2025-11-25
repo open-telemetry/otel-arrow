@@ -241,8 +241,9 @@ println!("OTLPExporter: max_in_flight = {}", max_in_flight);
                                                 make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
-                                        Err(_) => {
+                                        Err(error) => {
                                             self.pdata_metrics.logs_failed.inc();
+                                            _ = notify_prepare_error(error, &effect_handler).await;
                                         }
                                     }
                                 }
@@ -260,8 +261,9 @@ println!("OTLPExporter: max_in_flight = {}", max_in_flight);
                                                 make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
-                                        Err(_) => {
+                                        Err(error) => {
                                             self.pdata_metrics.metrics_failed.inc();
+                                            _ = notify_prepare_error(error, &effect_handler).await;
                                         }
                                     }
                                 }
@@ -279,8 +281,9 @@ println!("OTLPExporter: max_in_flight = {}", max_in_flight);
                                                 make_export_future(prepared, &mut client_pool);
                                             inflight.push(future);
                                         }
-                                        Err(_) => {
+                                        Err(error) => {
                                             self.pdata_metrics.traces_failed.inc();
+                                            _ = notify_prepare_error(error, &effect_handler).await;
                                         }
                                     }
                                 }
@@ -368,6 +371,12 @@ struct PreparedExport {
     signal_type: SignalType,
 }
 
+struct PrepareError {
+    error: Error,
+    context: Context,
+    saved_payload: OtapPayload,
+}
+
 fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     mut otap_batch: OtapArrowRecords,
     context: Context,
@@ -375,16 +384,27 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     encoder: &mut Enc,
     exporter: NodeId,
     signal_type: SignalType,
-) -> Result<PreparedExport, Error> {
+) -> Result<PreparedExport, PrepareError> {
     proto_buffer.clear();
-    encoder
-        .encode(&mut otap_batch, proto_buffer)
-        .map_err(|e| Error::ExporterError {
+    if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
+        let error = Error::ExporterError {
             exporter,
             kind: ExporterErrorKind::Other,
             error: format!("encoding error: {}", e),
             source_detail: "".to_string(),
-        })?;
+        };
+
+        if !context.may_return_payload() {
+            let _drop = otap_batch.take_payload();
+        }
+        let saved_payload: OtapPayload = otap_batch.into();
+
+        return Err(PrepareError {
+            error,
+            context,
+            saved_payload,
+        });
+    }
 
     let mut owned_buffer = ProtoBuffer::new();
     mem::swap(proto_buffer, &mut owned_buffer);
@@ -424,6 +444,26 @@ fn prepare_otlp_export(
         saved_payload,
         signal_type,
     }
+}
+
+async fn notify_prepare_error(
+    error: PrepareError,
+    effect_handler: &EffectHandler<OtapPdata>,
+) -> Result<(), Error> {
+    let PrepareError {
+        error,
+        context,
+        saved_payload,
+    } = error;
+
+    effect_handler
+        .notify_nack(NackMsg::new(
+            &error.to_string(),
+            OtapPdata::new(context, saved_payload),
+        ))
+        .await?;
+
+    Ok(())
 }
 
 /// Applies the Ack/Nack side effects for a completed gRPC export and returns the reusable client.
