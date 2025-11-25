@@ -30,6 +30,7 @@ use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use bytes::Bytes;
 
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
@@ -562,9 +563,9 @@ impl SignalBuffer {
         // have a bunch of timers pending, when we want a timer we can
         // cancel.
         let wakeup: OtapPayload = match signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(vec![]),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(vec![]),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(vec![]),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
         }
         .into();
 
