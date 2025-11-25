@@ -24,6 +24,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
+use bytes::Bytes;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -339,8 +340,8 @@ impl ProtoBuffer {
     }
 
     #[must_use]
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buffer
+    pub fn into_bytes(self) -> Bytes {
+        Bytes::from(self.buffer)
     }
 
     pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {

@@ -181,6 +181,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 mod tests {
     use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
     use crate::pdata::OtapPdata;
+    use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -622,9 +623,10 @@ mod tests {
         move |mut ctx| {
             Box::pin(async move {
                 //convert logsdata to otappdata
-                let mut bytes = vec![];
+                let mut bytes = BytesMut::new();
                 sent.encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
+                let bytes = bytes.freeze();
                 let otlp_logs_bytes =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
@@ -638,7 +640,7 @@ mod tests {
                     .try_into()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
                         .expect("failed to decode logs into logsdata"),
                     _ => panic!("expected logs type"),
                 };
@@ -656,10 +658,11 @@ mod tests {
             Box::pin(async move {
                 //convert tracesdata to otappdata
                 let traces_data = build_traces();
-                let mut bytes = vec![];
+                let mut bytes = BytesMut::new();
                 traces_data
                     .encode(&mut bytes)
                     .expect("failed to encode trace data into bytes");
+                let bytes = bytes.freeze();
                 let otlp_traces_bytes =
                     OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into());
                 ctx.process(Message::PData(otlp_traces_bytes))
@@ -674,7 +677,7 @@ mod tests {
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_traces_data = match otlp_bytes {
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                        TracesData::decode(bytes.as_slice())
+                        TracesData::decode(bytes.as_ref())
                             .expect("failed to decode traces into tracesdata")
                     }
                     _ => panic!("expected traces type"),

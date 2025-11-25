@@ -7,6 +7,7 @@ use crate::metrics::ExporterPDataMetrics;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
+use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -230,7 +231,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         context,
                                         &mut logs_client,
                                         &effect_handler,
-                                        |b| OtlpProtoBytes::ExportLogsRequest(b.to_vec()).into(),
+                                        |b| OtlpProtoBytes::ExportLogsRequest(b).into(),
                                     )
                                     .await
                                     {
@@ -244,7 +245,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         context,
                                         &mut metrics_client,
                                         &effect_handler,
-                                        |b| OtlpProtoBytes::ExportMetricsRequest(b.to_vec()).into(),
+                                        |b| OtlpProtoBytes::ExportMetricsRequest(b).into(),
                                     )
                                     .await
                                     {
@@ -258,7 +259,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         context,
                                         &mut trace_client,
                                         &effect_handler,
-                                        |b| OtlpProtoBytes::ExportTracesRequest(b.to_vec()).into(),
+                                        |b| OtlpProtoBytes::ExportTracesRequest(b).into(),
                                     )
                                     .await
                                     {
@@ -341,7 +342,7 @@ where
             source_detail: "".to_string(),
         })?;
 
-    let bytes = proto_buffer.as_ref().to_vec();
+    let bytes = Bytes::copy_from_slice(proto_buffer.as_ref());
     if !context.may_return_payload() {
         // drop before the export, payload not requested
         let _drop = otap_batch.take_payload();
@@ -355,11 +356,11 @@ where
 
 /// Generic function for exporting OTLP bytes via gRPC and handling Ack/Nack delivery.
 async fn handle_otlp_export<T2, Resp, S>(
-    bytes: Vec<u8>,
+    bytes: Bytes,
     context: Context,
     client: &mut crate::otap_grpc::otlp::client::OtlpServiceClient<T2, Resp, S>,
     effect_handler: &EffectHandler<OtapPdata>,
-    save_payload_fn: impl FnOnce(&[u8]) -> OtapPayload,
+    save_payload_fn: impl FnOnce(Bytes) -> OtapPayload,
 ) -> Result<(), Error>
 where
     T2: tonic::client::GrpcService<tonic::body::Body>,
@@ -371,9 +372,9 @@ where
     Resp: prost::Message + Default + Send + 'static,
 {
     let saved_payload = if context.may_return_payload() {
-        save_payload_fn(&bytes)
+        save_payload_fn(bytes.clone())
     } else {
-        save_payload_fn(&[])
+        save_payload_fn(Bytes::new())
     };
 
     let result = client.export(bytes).await;
@@ -481,6 +482,7 @@ mod tests {
                 let req = ExportLogsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
+                let req_bytes = Bytes::from(req_bytes);
                 let logs_pdata =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(req_bytes).into())
                         .test_subscribe_to(
@@ -495,6 +497,7 @@ mod tests {
                 let req = ExportMetricsServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
+                let req_bytes = Bytes::from(req_bytes);
                 let metrics_pdata =
                     OtapPdata::new_default(OtlpProtoBytes::ExportMetricsRequest(req_bytes).into())
                         .test_subscribe_to(
@@ -509,6 +512,7 @@ mod tests {
                 let req = ExportTraceServiceRequest::default();
                 let mut req_bytes = vec![];
                 req.encode(&mut req_bytes).unwrap();
+                let req_bytes = Bytes::from(req_bytes);
                 let traces_pdata =
                     OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(req_bytes).into())
                         .test_subscribe_to(
@@ -738,6 +742,7 @@ mod tests {
             let req = ExportLogsServiceRequest::default();
             let mut req_bytes = vec![];
             req.encode(&mut req_bytes).unwrap();
+            let req_bytes = Bytes::from(req_bytes);
 
             // send a request while the server isn't running and check how we handle it
             let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
