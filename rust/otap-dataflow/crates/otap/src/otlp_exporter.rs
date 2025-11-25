@@ -34,7 +34,7 @@ use otap_df_pdata::otlp::logs::LogsProtoBytesEncoder;
 use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::future::Future;
@@ -63,7 +63,7 @@ pub struct Config {
 }
 
 const fn default_max_in_flight() -> usize {
-    32
+    5
 }
 
 /// Exporter that sends OTLP data via gRPC
@@ -144,7 +144,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let compression = self.config.grpc.compression_encoding();
         let max_in_flight = self.config.max_in_flight.max(1);
-
+println!("OTLPExporter: max_in_flight = {}", max_in_flight);
         // reuse the encoder and the buffer across pdatas
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();

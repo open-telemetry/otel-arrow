@@ -54,8 +54,9 @@ async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
 axum = "0.8.4"
-bitflags = "2.9"
-bytemuck = "1.23"
+bitflags = "2.10"
+bytes = "1.11"
+bytemuck = "1.24"
 chrono = { version = "0.4", features = ["serde"] }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
