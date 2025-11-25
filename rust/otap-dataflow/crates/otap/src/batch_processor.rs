@@ -7,7 +7,6 @@
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
-use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -563,9 +562,9 @@ impl SignalBuffer {
         // have a bunch of timers pending, when we want a timer we can
         // cancel.
         let wakeup: OtapPayload = match signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(vec![]),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(vec![]),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(vec![]),
         }
         .into();
 
