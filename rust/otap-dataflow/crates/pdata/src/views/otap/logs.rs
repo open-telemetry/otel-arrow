@@ -2001,4 +2001,50 @@ mod tests {
             "Zero ID attribute not found (Bug #1 regression)"
         );
     }
+
+    #[test]
+    fn test_missing_attributes_iterator() {
+        // Verify that when attribute batches are None, the iterators correctly
+        // return empty without panicking
+        let logs_batch = create_test_logs_batch();
+
+        // Create view with no attributes
+        let logs_view = OtapLogsView::new(&logs_batch, None, None, None);
+
+        let mut log_count = 0;
+        for resource_logs in logs_view.resources() {
+            // Resource attributes should be empty
+            if let Some(resource) = resource_logs.resource() {
+                let attr_count = resource.attributes().count();
+                assert_eq!(
+                    attr_count, 0,
+                    "Expected 0 resource attributes when batch is None"
+                );
+            }
+
+            for scope_logs in resource_logs.scopes() {
+                // Scope attributes should be empty
+                if let Some(scope) = scope_logs.scope() {
+                    let scope_attr_count = scope.attributes().count();
+                    assert_eq!(
+                        scope_attr_count, 0,
+                        "Expected 0 scope attributes when batch is None"
+                    );
+                }
+
+                for log_record in scope_logs.log_records() {
+                    log_count += 1;
+
+                    // Log attributes should be empty
+                    let log_attr_count = log_record.attributes().count();
+                    assert_eq!(
+                        log_attr_count, 0,
+                        "Expected 0 log attributes when batch is None"
+                    );
+                }
+            }
+        }
+
+        assert_eq!(log_count, 3, "Should still iterate through all 3 logs");
+    }
 }
