@@ -6,7 +6,7 @@ use data_engine_expressions::*;
 use crate::{execution_context::*, scalars::execute_scalar_expression, *};
 
 pub fn execute_math_scalar_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     math_scalar_expression: &'a MathScalarExpression,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -49,7 +49,7 @@ where
 }
 
 fn execute_unary_operation<'a, 'b, TRecord: Record, F>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     unary_expression: &'a UnaryMathematicalScalarExpression,
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>
@@ -66,7 +66,7 @@ where
 }
 
 fn execute_binary_operation<'a, 'b, TRecord: Record, F>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     binary_expression: &'a BinaryMathematicalScalarExpression,
     op: F,
 ) -> Result<ResolvedValue<'b>, ExpressionError>

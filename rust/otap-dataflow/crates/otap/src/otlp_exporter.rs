@@ -420,6 +420,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         });
     }
 
+    // Maintain the buffer's capacity across repeated calls.
     let (bytes, next_capacity) = proto_buffer.take_into_bytes();
     proto_buffer.ensure_capacity(next_capacity);
 

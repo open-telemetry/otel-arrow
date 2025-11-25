@@ -7,7 +7,7 @@ use crate::{execution_context::*, scalars::*, *};
 use data_engine_expressions::*;
 
 pub fn execute_summary_data_expression<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     summary_data_expression: &'a SummaryDataExpression,
 ) -> Result<(), ExpressionError> {
     let group_by_expressions = summary_data_expression.get_group_by_expressions();

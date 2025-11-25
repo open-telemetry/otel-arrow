@@ -78,38 +78,30 @@ impl RecordSetEngine {
         }
     }
 
-    pub fn begin_batch<'a, 'b, 'c, TRecord: Record + 'static>(
+    pub fn begin_batch<'a, 'b, TRecord: Record + 'static>(
         &'b self,
         pipeline: &'a PipelineExpression,
-    ) -> Result<RecordSetEngineBatch<'a, 'b, 'c, TRecord>, ExpressionError>
-    where
-        'a: 'b,
-        'b: 'c,
-    {
+    ) -> Result<RecordSetEngineBatch<'a, 'b, TRecord>, ExpressionError> {
         let mut batch = RecordSetEngineBatch::new(pipeline, self);
         batch.initialize()?;
         Ok(batch)
     }
 }
 
-pub struct RecordSetEngineBatch<'a, 'b, 'c, TRecord: Record> {
+pub struct RecordSetEngineBatch<'a, 'b, TRecord: Record> {
     engine: &'b RecordSetEngine,
     pipeline: &'a PipelineExpression,
-    diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
+    diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
     global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries<'a>,
-    included_records: Vec<RecordSetEngineRecord<'a, 'c, TRecord>>,
+    included_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
 }
 
-impl<'a, 'b, 'c, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, 'c, TRecord>
-where
-    'a: 'b,
-    'b: 'c,
-{
+impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
     pub(crate) fn new(
         pipeline: &'a PipelineExpression,
         engine: &'b RecordSetEngine,
-    ) -> RecordSetEngineBatch<'a, 'b, 'c, TRecord> {
+    ) -> RecordSetEngineBatch<'a, 'b, TRecord> {
         Self {
             engine,
             pipeline,
@@ -174,7 +166,7 @@ where
     pub fn push_records<TRecords: RecordSet<TRecord>>(
         &mut self,
         records: &mut TRecords,
-    ) -> Vec<RecordSetEngineRecord<'a, 'c, TRecord>> {
+    ) -> Vec<RecordSetEngineRecord<'a, TRecord>> {
         let mut dropped_records = Vec::new();
 
         records.drain(&mut |attached_records, record| match self
@@ -187,7 +179,7 @@ where
         dropped_records
     }
 
-    pub fn flush(self) -> RecordSetEngineResults<'a, 'c, TRecord> {
+    pub fn flush(self) -> RecordSetEngineResults<'a, TRecord> {
         RecordSetEngineResults::new(
             self.pipeline,
             self.diagnostics,
@@ -206,7 +198,7 @@ where
         &self,
         attached_records: Option<&'d dyn AttachedRecords>,
         record: TRecord,
-    ) -> RecordSetEngineResult<'a, 'c, TRecord> {
+    ) -> RecordSetEngineResult<'a, TRecord> {
         let diagnostic_level = record
             .get_diagnostic_level()
             .unwrap_or(self.engine.diagnostic_level.clone());
@@ -224,10 +216,10 @@ where
     }
 }
 
-fn process_record<'a, 'c, TRecord: Record + 'static>(
-    execution_context: ExecutionContext<'a, '_, 'c, TRecord>,
+fn process_record<'a, TRecord: Record + 'static>(
+    execution_context: ExecutionContext<'a, '_, TRecord>,
     expressions: &'a [DataExpression],
-) -> RecordSetEngineResult<'a, 'c, TRecord> {
+) -> RecordSetEngineResult<'a, TRecord> {
     for expression in expressions {
         match expression {
             DataExpression::Discard(d) => {
@@ -302,15 +294,12 @@ fn process_record<'a, 'c, TRecord: Record + 'static>(
     RecordSetEngineResult::Include(execution_context.into())
 }
 
-fn process_summaries<'a, 'b>(
+fn process_summaries<'a>(
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     global_variables: &RefCell<MapValueStorage<OwnedValue>>,
     pipeline: &'a PipelineExpression,
     summaries: &Summaries<'a>,
-) -> RecordSetEngineSummaryResults<'a, 'b>
-where
-    'a: 'b,
-{
+) -> RecordSetEngineSummaryResults<'a> {
     let mut summaries = summaries.values.take();
 
     let mut included_summaries = Vec::with_capacity(summaries.len());
@@ -394,24 +383,24 @@ pub trait AttachedRecords {
     fn get_attached_record(&self, name: &str) -> Option<&(dyn MapValue + 'static)>;
 }
 
-pub enum RecordSetEngineResult<'a, 'b, TRecord: Record> {
-    Drop(RecordSetEngineRecord<'a, 'b, TRecord>),
-    Include(RecordSetEngineRecord<'a, 'b, TRecord>),
+pub enum RecordSetEngineResult<'a, TRecord: Record> {
+    Drop(RecordSetEngineRecord<'a, TRecord>),
+    Include(RecordSetEngineRecord<'a, TRecord>),
 }
 
 #[derive(Debug)]
-pub struct RecordSetEngineRecord<'a, 'b, TRecord: Record> {
+pub struct RecordSetEngineRecord<'a, TRecord: Record> {
     pipeline: &'a PipelineExpression,
     record: TRecord,
-    diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
+    diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
 }
 
-impl<'a, 'b, TRecord: Record> RecordSetEngineRecord<'a, 'b, TRecord> {
+impl<'a, TRecord: Record> RecordSetEngineRecord<'a, TRecord> {
     pub(crate) fn new(
         pipeline: &'a PipelineExpression,
         record: TRecord,
-        diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
-    ) -> RecordSetEngineRecord<'a, 'b, TRecord> {
+        diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
+    ) -> RecordSetEngineRecord<'a, TRecord> {
         Self {
             pipeline,
             record,
@@ -423,7 +412,7 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineRecord<'a, 'b, TRecord> {
         &self.record
     }
 
-    pub fn get_diagnostics(&self) -> &[RecordSetEngineDiagnostic<'b>] {
+    pub fn get_diagnostics(&self) -> &[RecordSetEngineDiagnostic<'a>] {
         &self.diagnostics
     }
 
@@ -432,15 +421,15 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineRecord<'a, 'b, TRecord> {
     }
 }
 
-impl<'a, 'b, 'c, TRecord: Record> From<ExecutionContext<'a, 'b, 'c, TRecord>>
-    for RecordSetEngineRecord<'a, 'c, TRecord>
+impl<'a, 'b, TRecord: Record> From<ExecutionContext<'a, 'b, TRecord>>
+    for RecordSetEngineRecord<'a, TRecord>
 {
-    fn from(val: ExecutionContext<'a, 'b, 'c, TRecord>) -> Self {
+    fn from(val: ExecutionContext<'a, 'b, TRecord>) -> Self {
         val.consume_into_record()
     }
 }
 
-impl<TRecord: Record> Display for RecordSetEngineRecord<'_, '_, TRecord> {
+impl<TRecord: Record> Display for RecordSetEngineRecord<'_, TRecord> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_diagnostics(self.pipeline.get_query(), &self.diagnostics, f)
     }
@@ -536,22 +525,22 @@ fn format_diagnostics(
 }
 
 #[derive(Debug)]
-pub struct RecordSetEngineResults<'a, 'b, TRecord: Record> {
+pub struct RecordSetEngineResults<'a, TRecord: Record> {
     pipeline: &'a PipelineExpression,
-    pub diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
-    pub summaries: RecordSetEngineSummaryResults<'a, 'b>,
-    pub included_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
-    pub dropped_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
+    pub diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
+    pub summaries: RecordSetEngineSummaryResults<'a>,
+    pub included_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
+    pub dropped_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
 }
 
-impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
+impl<'a, TRecord: Record> RecordSetEngineResults<'a, TRecord> {
     pub(crate) fn new(
         pipeline: &'a PipelineExpression,
-        diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
-        summaries: RecordSetEngineSummaryResults<'a, 'b>,
-        included_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
-        dropped_records: Vec<RecordSetEngineRecord<'a, 'b, TRecord>>,
-    ) -> RecordSetEngineResults<'a, 'b, TRecord> {
+        diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
+        summaries: RecordSetEngineSummaryResults<'a>,
+        included_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
+        dropped_records: Vec<RecordSetEngineRecord<'a, TRecord>>,
+    ) -> RecordSetEngineResults<'a, TRecord> {
         Self {
             pipeline,
             diagnostics,
@@ -566,25 +555,25 @@ impl<'a, 'b, TRecord: Record> RecordSetEngineResults<'a, 'b, TRecord> {
     }
 }
 
-impl<TRecord: Record> Display for RecordSetEngineResults<'_, '_, TRecord> {
+impl<TRecord: Record> Display for RecordSetEngineResults<'_, TRecord> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_diagnostics(self.pipeline.get_query(), &self.diagnostics, f)
     }
 }
 
 #[derive(Debug)]
-pub struct RecordSetEngineSummaryResults<'a, 'b> {
-    pub included_summaries: Vec<RecordSetEngineSummary<'a, 'b>>,
-    pub dropped_summaries: Vec<RecordSetEngineSummary<'a, 'b>>,
+pub struct RecordSetEngineSummaryResults<'a> {
+    pub included_summaries: Vec<RecordSetEngineSummary<'a>>,
+    pub dropped_summaries: Vec<RecordSetEngineSummary<'a>>,
     // Note: Marker used to not allow manual construction of the struct
     marker: PhantomData<usize>,
 }
 
-impl<'a, 'b> RecordSetEngineSummaryResults<'a, 'b> {
+impl<'a> RecordSetEngineSummaryResults<'a> {
     pub(crate) fn new(
-        included_summaries: Vec<RecordSetEngineSummary<'a, 'b>>,
-        dropped_summaries: Vec<RecordSetEngineSummary<'a, 'b>>,
-    ) -> RecordSetEngineSummaryResults<'a, 'b> {
+        included_summaries: Vec<RecordSetEngineSummary<'a>>,
+        dropped_summaries: Vec<RecordSetEngineSummary<'a>>,
+    ) -> RecordSetEngineSummaryResults<'a> {
         Self {
             included_summaries,
             dropped_summaries,
@@ -594,24 +583,24 @@ impl<'a, 'b> RecordSetEngineSummaryResults<'a, 'b> {
 }
 
 #[derive(Debug)]
-pub struct RecordSetEngineSummary<'a, 'b> {
+pub struct RecordSetEngineSummary<'a> {
     pipeline: Option<&'a PipelineExpression>,
-    pub diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
+    pub diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
     pub summary_id: String,
     pub group_by_values: Vec<(Box<str>, OwnedValue)>,
     pub aggregation_values: HashMap<Box<str>, SummaryAggregation>,
     pub map: Option<MapValueStorage<OwnedValue>>,
 }
 
-impl<'a, 'b> RecordSetEngineSummary<'a, 'b> {
+impl<'a> RecordSetEngineSummary<'a> {
     pub(crate) fn new(
         pipeline: Option<&'a PipelineExpression>,
-        diagnostics: Vec<RecordSetEngineDiagnostic<'b>>,
+        diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
         summary_id: String,
         group_by_values: Vec<(Box<str>, OwnedValue)>,
         aggregation_values: HashMap<Box<str>, SummaryAggregation>,
         map: Option<MapValueStorage<OwnedValue>>,
-    ) -> RecordSetEngineSummary<'a, 'b> {
+    ) -> RecordSetEngineSummary<'a> {
         Self {
             pipeline,
             diagnostics,
@@ -623,7 +612,7 @@ impl<'a, 'b> RecordSetEngineSummary<'a, 'b> {
     }
 }
 
-impl Display for RecordSetEngineSummary<'_, '_> {
+impl Display for RecordSetEngineSummary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(pipeline) = self.pipeline {
             format_diagnostics(pipeline.get_query(), &self.diagnostics, f)
