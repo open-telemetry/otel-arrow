@@ -16,7 +16,6 @@ use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, Tr
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::ready;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -40,9 +39,7 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProto
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
@@ -236,8 +233,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Logs,
                                     ) {
                                         Ok(prepared) => {
-                                            let future =
-                                                make_export_future(prepared, &mut client_pool);
+                                            let client =
+                                                SignalClient::Logs(client_pool.take_logs());
+                                            let future = make_export_future(prepared, client);
                                             inflight.push(future);
                                         }
                                         Err(error) => {
@@ -256,8 +254,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Metrics,
                                     ) {
                                         Ok(prepared) => {
-                                            let future =
-                                                make_export_future(prepared, &mut client_pool);
+                                            let client =
+                                                SignalClient::Metrics(client_pool.take_metrics());
+                                            let future = make_export_future(prepared, client);
                                             inflight.push(future);
                                         }
                                         Err(error) => {
@@ -276,8 +275,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         SignalType::Traces,
                                     ) {
                                         Ok(prepared) => {
-                                            let future =
-                                                make_export_future(prepared, &mut client_pool);
+                                            let client =
+                                                SignalClient::Traces(client_pool.take_traces());
+                                            let future = make_export_future(prepared, client);
                                             inflight.push(future);
                                         }
                                         Err(error) => {
@@ -314,8 +314,18 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                         }
                                     };
 
-                                    let future =
-                                        make_export_future(prepared, &mut client_pool);
+                                    let client = match signal_type {
+                                        SignalType::Logs => {
+                                            SignalClient::Logs(client_pool.take_logs())
+                                        }
+                                        SignalType::Metrics => {
+                                            SignalClient::Metrics(client_pool.take_metrics())
+                                        }
+                                        SignalType::Traces => {
+                                            SignalClient::Traces(client_pool.take_traces())
+                                        }
+                                    };
+                                    let future = make_export_future(prepared, client);
                                     inflight.push(future);
                                 }
                             }
@@ -485,7 +495,10 @@ async fn process_completed_export(
 }
 
 /// Builds an export future for the provided payload, borrowing a signal-specific client from the pool.
-fn make_export_future(prepared: PreparedExport, client_pool: &mut ClientPool) -> ExportFuture {
+fn make_export_future(
+    prepared: PreparedExport,
+    client: SignalClient,
+) -> impl Future<Output = CompletedExport> {
     let PreparedExport {
         bytes,
         context,
@@ -493,84 +506,54 @@ fn make_export_future(prepared: PreparedExport, client_pool: &mut ClientPool) ->
         signal_type,
     } = prepared;
 
-    let future: ExportTaskFuture = match signal_type {
-        SignalType::Logs => {
-            let mut client = client_pool.take_logs();
-            Box::pin(async move {
+    async move {
+        match client {
+            SignalClient::Logs(mut client) => {
                 let result = client.export(bytes).await.map(|_| ());
-                (result, SignalClient::Logs(client))
-            })
-        }
-        SignalType::Metrics => {
-            let mut client = client_pool.take_metrics();
-            Box::pin(async move {
+                CompletedExport {
+                    result,
+                    context,
+                    saved_payload,
+                    signal_type,
+                    client: SignalClient::Logs(client),
+                }
+            }
+            SignalClient::Metrics(mut client) => {
                 let result = client.export(bytes).await.map(|_| ());
-                (result, SignalClient::Metrics(client))
-            })
-        }
-        SignalType::Traces => {
-            let mut client = client_pool.take_traces();
-            Box::pin(async move {
+                CompletedExport {
+                    result,
+                    context,
+                    saved_payload,
+                    signal_type,
+                    client: SignalClient::Metrics(client),
+                }
+            }
+            SignalClient::Traces(mut client) => {
                 let result = client.export(bytes).await.map(|_| ());
-                (result, SignalClient::Traces(client))
-            })
+                CompletedExport {
+                    result,
+                    context,
+                    saved_payload,
+                    signal_type,
+                    client: SignalClient::Traces(client),
+                }
+            }
         }
-    };
-
-    ExportFuture::new(future, context, saved_payload, signal_type)
-}
-
-type ExportTaskFuture =
-    Pin<Box<dyn Future<Output = (Result<(), tonic::Status>, SignalClient)> + 'static>>;
-
-struct ExportFuture {
-    future: ExportTaskFuture,
-    outcome_data: Option<(Context, OtapPayload)>,
-    signal_type: SignalType,
-}
-
-impl ExportFuture {
-    fn new(
-        future: ExportTaskFuture,
-        context: Context,
-        saved_payload: OtapPayload,
-        signal_type: SignalType,
-    ) -> Self {
-        Self {
-            future,
-            outcome_data: Some((context, saved_payload)),
-            signal_type,
-        }
-    }
-}
-
-impl Unpin for ExportFuture {}
-
-impl Future for ExportFuture {
-    type Output = CompletedExport;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        let (result, client) = ready!(self.future.as_mut().poll(cx));
-        let (context, saved_payload) = self
-            .outcome_data
-            .take()
-            .expect("outcome data already taken");
-        Poll::Ready(CompletedExport {
-            result,
-            context,
-            saved_payload,
-            signal_type: self.signal_type,
-            client,
-        })
     }
 }
 
 /// FIFO-ish wrapper around the in-flight export RPCs.
-struct InFlightQueue {
-    futures: FuturesUnordered<ExportFuture>,
+struct InFlightQueue<Fut>
+where
+    Fut: Future<Output = CompletedExport>,
+{
+    futures: FuturesUnordered<Fut>,
 }
 
-impl InFlightQueue {
+impl<Fut> InFlightQueue<Fut>
+where
+    Fut: Future<Output = CompletedExport>,
+{
     fn new() -> Self {
         Self {
             futures: FuturesUnordered::new(),
@@ -585,7 +568,7 @@ impl InFlightQueue {
         self.futures.is_empty()
     }
 
-    fn push(&mut self, future: ExportFuture) {
+    fn push(&mut self, future: Fut) {
         self.futures.push(future);
     }
 
@@ -711,6 +694,7 @@ mod tests {
     use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
+    use std::pin::Pin;
     use std::time::Instant;
     use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
