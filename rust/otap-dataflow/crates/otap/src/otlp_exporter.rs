@@ -150,16 +150,16 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut metrics_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut traces_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut client_pool = ClientPool::new(max_in_flight, channel, compression);
-        client_pool.prewarm();
-        let mut inflight = InFlightQueue::new();
+        client_pool.prepopulate_clients();
+        let mut inflight = InFlightExports::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
-        // Main receive/export loop: respect the concurrency budget, push new exports,
-        // and feed completions back to the pipeline.
+        // Main loop: (1) finish ready completions, (2) biased wait for either a completion
+        // or the next message, (3) dispatch work while respecting the in-flight budget.
         loop {
             if inflight.len() >= max_in_flight && pending_msg.is_some() {
                 if let Some(completed) = inflight.next_completion().await {
-                    let client = process_completed_export(
+                    let client = finalize_completed_export(
                         completed,
                         &effect_handler,
                         &mut self.pdata_metrics,
@@ -172,11 +172,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
             while let Some(completed) = inflight.next_completion().now_or_never().flatten() {
                 let client =
-                    process_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
+                    finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
                         .await;
                 client_pool.release(client);
             }
 
+            // Prefer completions if any are ready; otherwise biased select between completion and recv.
             let msg = if let Some(msg) = pending_msg.take() {
                 msg
             } else if inflight.is_empty() {
@@ -189,7 +190,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 futures::select_biased! {
                     completed = completion_fut => {
                         if let Some(completed) = completed {
-                            let client = process_completed_export(
+                            let client = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
@@ -211,7 +212,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     );
                     while !inflight.is_empty() {
                         if let Some(completed) = inflight.next_completion().await {
-                            let client = process_completed_export(
+                            let client = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
@@ -249,9 +250,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &exporter_id,
                                 SignalType::Logs,
                             ) {
-                                Ok(prepared) => {
+                                Ok(encoded) => {
                                     let client = SignalClient::Logs(client_pool.take_logs());
-                                    let future = make_export_future(prepared, client);
+                                    let future = make_export_future(encoded, client);
                                     inflight.push(future);
                                 }
                                 Err(error) => {
@@ -269,9 +270,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &exporter_id,
                                 SignalType::Metrics,
                             ) {
-                                Ok(prepared) => {
+                                Ok(encoded) => {
                                     let client = SignalClient::Metrics(client_pool.take_metrics());
-                                    let future = make_export_future(prepared, client);
+                                    let future = make_export_future(encoded, client);
                                     inflight.push(future);
                                 }
                                 Err(error) => {
@@ -289,9 +290,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &exporter_id,
                                 SignalType::Traces,
                             ) {
-                                Ok(prepared) => {
+                                Ok(encoded) => {
                                     let client = SignalClient::Traces(client_pool.take_traces());
-                                    let future = make_export_future(prepared, client);
+                                    let future = make_export_future(encoded, client);
                                     inflight.push(future);
                                 }
                                 Err(error) => {
@@ -342,7 +343,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 }
 
 /// Helper function to handle export result and send Ack/Nack accordingly.
-async fn handle_export_result<T>(
+async fn route_export_result<T>(
     result: Result<T, tonic::Status>,
     context: Context,
     saved_payload: OtapPayload,
@@ -374,14 +375,15 @@ async fn handle_export_result<T>(
     }
 }
 
-struct PreparedExport {
+struct EncodedExport {
     bytes: Bytes,
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
 }
 
-struct PrepareError {
+/// Encoding failed before the request was sent; we still need to surface a Nack with payload.
+struct EncodingFailure {
     error: Error,
     context: Context,
     saved_payload: OtapPayload,
@@ -394,7 +396,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     encoder: &mut Enc,
     exporter: &NodeId,
     signal_type: SignalType,
-) -> Result<PreparedExport, PrepareError> {
+) -> Result<EncodedExport, EncodingFailure> {
     proto_buffer.clear();
     if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
         let error = Error::ExporterError {
@@ -409,7 +411,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         }
         let saved_payload: OtapPayload = otap_batch.into();
 
-        return Err(PrepareError {
+        return Err(EncodingFailure {
             error,
             context,
             saved_payload,
@@ -425,7 +427,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     }
     let saved_payload: OtapPayload = otap_batch.into();
 
-    Ok(PreparedExport {
+    Ok(EncodedExport {
         bytes,
         context,
         saved_payload,
@@ -438,14 +440,14 @@ fn prepare_otlp_export(
     context: Context,
     signal_type: SignalType,
     save_payload_fn: impl FnOnce(Bytes) -> OtapPayload,
-) -> PreparedExport {
+) -> EncodedExport {
     let saved_payload = if context.may_return_payload() {
         save_payload_fn(bytes.clone())
     } else {
         save_payload_fn(Bytes::new())
     };
 
-    PreparedExport {
+    EncodedExport {
         bytes,
         context,
         saved_payload,
@@ -454,10 +456,10 @@ fn prepare_otlp_export(
 }
 
 async fn notify_prepare_error(
-    error: PrepareError,
+    error: EncodingFailure,
     effect_handler: &EffectHandler<OtapPdata>,
 ) -> Result<(), Error> {
-    let PrepareError {
+    let EncodingFailure {
         error,
         context,
         saved_payload,
@@ -474,7 +476,7 @@ async fn notify_prepare_error(
 }
 
 /// Applies the Ack/Nack side effects for a completed gRPC export and returns the reusable client.
-async fn process_completed_export(
+async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
@@ -487,7 +489,7 @@ async fn process_completed_export(
         client,
     } = completed;
 
-    match handle_export_result(result, context, saved_payload, effect_handler).await {
+    match route_export_result(result, context, saved_payload, effect_handler).await {
         Ok(()) => pdata_metrics.add_exported(signal_type, 1),
         Err(_) => pdata_metrics.add_failed(signal_type, 1),
     }
@@ -497,10 +499,10 @@ async fn process_completed_export(
 
 /// Builds an export future for the provided payload, borrowing a signal-specific client from the pool.
 fn make_export_future(
-    prepared: PreparedExport,
+    prepared: EncodedExport,
     client: SignalClient,
 ) -> impl Future<Output = CompletedExport> {
-    let PreparedExport {
+    let EncodedExport {
         bytes,
         context,
         saved_payload,
@@ -544,14 +546,14 @@ fn make_export_future(
 }
 
 /// FIFO-ish wrapper around the in-flight export RPCs.
-struct InFlightQueue<Fut>
+struct InFlightExports<Fut>
 where
     Fut: Future<Output = CompletedExport>,
 {
     futures: FuturesUnordered<Fut>,
 }
 
-impl<Fut> InFlightQueue<Fut>
+impl<Fut> InFlightExports<Fut>
 where
     Fut: Future<Output = CompletedExport>,
 {
@@ -603,7 +605,9 @@ impl ClientPool {
         }
     }
 
-    fn prewarm(&mut self) {
+    /// Eagerly build up to `max_in_flight` clients per signal to avoid first-call setup.
+    /// Eagerly build up to `max_in_flight` clients per signal to avoid first-call setup.
+    fn prepopulate_clients(&mut self) {
         let logs_cap = self.logs.capacity();
         for _ in 0..logs_cap {
             self.logs.push(self.make_logs_client());
