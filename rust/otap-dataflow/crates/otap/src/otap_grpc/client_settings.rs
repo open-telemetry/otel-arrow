@@ -18,7 +18,7 @@ pub struct GrpcClientSettings {
     pub grpc_endpoint: String,
 
     /// Compression method to use for outbound requests. Defaults to no compression.
-    #[serde(default)]
+    #[serde(default, alias = "compression_method")]
     pub compression: Option<CompressionMethod>,
 
     /// Maximum number of concurrent in-flight requests allowed by the transport stack.

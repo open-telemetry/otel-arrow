@@ -398,7 +398,7 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     encoder: &mut Enc,
     exporter: &NodeId,
     signal_type: SignalType,
-) -> Result<EncodedExport, EncodingFailure> {
+) -> Result<EncodedExport, Box<EncodingFailure>> {
     proto_buffer.clear();
     if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
         let error = Error::ExporterError {
@@ -413,11 +413,11 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         }
         let saved_payload: OtapPayload = otap_batch.into();
 
-        return Err(EncodingFailure {
+        return Err(Box::new(EncodingFailure {
             error,
             context,
             saved_payload,
-        });
+        }));
     }
 
     // Maintain the buffer's capacity across repeated calls.
@@ -495,18 +495,18 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
 }
 
 async fn notify_prepare_error(
-    error: EncodingFailure,
+    error: Box<EncodingFailure>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) -> Result<(), Error> {
     let EncodingFailure {
         error,
         context,
         saved_payload,
-    } = error;
+    } = *error;
 
     effect_handler
         .notify_nack(NackMsg::new(
-            &error.to_string(),
+            error.to_string(),
             OtapPdata::new(context, saved_payload),
         ))
         .await?;
