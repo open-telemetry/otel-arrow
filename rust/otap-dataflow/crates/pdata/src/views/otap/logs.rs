@@ -9,17 +9,20 @@
 use std::collections::BTreeMap;
 
 use arrow::array::{
-    Array, BooleanArray, FixedSizeBinaryArray, Float64Array, RecordBatch, StructArray,
-    TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+    Array, RecordBatch, StructArray, UInt16Array,
 };
 
+#[cfg(test)]
+use arrow::array::{TimestampNanosecondArray, UInt32Array};
+
 use crate::arrays::{
-    ByteArrayAccessor, Int32ArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor,
-    NullableArrayAccessor, StringArrayAccessor,
+    MaybeDictArrayAccessor,
+    NullableArrayAccessor,
 };
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
-use crate::otlp::attributes::AttributeValueType;
+use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
+use crate::otlp::logs::{LogBodyArrays, LogsArrays};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use crate::schema::{SpanId, TraceId};
@@ -83,119 +86,12 @@ impl<'a> Iterator for RowGroupIter<'a> {
     }
 }
 
-/// Holds references to specific columns for O(1) access.
-///
-/// Memory cost: ~200 bytes (accessors are 24 bytes, references are 16 bytes).
-/// Without this caching, each field access would require `column_by_name()` lookup.
-struct OtapLogsColumns<'a> {
-    // Logs batch columns
-    id: Option<&'a UInt16Array>,
-    time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    observed_time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    severity_number: Option<Int32ArrayAccessor<'a>>,
-    severity_text: Option<StringArrayAccessor<'a>>,
-    body_columns: Option<OtapBodyColumns<'a>>,
-    dropped_attributes_count: Option<&'a UInt32Array>,
-    flags: Option<&'a UInt32Array>,
-    trace_id: Option<&'a FixedSizeBinaryArray>,
-    span_id: Option<&'a FixedSizeBinaryArray>,
-    event_name: Option<StringArrayAccessor<'a>>,
-}
-
-/// Cached attribute columns for O(1) access.
-///
-/// Column references are cached at construction to avoid repeated `column_by_name()` lookups
-/// during iteration. For a batch with 100 logs and 3 attributes each, this eliminates
-/// ~2000 schema traversals.
-///
-/// Arrow accessor types (StringArrayAccessor, Int64ArrayAccessor, etc.) are used because
-/// they handle dictionary encoding transparently and eliminate per-row type checks.
-///
-/// Memory cost: ~168 bytes (7 fields, accessors are 24 bytes, references are 16 bytes).
-struct OtapAttributeColumns<'a> {
-    key: Option<StringArrayAccessor<'a>>,
-    type_id: Option<&'a UInt8Array>,
-    str_val: Option<StringArrayAccessor<'a>>,
-    int_val: Option<Int64ArrayAccessor<'a>>,
-    double_val: Option<&'a Float64Array>,
-    bool_val: Option<&'a BooleanArray>,
-    bytes_val: Option<ByteArrayAccessor<'a>>,
-}
-
-impl<'a> OtapAttributeColumns<'a> {
-    fn new(batch: &'a RecordBatch) -> Self {
-        Self {
-            key: batch
-                .column_by_name(consts::ATTRIBUTE_KEY)
-                .and_then(|c| StringArrayAccessor::try_new(c).ok()),
-            type_id: batch
-                .column_by_name(consts::ATTRIBUTE_TYPE)
-                .and_then(|c| c.as_any().downcast_ref::<UInt8Array>()),
-            str_val: batch
-                .column_by_name(consts::ATTRIBUTE_STR)
-                .and_then(|c| StringArrayAccessor::try_new(c).ok()),
-            int_val: batch
-                .column_by_name(consts::ATTRIBUTE_INT)
-                .and_then(|c| Int64ArrayAccessor::try_new(c).ok()),
-            double_val: batch
-                .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .and_then(|c| c.as_any().downcast_ref::<Float64Array>()),
-            bool_val: batch
-                .column_by_name(consts::ATTRIBUTE_BOOL)
-                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>()),
-            bytes_val: batch
-                .column_by_name(consts::ATTRIBUTE_BYTES)
-                .and_then(|c| ByteArrayAccessor::try_new(c).ok()),
-        }
-    }
-}
-
-/// Cached body columns for O(1) access.
-///
-/// Same rationale as OtapAttributeColumns - column references from the body StructArray
-/// are cached to avoid repeated lookups when accessing log record bodies.
-///
-/// Memory cost: ~128 bytes (6 fields, accessors are 24 bytes, references are 16 bytes).
-struct OtapBodyColumns<'a> {
-    type_id: Option<&'a UInt8Array>,
-    str_val: Option<StringArrayAccessor<'a>>,
-    int_val: Option<Int64ArrayAccessor<'a>>,
-    double_val: Option<&'a Float64Array>,
-    bool_val: Option<&'a BooleanArray>,
-    bytes_val: Option<ByteArrayAccessor<'a>>,
-}
-
-impl<'a> OtapBodyColumns<'a> {
-    fn new(body_struct: &'a StructArray) -> Self {
-        Self {
-            type_id: body_struct
-                .column_by_name(consts::ATTRIBUTE_TYPE)
-                .and_then(|c| c.as_any().downcast_ref::<UInt8Array>()),
-            str_val: body_struct
-                .column_by_name(consts::ATTRIBUTE_STR)
-                .and_then(|c| StringArrayAccessor::try_new(c).ok()),
-            int_val: body_struct
-                .column_by_name(consts::ATTRIBUTE_INT)
-                .and_then(|c| Int64ArrayAccessor::try_new(c).ok()),
-            double_val: body_struct
-                .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .and_then(|c| c.as_any().downcast_ref::<Float64Array>()),
-            bool_val: body_struct
-                .column_by_name(consts::ATTRIBUTE_BOOL)
-                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>()),
-            bytes_val: body_struct
-                .column_by_name(consts::ATTRIBUTE_BYTES)
-                .and_then(|c| ByteArrayAccessor::try_new(c).ok()),
-        }
-    }
-}
-
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
-    columns: OtapLogsColumns<'a>,                     // ~200 bytes
-    resource_attrs: Option<OtapAttributeColumns<'a>>, // ~168 bytes when present
-    scope_attrs: Option<OtapAttributeColumns<'a>>,    // ~168 bytes when present
-    log_attrs: Option<OtapAttributeColumns<'a>>,      // ~168 bytes when present
+    columns: LogsArrays<'a>,                       // ~220 bytes
+    resource_attrs: Option<Attribute16Arrays<'a>>,  // ~168 bytes
+    scope_attrs: Option<Attribute16Arrays<'a>>,    // ~168 bytes
+    log_attrs: Option<Attribute16Arrays<'a>>,      // ~168 bytes
 
     // Pre-computed indices for hierarchy reconstruction and attribute matching.
     //
@@ -242,44 +138,9 @@ impl<'a> OtapLogsView<'a> {
         resource_attrs: Option<&'a RecordBatch>,
         scope_attrs: Option<&'a RecordBatch>,
         log_attrs: Option<&'a RecordBatch>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         // 1. Cache columns for O(1) access
-        let columns = OtapLogsColumns {
-            id: logs_batch
-                .column_by_name(consts::ID)
-                .and_then(|c| c.as_any().downcast_ref::<UInt16Array>()),
-            time_unix_nano: logs_batch
-                .column_by_name(consts::TIME_UNIX_NANO)
-                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>()),
-            observed_time_unix_nano: logs_batch
-                .column_by_name(consts::OBSERVED_TIME_UNIX_NANO)
-                .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>()),
-            severity_number: logs_batch
-                .column_by_name(consts::SEVERITY_NUMBER)
-                .and_then(|c| Int32ArrayAccessor::try_new(c).ok()),
-            severity_text: logs_batch
-                .column_by_name(consts::SEVERITY_TEXT)
-                .and_then(|c| StringArrayAccessor::try_new(c).ok()),
-            body_columns: logs_batch
-                .column_by_name(consts::BODY)
-                .and_then(|c| c.as_any().downcast_ref::<StructArray>())
-                .map(OtapBodyColumns::new),
-            dropped_attributes_count: logs_batch
-                .column_by_name(consts::DROPPED_ATTRIBUTES_COUNT)
-                .and_then(|c| c.as_any().downcast_ref::<UInt32Array>()),
-            flags: logs_batch
-                .column_by_name(consts::FLAGS)
-                .and_then(|c| c.as_any().downcast_ref::<UInt32Array>()),
-            trace_id: logs_batch
-                .column_by_name(consts::TRACE_ID)
-                .and_then(|c| c.as_any().downcast_ref::<FixedSizeBinaryArray>()),
-            span_id: logs_batch
-                .column_by_name(consts::SPAN_ID)
-                .and_then(|c| c.as_any().downcast_ref::<FixedSizeBinaryArray>()),
-            event_name: logs_batch
-                .column_by_name(consts::EVENT_NAME)
-                .and_then(|c| StringArrayAccessor::try_new(c).ok()),
-        };
+        let columns = LogsArrays::try_from(logs_batch)?;
 
         // 2. Pre-compute resource grouping
         let resource_groups = group_by_resource_id(logs_batch);
@@ -310,17 +171,17 @@ impl<'a> OtapLogsView<'a> {
             BTreeMap::new()
         };
 
-        Self {
+        Ok(Self {
             columns,
-            resource_attrs: resource_attrs.map(OtapAttributeColumns::new),
-            scope_attrs: scope_attrs.map(OtapAttributeColumns::new),
-            log_attrs: log_attrs.map(OtapAttributeColumns::new),
+            resource_attrs: resource_attrs.map(Attribute16Arrays::try_from).transpose()?,
+            scope_attrs: scope_attrs.map(Attribute16Arrays::try_from).transpose()?,
+            log_attrs: log_attrs.map(Attribute16Arrays::try_from).transpose()?,
             resource_groups,
             scope_groups_map,
             resource_attrs_map,
             scope_attrs_map,
             log_attrs_map,
-        }
+        })
     }
 }
 
@@ -338,12 +199,12 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapLogsView<'a> {
         let scope_attrs = records.get(ArrowPayloadType::ScopeAttrs);
         let log_attrs = records.get(ArrowPayloadType::LogAttrs);
 
-        Ok(Self::new(
+        Self::new(
             logs_batch,
             resource_attrs,
             scope_attrs,
             log_attrs,
-        ))
+        )
     }
 }
 
@@ -624,7 +485,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
         // Extract body value from the cached body columns
         self.view
             .columns
-            .body_columns
+            .body
             .as_ref()
             .and_then(|cols| get_body_from_struct(cols, self.row_idx))
     }
@@ -664,22 +525,14 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
     #[inline]
     fn trace_id(&self) -> Option<&TraceId> {
         self.view.columns.trace_id.as_ref().and_then(|col| {
-            if col.is_valid(self.row_idx) {
-                col.value(self.row_idx).try_into().ok()
-            } else {
-                None
-            }
+            col.slice_at(self.row_idx).and_then(|bytes| bytes.try_into().ok())
         })
     }
 
     #[inline]
     fn span_id(&self) -> Option<&SpanId> {
         self.view.columns.span_id.as_ref().and_then(|col| {
-            if col.is_valid(self.row_idx) {
-                col.value(self.row_idx).try_into().ok()
-            } else {
-                None
-            }
+            col.slice_at(self.row_idx).and_then(|bytes| bytes.try_into().ok())
         })
     }
 
@@ -708,7 +561,7 @@ impl<'a> ResourceView for OtapResourceView<'a> {
         Self: 'att;
 
     type AttributesIter<'att>
-        = OtapResourceAttributeIter<'att>
+        = OtapAttributeIter<'att>
     where
         Self: 'att;
 
@@ -721,8 +574,8 @@ impl<'a> ResourceView for OtapResourceView<'a> {
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
-        OtapResourceAttributeIter {
-            resource_attrs: self.view.resource_attrs.as_ref(),
+        OtapAttributeIter {
+            attrs: self.view.resource_attrs.as_ref(),
             matching_rows,
             current_idx: 0,
         }
@@ -747,7 +600,7 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
         Self: 'att;
 
     type AttributeIter<'att>
-        = OtapScopeAttributeIter<'att>
+        = OtapAttributeIter<'att>
     where
         Self: 'att;
 
@@ -770,8 +623,8 @@ impl<'a> InstrumentationScopeView for OtapInstrumentationScopeView<'a> {
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
 
-        OtapScopeAttributeIter {
-            scope_attrs: self.view.scope_attrs.as_ref(),
+        OtapAttributeIter {
+            attrs: self.view.scope_attrs.as_ref(),
             matching_rows,
             current_idx: 0,
         }
@@ -897,8 +750,9 @@ impl<'a> AnyValueView<'a> for OtapAnyValueView<'a> {
 // ===== Attribute Iterators =====
 
 /// Iterator over log record attributes
+/// Generic iterator over attributes (used for log, resource, and scope attributes)
 pub struct OtapAttributeIter<'a> {
-    log_attrs: Option<&'a OtapAttributeColumns<'a>>,
+    attrs: Option<&'a Attribute16Arrays<'a>>,
     matching_rows: &'a [usize],
     current_idx: usize,
 }
@@ -919,7 +773,7 @@ impl<'a> OtapAttributeIter<'a> {
         };
 
         Self {
-            log_attrs: view.log_attrs.as_ref(),
+            attrs: view.log_attrs.as_ref(),
             matching_rows,
             current_idx: 0,
         }
@@ -938,78 +792,18 @@ impl<'a> Iterator for OtapAttributeIter<'a> {
         let attr_row_idx = self.matching_rows[self.current_idx];
         self.current_idx += 1;
 
-        let log_attrs_cols = self.log_attrs?;
+        let attrs_cols = self.attrs?;
 
         // Extract key
-        let key = get_attribute_key(log_attrs_cols, attr_row_idx)?;
+        let key = get_attribute_key(attrs_cols, attr_row_idx)?;
 
         // Extract value with type information
-        let value = get_attribute_value(log_attrs_cols, attr_row_idx);
+        let value = get_attribute_value(attrs_cols, attr_row_idx);
 
         Some(OtapAttributeView { key, value })
     }
 }
 
-/// Iterator over attributes for a resource
-pub struct OtapResourceAttributeIter<'a> {
-    resource_attrs: Option<&'a OtapAttributeColumns<'a>>,
-    matching_rows: &'a [usize],
-    current_idx: usize,
-}
-
-impl<'a> Iterator for OtapResourceAttributeIter<'a> {
-    type Item = OtapAttributeView<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current_idx >= self.matching_rows.len() {
-            return None;
-        }
-
-        let attr_row_idx = self.matching_rows[self.current_idx];
-        self.current_idx += 1;
-
-        let resource_attrs_cols = self.resource_attrs?;
-
-        // Extract key
-        let key = get_attribute_key(resource_attrs_cols, attr_row_idx)?;
-
-        // Extract value with type information
-        let value = get_attribute_value(resource_attrs_cols, attr_row_idx);
-        Some(OtapAttributeView { key, value })
-    }
-}
-
-/// Iterator over scope attributes
-pub struct OtapScopeAttributeIter<'a> {
-    scope_attrs: Option<&'a OtapAttributeColumns<'a>>,
-    matching_rows: &'a [usize],
-    current_idx: usize,
-}
-
-impl<'a> Iterator for OtapScopeAttributeIter<'a> {
-    type Item = OtapAttributeView<'a>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current_idx >= self.matching_rows.len() {
-            return None;
-        }
-
-        let attr_row_idx = self.matching_rows[self.current_idx];
-        self.current_idx += 1;
-
-        let scope_attrs_cols = self.scope_attrs?;
-
-        // Extract key
-        let key = get_attribute_key(scope_attrs_cols, attr_row_idx)?;
-
-        // Extract value with type information
-        let value = get_attribute_value(scope_attrs_cols, attr_row_idx);
-
-        Some(OtapAttributeView { key, value })
-    }
-}
 
 // ===== Helper Functions =====
 
@@ -1203,11 +997,11 @@ fn group_by_scope_id(logs_batch: &RecordBatch, row_indices: &RowGroup) -> Vec<(u
 // Unused helpers removed
 
 fn get_body_from_struct<'a>(
-    cols: &'a OtapBodyColumns<'a>,
+    cols: &'a LogBodyArrays<'a>,
     row_idx: usize,
 ) -> Option<OtapAnyValueView<'a>> {
-    // Get the type field to determine what kind of value this is
-    let type_array = cols.type_id?;
+    let anyval = &cols.anyval_arrays;
+    let type_array = &anyval.attr_type;
 
     if !type_array.is_valid(row_idx) {
         return Some(OtapAnyValueView::Empty);
@@ -1215,24 +1009,24 @@ fn get_body_from_struct<'a>(
 
     let value_type = AttributeValueType::try_from(type_array.value(row_idx)).ok()?;
 
-    // Extract the appropriate value field based on type using cached accessors
+    // Extract the appropriate value field based on type
     match value_type {
         AttributeValueType::Str => Some(
-            cols.str_val
+            anyval.attr_str
                 .as_ref()
                 .and_then(|accessor| accessor.str_at(row_idx))
                 .map(|s| OtapAnyValueView::Str(s.as_bytes()))
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Int => Some(
-            cols.int_val
+            anyval.attr_int
                 .as_ref()
                 .and_then(|accessor| accessor.value_at(row_idx))
                 .map(OtapAnyValueView::Int)
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Double => Some(
-            cols.double_val
+            anyval.attr_double
                 .and_then(|arr| {
                     if arr.is_valid(row_idx) {
                         Some(OtapAnyValueView::Double(arr.value(row_idx)))
@@ -1243,7 +1037,7 @@ fn get_body_from_struct<'a>(
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Bool => Some(
-            cols.bool_val
+            anyval.attr_bool
                 .and_then(|arr| {
                     if arr.is_valid(row_idx) {
                         Some(OtapAnyValueView::Bool(arr.value(row_idx)))
@@ -1254,7 +1048,7 @@ fn get_body_from_struct<'a>(
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Bytes => Some(
-            cols.bytes_val
+            anyval.attr_bytes
                 .as_ref()
                 .and_then(|accessor| accessor.slice_at(row_idx))
                 .map(OtapAnyValueView::Bytes)
@@ -1278,22 +1072,16 @@ fn get_log_id(id_array: Option<&UInt16Array>, row_idx: usize) -> Option<u16> {
 }
 
 /// Extract attribute key from an attribute batch row
-fn get_attribute_key<'a>(cols: &'a OtapAttributeColumns<'a>, row_idx: usize) -> Option<&'a [u8]> {
-    cols.key
-        .as_ref()
-        .and_then(|accessor| accessor.str_at(row_idx))
-        .map(|s| s.as_bytes())
+fn get_attribute_key<'a>(cols: &'a Attribute16Arrays<'a>, row_idx: usize) -> Option<&'a [u8]> {
+    cols.attr_key.str_at(row_idx).map(|s| s.as_bytes())
 }
 
 /// Extract attribute value with type information from an attribute batch row
 fn get_attribute_value<'a>(
-    cols: &'a OtapAttributeColumns<'a>,
+    cols: &'a Attribute16Arrays<'a>,
     row_idx: usize,
 ) -> OtapAnyValueView<'a> {
-    let type_array = match cols.type_id {
-        Some(arr) => arr,
-        None => return OtapAnyValueView::Empty,
-    };
+    let type_array = &cols.anyval_arrays.attr_type;
 
     if !type_array.is_valid(row_idx) {
         return OtapAnyValueView::Empty;
@@ -1304,22 +1092,23 @@ fn get_attribute_value<'a>(
         Err(_) => return OtapAnyValueView::Empty,
     };
 
-    // Extract the appropriate value based on type using cached accessors
+    // Extract the appropriate value based on type
+    let anyval = &cols.anyval_arrays;
     match value_type {
-        AttributeValueType::Str => cols
-            .str_val
+        AttributeValueType::Str => anyval
+            .attr_str
             .as_ref()
             .and_then(|accessor| accessor.str_at(row_idx))
             .map(|s| OtapAnyValueView::Str(s.as_bytes()))
             .unwrap_or(OtapAnyValueView::Empty),
-        AttributeValueType::Int => cols
-            .int_val
+        AttributeValueType::Int => anyval
+            .attr_int
             .as_ref()
             .and_then(|accessor| accessor.value_at(row_idx))
             .map(OtapAnyValueView::Int)
             .unwrap_or(OtapAnyValueView::Empty),
-        AttributeValueType::Double => cols
-            .double_val
+        AttributeValueType::Double => anyval
+            .attr_double
             .and_then(|arr| {
                 if arr.is_valid(row_idx) {
                     Some(OtapAnyValueView::Double(arr.value(row_idx)))
@@ -1328,8 +1117,8 @@ fn get_attribute_value<'a>(
                 }
             })
             .unwrap_or(OtapAnyValueView::Empty),
-        AttributeValueType::Bool => cols
-            .bool_val
+        AttributeValueType::Bool => anyval
+            .attr_bool
             .and_then(|arr| {
                 if arr.is_valid(row_idx) {
                     Some(OtapAnyValueView::Bool(arr.value(row_idx)))
@@ -1338,8 +1127,8 @@ fn get_attribute_value<'a>(
                 }
             })
             .unwrap_or(OtapAnyValueView::Empty),
-        AttributeValueType::Bytes => cols
-            .bytes_val
+        AttributeValueType::Bytes => anyval
+            .attr_bytes
             .as_ref()
             .and_then(|accessor| accessor.slice_at(row_idx))
             .map(OtapAnyValueView::Bytes)
@@ -1557,7 +1346,8 @@ mod tests {
             Some(&resource_attrs),
             None, // no scope attrs
             Some(&log_attrs),
-        );
+        )
+        .unwrap();
 
         // Verify we can iterate
         let mut resource_count = 0;
@@ -1669,7 +1459,7 @@ mod tests {
             .as_ptr();
 
         // Create view
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, None);
+        let logs_view = OtapLogsView::new(&logs_batch, None, None, None).unwrap();
 
         // Iterate through view and access data
         for resource_logs in logs_view.resources() {
@@ -1743,7 +1533,7 @@ mod tests {
         )
         .unwrap();
 
-        let view = OtapLogsView::new(&batch, None, None, None);
+        let view = OtapLogsView::new(&batch, None, None, None).unwrap();
 
         // Verify resource grouping
         let resource_groups = &view.resource_groups;
@@ -1755,8 +1545,8 @@ mod tests {
         match row_group {
             RowGroup::Scattered(indices) => {
                 assert_eq!(
-                    indices,
-                    &vec![0, 2],
+                    *indices,
+                    vec![0, 2],
                     "Resource 1 should have scattered indices [0, 2]"
                 );
             }
@@ -1816,7 +1606,7 @@ mod tests {
             RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(resource_struct)])
                 .unwrap();
 
-        let logs_view = OtapLogsView::new(&batch, None, None, None);
+        let logs_view = OtapLogsView::new(&batch, None, None, None).unwrap();
 
         // Should have 1 group, Contiguous(0..100)
         assert_eq!(logs_view.resource_groups.len(), 1);
@@ -1942,7 +1732,8 @@ mod tests {
         .unwrap();
 
         // Create view with log attributes
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, Some(&log_attrs_batch));
+        let logs_view =
+            OtapLogsView::new(&logs_batch, None, None, Some(&log_attrs_batch)).unwrap();
 
         // Iterate and verify attributes
         let mut attr_count = 0;
@@ -2009,7 +1800,7 @@ mod tests {
         let logs_batch = create_test_logs_batch();
 
         // Create view with no attributes
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, None);
+        let logs_view = OtapLogsView::new(&logs_batch, None, None, None).unwrap();
 
         let mut log_count = 0;
         for resource_logs in logs_view.resources() {
