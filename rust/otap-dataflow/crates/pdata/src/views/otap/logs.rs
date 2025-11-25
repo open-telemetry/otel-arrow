@@ -210,8 +210,19 @@ pub struct OtapLogsView<'a> {
     // remain in the Arrow RecordBatch (zero-copy).
     //
     // TODO: Consider HashMap instead of BTreeMap for log_attrs_map when log count
-    // is large (>1000). BTreeMap is O(log n) lookup, appropriate for small maps
-    // (resources/scopes), but HashMap O(1) might be faster for large maps.
+    // is large (>1000).
+    //
+    // Current choice (BTreeMap): Optimizes for memory efficiency over lookup speed.
+    // HashMap requires extra capacity beyond the actual entry count to maintain low
+    // collision rates, which adds overhead when multiplied across many batches in a
+    // high-performance pipeline. BTreeMap stores data more compactly. For resource/
+    // scope maps (1-10 entries), this is clearly better. For log_attrs_map, we trade
+    // O(log n) lookups for lower memory, where O(log n) on u16 keys is still fast.
+    //
+    // Future consideration: If profiling shows (1) batches consistently have 1000+
+    // logs, AND (2) attribute lookup is a bottleneck, then HashMap's O(1) might
+    // justify the memory cost. Requires measuring typical log count and attributes-
+    // per-log in production workloads.
     //
     // Resource ID -> List of rows (RowGroup)
     resource_groups: Vec<(u16, RowGroup)>,
