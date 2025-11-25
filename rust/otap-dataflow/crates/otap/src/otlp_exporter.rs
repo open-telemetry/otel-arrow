@@ -146,8 +146,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut logs_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut metrics_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut traces_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut client_pool = ClientPool::new(max_in_flight, channel, compression);
+        client_pool.prewarm();
         let mut inflight = InFlightQueue::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
@@ -241,9 +244,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             match prepare_otap_export(
                                 otap_batch,
                                 context,
-                                &mut proto_buffer,
+                                &mut logs_buffer,
                                 &mut logs_encoder,
-                                exporter_id.clone(),
+                                &exporter_id,
                                 SignalType::Logs,
                             ) {
                                 Ok(prepared) => {
@@ -261,9 +264,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             match prepare_otap_export(
                                 otap_batch,
                                 context,
-                                &mut proto_buffer,
+                                &mut metrics_buffer,
                                 &mut metrics_encoder,
-                                exporter_id.clone(),
+                                &exporter_id,
                                 SignalType::Metrics,
                             ) {
                                 Ok(prepared) => {
@@ -281,9 +284,9 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             match prepare_otap_export(
                                 otap_batch,
                                 context,
-                                &mut proto_buffer,
+                                &mut traces_buffer,
                                 &mut traces_encoder,
-                                exporter_id.clone(),
+                                &exporter_id,
                                 SignalType::Traces,
                             ) {
                                 Ok(prepared) => {
@@ -389,13 +392,13 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
     context: Context,
     proto_buffer: &mut ProtoBuffer,
     encoder: &mut Enc,
-    exporter: NodeId,
+    exporter: &NodeId,
     signal_type: SignalType,
 ) -> Result<PreparedExport, PrepareError> {
     proto_buffer.clear();
     if let Err(e) = encoder.encode(&mut otap_batch, proto_buffer) {
         let error = Error::ExporterError {
-            exporter,
+            exporter: exporter.clone(),
             kind: ExporterErrorKind::Other,
             error: format!("encoding error: {}", e),
             source_detail: "".to_string(),
@@ -597,6 +600,23 @@ impl ClientPool {
             logs: Vec::with_capacity(max_in_flight),
             metrics: Vec::with_capacity(max_in_flight),
             traces: Vec::with_capacity(max_in_flight),
+        }
+    }
+
+    fn prewarm(&mut self) {
+        let logs_cap = self.logs.capacity();
+        for _ in 0..logs_cap {
+            self.logs.push(self.make_logs_client());
+        }
+
+        let metrics_cap = self.metrics.capacity();
+        for _ in 0..metrics_cap {
+            self.metrics.push(self.make_metrics_client());
+        }
+
+        let traces_cap = self.traces.capacity();
+        for _ in 0..traces_cap {
+            self.traces.push(self.make_traces_client());
         }
     }
 
