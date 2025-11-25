@@ -11,6 +11,7 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
+use crate::otap_grpc::client_settings::GrpcClientSettings;
 use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, TraceServiceClient};
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
@@ -39,14 +40,12 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProto
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::future::Future;
-use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
-use crate::otap_grpc::client_settings::GrpcClientSettings;
 
 /// The URN for the OTLP exporter
 pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
@@ -145,7 +144,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let compression = self.config.grpc.compression_encoding();
         let max_in_flight = self.config.max_in_flight.max(1);
-println!("OTLPExporter: max_in_flight = {}", max_in_flight);
         // reuse the encoder and the buffer across pdatas
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
@@ -407,11 +405,8 @@ fn prepare_otap_export<Enc: ProtoBytesEncoder>(
         });
     }
 
-    let mut owned_buffer = ProtoBuffer::new();
-    mem::swap(proto_buffer, &mut owned_buffer);
-    let next_capacity = owned_buffer.capacity();
-    let bytes = Bytes::from(owned_buffer.into_bytes());
-    *proto_buffer = ProtoBuffer::with_capacity(next_capacity);
+    let (bytes, next_capacity) = proto_buffer.take_into_bytes();
+    proto_buffer.ensure_capacity(next_capacity);
 
     if !context.may_return_payload() {
         // drop before the export, payload not requested
