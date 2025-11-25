@@ -32,9 +32,9 @@ use crate::{
     pdata::{Context, OtapPdata},
 };
 
+pub mod client_settings;
 pub mod middleware;
 pub mod otlp;
-pub mod client_settings;
 pub mod server_settings;
 
 /// Common settings for OTLP receivers.

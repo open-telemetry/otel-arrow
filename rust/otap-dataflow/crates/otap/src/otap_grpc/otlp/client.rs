@@ -8,6 +8,7 @@
 //! able to receive GRPC OTLP requests, and if there's no need to serialize them, we can keep
 //! the payload serialized as protobuf before then forwarding using these clients.
 
+use bytes::Bytes;
 use http::uri::PathAndQuery;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -31,7 +32,7 @@ impl<T> Codec for OtlpRequestCodec<T>
 where
     T: Message + Default + Send + 'static,
 {
-    type Encode = Vec<u8>;
+    type Encode = Bytes;
     type Decode = T;
 
     type Encoder = OtlpRequestEncoder;
@@ -56,7 +57,7 @@ struct OtlpRequestEncoder {}
 
 impl Encoder for OtlpRequestEncoder {
     type Error = Status;
-    type Item = Vec<u8>;
+    type Item = Bytes;
 
     fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
         dst.put(item.as_ref());
@@ -149,7 +150,7 @@ where
     /// Send the serialized grpc request
     pub async fn export(
         &mut self,
-        request: impl tonic::IntoRequest<Vec<u8>>,
+        request: impl tonic::IntoRequest<Bytes>,
     ) -> Result<tonic::Response<Resp>, Status> {
         self.inner
             .ready()

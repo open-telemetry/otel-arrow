@@ -12,6 +12,7 @@ use crate::fake_data_generator::fake_signal::{
 };
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
+use bytes::BytesMut;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
@@ -406,19 +407,25 @@ impl TryFrom<OtlpProtoMessage> for OtapPdata {
     type Error = Error;
 
     fn try_from(value: OtlpProtoMessage) -> Result<Self, Self::Error> {
-        let mut bytes = vec![];
+        let mut bytes = BytesMut::new();
         Ok(match value {
             OtlpProtoMessage::Logs(logs_data) => {
                 logs_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into())
+                OtapPdata::new_todo_context(
+                    OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into(),
+                )
             }
             OtlpProtoMessage::Metrics(metrics_data) => {
                 metrics_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportMetricsRequest(bytes).into())
+                OtapPdata::new_todo_context(
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into(),
+                )
             }
             OtlpProtoMessage::Traces(trace_data) => {
                 trace_data.encode(&mut bytes)?;
-                OtapPdata::new_todo_context(OtlpProtoBytes::ExportTracesRequest(bytes).into())
+                OtapPdata::new_todo_context(
+                    OtlpProtoBytes::ExportTracesRequest(bytes.freeze()).into(),
+                )
             }
         })
     }

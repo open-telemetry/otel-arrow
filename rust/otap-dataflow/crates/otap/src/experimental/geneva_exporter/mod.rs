@@ -256,7 +256,7 @@ impl GenevaExporter {
                     .await;
 
                 // Decode OTLP bytes to ResourceLogs
-                let logs_request = ExportLogsServiceRequest::decode(&bytes[..])
+                let logs_request = ExportLogsServiceRequest::decode(bytes.as_ref())
                     .map_err(|e| format!("Failed to decode logs request: {}", e))?;
 
                 // Encode and compress using Geneva client
@@ -288,7 +288,7 @@ impl GenevaExporter {
                     .await;
 
                 // Decode OTLP bytes to ResourceSpans
-                let traces_request = ExportTraceServiceRequest::decode(&bytes[..])
+                let traces_request = ExportTraceServiceRequest::decode(bytes.as_ref())
                     .map_err(|e| format!("Failed to decode traces request: {}", e))?;
 
                 // Encode and compress using Geneva client
