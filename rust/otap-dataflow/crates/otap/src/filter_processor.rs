@@ -9,31 +9,35 @@
 //! ToDo: Collect telemetry like number of filtered data is removed datapoints
 
 use self::config::Config;
+use self::metrics::FilterPdataMetrics;
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
-
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::otap::OtapArrowRecords;
+use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
 mod config;
+mod metrics;
 /// The URN for the filter processor
 pub const FILTER_PROCESSOR_URN: &str = "urn:otel:filter:processor";
 
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
     config: Config,
+    metrics: MetricSet<FilterPdataMetrics>,
 }
 
 /// Factory function to create a FilterProcessor.
@@ -71,20 +75,19 @@ impl FilterProcessor {
     /// Creates a new FilterProcessor
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(config: Config, _pipeline_ctx: PipelineContext) -> Self {
-        FilterProcessor { config }
+    pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        FilterProcessor { config, metrics }
     }
 
     /// Creates a new FilterProcessor from a configuration object
-    pub fn from_config(
-        _pipeline_ctx: PipelineContext,
-        config: &Value,
-    ) -> Result<Self, ConfigError> {
+    pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
+        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
-        Ok(FilterProcessor { config })
+        Ok(FilterProcessor { config, metrics })
     }
 }
 
@@ -96,8 +99,13 @@ impl local::Processor<OtapPdata> for FilterProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::Control(_control) => {
-                // ToDo: add internal telemetry that will be sent out here
+            Message::Control(control) => {
+                if let NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                } = control
+                {
+                    _ = metrics_reporter.report(&mut self.metrics);
+                }
                 Ok(())
             }
             Message::PData(pdata) => {
@@ -113,32 +121,52 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         arrow_records
                     }
                     SignalType::Logs => {
-                        self.config
-                            .log_filters()
-                            .filter(arrow_records)
-                            .map_err(|e| {
-                                let source_detail = format_error_sources(&e);
-                                Error::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: format!("Filter error: {e}"),
-                                    source_detail,
-                                }
-                            })?
+                        // get logs
+                        let (filtered_arrow_records, log_signals_consumed, log_signals_filtered) =
+                            self.config
+                                .log_filters()
+                                .filter(arrow_records)
+                                .map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
+
+                        // get logs after
+                        self.metrics.log_signals_consumed.add(log_signals_consumed);
+                        self.metrics.log_signals_filtered.add(log_signals_filtered);
+
+                        filtered_arrow_records
                     }
-                    SignalType::Traces => self
-                        .config
-                        .trace_filters()
-                        .filter(arrow_records)
-                        .map_err(|e| {
-                            let source_detail = format_error_sources(&e);
-                            Error::ProcessorError {
-                                processor: effect_handler.processor_id(),
-                                kind: ProcessorErrorKind::Other,
-                                error: format!("Filter error: {e}"),
-                                source_detail,
-                            }
-                        })?,
+                    SignalType::Traces => {
+                        // get spans
+                        let (filtered_arrow_records, span_signals_consumed, span_signals_filtered) =
+                            self.config
+                                .trace_filters()
+                                .filter(arrow_records)
+                                .map_err(|e| {
+                                    let source_detail = format_error_sources(&e);
+                                    Error::ProcessorError {
+                                        processor: effect_handler.processor_id(),
+                                        kind: ProcessorErrorKind::Other,
+                                        error: format!("Filter error: {e}"),
+                                        source_detail,
+                                    }
+                                })?;
+
+                        self.metrics
+                            .span_signals_consumed
+                            .add(span_signals_consumed);
+                        self.metrics
+                            .span_signals_filtered
+                            .add(span_signals_filtered);
+
+                        filtered_arrow_records
+                    }
                 };
                 effect_handler
                     .send_message(OtapPdata::new(context, filtered_arrow_records.into()))
@@ -153,6 +181,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 mod tests {
     use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
     use crate::pdata::OtapPdata;
+    use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -594,9 +623,10 @@ mod tests {
         move |mut ctx| {
             Box::pin(async move {
                 //convert logsdata to otappdata
-                let mut bytes = vec![];
+                let mut bytes = BytesMut::new();
                 sent.encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
+                let bytes = bytes.freeze();
                 let otlp_logs_bytes =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
@@ -610,7 +640,7 @@ mod tests {
                     .try_into()
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_logs_data = match otlp_bytes {
-                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_slice())
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => LogsData::decode(bytes.as_ref())
                         .expect("failed to decode logs into logsdata"),
                     _ => panic!("expected logs type"),
                 };
@@ -628,10 +658,11 @@ mod tests {
             Box::pin(async move {
                 //convert tracesdata to otappdata
                 let traces_data = build_traces();
-                let mut bytes = vec![];
+                let mut bytes = BytesMut::new();
                 traces_data
                     .encode(&mut bytes)
                     .expect("failed to encode trace data into bytes");
+                let bytes = bytes.freeze();
                 let otlp_traces_bytes =
                     OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into());
                 ctx.process(Message::PData(otlp_traces_bytes))
@@ -646,7 +677,7 @@ mod tests {
                     .expect("failed to convert to OtlpProtoBytes");
                 let received_traces_data = match otlp_bytes {
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                        TracesData::decode(bytes.as_slice())
+                        TracesData::decode(bytes.as_ref())
                             .expect("failed to decode traces into tracesdata")
                     }
                     _ => panic!("expected traces type"),

@@ -4,14 +4,12 @@
 use data_engine_expressions::*;
 use data_engine_recordset::*;
 
-pub(crate) fn process_records<'a, 'b, 'c, TRecords, TRecord>(
+pub(crate) fn process_records<'a, TRecords, TRecord>(
     pipeline: &'a PipelineExpression,
-    engine: &'b RecordSetEngine,
+    engine: &RecordSetEngine,
     records: &mut TRecords,
-) -> RecordSetEngineResults<'a, 'c, TRecord>
+) -> RecordSetEngineResults<'a, TRecord>
 where
-    'a: 'c,
-    'b: 'c,
     TRecords: RecordSet<TRecord>,
     TRecord: Record + 'static,
 {

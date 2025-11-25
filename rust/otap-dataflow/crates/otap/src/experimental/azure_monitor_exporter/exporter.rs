@@ -69,7 +69,7 @@ impl AzureMonitorExporter {
 
         match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                let request = ExportLogsServiceRequest::decode(bytes.as_slice()).map_err(|e| {
+                let request = ExportLogsServiceRequest::decode(bytes.as_ref()).map_err(|e| {
                     Error::PDataError {
                         reason: format!("Failed to decode OTLP logs request: {e}"),
                     }

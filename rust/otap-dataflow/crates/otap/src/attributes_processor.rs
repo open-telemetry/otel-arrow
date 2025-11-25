@@ -531,6 +531,7 @@ mod payload_sets {
 mod tests {
     use super::*;
     use crate::pdata::OtapPdata;
+    use bytes::BytesMut;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
@@ -626,8 +627,9 @@ mod tests {
 
         phase
             .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
+                let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
                 let pdata_in =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
@@ -644,7 +646,7 @@ mod tests {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
                 };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 // Resource should still have key "a"
                 let res_attrs = &decoded.resource_logs[0]
@@ -707,9 +709,11 @@ mod tests {
 
         phase
             .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
+                let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode");
-                let pdata_in = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process");
@@ -722,7 +726,7 @@ mod tests {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
                 };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 // Resource should still have key "a"
                 let res_attrs = &decoded.resource_logs[0]
@@ -790,8 +794,9 @@ mod tests {
 
         phase
             .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
+                let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
                 let pdata_in =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
@@ -805,7 +810,7 @@ mod tests {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
                 };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 // Resource 'a' should be deleted
                 let res_attrs = &decoded.resource_logs[0]
@@ -865,8 +870,9 @@ mod tests {
 
         phase
             .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
+                let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
                 let pdata_in =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
@@ -880,7 +886,7 @@ mod tests {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
                 };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 // Resource 'a' should remain
                 let res_attrs = &decoded.resource_logs[0]
@@ -944,8 +950,9 @@ mod tests {
 
         phase
             .run_test(|mut ctx| async move {
-                let mut bytes = Vec::new();
+                let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
                 let pdata_in =
                     OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 ctx.process(Message::PData(pdata_in))
@@ -959,7 +966,7 @@ mod tests {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
                 };
-                let decoded = ExportLogsServiceRequest::decode(bytes.as_slice()).expect("decode");
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 // Resource 'a' should be deleted; 'r' should remain
                 let res_attrs = &decoded.resource_logs[0]
@@ -992,6 +999,7 @@ mod tests {
 mod telemetry_tests {
     use super::*;
     use crate::pdata::OtapPdata;
+    use bytes::BytesMut;
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
@@ -1073,9 +1081,9 @@ mod telemetry_tests {
                     ..Default::default()
                 }],
             };
-            let mut bytes = Vec::new();
+            let mut bytes = BytesMut::new();
             req.encode(&mut bytes).expect("encode");
-            bytes
+            bytes.freeze()
         };
 
         // 5) Drive processor with TestRuntime; start collector inside and then request a telemetry snapshot

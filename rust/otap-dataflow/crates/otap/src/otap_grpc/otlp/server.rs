@@ -13,6 +13,7 @@ use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::pdata::{Context, OtapPdata};
+use bytes::Bytes;
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
@@ -188,10 +189,11 @@ impl Decoder for OtlpBytesDecoder {
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         let buf = src.chunk();
+        let bytes = Bytes::copy_from_slice(buf);
         let result = match self.signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(buf.to_vec()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(buf.to_vec()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(buf.to_vec()),
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes),
         };
         src.advance(buf.len());
         Ok(Some(OtapPdata::new(Context::default(), result.into())))
