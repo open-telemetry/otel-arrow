@@ -139,7 +139,7 @@ impl Config {
 
 /// Per-signal state
 #[derive(Default)]
-struct BatchSignals {
+struct SignalBatches {
     logs: SignalBuffer,
     metrics: SignalBuffer,
     traces: SignalBuffer,
@@ -161,7 +161,7 @@ struct SignalBuffer {
 /// Local (!Send) batch processor
 pub struct BatchProcessor {
     config: Config,
-    signals: BatchSignals,
+    signals: SignalBatches,
     lower_limit: NonZeroUsize,
     metrics: MetricSet<BatchProcessorMetrics>,
 }
@@ -276,7 +276,7 @@ impl BatchProcessor {
 
         Ok(BatchProcessor {
             config,
-            signals: BatchSignals::default(),
+            signals: SignalBatches::default(),
             lower_limit,
             metrics,
         })
