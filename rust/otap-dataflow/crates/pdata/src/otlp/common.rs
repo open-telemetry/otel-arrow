@@ -338,6 +338,14 @@ impl ProtoBuffer {
         Self { buffer: Vec::new() }
     }
 
+    /// Construct a new buffer with at least the provided capacity.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(capacity),
+        }
+    }
+
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.buffer
@@ -385,6 +393,12 @@ impl ProtoBuffer {
     #[must_use]
     pub const fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    /// Returns the current capacity of the underlying buffer.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.buffer.capacity()
     }
 
     #[must_use]
