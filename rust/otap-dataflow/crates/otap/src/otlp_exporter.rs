@@ -16,6 +16,7 @@ use crate::otap_grpc::otlp::client::{LogsServiceClient, MetricsServiceClient, Tr
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -145,7 +146,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::with_capacity(8*1024);
+        let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
         let mut client_pool = ClientPool::new(max_in_flight, channel, compression);
         let mut inflight = InFlightQueue::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
@@ -166,174 +167,171 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 continue;
             }
 
-            tokio::select! {
-                biased;
-                Some(completed) = inflight.next_completion(), if !inflight.is_empty() => {
-                    // A gRPC export finished; surface the result to the pipeline before
-                    // accepting more work so we honour backpressure and ordered Acks.
-                    let client = process_completed_export(
-                        completed,
-                        &effect_handler,
-                        &mut self.pdata_metrics,
-                    )
-                    .await;
-                    client_pool.release(client);
-                }
-                msg = async {
-                    if let Some(msg) = pending_msg.take() {
-                        Ok(msg)
-                    } else {
-                        msg_chan.recv().await
+            while let Some(completed) = inflight.next_completion().now_or_never().flatten() {
+                let client =
+                    process_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
+                        .await;
+                client_pool.release(client);
+            }
+
+            let msg = if let Some(msg) = pending_msg.take() {
+                msg
+            } else if inflight.is_empty() {
+                msg_chan.recv().await?
+            } else {
+                let completion_fut = inflight.next_completion().fuse();
+                let recv_fut = msg_chan.recv().fuse();
+                futures::pin_mut!(completion_fut, recv_fut);
+
+                futures::select_biased! {
+                    completed = completion_fut => {
+                        if let Some(completed) = completed {
+                            let client = process_completed_export(
+                                completed,
+                                &effect_handler,
+                                &mut self.pdata_metrics,
+                            )
+                            .await;
+                            client_pool.release(client);
+                        }
+                        continue;
                     }
-                } => {
-                    let msg = msg?;
+                    msg = recv_fut => msg?,
+                }
+            };
 
-                    match msg {
-                        Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            debug_assert!(
-                                pending_msg.is_none(),
-                                "pending message should have been drained before shutdown"
-                            );
-                            while !inflight.is_empty() {
-                                if let Some(completed) = inflight.next_completion().await {
-                                    let client = process_completed_export(
-                                        completed,
-                                        &effect_handler,
-                                        &mut self.pdata_metrics,
-                                    )
-                                    .await;
-                                    client_pool.release(client);
-                                }
-                            }
-                            _ = timer_cancel_handle.cancel().await;
-                            return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+            match msg {
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    debug_assert!(
+                        pending_msg.is_none(),
+                        "pending message should have been drained before shutdown"
+                    );
+                    while !inflight.is_empty() {
+                        if let Some(completed) = inflight.next_completion().await {
+                            let client = process_completed_export(
+                                completed,
+                                &effect_handler,
+                                &mut self.pdata_metrics,
+                            )
+                            .await;
+                            client_pool.release(client);
                         }
-                        Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            _ = metrics_reporter.report(&mut self.pdata_metrics);
-                        }
-                        Message::PData(pdata) => {
-                            if inflight.len() >= max_in_flight {
-                                pending_msg = Some(Message::PData(pdata));
-                                continue;
-                            }
+                    }
+                    _ = timer_cancel_handle.cancel().await;
+                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                }
+                Message::Control(NodeControlMsg::CollectTelemetry {
+                    mut metrics_reporter,
+                }) => {
+                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                }
+                Message::PData(pdata) => {
+                    if inflight.len() >= max_in_flight {
+                        pending_msg = Some(Message::PData(pdata));
+                        continue;
+                    }
 
-                            let signal_type = pdata.signal_type();
-                            let (context, payload) = pdata.into_parts();
-                            self.pdata_metrics.inc_consumed(signal_type);
+                    let signal_type = pdata.signal_type();
+                    let (context, payload) = pdata.into_parts();
+                    self.pdata_metrics.inc_consumed(signal_type);
 
-                            // Dispatch based on signal type and the concrete payload representation.
-                            match (signal_type, payload) {
-                                (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                                    match prepare_otap_export(
-                                        otap_batch,
-                                        context,
-                                        &mut proto_buffer,
-                                        &mut logs_encoder,
-                                        exporter_id.clone(),
-                                        SignalType::Logs,
-                                    ) {
-                                        Ok(prepared) => {
-                                            let client =
-                                                SignalClient::Logs(client_pool.take_logs());
-                                            let future = make_export_future(prepared, client);
-                                            inflight.push(future);
-                                        }
-                                        Err(error) => {
-                                            self.pdata_metrics.logs_failed.inc();
-                                            _ = notify_prepare_error(error, &effect_handler).await;
-                                        }
-                                    }
-                                }
-                                (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                                    match prepare_otap_export(
-                                        otap_batch,
-                                        context,
-                                        &mut proto_buffer,
-                                        &mut metrics_encoder,
-                                        exporter_id.clone(),
-                                        SignalType::Metrics,
-                                    ) {
-                                        Ok(prepared) => {
-                                            let client =
-                                                SignalClient::Metrics(client_pool.take_metrics());
-                                            let future = make_export_future(prepared, client);
-                                            inflight.push(future);
-                                        }
-                                        Err(error) => {
-                                            self.pdata_metrics.metrics_failed.inc();
-                                            _ = notify_prepare_error(error, &effect_handler).await;
-                                        }
-                                    }
-                                }
-                                (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                                    match prepare_otap_export(
-                                        otap_batch,
-                                        context,
-                                        &mut proto_buffer,
-                                        &mut traces_encoder,
-                                        exporter_id.clone(),
-                                        SignalType::Traces,
-                                    ) {
-                                        Ok(prepared) => {
-                                            let client =
-                                                SignalClient::Traces(client_pool.take_traces());
-                                            let future = make_export_future(prepared, client);
-                                            inflight.push(future);
-                                        }
-                                        Err(error) => {
-                                            self.pdata_metrics.traces_failed.inc();
-                                            _ = notify_prepare_error(error, &effect_handler).await;
-                                        }
-                                    }
-                                }
-                                (_, OtapPayload::OtlpBytes(service_req)) => {
-                                    let prepared = match service_req {
-                                        OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                                            prepare_otlp_export(
-                                                bytes,
-                                                context,
-                                                SignalType::Logs,
-                                                |b| OtlpProtoBytes::ExportLogsRequest(b).into(),
-                                            )
-                                        }
-                                        OtlpProtoBytes::ExportMetricsRequest(bytes) => {
-                                            prepare_otlp_export(
-                                                bytes,
-                                                context,
-                                                SignalType::Metrics,
-                                                |b| OtlpProtoBytes::ExportMetricsRequest(b).into(),
-                                            )
-                                        }
-                                        OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                                            prepare_otlp_export(
-                                                bytes,
-                                                context,
-                                                SignalType::Traces,
-                                                |b| OtlpProtoBytes::ExportTracesRequest(b).into(),
-                                            )
-                                        }
-                                    };
-
-                                    let client = match signal_type {
-                                        SignalType::Logs => {
-                                            SignalClient::Logs(client_pool.take_logs())
-                                        }
-                                        SignalType::Metrics => {
-                                            SignalClient::Metrics(client_pool.take_metrics())
-                                        }
-                                        SignalType::Traces => {
-                                            SignalClient::Traces(client_pool.take_traces())
-                                        }
-                                    };
+                    // Dispatch based on signal type and the concrete payload representation.
+                    match (signal_type, payload) {
+                        (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                            match prepare_otap_export(
+                                otap_batch,
+                                context,
+                                &mut proto_buffer,
+                                &mut logs_encoder,
+                                exporter_id.clone(),
+                                SignalType::Logs,
+                            ) {
+                                Ok(prepared) => {
+                                    let client = SignalClient::Logs(client_pool.take_logs());
                                     let future = make_export_future(prepared, client);
                                     inflight.push(future);
                                 }
+                                Err(error) => {
+                                    self.pdata_metrics.logs_failed.inc();
+                                    _ = notify_prepare_error(error, &effect_handler).await;
+                                }
                             }
                         }
-                        _ => {
-                            // ignore unhandled messages
+                        (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                            match prepare_otap_export(
+                                otap_batch,
+                                context,
+                                &mut proto_buffer,
+                                &mut metrics_encoder,
+                                exporter_id.clone(),
+                                SignalType::Metrics,
+                            ) {
+                                Ok(prepared) => {
+                                    let client = SignalClient::Metrics(client_pool.take_metrics());
+                                    let future = make_export_future(prepared, client);
+                                    inflight.push(future);
+                                }
+                                Err(error) => {
+                                    self.pdata_metrics.metrics_failed.inc();
+                                    _ = notify_prepare_error(error, &effect_handler).await;
+                                }
+                            }
+                        }
+                        (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
+                            match prepare_otap_export(
+                                otap_batch,
+                                context,
+                                &mut proto_buffer,
+                                &mut traces_encoder,
+                                exporter_id.clone(),
+                                SignalType::Traces,
+                            ) {
+                                Ok(prepared) => {
+                                    let client = SignalClient::Traces(client_pool.take_traces());
+                                    let future = make_export_future(prepared, client);
+                                    inflight.push(future);
+                                }
+                                Err(error) => {
+                                    self.pdata_metrics.traces_failed.inc();
+                                    _ = notify_prepare_error(error, &effect_handler).await;
+                                }
+                            }
+                        }
+                        (_, OtapPayload::OtlpBytes(service_req)) => {
+                            let prepared = match service_req {
+                                OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                                    prepare_otlp_export(bytes, context, SignalType::Logs, |b| {
+                                        OtlpProtoBytes::ExportLogsRequest(b).into()
+                                    })
+                                }
+                                OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                                    prepare_otlp_export(bytes, context, SignalType::Metrics, |b| {
+                                        OtlpProtoBytes::ExportMetricsRequest(b).into()
+                                    })
+                                }
+                                OtlpProtoBytes::ExportTracesRequest(bytes) => {
+                                    prepare_otlp_export(bytes, context, SignalType::Traces, |b| {
+                                        OtlpProtoBytes::ExportTracesRequest(b).into()
+                                    })
+                                }
+                            };
+
+                            let client = match signal_type {
+                                SignalType::Logs => SignalClient::Logs(client_pool.take_logs()),
+                                SignalType::Metrics => {
+                                    SignalClient::Metrics(client_pool.take_metrics())
+                                }
+                                SignalType::Traces => {
+                                    SignalClient::Traces(client_pool.take_traces())
+                                }
+                            };
+                            let future = make_export_future(prepared, client);
+                            inflight.push(future);
                         }
                     }
+                }
+                _ => {
+                    // ignore unhandled messages
                 }
             }
         }
@@ -588,7 +586,11 @@ struct ClientPool {
 }
 
 impl ClientPool {
-    fn new(max_in_flight: usize, base_channel: Channel, compression: Option<CompressionEncoding>) -> Self {
+    fn new(
+        max_in_flight: usize,
+        base_channel: Channel,
+        compression: Option<CompressionEncoding>,
+    ) -> Self {
         Self {
             base_channel,
             compression,
