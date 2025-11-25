@@ -8,7 +8,7 @@ use chrono::Utc;
 use crate::{execution_context::*, *};
 
 pub fn execute_temporal_scalar_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     temporal_scalar_expression: &'a TemporalScalarExpression,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where

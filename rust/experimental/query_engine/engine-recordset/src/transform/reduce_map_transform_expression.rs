@@ -16,7 +16,7 @@ use crate::{
 };
 
 pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     reduce_map_transform_expression: &'a ReduceMapTransformExpression,
 ) -> Result<(), ExpressionError> {
     match reduce_map_transform_expression {
@@ -287,7 +287,7 @@ impl PartialEq for MapReductionKey<'_> {
 impl Eq for MapReductionKey<'_> {}
 
 fn resolve_map_reduction<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     target: &'a MutableValueExpression,
     map_selection: &'a MapSelectionExpression,
 ) -> Result<MapReduction<'c>, ExpressionError>
@@ -345,7 +345,7 @@ where
 }
 
 fn process_map_reduction_accessor<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     target: &'a MutableValueExpression,
     mut selectors: Iter<'a, ScalarExpression>,
     current_reduction: &mut MapReduction<'c>,
@@ -405,7 +405,7 @@ where
 }
 
 fn remove_from_map<'a, TRecord: Record + 'static>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
@@ -472,7 +472,7 @@ fn remove_from_map<'a, TRecord: Record + 'static>(
 }
 
 fn remove_from_array<'a, TRecord: Record + 'static>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     array: &mut dyn ArrayValueMut,
     reduction: &MapReduction<'_>,
@@ -551,7 +551,7 @@ fn remove_from_array<'a, TRecord: Record + 'static>(
 }
 
 fn keep_in_map<'a, TRecord: Record + 'static>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     map: &mut dyn MapValueMut,
     reduction: &MapReduction<'_>,
@@ -605,7 +605,7 @@ fn keep_in_map<'a, TRecord: Record + 'static>(
 }
 
 fn keep_in_array<'a, TRecord: Record + 'static>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     array: &mut dyn ArrayValueMut,
     reduction: &MapReduction<'_>,
