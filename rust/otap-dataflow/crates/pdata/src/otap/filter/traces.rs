@@ -81,7 +81,10 @@ impl TraceFilter {
     }
 
     /// take a traces payload and return the filtered result
-    pub fn filter(&self, mut traces_payload: OtapArrowRecords) -> Result<OtapArrowRecords> {
+    pub fn filter(
+        &self,
+        mut traces_payload: OtapArrowRecords,
+    ) -> Result<(OtapArrowRecords, u64, u64)> {
         let (
             resource_attr_filter,
             span_filter,
@@ -154,7 +157,13 @@ impl TraceFilter {
             include_config.create_filters(&traces_payload, false)?
         } else {
             // both include and exclude is none
-            return Ok(traces_payload);
+            let num_rows = traces_payload
+                .get(ArrowPayloadType::Spans)
+                .ok_or_else(|| Error::RecordBatchNotFound {
+                    payload_type: ArrowPayloadType::Spans,
+                })?
+                .num_rows() as u64;
+            return Ok((traces_payload, num_rows, num_rows));
         };
 
         let (span_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -167,13 +176,14 @@ impl TraceFilter {
             span_link_attr_filter,
         )?;
 
-        apply_filter(&mut traces_payload, ArrowPayloadType::Spans, &span_filter)?;
+        let (span_rows_before, span_rows_removed) =
+            apply_filter(&mut traces_payload, ArrowPayloadType::Spans, &span_filter)?;
 
         for (payload_type, filter) in child_record_batch_filters {
-            apply_filter(&mut traces_payload, payload_type, &filter)?;
+            let (_, _) = apply_filter(&mut traces_payload, payload_type, &filter)?;
         }
 
-        Ok(traces_payload)
+        Ok((traces_payload, span_rows_before, span_rows_removed))
     }
 
     /// this function takes the filters for each record batch and makes sure that incomplete

@@ -7,6 +7,7 @@
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
+use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
