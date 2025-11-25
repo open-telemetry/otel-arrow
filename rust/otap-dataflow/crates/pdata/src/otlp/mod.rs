@@ -4,6 +4,7 @@
 //! This module contains traits and utilities for OTLP (OpenTelemetry
 //! Protocol) message types.
 
+use bytes::Bytes;
 pub use otap_df_pdata_otlp_macros::Message; // Required for derived code
 pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
 
@@ -30,11 +31,11 @@ mod tests;
 #[derive(Clone, Debug)]
 pub enum OtlpProtoBytes {
     /// protobuf serialized ExportLogsServiceRequest
-    ExportLogsRequest(Vec<u8>),
+    ExportLogsRequest(Bytes),
     /// protobuf serialized ExportMetricsServiceRequest
-    ExportMetricsRequest(Vec<u8>),
+    ExportMetricsRequest(Bytes),
     /// protobuf serialized ExportTracesServiceRequest
-    ExportTracesRequest(Vec<u8>),
+    ExportTracesRequest(Bytes),
 }
 
 impl OtlpProtoBytes {
@@ -44,7 +45,7 @@ impl OtlpProtoBytes {
         match self {
             OtlpProtoBytes::ExportLogsRequest(bytes)
             | OtlpProtoBytes::ExportMetricsRequest(bytes)
-            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_slice(),
+            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_ref(),
         }
     }
 }

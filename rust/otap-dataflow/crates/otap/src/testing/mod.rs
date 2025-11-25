@@ -4,6 +4,7 @@
 //! Ultra-minimal test utilities for OTAP components
 
 use crate::pdata::OtapPdata;
+use bytes::Bytes;
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
@@ -66,7 +67,7 @@ pub fn create_test_pdata() -> OtapPdata {
     let mut otlp_bytes = vec![];
     otlp_service_req.encode(&mut otlp_bytes).unwrap();
 
-    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(otlp_bytes).into())
+    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::from(otlp_bytes)).into())
 }
 
 /// Simple exporter test where there is NO subscribe_to() in the context.

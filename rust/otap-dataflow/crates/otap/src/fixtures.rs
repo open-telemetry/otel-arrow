@@ -8,6 +8,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt16Type, UInt32Type};
 use arrow_ipc::writer::StreamWriter;
+use bytes::BytesMut;
 use fluke_hpack::Encoder;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
@@ -124,9 +125,9 @@ pub fn create_single_logs_pdata_with_attrs(attributes: Vec<KeyValue>) -> OtapPda
             ..Default::default()
         }],
     };
-    let mut bytes = vec![];
+    let mut bytes = BytesMut::new();
     log_req_1.encode(&mut bytes).unwrap();
-    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into())
+    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into())
 }
 
 pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {
