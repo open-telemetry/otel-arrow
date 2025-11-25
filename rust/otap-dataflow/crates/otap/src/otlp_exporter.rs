@@ -145,8 +145,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
         let mut logs_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_encoder = TracesProtoBytesEncoder::new();
-        let mut proto_buffer = ProtoBuffer::new();
-        let mut client_pool = ClientPool::new(channel, compression);
+        let mut proto_buffer = ProtoBuffer::with_capacity(8*1024);
+        let mut client_pool = ClientPool::new(max_in_flight, channel, compression);
         let mut inflight = InFlightQueue::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
@@ -588,13 +588,13 @@ struct ClientPool {
 }
 
 impl ClientPool {
-    fn new(base_channel: Channel, compression: Option<CompressionEncoding>) -> Self {
+    fn new(max_in_flight: usize, base_channel: Channel, compression: Option<CompressionEncoding>) -> Self {
         Self {
             base_channel,
             compression,
-            logs: Vec::new(),
-            metrics: Vec::new(),
-            traces: Vec::new(),
+            logs: Vec::with_capacity(max_in_flight),
+            metrics: Vec::with_capacity(max_in_flight),
+            traces: Vec::with_capacity(max_in_flight),
         }
     }
 
