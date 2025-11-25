@@ -16,6 +16,7 @@ use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::ready;
+use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
@@ -571,13 +572,13 @@ impl Future for ExportFuture {
 
 /// FIFO-ish wrapper around the in-flight export RPCs.
 struct InFlightQueue {
-    futures: Vec<ExportFuture>,
+    futures: FuturesUnordered<ExportFuture>,
 }
 
 impl InFlightQueue {
     fn new() -> Self {
         Self {
-            futures: Vec::new(),
+            futures: FuturesUnordered::new(),
         }
     }
 
@@ -593,49 +594,9 @@ impl InFlightQueue {
         self.futures.push(future);
     }
 
-    fn poll_next(&mut self, cx: &mut TaskContext<'_>) -> Poll<Option<CompletedExport>> {
-        let mut index = 0;
-        while index < self.futures.len() {
-            let poll_result = {
-                let future = Pin::new(&mut self.futures[index]);
-                future.poll(cx)
-            };
-
-            match poll_result {
-                Poll::Ready(completed) => {
-                    let _ = self.futures.swap_remove(index);
-                    return Poll::Ready(Some(completed));
-                }
-                Poll::Pending => {
-                    index += 1;
-                }
-            }
-        }
-
-        if self.futures.is_empty() {
-            Poll::Ready(None)
-        } else {
-            Poll::Pending
-        }
-    }
-
     /// Returns a future that resolves once the next export finishes.
-    fn next_completion(&mut self) -> NextCompletion<'_> {
-        NextCompletion { queue: self }
-    }
-}
-
-/// Drives the in-flight queue until the next export finishes.
-struct NextCompletion<'a> {
-    queue: &'a mut InFlightQueue,
-}
-
-impl Future for NextCompletion<'_> {
-    type Output = Option<CompletedExport>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        this.queue.poll_next(cx)
+    fn next_completion(&mut self) -> impl Future<Output = Option<CompletedExport>> + '_ {
+        self.futures.next()
     }
 }
 
