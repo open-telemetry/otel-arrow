@@ -22,7 +22,7 @@ use crate::{
 };
 
 pub fn execute_transform_expression<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     transform_expression: &'a TransformExpression,
 ) -> Result<(), ExpressionError> {
     match transform_expression {
@@ -485,7 +485,7 @@ impl Display for MapKeys<'_> {
 }
 
 fn resolve_map_keys<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     target: &'a MutableValueExpression,
     key_list: &'a MapKeyListExpression,
 ) -> Result<MapKeys<'c>, ExpressionError>

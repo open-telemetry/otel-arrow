@@ -24,7 +24,7 @@ impl<'a> Summaries<'a> {
 
     pub fn create_or_update_summary<T: Record>(
         &self,
-        execution_context: &ExecutionContext<'a, '_, '_, T>,
+        execution_context: &ExecutionContext<'a, '_, T>,
         summary_data_expression: &'a SummaryDataExpression,
         mut group_by_values: Vec<(Box<str>, ResolvedValue)>,
         mut aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
@@ -98,7 +98,7 @@ impl<'a> Summary<'a> {
 
     pub(crate) fn update<T: Record>(
         &mut self,
-        execution_context: &ExecutionContext<'a, '_, '_, T>,
+        execution_context: &ExecutionContext<'a, '_, T>,
         aggregation_values: HashMap<Box<str>, SummaryAggregationUpdate>,
     ) {
         for (key, aggregation) in aggregation_values {

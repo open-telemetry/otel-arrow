@@ -26,7 +26,7 @@ static VALUE_TYPE_NAMES: LazyLock<Vec<StringValueStorage>> = LazyLock::new(|| {
 });
 
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     scalar_expression: &'a ScalarExpression,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -472,7 +472,7 @@ where
 }
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     borrow_source: BorrowSource,
     borrow: Ref<'b, dyn AsStaticValue + 'static>,
     expression: &'a ScalarExpression,
@@ -600,7 +600,7 @@ where
 }
 
 fn select_from_value<'a, 'b, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     root: Value<'b>,
     expression: &'a ScalarExpression,
     selectors: &mut Iter<'a, ScalarExpression>,
