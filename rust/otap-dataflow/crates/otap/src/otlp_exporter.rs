@@ -37,6 +37,7 @@ use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use serde::Deserialize;
 use std::future::Future;
@@ -142,48 +143,52 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
         let compression = self.config.grpc.compression_encoding();
         let max_in_flight = self.config.max_in_flight.max(1);
+
         // reuse the encoder and the buffer across pdatas
-        let mut logs_encoder = LogsProtoBytesEncoder::new();
-        let mut metrics_encoder = MetricsProtoBytesEncoder::new();
-        let mut traces_encoder = TracesProtoBytesEncoder::new();
-        let mut logs_buffer = ProtoBuffer::with_capacity(8 * 1024);
-        let mut metrics_buffer = ProtoBuffer::with_capacity(8 * 1024);
-        let mut traces_buffer = ProtoBuffer::with_capacity(8 * 1024);
-        let mut client_pool = ClientPool::new(max_in_flight, channel, compression);
-        client_pool.prepopulate_clients();
-        let mut inflight = InFlightExports::new();
+        let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
+        let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
+        let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
+
+        let mut logs_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut metrics_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+        let mut traces_proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
+
+        let mut grpc_clients = GrpcClientPool::new(max_in_flight, channel, compression);
+        grpc_clients.prepopulate_clients();
+
+        let mut inflight_exports = InFlightExports::new();
         let mut pending_msg: Option<Message<OtapPdata>> = None;
 
-        // Main loop: (1) finish ready completions, (2) biased wait for either a completion
-        // or the next message, (3) dispatch work while respecting the in-flight budget.
+        // Main loop: 1) finish ready completions, 2) biased wait for either a completion
+        // or the next message, 3) dispatch work while respecting the in-flight budget.
         loop {
-            if inflight.len() >= max_in_flight && pending_msg.is_some() {
-                if let Some(completed) = inflight.next_completion().await {
+            if inflight_exports.len() >= max_in_flight && pending_msg.is_some() {
+                if let Some(completed) = inflight_exports.next_completion().await {
                     let client = finalize_completed_export(
                         completed,
                         &effect_handler,
                         &mut self.pdata_metrics,
                     )
                     .await;
-                    client_pool.release(client);
+                    grpc_clients.release(client);
                 }
                 continue;
             }
 
-            while let Some(completed) = inflight.next_completion().now_or_never().flatten() {
+            while let Some(completed) = inflight_exports.next_completion().now_or_never().flatten() {
                 let client =
                     finalize_completed_export(completed, &effect_handler, &mut self.pdata_metrics)
                         .await;
-                client_pool.release(client);
+                grpc_clients.release(client);
             }
 
-            // Prefer completions if any are ready; otherwise biased select between completion and recv.
+            // Prefer completions if any are ready, otherwise biased select between completion and recv.
             let msg = if let Some(msg) = pending_msg.take() {
                 msg
-            } else if inflight.is_empty() {
+            } else if inflight_exports.is_empty() {
                 msg_chan.recv().await?
             } else {
-                let completion_fut = inflight.next_completion().fuse();
+                let completion_fut = inflight_exports.next_completion().fuse();
                 let recv_fut = msg_chan.recv().fuse();
                 futures::pin_mut!(completion_fut, recv_fut);
 
@@ -196,7 +201,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                 &mut self.pdata_metrics,
                             )
                             .await;
-                            client_pool.release(client);
+                            grpc_clients.release(client);
                         }
                         continue;
                     }
@@ -210,15 +215,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
                     );
-                    while !inflight.is_empty() {
-                        if let Some(completed) = inflight.next_completion().await {
+                    while !inflight_exports.is_empty() {
+                        if let Some(completed) = inflight_exports.next_completion().await {
                             let client = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
                             )
                             .await;
-                            client_pool.release(client);
+                            grpc_clients.release(client);
                         }
                     }
                     _ = timer_cancel_handle.cancel().await;
@@ -230,7 +235,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     _ = metrics_reporter.report(&mut self.pdata_metrics);
                 }
                 Message::PData(pdata) => {
-                    if inflight.len() >= max_in_flight {
+                    if inflight_exports.len() >= max_in_flight {
                         pending_msg = Some(Message::PData(pdata));
                         continue;
                     }
@@ -242,64 +247,58 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // Dispatch based on signal type and the concrete payload representation.
                     match (signal_type, payload) {
                         (SignalType::Logs, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                            match prepare_otap_export(
+                            dispatch_otap_export(
                                 otap_batch,
                                 context,
-                                &mut logs_buffer,
-                                &mut logs_encoder,
-                                &exporter_id,
                                 SignalType::Logs,
-                            ) {
-                                Ok(encoded) => {
-                                    let client = SignalClient::Logs(client_pool.take_logs());
-                                    let future = make_export_future(encoded, client);
-                                    inflight.push(future);
-                                }
-                                Err(error) => {
-                                    self.pdata_metrics.logs_failed.inc();
-                                    _ = notify_prepare_error(error, &effect_handler).await;
-                                }
-                            }
+                                &exporter_id,
+                                &mut logs_proto_buffer,
+                                &mut logs_proto_encoder,
+                                |encoded| {
+                                    let client = SignalClient::Logs(grpc_clients.take_logs());
+                                    make_export_future(encoded, client)
+                                },
+                                &mut inflight_exports,
+                                &mut self.pdata_metrics.logs_failed,
+                                &effect_handler,
+                            )
+                            .await;
                         }
                         (SignalType::Metrics, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                            match prepare_otap_export(
+                            dispatch_otap_export(
                                 otap_batch,
                                 context,
-                                &mut metrics_buffer,
-                                &mut metrics_encoder,
-                                &exporter_id,
                                 SignalType::Metrics,
-                            ) {
-                                Ok(encoded) => {
-                                    let client = SignalClient::Metrics(client_pool.take_metrics());
-                                    let future = make_export_future(encoded, client);
-                                    inflight.push(future);
-                                }
-                                Err(error) => {
-                                    self.pdata_metrics.metrics_failed.inc();
-                                    _ = notify_prepare_error(error, &effect_handler).await;
-                                }
-                            }
+                                &exporter_id,
+                                &mut metrics_proto_buffer,
+                                &mut metrics_proto_encoder,
+                                |encoded| {
+                                    let client = SignalClient::Metrics(grpc_clients.take_metrics());
+                                    make_export_future(encoded, client)
+                                },
+                                &mut inflight_exports,
+                                &mut self.pdata_metrics.metrics_failed,
+                                &effect_handler,
+                            )
+                            .await;
                         }
                         (SignalType::Traces, OtapPayload::OtapArrowRecords(otap_batch)) => {
-                            match prepare_otap_export(
+                            dispatch_otap_export(
                                 otap_batch,
                                 context,
-                                &mut traces_buffer,
-                                &mut traces_encoder,
-                                &exporter_id,
                                 SignalType::Traces,
-                            ) {
-                                Ok(encoded) => {
-                                    let client = SignalClient::Traces(client_pool.take_traces());
-                                    let future = make_export_future(encoded, client);
-                                    inflight.push(future);
-                                }
-                                Err(error) => {
-                                    self.pdata_metrics.traces_failed.inc();
-                                    _ = notify_prepare_error(error, &effect_handler).await;
-                                }
-                            }
+                                &exporter_id,
+                                &mut traces_proto_buffer,
+                                &mut traces_proto_encoder,
+                                |encoded| {
+                                    let client = SignalClient::Traces(grpc_clients.take_traces());
+                                    make_export_future(encoded, client)
+                                },
+                                &mut inflight_exports,
+                                &mut self.pdata_metrics.traces_failed,
+                                &effect_handler,
+                            )
+                            .await;
                         }
                         (_, OtapPayload::OtlpBytes(service_req)) => {
                             let prepared = match service_req {
@@ -321,16 +320,16 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             };
 
                             let client = match signal_type {
-                                SignalType::Logs => SignalClient::Logs(client_pool.take_logs()),
+                                SignalType::Logs => SignalClient::Logs(grpc_clients.take_logs()),
                                 SignalType::Metrics => {
-                                    SignalClient::Metrics(client_pool.take_metrics())
+                                    SignalClient::Metrics(grpc_clients.take_metrics())
                                 }
                                 SignalType::Traces => {
-                                    SignalClient::Traces(client_pool.take_traces())
+                                    SignalClient::Traces(grpc_clients.take_traces())
                                 }
                             };
                             let future = make_export_future(prepared, client);
-                            inflight.push(future);
+                            inflight_exports.push(future);
                         }
                     }
                 }
@@ -452,6 +451,41 @@ fn prepare_otlp_export(
         context,
         saved_payload,
         signal_type,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
+    otap_batch: OtapArrowRecords,
+    context: Context,
+    signal_type: SignalType,
+    exporter_id: &NodeId,
+    proto_buffer: &mut ProtoBuffer,
+    encoder: &mut Enc,
+    make_future: MakeFuture,
+    inflight: &mut InFlightExports<Fut>,
+    failed_counter: &mut Counter<u64>,
+    effect_handler: &EffectHandler<OtapPdata>,
+) where
+    Enc: ProtoBytesEncoder,
+    Fut: Future<Output = CompletedExport>,
+    MakeFuture: FnOnce(EncodedExport) -> Fut,
+{
+    match prepare_otap_export(
+        otap_batch,
+        context,
+        proto_buffer,
+        encoder,
+        exporter_id,
+        signal_type,
+    ) {
+        Ok(encoded) => {
+            inflight.push(make_future(encoded));
+        }
+        Err(error) => {
+            failed_counter.inc();
+            _ = notify_prepare_error(error, effect_handler).await;
+        }
     }
 }
 
@@ -582,7 +616,7 @@ where
 }
 
 /// Keeps a small stash of gRPC clients so each export can reuse an existing connection.
-struct ClientPool {
+struct GrpcClientPool {
     base_channel: Channel,
     compression: Option<CompressionEncoding>,
     logs: Vec<LogsServiceClient<Channel>>,
@@ -590,7 +624,7 @@ struct ClientPool {
     traces: Vec<TraceServiceClient<Channel>>,
 }
 
-impl ClientPool {
+impl GrpcClientPool {
     fn new(
         max_in_flight: usize,
         base_channel: Channel,
@@ -605,7 +639,6 @@ impl ClientPool {
         }
     }
 
-    /// Eagerly build up to `max_in_flight` clients per signal to avoid first-call setup.
     /// Eagerly build up to `max_in_flight` clients per signal to avoid first-call setup.
     fn prepopulate_clients(&mut self) {
         let logs_cap = self.logs.capacity();
