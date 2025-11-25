@@ -3,13 +3,15 @@ permissions:
   contents: read
 
 on:
-- pull_request_target
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
 
 jobs:
   tidy:
     permissions:
       contents: write
-      pull-requests: write
     runs-on: ubuntu-latest
     if: ${{ github.actor == 'renovate[bot]' }}
     steps:
@@ -23,18 +25,14 @@ jobs:
       - name: make genotelarrowcol
         # This also runs 'go mod tidy' as part of its process
         run: make genotelarrowcol
-      - name: Create GitHub App token
-        if: '!inputs.dry_run'
-        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2.1.4
-        id: app-token
-        with:
-          app-id: ${{ vars.OTELBOT_APP_ID }}
-          private-key: ${{ secrets.OTELBOT_PRIVATE_KEY }}
       - name: Commit changes
         run: |
           # Configure git for otelbot
           git config user.name otelbot
           git config user.email 197425009+otelbot@users.noreply.github.com
 
-          echo "git diff --exit-code || (git add . && git commit -m \"make genotelarrowcol\" && git push)"
-          git diff --exit-code || (git add . && git commit -m "make genotelarrowcol" && git push)
+          if ! git diff --exit-code; then
+            git add .
+            git commit -m "make genotelarrowcol"
+            git push
+          fi

@@ -34,6 +34,7 @@ use crate::{
 
 pub mod middleware;
 pub mod otlp;
+pub mod server_settings;
 
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]
