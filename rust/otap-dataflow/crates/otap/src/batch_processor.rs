@@ -503,9 +503,8 @@ impl BatchProcessor {
         if self.config.timeout != Duration::ZERO
             && reason == FlushReason::Size
             && upper_limit.is_some()
-            && !output_batches.is_empty()
+            && output_batches.len() > 1
         {
-            debug_assert!(output_batches.len() > 1);
             debug_assert!(output_batches[0].batch_length() >= self.lower_limit.get());
 
             if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
