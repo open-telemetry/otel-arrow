@@ -7,8 +7,9 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use arrow::array::Array;
-use criterion::{Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otap::filter::build_uint16_id_filter;
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
+use otap_df_pdata::otap::filter::{self, build_uint16_id_filter, MatchType};
+use otap_df_pdata::otap::filter::logs::{LogFilter, LogMatchProperties};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
@@ -23,8 +24,80 @@ fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
     otlp_to_otap(&OtlpProtoMessage::Logs(logs_data))
 }
 
-fn bench_filter(c: &mut Criterion) {
+fn bench_log_filter(
+    c: &mut Criterion,
+    batch_sizes: &[usize],
+    bench_group_name: &str,
+    include: Option<LogMatchProperties>,
+    exclude: Option<LogMatchProperties>,
+) {
+    preview_result(include.clone(), exclude.clone());
 
+    let mut group = c.benchmark_group(bench_group_name);
+    for batch_size in batch_sizes {
+        let benchmark_id = BenchmarkId::new("batch_size", batch_size);
+
+        let filter = LogFilter::new(include.clone(), exclude.clone(), Vec::new());
+        let batch = generate_logs_batch(*batch_size);
+        _ = group.bench_with_input(benchmark_id, &(batch, filter), |b, input| {
+            b.iter_batched(
+                || input,
+                |input| {
+                    let (batch, filter) = &input;
+                    let (result, _, _) = filter.filter(batch.clone()).unwrap();
+                    black_box(result)
+                },
+                BatchSize::SmallInput,
+            );
+        })
+    }
+
+    group.finish();
+}
+
+// used for debugging to make sure we're not just filtering empty batches
+fn preview_result(include: Option<LogMatchProperties>, exclude: Option<LogMatchProperties>) {
+    let batch = generate_logs_batch(20);
+    let filter = LogFilter::new(include.clone(), exclude.clone(), Vec::new());
+    let (result, _, _) = filter.filter(batch.clone()).unwrap();
+
+    println!("Testing output of filter:");
+    println!("include = {include:?}");
+    println!("exclude = {exclude:?}");
+    for payload_type in result.allowed_payload_types() {
+        println!("{:?}:", payload_type);
+        match result.get(*payload_type) {
+            Some(rb) => arrow::util::pretty::print_batches(&[rb.clone()]).unwrap(),
+            None => println!("None"),
+        }
+    }
+}
+
+fn bench_filter(c: &mut Criterion) {
+    let batch_sizes = [32, 1024, 8092];
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(),          // no resource attr filter,
+        Vec::new(),          // no record attrs filter,
+        vec!["WARN".into()], // severity_text = "WARN",
+        None,                // no severity number filter,
+        Vec::new(),          // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "simple_field_filter", Some(include), None);
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(), // no resource attr filter,
+        vec![
+            // attrs["code.namespace"] == "main"
+            filter::KeyValue::new("code.namespace".into(), filter::AnyValue::String("main".into())),
+        ],
+        Vec::new(), // no severity text filter
+        None,       // no severity number filter,
+        Vec::new(), // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "simple_attrs_filter", Some(include), None);
 }
 
 /// Benchmark for [`build_uint16_id_filter`]

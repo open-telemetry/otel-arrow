@@ -9,7 +9,7 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-arrow.workspace = true
+arrow = { workspace = true, features = ["prettyprint"] }
 tokio.workspace = true
 serde_json.workspace = true
 mimalloc-rust.workspace = true

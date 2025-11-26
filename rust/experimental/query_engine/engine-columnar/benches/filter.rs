@@ -6,10 +6,10 @@ use std::time::Instant;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use data_engine_columnar::pipeline::Pipeline;
 use data_engine_kql_parser::{KqlParser, Parser};
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
-use otap_df_pdata::OtapArrowRecords;
 use tokio::runtime::Runtime;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
@@ -17,7 +17,7 @@ fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
     otlp_to_otap(&OtlpProtoMessage::Logs(logs_data))
 }
 
-fn bench_pipeline(
+fn bench_log_pipeline(
     c: &mut Criterion,
     rt: &Runtime,
     batch_sizes: &[usize],
@@ -77,8 +77,8 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         .expect("can build tokio single threaded runtime");
 
     let batch_sizes = [32, 1024, 8192];
-    bench_pipeline(c, &rt, &batch_sizes, "simple_field_filter", "logs | where severity_text == \"WARN\"");
-    bench_pipeline(c, &rt, &batch_sizes, "simple_attr_filter", "logs | where attributes[\"code.namespace\"] == \"main\"");
+    bench_log_pipeline(c, &rt, &batch_sizes, "simple_field_filter", "logs | where severity_text == \"WARN\"");
+    bench_log_pipeline(c, &rt, &batch_sizes, "simple_attr_filter", "logs | where attributes[\"code.namespace\"] == \"main\"");
 }
 
 #[allow(missing_docs)]
