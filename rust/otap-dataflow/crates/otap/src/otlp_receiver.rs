@@ -41,6 +41,7 @@ use serde_json::Value;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tower::limit::GlobalConcurrencyLimitLayer;
 use tonic::transport::Server;
 use crate::otap_grpc::common;
 use crate::otap_grpc::common::AckRegistry;
@@ -174,7 +175,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             metrics_server.common.state(),
             traces_server.common.state(),
         );
-        let mut server_builder = common::apply_server_tuning(Server::builder(), config);
+        let max_concurrent_requests = config.max_concurrent_requests.max(1);
+        let global_limit =
+            GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
+        let mut server_builder =
+            common::apply_server_tuning(Server::builder(), config).layer(global_limit);
 
         let server = server_builder
             .add_service(logs_server)
@@ -182,20 +187,24 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .add_service(traces_server);
 
         // Start periodic telemetry collection
-        let telemetry_cancel_handle = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
-            .await?;
+        let mut telemetry_cancel_handle = Some(
+            effect_handler
+                .start_periodic_telemetry(Duration::from_secs(1))
+                .await?,
+        );
+        let mut server_task = Box::pin(server.serve_with_incoming(incoming));
 
-        tokio::select! {
-            biased;
+        loop {
+            tokio::select! {
+                biased;
 
-            // Process internal events
-            ctrl_msg_result = async {
-                loop {
-                    match ctrl_msg_recv.recv().await {
+                ctrl_msg = ctrl_msg_recv.recv() => {
+                    match ctrl_msg {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             let snapshot = self.metrics.snapshot();
-                            _ = telemetry_cancel_handle.cancel().await;
+                            if let Some(handle) = telemetry_cancel_handle.take() {
+                                _ = handle.cancel().await;
+                            }
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
@@ -221,29 +230,37 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             );
                         },
                         Err(e) => {
+                            if let Some(handle) = telemetry_cancel_handle.take() {
+                                _ = handle.cancel().await;
+                            }
                             return Err(Error::ChannelRecvError(e));
                         }
                         _ => {
                             // unknown control message do nothing
                         }
                     }
-                }
-            } => {
-                return ctrl_msg_result;
-            },
+                },
 
-            // Run server
-            result = server.serve_with_incoming(incoming) => {
-                if let Err(error) = result {
-                    let source_detail = format_error_sources(&error);
-                    return Err(Error::ReceiverError {
-                        receiver: effect_handler.receiver_id(),
-                        kind: ReceiverErrorKind::Transport,
-                        error: error.to_string(),
-                        source_detail,
-                    });
+                result = &mut server_task => {
+                    if let Some(handle) = telemetry_cancel_handle.take() {
+                        _ = handle.cancel().await;
+                    }
+                    if let Err(error) = result {
+                        let source_detail = format_error_sources(&error);
+                        return Err(Error::ReceiverError {
+                            receiver: effect_handler.receiver_id(),
+                            kind: ReceiverErrorKind::Transport,
+                            error: error.to_string(),
+                            source_detail,
+                        });
+                    }
+                    break;
                 }
             }
+        }
+
+        if let Some(handle) = telemetry_cancel_handle.take() {
+            _ = handle.cancel().await;
         }
 
         Ok(TerminalState::new(

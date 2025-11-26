@@ -45,6 +45,14 @@ pub struct GrpcServerSettings {
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
 
+    /// Upper bound on concurrently active HTTP/2 streams per connection.
+    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
+    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
+    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
+    /// default.
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
+    
     /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
     /// Keeping this `true` (the default) avoids Nagle's algorithm and minimizes per-export latency.
     /// Disabling it trades slightly higher latency for fewer small TCP packets when workloads
@@ -147,14 +155,6 @@ pub struct GrpcServerSettings {
     /// network jitter. Decrease it for quicker failover or increase it for chatty-but-latent paths.
     #[serde(default = "default_http2_keepalive_timeout", with = "humantime_serde")]
     pub http2_keepalive_timeout: Option<Duration>,
-
-    /// Upper bound on concurrently active HTTP/2 streams per connection.
-    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
-    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
-    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
-    /// default.
-    #[serde(default)]
-    pub max_concurrent_streams: Option<u32>,
 
     /// Whether to wait for the result (default: false)
     ///
