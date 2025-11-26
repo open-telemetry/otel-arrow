@@ -1532,9 +1532,26 @@ impl InvokeFunctionScalarExpression {
             ));
         }
 
-        // If function is implemented by expressions, and it has a single return
-        // statement, and that return statement is static, then we can elide the
-        // invocation of the function completely
+        /*
+        Note:
+
+        If a function...
+          * Has an implementation supplied by expressions
+          * Has only immutable arguments
+          * Has a single return statement
+          * Has a static return value
+        ...then we can elide the invocation of the function completely.
+
+        The immutable argument rule is there to make sure side-effects are preserved. Consider a function like...
+
+        my_func(m: Mutable(Map)) {
+            m['some_attr'] = 1;
+            return 1;
+        }
+
+        ...in that case the return is a constant (Long(1)) but we can't elide the function because the map
+        argument "m" still needs to be mutated.
+        */
         if let PipelineFunctionImplementation::Expressions(expressions) =
             function.get_implementation()
             && !function.get_parameters().iter().any(|v| {
