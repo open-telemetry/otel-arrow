@@ -13,8 +13,19 @@ use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otap_df_pdata::OtapArrowRecords;
 use roaring::RoaringBitmap;
+
+fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
+    let logs_data = logs_with_varying_attributes_and_properties(batch_size);
+    otlp_to_otap(&OtlpProtoMessage::Logs(logs_data))
+}
+
+fn bench_filter(c: &mut Criterion) {
+
+}
 
 /// Benchmark for [`build_uint16_id_filter`]
 ///
@@ -155,7 +166,7 @@ mod benches {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_build_uint16_id_filter
+        targets = bench_filter, bench_build_uint16_id_filter
     );
 }
 

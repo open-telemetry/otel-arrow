@@ -6,60 +6,15 @@ use std::time::Instant;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use data_engine_columnar::pipeline::Pipeline;
 use data_engine_kql_parser::{KqlParser, Parser};
-use otap_df_pdata::proto::opentelemetry::common::v1::{KeyValue, AnyValue};
-use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber};
 use otap_df_pdata::proto::OtlpProtoMessage;
+use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use otap_df_pdata::OtapArrowRecords;
 use tokio::runtime::Runtime;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
-    let log_records = (0..batch_size).map(|i| {
-        // generate some log attributes that somewhat follow semantic conventions
-        let attrs = vec![
-            KeyValue::new(
-                "code.namespace", 
-                AnyValue::new_string(match i % 3 {
-                    0 => "main",
-                    1 => "otap_dataflow_engine",
-                    _ => "arrow::array"
-                })
-            ),
-            KeyValue::new(
-                "code.line.number",
-                AnyValue::new_int((i % 5) as i64)
-            )
-        ];
-
-        // cycle through severity numbers
-        // 5 = DEBUG, 9 = INFO, 13 = WARN, 17 = ERROR 
-        let severity_number = SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).unwrap();
-        let severity_text = severity_number.as_str_name().split("_").nth(2).unwrap();
-        let event_name = format!("event {}", i);
-        let time_unix_nano = i as u64;
-
-        LogRecord::build()
-            .attributes(attrs)
-            .event_name(event_name)
-            .severity_number(severity_number)
-            .severity_text(severity_text)
-            .time_unix_nano(time_unix_nano)
-            .finish()
-    }).collect::<Vec<_>>();
-
-    otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-        resource_logs: vec![
-            ResourceLogs {
-                scope_logs: vec![
-                    ScopeLogs {
-                        log_records,
-                        ..Default::default()
-                    }
-                ],
-                ..Default::default()
-            }
-        ]
-    }))
+    let logs_data = logs_with_varying_attributes_and_properties(batch_size);
+    otlp_to_otap(&OtlpProtoMessage::Logs(logs_data))
 }
 
 fn bench_pipeline(
@@ -107,7 +62,7 @@ async fn preview_result(pipeline_kql: &str) {
 
     println!("Testing output of pipeline: {}", pipeline_kql);
     for payload_type in result.allowed_payload_types() {
-        println!("{:?}", payload_type);
+        println!("{:?}:", payload_type);
         match result.get(*payload_type) {
             Some(rb) => arrow::util::pretty::print_batches(&[rb.clone()]).unwrap(),
             None => println!("None")
