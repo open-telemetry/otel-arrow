@@ -65,7 +65,7 @@ async fn preview_result(pipeline_kql: &str) {
         println!("{:?}:", payload_type);
         match result.get(*payload_type) {
             Some(rb) => arrow::util::pretty::print_batches(&[rb.clone()]).unwrap(),
-            None => println!("None")
+            None => println!("None"),
         }
     }
 }
@@ -77,8 +77,34 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         .expect("can build tokio single threaded runtime");
 
     let batch_sizes = [32, 1024, 8192];
-    bench_log_pipeline(c, &rt, &batch_sizes, "simple_field_filter", "logs | where severity_text == \"WARN\"");
-    bench_log_pipeline(c, &rt, &batch_sizes, "simple_attr_filter", "logs | where attributes[\"code.namespace\"] == \"main\"");
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "simple_field_filter",
+        "logs | where severity_text == \"WARN\"",
+    );
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "simple_attr_filter",
+        "logs | where attributes[\"code.namespace\"] == \"main\"",
+    );
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "attr_or_filter",
+        "logs | where attributes[\"code.namespace\"] == \"main\" or attributes[\"code.line.number\"] == 2",
+    );
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "attr_and_prop_filter",
+        "logs | where attributes[\"code.namespace\"] == \"main\" and severity_text == \"WARN\"",
+    );
 }
 
 #[allow(missing_docs)]

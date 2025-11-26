@@ -98,6 +98,33 @@ fn bench_filter(c: &mut Criterion) {
         Vec::new(), // no bodies filter
     );
     bench_log_filter(c, &batch_sizes, "simple_attrs_filter", Some(include), None);
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(),
+        vec![
+            // attrs["code.namespace"] == "main" or attrs["code.line.number"] == 2
+            KeyValue::new("code.namespace".into(), AnyValue::String("main".into())),
+            KeyValue::new("code.line.number".into(), AnyValue::Int(2)),
+        ],
+        Vec::new(), // no severity text filter
+        None,       // no severity number filter,
+        Vec::new(), // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "attrs_or_filter", Some(include), None);
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(),
+        vec![
+            // attrs["code.namespace"] == "main"
+            KeyValue::new("code.namespace".into(), AnyValue::String("main".into())),
+        ],
+        vec!["WARN".into()], // severity_text == "WARN"
+        None,                // no severity number filter,
+        Vec::new(),          // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "attr_and_prop_filter", Some(include), None);
 }
 
 /// Benchmark for [`build_uint16_id_filter`]
