@@ -8,17 +8,12 @@
 
 use std::collections::BTreeMap;
 
-use arrow::array::{
-    Array, RecordBatch, StructArray, UInt16Array,
-};
+use arrow::array::{Array, RecordBatch, StructArray, UInt16Array};
 
 #[cfg(test)]
 use arrow::array::{TimestampNanosecondArray, UInt32Array};
 
-use crate::arrays::{
-    MaybeDictArrayAccessor,
-    NullableArrayAccessor,
-};
+use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor};
 use crate::error::Error;
 use crate::otap::OtapArrowRecords;
 use crate::otlp::attributes::{Attribute16Arrays, AttributeValueType};
@@ -89,9 +84,9 @@ impl<'a> Iterator for RowGroupIter<'a> {
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
     columns: LogsArrays<'a>,                       // ~220 bytes
-    resource_attrs: Option<Attribute16Arrays<'a>>,  // ~168 bytes
-    scope_attrs: Option<Attribute16Arrays<'a>>,    // ~168 bytes
-    log_attrs: Option<Attribute16Arrays<'a>>,      // ~168 bytes
+    resource_attrs: Option<Attribute16Arrays<'a>>, // ~168 bytes when present
+    scope_attrs: Option<Attribute16Arrays<'a>>,    // ~168 bytes when present
+    log_attrs: Option<Attribute16Arrays<'a>>,      // ~168 bytes when present
 
     // Pre-computed indices for hierarchy reconstruction and attribute matching.
     //
@@ -173,7 +168,9 @@ impl<'a> OtapLogsView<'a> {
 
         Ok(Self {
             columns,
-            resource_attrs: resource_attrs.map(Attribute16Arrays::try_from).transpose()?,
+            resource_attrs: resource_attrs
+                .map(Attribute16Arrays::try_from)
+                .transpose()?,
             scope_attrs: scope_attrs.map(Attribute16Arrays::try_from).transpose()?,
             log_attrs: log_attrs.map(Attribute16Arrays::try_from).transpose()?,
             resource_groups,
@@ -199,12 +196,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapLogsView<'a> {
         let scope_attrs = records.get(ArrowPayloadType::ScopeAttrs);
         let log_attrs = records.get(ArrowPayloadType::LogAttrs);
 
-        Self::new(
-            logs_batch,
-            resource_attrs,
-            scope_attrs,
-            log_attrs,
-        )
+        Self::new(logs_batch, resource_attrs, scope_attrs, log_attrs)
     }
 }
 
@@ -525,14 +517,16 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
     #[inline]
     fn trace_id(&self) -> Option<&TraceId> {
         self.view.columns.trace_id.as_ref().and_then(|col| {
-            col.slice_at(self.row_idx).and_then(|bytes| bytes.try_into().ok())
+            col.slice_at(self.row_idx)
+                .and_then(|bytes| bytes.try_into().ok())
         })
     }
 
     #[inline]
     fn span_id(&self) -> Option<&SpanId> {
         self.view.columns.span_id.as_ref().and_then(|col| {
-            col.slice_at(self.row_idx).and_then(|bytes| bytes.try_into().ok())
+            col.slice_at(self.row_idx)
+                .and_then(|bytes| bytes.try_into().ok())
         })
     }
 
@@ -785,25 +779,26 @@ impl<'a> Iterator for OtapAttributeIter<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_idx >= self.matching_rows.len() {
-            return None;
-        }
-
-        let attr_row_idx = self.matching_rows[self.current_idx];
-        self.current_idx += 1;
-
         let attrs_cols = self.attrs?;
 
-        // Extract key
-        let key = get_attribute_key(attrs_cols, attr_row_idx)?;
+        // Loop to skip invalid attributes (e.g., null keys) instead of terminating iteration
+        loop {
+            if self.current_idx >= self.matching_rows.len() {
+                return None;
+            }
 
-        // Extract value with type information
-        let value = get_attribute_value(attrs_cols, attr_row_idx);
+            let attr_row_idx = self.matching_rows[self.current_idx];
+            self.current_idx += 1;
 
-        Some(OtapAttributeView { key, value })
+            // If key is invalid (null), skip this attribute and continue to next
+            if let Some(key) = get_attribute_key(attrs_cols, attr_row_idx) {
+                let value = get_attribute_value(attrs_cols, attr_row_idx);
+                return Some(OtapAttributeView { key, value });
+            }
+            // If key was None, loop continues to next attribute
+        }
     }
 }
-
 
 // ===== Helper Functions =====
 
@@ -861,11 +856,6 @@ fn group_by_resource_id(logs_batch: &RecordBatch) -> Vec<(u16, RowGroup)> {
         None => return Vec::new(),
     };
 
-    let id_array = match id_col.as_any().downcast_ref::<UInt16Array>() {
-        Some(arr) => arr,
-        None => return Vec::new(),
-    };
-
     // Optimized grouping:
     // We iterate through the rows and build groups.
     // Since we iterate in order (0..num_rows), we can detect contiguous ranges easily.
@@ -878,31 +868,60 @@ fn group_by_resource_id(logs_batch: &RecordBatch) -> Vec<(u16, RowGroup)> {
 
     let mut builders: BTreeMap<u16, GroupBuilder> = BTreeMap::new();
 
-    for i in 0..num_rows {
-        if id_array.is_valid(i) {
-            let id = id_array.value(i);
-
-            let _ = builders
-                .entry(id)
-                .and_modify(|builder| match builder {
-                    GroupBuilder::Contiguous { start, count } => {
-                        if *start + *count == i {
-                            // Still contiguous
-                            *count += 1;
-                        } else {
-                            // Break in continuity, switch to Scattered
-                            let mut indices = Vec::with_capacity(*count + 1);
-                            indices.extend(*start..(*start + *count));
-                            indices.push(i);
-                            *builder = GroupBuilder::Scattered(indices);
+    // Handle dictionary-encoded resource.id (common in OTAP for repeated values)
+    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(id_col) {
+        for i in 0..num_rows {
+            if let Some(id) = accessor.value_at(i) {
+                let _ = builders
+                    .entry(id)
+                    .and_modify(|builder| match builder {
+                        GroupBuilder::Contiguous { start, count } => {
+                            if *start + *count == i {
+                                // Still contiguous
+                                *count += 1;
+                            } else {
+                                // Break in continuity, switch to Scattered
+                                let mut indices = Vec::with_capacity(*count + 1);
+                                indices.extend(*start..(*start + *count));
+                                indices.push(i);
+                                *builder = GroupBuilder::Scattered(indices);
+                            }
                         }
-                    }
-                    GroupBuilder::Scattered(indices) => {
-                        indices.push(i);
-                    }
-                })
-                .or_insert(GroupBuilder::Contiguous { start: i, count: 1 });
+                        GroupBuilder::Scattered(indices) => {
+                            indices.push(i);
+                        }
+                    })
+                    .or_insert(GroupBuilder::Contiguous { start: i, count: 1 });
+            }
         }
+    } else if let Some(id_array) = id_col.as_any().downcast_ref::<UInt16Array>() {
+        // Fallback: Handle direct UInt16Array (not dictionary-encoded)
+        for i in 0..num_rows {
+            if id_array.is_valid(i) {
+                let id = id_array.value(i);
+                let _ = builders
+                    .entry(id)
+                    .and_modify(|builder| match builder {
+                        GroupBuilder::Contiguous { start, count } => {
+                            if *start + *count == i {
+                                *count += 1;
+                            } else {
+                                let mut indices = Vec::with_capacity(*count + 1);
+                                indices.extend(*start..(*start + *count));
+                                indices.push(i);
+                                *builder = GroupBuilder::Scattered(indices);
+                            }
+                        }
+                        GroupBuilder::Scattered(indices) => {
+                            indices.push(i);
+                        }
+                    })
+                    .or_insert(GroupBuilder::Contiguous { start: i, count: 1 });
+            }
+        }
+    } else {
+        // Unsupported array type
+        return Vec::new();
     }
 
     builders
@@ -936,12 +955,6 @@ fn group_by_scope_id(logs_batch: &RecordBatch, row_indices: &RowGroup) -> Vec<(u
         None => return Vec::new(),
     };
 
-    let scope_id_array = id_col.as_any().downcast_ref::<UInt16Array>();
-    let scope_id_array = match scope_id_array {
-        Some(arr) => arr,
-        None => return vec![],
-    };
-
     enum GroupBuilder {
         Contiguous { start: usize, count: usize },
         Scattered(Vec<usize>),
@@ -949,35 +962,67 @@ fn group_by_scope_id(logs_batch: &RecordBatch, row_indices: &RowGroup) -> Vec<(u
 
     let mut builders: BTreeMap<u16, GroupBuilder> = BTreeMap::new();
 
-    // Iterate over the parent group's indices
-    for row_idx in row_indices.iter() {
-        if scope_id_array.is_valid(row_idx) {
-            let scope_id = scope_id_array.value(row_idx);
-
-            let _ = builders
-                .entry(scope_id)
-                .and_modify(|builder| match builder {
-                    GroupBuilder::Contiguous { start, count } => {
-                        if *start + *count == row_idx {
-                            // Still contiguous
-                            *count += 1;
-                        } else {
-                            // Break in continuity, switch to Scattered
-                            let mut indices = Vec::with_capacity(*count + 1);
-                            indices.extend(*start..(*start + *count));
-                            indices.push(row_idx);
-                            *builder = GroupBuilder::Scattered(indices);
+    // Handle dictionary-encoded scope.id (common in OTAP for repeated values)
+    if let Ok(accessor) = MaybeDictArrayAccessor::<UInt16Array>::try_new(id_col) {
+        // Iterate over the parent group's indices
+        for row_idx in row_indices.iter() {
+            if let Some(scope_id) = accessor.value_at(row_idx) {
+                let _ = builders
+                    .entry(scope_id)
+                    .and_modify(|builder| match builder {
+                        GroupBuilder::Contiguous { start, count } => {
+                            if *start + *count == row_idx {
+                                // Still contiguous
+                                *count += 1;
+                            } else {
+                                // Break in continuity, switch to Scattered
+                                let mut indices = Vec::with_capacity(*count + 1);
+                                indices.extend(*start..(*start + *count));
+                                indices.push(row_idx);
+                                *builder = GroupBuilder::Scattered(indices);
+                            }
                         }
-                    }
-                    GroupBuilder::Scattered(indices) => {
-                        indices.push(row_idx);
-                    }
-                })
-                .or_insert(GroupBuilder::Contiguous {
-                    start: row_idx,
-                    count: 1,
-                });
+                        GroupBuilder::Scattered(indices) => {
+                            indices.push(row_idx);
+                        }
+                    })
+                    .or_insert(GroupBuilder::Contiguous {
+                        start: row_idx,
+                        count: 1,
+                    });
+            }
         }
+    } else if let Some(scope_id_array) = id_col.as_any().downcast_ref::<UInt16Array>() {
+        // Fallback: Handle direct UInt16Array (not dictionary-encoded)
+        for row_idx in row_indices.iter() {
+            if scope_id_array.is_valid(row_idx) {
+                let scope_id = scope_id_array.value(row_idx);
+                let _ = builders
+                    .entry(scope_id)
+                    .and_modify(|builder| match builder {
+                        GroupBuilder::Contiguous { start, count } => {
+                            if *start + *count == row_idx {
+                                *count += 1;
+                            } else {
+                                let mut indices = Vec::with_capacity(*count + 1);
+                                indices.extend(*start..(*start + *count));
+                                indices.push(row_idx);
+                                *builder = GroupBuilder::Scattered(indices);
+                            }
+                        }
+                        GroupBuilder::Scattered(indices) => {
+                            indices.push(row_idx);
+                        }
+                    })
+                    .or_insert(GroupBuilder::Contiguous {
+                        start: row_idx,
+                        count: 1,
+                    });
+            }
+        }
+    } else {
+        // Unsupported array type
+        return Vec::new();
     }
 
     builders
@@ -1012,21 +1057,24 @@ fn get_body_from_struct<'a>(
     // Extract the appropriate value field based on type
     match value_type {
         AttributeValueType::Str => Some(
-            anyval.attr_str
+            anyval
+                .attr_str
                 .as_ref()
                 .and_then(|accessor| accessor.str_at(row_idx))
                 .map(|s| OtapAnyValueView::Str(s.as_bytes()))
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Int => Some(
-            anyval.attr_int
+            anyval
+                .attr_int
                 .as_ref()
                 .and_then(|accessor| accessor.value_at(row_idx))
                 .map(OtapAnyValueView::Int)
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Double => Some(
-            anyval.attr_double
+            anyval
+                .attr_double
                 .and_then(|arr| {
                     if arr.is_valid(row_idx) {
                         Some(OtapAnyValueView::Double(arr.value(row_idx)))
@@ -1037,7 +1085,8 @@ fn get_body_from_struct<'a>(
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Bool => Some(
-            anyval.attr_bool
+            anyval
+                .attr_bool
                 .and_then(|arr| {
                     if arr.is_valid(row_idx) {
                         Some(OtapAnyValueView::Bool(arr.value(row_idx)))
@@ -1048,7 +1097,8 @@ fn get_body_from_struct<'a>(
                 .unwrap_or(OtapAnyValueView::Empty),
         ),
         AttributeValueType::Bytes => Some(
-            anyval.attr_bytes
+            anyval
+                .attr_bytes
                 .as_ref()
                 .and_then(|accessor| accessor.slice_at(row_idx))
                 .map(OtapAnyValueView::Bytes)
@@ -1158,8 +1208,8 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
 
-    /// Helper to create a simple OTAP logs RecordBatch for testing
-    fn create_test_logs_batch() -> RecordBatch {
+    /// Helper to create a logs batch with optional ID column
+    fn create_test_logs_batch_impl(include_id: bool) -> RecordBatch {
         // Define schema matching OTAP logs structure
         let resource_field = Field::new(
             "resource",
@@ -1173,8 +1223,12 @@ mod tests {
             false,
         );
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::UInt16, false),
+        // Build schema conditionally
+        let mut fields = Vec::new();
+        if include_id {
+            fields.push(Field::new("id", DataType::UInt16, false));
+        }
+        fields.extend([
             resource_field,
             scope_field,
             Field::new(
@@ -1202,7 +1256,9 @@ mod tests {
             ),
             Field::new("flags", DataType::UInt32, true),
             Field::new("event_name", DataType::Utf8, true),
-        ]));
+        ]);
+
+        let schema = Arc::new(Schema::new(fields));
 
         // Create test data (3 log records)
         let id_array = UInt16Array::from(vec![1, 2, 3]);
@@ -1238,7 +1294,6 @@ mod tests {
             StringArray::from(vec![Some("INFO"), Some("ERROR"), Some("WARN")]);
 
         // Body struct (mimicking AnyValue)
-        // We need a struct with "type" (UInt8) and "str" (Utf8) fields to represent string bodies
         let body_type_array = UInt8Array::from(vec![1, 1, 1]); // 1 = Str
         let body_str_array = StringArray::from(vec![
             Some("Log message 1"),
@@ -1261,22 +1316,28 @@ mod tests {
         let event_name_array =
             StringArray::from(vec![Some("event1"), Some("event2"), Some("event3")]);
 
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(id_array),
-                Arc::new(resource_struct),
-                Arc::new(scope_struct),
-                Arc::new(time_array),
-                Arc::new(observed_time_array),
-                Arc::new(severity_array),
-                Arc::new(severity_text_array),
-                Arc::new(body_struct),
-                Arc::new(flags_array),
-                Arc::new(event_name_array),
-            ],
-        )
-        .unwrap()
+        // Build columns conditionally
+        let mut columns: Vec<ArrayRef> = Vec::new();
+        if include_id {
+            columns.push(Arc::new(id_array) as ArrayRef);
+        }
+        columns.extend([
+            Arc::new(resource_struct) as ArrayRef,
+            Arc::new(scope_struct) as ArrayRef,
+            Arc::new(time_array) as ArrayRef,
+            Arc::new(observed_time_array) as ArrayRef,
+            Arc::new(severity_array) as ArrayRef,
+            Arc::new(severity_text_array) as ArrayRef,
+            Arc::new(body_struct) as ArrayRef,
+            Arc::new(flags_array) as ArrayRef,
+            Arc::new(event_name_array) as ArrayRef,
+        ]);
+
+        RecordBatch::try_new(schema, columns).unwrap()
+    }
+
+    fn create_test_logs_batch() -> RecordBatch {
+        create_test_logs_batch_impl(true)
     }
 
     /// Helper to create resource attributes batch
@@ -1619,10 +1680,11 @@ mod tests {
     }
 
     /// Test that log attributes with dictionary-encoded keys and values are correctly accessible
-    /// This test specifically validates the fixes for:
-    /// - Bug #1: log_id == 0 being treated as invalid
-    /// - Bug #2: Dictionary-encoded attribute keys not being supported
-    /// - Bug #3: Dictionary-encoded attribute values (strings and ints) not being supported
+    ///
+    /// This test validates:
+    /// - Attributes linked to log records with id=0 are accessible (0 is a valid ID)
+    /// - Dictionary-encoded attribute keys (names) are properly decoded
+    /// - Dictionary-encoded attribute values (strings and integers) are properly decoded
     #[test]
     fn test_log_attributes_with_dictionary_encoding() {
         use arrow::array::{DictionaryArray, TimestampNanosecondArray};
@@ -1732,8 +1794,7 @@ mod tests {
         .unwrap();
 
         // Create view with log attributes
-        let logs_view =
-            OtapLogsView::new(&logs_batch, None, None, Some(&log_attrs_batch)).unwrap();
+        let logs_view = OtapLogsView::new(&logs_batch, None, None, Some(&log_attrs_batch)).unwrap();
 
         // Iterate and verify attributes
         let mut attr_count = 0;
@@ -1770,7 +1831,7 @@ mod tests {
                             }
                             "attr.zero_id" => {
                                 found_zero_id_attr = true;
-                                // This tests Bug #1: log_id == 0 should be valid
+                                // Validates that attributes with parent_id=0 are accessible (0 is valid)
                                 assert_eq!(
                                     attr.value().unwrap().as_int64(),
                                     Some(0),
@@ -1787,17 +1848,20 @@ mod tests {
         assert_eq!(attr_count, 3, "Expected 3 attributes");
         assert!(found_string_attr, "String attribute not found");
         assert!(found_int_attr, "Int attribute not found");
-        assert!(
-            found_zero_id_attr,
-            "Zero ID attribute not found (Bug #1 regression)"
-        );
+        assert!(found_zero_id_attr, "Attribute with parent_id=0 not found");
+    }
+
+    /// Helper to create a logs batch WITHOUT ID column (for when there are no attributes)
+    fn create_test_logs_batch_no_id() -> RecordBatch {
+        create_test_logs_batch_impl(false)
     }
 
     #[test]
     fn test_missing_attributes_iterator() {
         // Verify that when attribute batches are None, the iterators correctly
         // return empty without panicking
-        let logs_batch = create_test_logs_batch();
+        // Use batch WITHOUT ID column since there are no attributes to link to
+        let logs_batch = create_test_logs_batch_no_id();
 
         // Create view with no attributes
         let logs_view = OtapLogsView::new(&logs_batch, None, None, None).unwrap();
@@ -1837,5 +1901,170 @@ mod tests {
         }
 
         assert_eq!(log_count, 3, "Should still iterate through all 3 logs");
+    }
+
+    #[test]
+    fn test_dictionary_encoded_resource_and_scope_ids() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::UInt8Type;
+
+        // Test that dictionary-encoded resource.id and scope.id columns work correctly
+        // This is a common optimization in Arrow for columns with repeated values
+        // Note: MaybeDictArrayAccessor supports UInt8/UInt16 key types
+
+        // Create dictionary-encoded resource IDs: [0, 0, 1] (indices) -> [10, 20] (values)
+        let resource_id_keys = UInt8Array::from(vec![0, 0, 1]);
+        let resource_id_values = UInt16Array::from(vec![10, 20]);
+        let resource_id_dict =
+            DictionaryArray::<UInt8Type>::try_new(resource_id_keys, Arc::new(resource_id_values))
+                .unwrap();
+
+        let resource_struct = StructArray::from(vec![(
+            Arc::new(Field::new(
+                "id",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
+                false,
+            )),
+            Arc::new(resource_id_dict) as ArrayRef,
+        )]);
+
+        // Create dictionary-encoded scope IDs: [0, 1, 1] (indices) -> [100, 200] (values)
+        let scope_id_keys = UInt8Array::from(vec![0, 1, 1]);
+        let scope_id_values = UInt16Array::from(vec![100, 200]);
+        let scope_id_dict =
+            DictionaryArray::<UInt8Type>::try_new(scope_id_keys, Arc::new(scope_id_values))
+                .unwrap();
+
+        let scope_struct = StructArray::from(vec![(
+            Arc::new(Field::new(
+                "id",
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
+                false,
+            )),
+            Arc::new(scope_id_dict) as ArrayRef,
+        )]);
+
+        // Create minimal log data
+        let time_array = TimestampNanosecondArray::from(vec![1_000_000, 2_000_000, 3_000_000]);
+
+        let body_type_array = UInt8Array::from(vec![1, 1, 1]); // Str type
+        let body_str_array = StringArray::from(vec!["log1", "log2", "log3"]);
+        let body_struct = StructArray::from(vec![
+            (
+                Arc::new(Field::new("type", DataType::UInt8, false)),
+                Arc::new(body_type_array) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("str", DataType::Utf8, true)),
+                Arc::new(body_str_array) as ArrayRef,
+            ),
+        ]);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "resource",
+                DataType::Struct(
+                    vec![Field::new(
+                        "id",
+                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+            Field::new(
+                "scope",
+                DataType::Struct(
+                    vec![Field::new(
+                        "id",
+                        DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "body",
+                DataType::Struct(
+                    vec![
+                        Field::new("type", DataType::UInt8, false),
+                        Field::new("str", DataType::Utf8, true),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
+        ]));
+
+        let logs_batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(resource_struct) as ArrayRef,
+                Arc::new(scope_struct) as ArrayRef,
+                Arc::new(time_array) as ArrayRef,
+                Arc::new(body_struct) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        // Create view with dictionary-encoded IDs
+        let logs_view = OtapLogsView::new(&logs_batch, None, None, None)
+            .expect("Should create view with dictionary-encoded IDs");
+
+        // Verify correct grouping by resource
+        let mut resource_count = 0;
+        let mut scope_count = 0;
+        let mut log_count = 0;
+
+        for resource_logs in logs_view.resources() {
+            resource_count += 1;
+            for scope_logs in resource_logs.scopes() {
+                scope_count += 1;
+                for _log in scope_logs.log_records() {
+                    log_count += 1;
+                }
+            }
+        }
+
+        // Expected: 2 resources (ID 10 and 20), 3 scopes total, 3 logs
+        assert_eq!(
+            resource_count, 2,
+            "Should have 2 resource groups from dictionary-encoded resource.id"
+        );
+        assert_eq!(
+            scope_count, 3,
+            "Should have 3 scope groups from dictionary-encoded scope.id"
+        );
+        assert_eq!(log_count, 3, "Should iterate all 3 logs");
+
+        // Verify the grouping is correct by checking log distribution
+        let resources: Vec<_> = logs_view.resources().collect();
+
+        // First resource (ID 10) should have 2 logs
+        let first_resource_logs: usize = resources[0]
+            .scopes()
+            .map(|scope| scope.log_records().count())
+            .sum();
+        assert_eq!(
+            first_resource_logs, 2,
+            "First resource should have 2 logs (indices 0, 1)"
+        );
+
+        // Second resource (ID 20) should have 1 log
+        let second_resource_logs: usize = resources[1]
+            .scopes()
+            .map(|scope| scope.log_records().count())
+            .sum();
+        assert_eq!(
+            second_resource_logs, 1,
+            "Second resource should have 1 log (index 2)"
+        );
     }
 }
