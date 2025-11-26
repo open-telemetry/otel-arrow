@@ -844,7 +844,7 @@ mod test {
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::testing::round_trip::encode_otlp;
+    use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
 
@@ -858,7 +858,7 @@ mod test {
     }
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let otap_batch = encode_otlp(&OtlpProtoMessage::Logs(logs_data));
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let pipeline_expr = KqlParser::parse(kql_expr).unwrap();
         let mut pipeline = Pipeline::new(pipeline_expr);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
