@@ -11,11 +11,11 @@
 //! - respond: ACK/NACK is mapped back to the waiting gRPC request
 
 use crate::otap_grpc::otlp::server::{AckSlot, RouteResponse};
+use crate::otap_grpc::server_settings::GrpcServerSettings;
 use crate::pdata::OtapPdata;
 use otap_df_config::SignalType;
 use otap_df_engine::control::{AckMsg, NackMsg};
 use tonic::transport::Server;
-use crate::otap_grpc::server_settings::GrpcServerSettings;
 
 /// Aggregates the per-signal ACK subscription maps that let us route responses back to callers.
 #[derive(Clone, Default)]
@@ -31,11 +31,7 @@ pub struct AckRegistry {
 impl AckRegistry {
     /// Creates a new bundle of optional subscription maps.
     #[must_use]
-    pub fn new(
-        logs: Option<AckSlot>,
-        metrics: Option<AckSlot>,
-        traces: Option<AckSlot>,
-    ) -> Self {
+    pub fn new(logs: Option<AckSlot>, metrics: Option<AckSlot>, traces: Option<AckSlot>) -> Self {
         Self {
             logs,
             metrics,
@@ -62,10 +58,7 @@ pub fn route_ack_response(states: &AckRegistry, ack: AckMsg<OtapPdata>) -> Route
 
 /// Routes a Nack message to the appropriate shared state.
 #[must_use]
-pub fn route_nack_response(
-    states: &AckRegistry,
-    mut nack: NackMsg<OtapPdata>,
-) -> RouteResponse {
+pub fn route_nack_response(states: &AckRegistry, mut nack: NackMsg<OtapPdata>) -> RouteResponse {
     let calldata = std::mem::take(&mut nack.calldata);
     let signal_type = nack.refused.signal_type();
     let resp = Err(nack);

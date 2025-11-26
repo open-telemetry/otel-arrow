@@ -52,7 +52,7 @@ pub struct GrpcServerSettings {
     /// default.
     #[serde(default)]
     pub max_concurrent_streams: Option<u32>,
-    
+
     /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
     /// Keeping this `true` (the default) avoids Nagle's algorithm and minimizes per-export latency.
     /// Disabling it trades slightly higher latency for fewer small TCP packets when workloads

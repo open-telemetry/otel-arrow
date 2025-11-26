@@ -5,8 +5,8 @@
 //!
 //! Once the TCP listener is bound the receiver builds three OTLP-specific gRPC servers (logs,
 //! metrics, traces). Each server is backed by the shared codecs in `otap_grpc::otlp::server`,
-//! producing lazily-decoded [`OtapPdata`](crate::pdata::OtapPdata) that are pushed straight into
-//! the pipeline. The `AckRegistry` bundle aggregates the per-signal subscription maps that connect
+//! producing lazily-decoded [`OtapPdata`](OtapPdata) that are pushed straight into
+//! the pipeline. The `AckRegistry` aggregates the per-signal subscription maps that connect
 //! incoming requests with their ACK/NACK responses when `wait_for_result` is enabled.
 //!
 //! A `tokio::select!` drives two responsibilities concurrently:
@@ -18,9 +18,14 @@
 //! behaviour today.
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer};
+use crate::otap_grpc::otlp::server::{
+    LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer,
+};
 use crate::pdata::OtapPdata;
 
+use crate::otap_grpc::common;
+use crate::otap_grpc::common::AckRegistry;
+use crate::otap_grpc::server_settings::GrpcServerSettings;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -36,16 +41,14 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tower::limit::GlobalConcurrencyLimitLayer;
 use tonic::transport::Server;
-use crate::otap_grpc::common;
-use crate::otap_grpc::common::AckRegistry;
-use crate::otap_grpc::server_settings::GrpcServerSettings;
+use tower::limit::GlobalConcurrencyLimitLayer;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -73,15 +76,15 @@ pub struct Config {
 /// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
 ///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server::OtlpBytesCodec), allowing downstream stages
 ///   to decode lazily.
-/// - `tune_max_concurrent_requests` clamps the gRPC concurrency to the downstream channel capacity,
-///   preventing backlog buildup while still honouring user settings.
 /// - `AckRegistry` maintains per-signal ACK subscription slots so `wait_for_result` lookups avoid
 ///   extra bookkeeping and route responses directly back to callers.
 /// - Metrics are wired through a `MetricSet`, letting periodic snapshots flush ACK/NACK counters
 ///   without rebuilding instruments.
 pub struct OTLPReceiver {
     config: Config,
-    metrics: MetricSet<OtlpReceiverMetrics>,
+    // Arc<Mutex<...>> so we can share metrics with the gRPC services which are `Send` due to
+    // tonic requirements.
+    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory.
@@ -118,7 +121,9 @@ impl OTLPReceiver {
         })?;
 
         // Register OTLP receiver metrics for this node.
-        let metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
+        let metrics = Arc::new(Mutex::new(
+            pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+        ));
 
         Ok(Self { config, metrics })
     }
@@ -137,9 +142,12 @@ impl OTLPReceiver {
         TraceServiceServer,
         AckRegistry,
     ) {
-        let logs_server = LogsServiceServer::new(effect_handler.clone(), settings);
-        let metrics_server = MetricsServiceServer::new(effect_handler.clone(), settings);
-        let traces_server = TraceServiceServer::new(effect_handler.clone(), settings);
+        let logs_server =
+            LogsServiceServer::new(effect_handler.clone(), settings, self.metrics.clone());
+        let metrics_server =
+            MetricsServiceServer::new(effect_handler.clone(), settings, self.metrics.clone());
+        let traces_server =
+            TraceServiceServer::new(effect_handler.clone(), settings, self.metrics.clone());
 
         let ack_registry = AckRegistry::new(
             logs_server.common.state(),
@@ -152,9 +160,10 @@ impl OTLPReceiver {
 
     fn handle_ack(&mut self, registry: &AckRegistry, ack: AckMsg<OtapPdata>) {
         let resp = common::route_ack_response(registry, ack);
+        let mut metrics = self.metrics.lock();
         common::handle_route_response(
             resp,
-            &mut self.metrics,
+            &mut *metrics,
             |metrics| metrics.acks_received.inc(),
             |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
         );
@@ -162,9 +171,10 @@ impl OTLPReceiver {
 
     fn handle_nack(&mut self, registry: &AckRegistry, nack: NackMsg<OtapPdata>) {
         let resp = common::route_nack_response(registry, nack);
+        let mut metrics = self.metrics.lock();
         common::handle_route_response(
             resp,
-            &mut self.metrics,
+            &mut *metrics,
             |metrics| metrics.nacks_received.inc(),
             |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
         );
@@ -180,14 +190,16 @@ impl OTLPReceiver {
     ) -> Result<Option<TerminalState>, Error> {
         match msg {
             NodeControlMsg::Shutdown { deadline, .. } => {
-                let snapshot = self.metrics.snapshot();
+                let snapshot = self.metrics.lock().snapshot();
                 if let Some(handle) = telemetry_cancel_handle.take() {
                     _ = handle.cancel().await;
                 }
                 Ok(Some(TerminalState::new(deadline, [snapshot])))
             }
-            NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
-                _ = metrics_reporter.report(&mut self.metrics);
+            NodeControlMsg::CollectTelemetry {
+                mut metrics_reporter,
+            } => {
+                _ = metrics_reporter.report(&mut *self.metrics.lock());
                 Ok(None)
             }
             NodeControlMsg::Ack(ack) => {
@@ -242,6 +254,26 @@ pub struct OtlpReceiverMetrics {
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
     pub acks_nacks_invalid_or_expired: Counter<u64>,
+
+    /// Number of OTLP RPCs started.
+    #[metric(unit = "{requests}")]
+    pub requests_started: Counter<u64>,
+
+    /// Number of OTLP RPCs completed (success + nack).
+    #[metric(unit = "{requests}")]
+    pub requests_completed: Counter<u64>,
+
+    /// Number of OTLP RPCs rejected before entering the pipeline (e.g. slot exhaustion).
+    #[metric(unit = "{requests}")]
+    pub rejected_requests: Counter<u64>,
+
+    /// Number of transport-level errors surfaced by tonic/server.
+    #[metric(unit = "{errors}")]
+    pub transport_errors: Counter<u64>,
+
+    /// Total bytes received across OTLP requests (payload bytes).
+    #[metric(unit = "By")]
+    pub request_bytes: Counter<u64>,
 }
 
 #[async_trait]
@@ -263,7 +295,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let max_concurrent_requests = config.max_concurrent_requests.max(1);
         let server = {
             let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
-            let mut builder = common::apply_server_tuning(Server::builder(), config).layer(global_limit);
+            let mut builder =
+                common::apply_server_tuning(Server::builder(), config).layer(global_limit);
             builder
                 .add_service(logs_server)
                 .add_service(metrics_server)
@@ -306,6 +339,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         _ = handle.cancel().await;
                     }
                     if let Err(error) = result {
+                        self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(&effect_handler, error));
                     }
                     break;
@@ -315,7 +349,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 
         Ok(TerminalState::new(
             Instant::now().add(Duration::from_secs(1)),
-            [self.metrics],
+            [self.metrics.lock().snapshot()],
         ))
     }
 }
@@ -832,7 +866,7 @@ mod tests {
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: test_config(addr),
-                metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                metrics: Arc::new(Mutex::new(pipeline_ctx.register_metrics::<OtlpReceiverMetrics>())),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -864,7 +898,7 @@ mod tests {
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: test_config(addr),
-                metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                metrics: Arc::new(Mutex::new(pipeline_ctx.register_metrics::<OtlpReceiverMetrics>())),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,

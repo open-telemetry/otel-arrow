@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
+use crate::otlp_receiver::OtlpReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -28,15 +29,16 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otap_df_telemetry::metrics::MetricSet;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
+use std::sync::OnceLock;
 use tokio::sync::oneshot;
 use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
-use std::sync::OnceLock;
 
 /// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
 /// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
@@ -185,13 +187,20 @@ struct OtlpBytesCodec {
     signal: SignalType,
     /// Whether to pre-reserve a context frame (when wait_for_result is on).
     preallocate_frame: bool,
+    /// Metrics sink for request tracking.
+    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 impl OtlpBytesCodec {
-    fn new(signal: SignalType, preallocate_frame: bool) -> Self {
+    fn new(
+        signal: SignalType,
+        preallocate_frame: bool,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
             signal,
             preallocate_frame,
+            metrics,
         }
     }
 }
@@ -208,7 +217,7 @@ impl Codec for OtlpBytesCodec {
     }
 
     fn decoder(&mut self) -> Self::Decoder {
-        OtlpBytesDecoder::new(self.signal, self.preallocate_frame)
+        OtlpBytesDecoder::new(self.signal, self.preallocate_frame, self.metrics.clone())
     }
 }
 
@@ -240,13 +249,19 @@ impl Encoder for OtlpResponseEncoder {
 struct OtlpBytesDecoder {
     signal: SignalType,
     preallocate_frame: bool,
+    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 impl OtlpBytesDecoder {
-    fn new(signal: SignalType, preallocate_frame: bool) -> Self {
+    fn new(
+        signal: SignalType,
+        preallocate_frame: bool,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
             signal,
             preallocate_frame,
+            metrics,
         }
     }
 }
@@ -260,6 +275,8 @@ impl Decoder for OtlpBytesDecoder {
         // Use copy_to_bytes so we copy once while advancing the buffer.
         let len = src.remaining();
         let bytes = src.copy_to_bytes(len);
+        let mut guard = self.metrics.lock();
+        guard.request_bytes.add(len as u64);
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
@@ -279,8 +296,12 @@ impl Decoder for OtlpBytesDecoder {
 /// appropriate signal.  Note! This is an inexpensive call, called for
 /// each request instead of a Clone + Sync + Send trait binding that
 /// would require Arc<Mutex<_>>.
-fn new_grpc(signal: SignalType, settings: OtlpServerSettings) -> Grpc<OtlpBytesCodec> {
-    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result);
+fn new_grpc(
+    signal: SignalType,
+    settings: OtlpServerSettings,
+    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+) -> Grpc<OtlpBytesCodec> {
+    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, metrics);
     let mut grpc = Grpc::new(codec);
     if let Some(limit) = settings.max_decoding_message_size {
         grpc = grpc.max_decoding_message_size(limit);
@@ -297,13 +318,19 @@ fn new_grpc(signal: SignalType, settings: OtlpServerSettings) -> Grpc<OtlpBytesC
 struct OtapBatchService {
     effect_handler: Option<EffectHandler<OtapPdata>>,
     state: Option<AckSlot>,
+    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<AckSlot>) -> Self {
+    fn new(
+        effect_handler: EffectHandler<OtapPdata>,
+        state: Option<AckSlot>,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
+            metrics,
         }
     }
 }
@@ -333,12 +360,15 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
         let state = self.state.clone();
+        let metrics = self.metrics.clone();
         Box::pin(async move {
+            metrics.lock().requests_started.inc();
             let cancel_rx = if let Some(state) = state {
                 // Try to allocate a slot (under the mutex) for calldata.
                 let mut guard = state.0.lock();
                 let (key, rx) = match guard.allocate(|| oneshot::channel()) {
                     None => {
+                        metrics.lock().rejected_requests.inc();
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
                     Some(pair) => pair,
@@ -380,6 +410,8 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 }
             }
 
+            metrics.lock().requests_completed.inc();
+
             Ok(tonic::Response::new(()))
         })
     }
@@ -406,6 +438,7 @@ pub struct ServerCommon {
     effect_handler: EffectHandler<OtapPdata>,
     state: Option<AckSlot>,
     settings: OtlpServerSettings,
+    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
 }
 
 impl ServerCommon {
@@ -415,13 +448,18 @@ impl ServerCommon {
         self.state.clone()
     }
 
-    fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
+    fn new(
+        effect_handler: EffectHandler<OtapPdata>,
+        settings: &OtlpServerSettings,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
             effect_handler,
             state: settings
                 .wait_for_result
                 .then(|| AckSlot::new(settings.max_concurrent_requests)),
             settings: settings.clone(),
+            metrics,
         }
     }
 }
@@ -436,9 +474,13 @@ pub struct LogsServiceServer {
 impl LogsServiceServer {
     /// create a new instance of `LogsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
+    pub fn new(
+        effect_handler: EffectHandler<OtapPdata>,
+        settings: &OtlpServerSettings,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings),
+            common: ServerCommon::new(effect_handler, settings, metrics),
         }
     }
 }
@@ -448,20 +490,28 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(SignalType::Logs, common.settings);
-                let service = OtapBatchService::new(common.effect_handler, common.state);
+                let mut grpc = new_grpc(
+                    SignalType::Logs,
+                    common.settings.clone(),
+                    common.metrics.clone(),
+                );
+                let service = OtapBatchService::new(
+                    common.effect_handler,
+                    common.state,
+                    common.metrics.clone(),
+                );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
             _ => Box::pin(async move { Ok(unimplemented_resp()) }),
         }
-    }
-
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -479,9 +529,13 @@ pub struct MetricsServiceServer {
 impl MetricsServiceServer {
     /// create a new instance of `MetricsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
+    pub fn new(
+        effect_handler: EffectHandler<OtapPdata>,
+        settings: &OtlpServerSettings,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings),
+            common: ServerCommon::new(effect_handler, settings, metrics),
         }
     }
 }
@@ -491,20 +545,28 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(SignalType::Metrics, common.settings);
-                let service = OtapBatchService::new(common.effect_handler, common.state);
+                let mut grpc = new_grpc(
+                    SignalType::Metrics,
+                    common.settings.clone(),
+                    common.metrics.clone(),
+                );
+                let service = OtapBatchService::new(
+                    common.effect_handler,
+                    common.state,
+                    common.metrics.clone(),
+                );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
             _ => Box::pin(async move { Ok(unimplemented_resp()) }),
         }
-    }
-
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -522,9 +584,13 @@ pub struct TraceServiceServer {
 impl TraceServiceServer {
     /// create a new instance of `TracesServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
+    pub fn new(
+        effect_handler: EffectHandler<OtapPdata>,
+        settings: &OtlpServerSettings,
+        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings),
+            common: ServerCommon::new(effect_handler, settings, metrics),
         }
     }
 }
@@ -534,20 +600,28 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
     type Error = Infallible;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
+    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
-                let mut grpc = new_grpc(SignalType::Traces, common.settings);
-                let service = OtapBatchService::new(common.effect_handler, common.state);
+                let mut grpc = new_grpc(
+                    SignalType::Traces,
+                    common.settings.clone(),
+                    common.metrics.clone(),
+                );
+                let service = OtapBatchService::new(
+                    common.effect_handler,
+                    common.state,
+                    common.metrics.clone(),
+                );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
             _ => Box::pin(async move { Ok(unimplemented_resp()) }),
         }
-    }
-
-    fn poll_ready(&mut self, _cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
     }
 }
 
