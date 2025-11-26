@@ -503,13 +503,13 @@ mod tests {
         UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use otap_df_pdata::otap::OtapArrowRecords;
-    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use std::sync::Arc;
 
-    // View imports for future zero-copy path tests
-    use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
-    use otap_df_pdata::views::otap::OtapLogsView;
+    // TODO: Re-enable these imports when zero-copy view tests are uncommented
+    // use otap_df_pdata::otap::OtapArrowRecords;
+    // use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    // use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    // use otap_df_pdata::views::otap::OtapLogsView;
 
     // TODO: Re-enable when zero-copy view tests are uncommented
     /// Helper to create a simple OTAP logs RecordBatch for testing Geneva exporter
