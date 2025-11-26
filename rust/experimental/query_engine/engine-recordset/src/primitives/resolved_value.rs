@@ -6,7 +6,7 @@ use std::{cell::Ref, fmt::Display};
 use data_engine_expressions::*;
 use regex::Regex;
 
-use crate::*;
+use crate::{execution_context::ExecutionContext, *};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BorrowSource {
@@ -234,6 +234,107 @@ impl<'a> ResolvedValue<'a> {
             ResolvedValue::Slice(_) => panic!(),
             ResolvedValue::List(_) => panic!(),
             ResolvedValue::Sequence(_) => panic!(),
+        }
+    }
+
+    pub(crate) fn select<'b, TRecord: Record>(
+        self,
+        execution_context: &ExecutionContext<'b, '_, TRecord>,
+        expression: &'b dyn Expression,
+        selector: Value,
+    ) -> Result<Option<ResolvedValue<'a>>, ExpressionError> {
+        match selector {
+            Value::Integer(index) => {
+                match self.try_resolve_array() {
+                    Ok(array_value) => {
+                        let mut index = index.get_value();
+                        let length = array_value.len() as i64;
+                        if index < 0 {
+                            index += length;
+                        }
+                        if index < 0 || index >= length {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Warn,
+                                expression,
+                                || format!("Array index '{index}' specified in accessor expression is invalid"),
+                            );
+                            return Ok(None);
+                        }
+
+                        let mut item = None;
+
+                        array_value.take((index as usize).into(), |_, v| Ok(v), &mut |v| {
+                            item = Some(v)
+                        })?;
+
+                        if let Some(v) = item {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                expression,
+                                || format!("Resolved {} value for index '{index}' specified in accessor expression", ResolvedValue::Value(v.to_value())),
+                            );
+                            Ok(Some(v))
+                        } else {
+                            unreachable!() // Closure not executed
+                        }
+                    }
+                    Err(orig) => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            expression,
+                            || format!("Could not search for array index '{}' specified in select expression because current node is a '{}' value", index.get_value(), orig.get_value_type()),
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+            Value::String(key) => {
+                match self.try_resolve_map() {
+                    Ok(map_value) => {
+                        let key = key.get_value();
+
+                        if !map_value.contains_key(key) {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Warn,
+                                expression,
+                                || format!("Map key '{key}' specified in accessor expression could not be found"),
+                            );
+                            return Ok(None);
+                        }
+
+                        let mut item = None;
+
+                        map_value.take(&[key], |_, v| Ok(v), &mut |v| item = Some(v))?;
+
+                        if let Some(v) = item {
+                            execution_context.add_diagnostic_if_enabled(
+                                RecordSetEngineDiagnosticLevel::Verbose,
+                                expression,
+                                || format!("Resolved {} value for key '{key}' specified in accessor expression", ResolvedValue::Value(v.to_value())),
+                            );
+                            Ok(Some(v))
+                        } else {
+                            unreachable!() // Closure not executed
+                        }
+                    }
+                    Err(orig) => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            expression,
+                            || format!("Could not search for map key '{}' specified in select expression because current node is a '{}' value", key.get_value(), orig.get_value_type()),
+                        );
+                        Ok(None)
+                    }
+                }
+            }
+            v => {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    expression,
+                    || format!("Unexpected scalar expression with '{}' value type encountered in select expression", v.get_value_type()),
+                );
+                Ok(None)
+            }
         }
     }
 }
