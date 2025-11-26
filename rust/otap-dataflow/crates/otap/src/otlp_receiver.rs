@@ -6,8 +6,8 @@
 //! Once the TCP listener is bound the receiver builds three OTLP-specific gRPC servers (logs,
 //! metrics, traces). Each server is backed by the shared codecs in `otap_grpc::otlp::server`,
 //! producing lazily-decoded [`OtapPdata`](crate::pdata::OtapPdata) that are pushed straight into
-//! the pipeline. The `SignalAckRoutingState` bundle aggregates the per-signal subscription maps that
-//! connect incoming requests with their ACK/NACK responses when `wait_for_result` is enabled.
+//! the pipeline. The `AckRegistry` bundle aggregates the per-signal subscription maps that connect
+//! incoming requests with their ACK/NACK responses when `wait_for_result` is enabled.
 //!
 //! A `tokio::select!` drives two responsibilities concurrently:
 //! - poll control messages from the engine (shutdown, telemetry collection, ACK/NACK forwarding)
@@ -64,9 +64,10 @@ pub struct Config {
 
 /// gRPC receiver that ingests OTLP signals and forwards them into the OTAP pipeline.
 ///
-/// The implementation mirrors the OTAP Arrow receiver layout: a shared [`GrpcServerConfig`] drives
-/// listener creation, per-signal tonic services are registered on a single server, and the receiver
-/// is wrapped in a [`ReceiverFactory`] so the dataflow engine can build it from configuration.
+/// The implementation mirrors the OTAP Arrow receiver layout: a shared [`GrpcServerSettings`]
+/// drives listener creation, per-signal tonic services are registered on a single server, and the
+/// receiver is wrapped in a [`ReceiverFactory`] so the dataflow engine can build it from
+/// configuration.
 ///
 /// Several optimisations keep the hot path inexpensive:
 /// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
@@ -74,8 +75,8 @@ pub struct Config {
 ///   to decode lazily.
 /// - `tune_max_concurrent_requests` clamps the gRPC concurrency to the downstream channel capacity,
 ///   preventing backlog buildup while still honouring user settings.
-/// - `SignalAckRoutingState` maintains per-signal ACK subscription slots so `wait_for_result`
-///   lookups avoid extra bookkeeping and route responses directly back to callers.
+/// - `AckRegistry` maintains per-signal ACK subscription slots so `wait_for_result` lookups avoid
+///   extra bookkeeping and route responses directly back to callers.
 /// - Metrics are wired through a `MetricSet`, letting periodic snapshots flush ACK/NACK counters
 ///   without rebuilding instruments.
 pub struct OTLPReceiver {
@@ -230,11 +231,11 @@ impl OTLPReceiver {
 #[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
-    /// Number of acks received.
+    /// Number of acks received from downstream (routed back to the caller).
     #[metric(unit = "{acks}")]
     pub acks_received: Counter<u64>,
 
-    /// Number of nacks received.
+    /// Number of nacks received from downstream (routed back to the caller).
     #[metric(unit = "{nacks}")]
     pub nacks_received: Counter<u64>,
 
