@@ -8,7 +8,7 @@
 //! requires it
 
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
@@ -24,6 +24,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
 use tokio::sync::oneshot;
@@ -32,15 +33,16 @@ use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
 
-/// Shared state for binding requests with responses.  This map is
-/// generally optional depending on wait_for_result: true, we do not
-/// create or use the state when ack/nack is not required.
+/// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
+/// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
+/// map entirely.
 #[derive(Clone)]
-pub struct SharedState(
+pub struct AckSlot(
+    // parking_lot mutex keeps the hot ACK/NACK path lock-free from poisoning.
     pub(crate) Arc<Mutex<SlotsState<oneshot::Sender<Result<(), NackMsg<OtapPdata>>>>>>,
 );
 
-impl SharedState {
+impl AckSlot {
     pub(crate) fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
@@ -58,8 +60,8 @@ pub enum RouteResponse {
     Invalid,
 }
 
-impl SharedState {
-    /// Internal helper to route responses to slots
+impl AckSlot {
+    /// Routes the final outcome into the registered slot matching the provided `CallData`.
     #[must_use]
     pub fn route_response(
         &self,
@@ -73,12 +75,7 @@ impl SharedState {
         };
 
         // Try to take the channel from the slot under the mutex.
-        let chan = self
-            .0
-            .lock()
-            .map(|mut state| state.take(key))
-            .ok()
-            .flatten();
+        let chan = self.0.lock().take(key);
 
         // Try to send.
         if chan.and_then(|sender| sender.send(result).ok()).is_some() {
@@ -206,7 +203,11 @@ impl Decoder for OtlpBytesDecoder {
 /// would require Arc<Mutex<_>>.
 fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
     let codec = OtlpBytesCodec::new(signal);
-    Grpc::new(codec).apply_compression_config(
+    let mut grpc = Grpc::new(codec);
+    if let Some(limit) = settings.max_decoding_message_size {
+        grpc = grpc.max_decoding_message_size(limit);
+    }
+    grpc.apply_compression_config(
         settings.request_compression_encodings,
         settings.response_compression_encodings,
     )
@@ -217,11 +218,11 @@ fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
 /// not require Arc<Mutex<_>>.
 struct OtapBatchService {
     effect_handler: Option<EffectHandler<OtapPdata>>,
-    state: Option<SharedState>,
+    state: Option<AckSlot>,
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
+    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<AckSlot>) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
@@ -233,14 +234,12 @@ impl OtapBatchService {
 /// drops the future.
 pub(crate) struct SlotGuard {
     pub(crate) key: SlotKey,
-    pub(crate) state: SharedState,
+    pub(crate) state: AckSlot,
 }
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.state.0.lock() {
-            state.cancel(self.key);
-        }
+        self.state.0.lock().cancel(self.key);
     }
 }
 
@@ -259,17 +258,14 @@ impl UnaryService<OtapPdata> for OtapBatchService {
         Box::pin(async move {
             let cancel_rx = if let Some(state) = state {
                 // Try to allocate a slot (under the mutex) for calldata.
-                let (key, rx) = match state
-                    .0
-                    .lock()
-                    .map(|mut state| state.allocate(|| oneshot::channel()))
-                {
-                    Err(_) => return Err(Status::internal("Mutex poisoned")),
-                    Ok(None) => {
+                let mut guard = state.0.lock();
+                let (key, rx) = match guard.allocate(|| oneshot::channel()) {
+                    None => {
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
-                    Ok(Some(pair)) => pair,
+                    Some(pair) => pair,
                 };
+                drop(guard);
 
                 // Enter the subscription. Slot key becomes calldata.
                 effect_handler.subscribe_to(
@@ -333,14 +329,14 @@ fn unimplemented_resp() -> Response<Body> {
 #[derive(Clone)]
 pub struct ServerCommon {
     effect_handler: EffectHandler<OtapPdata>,
-    state: Option<SharedState>,
+    state: Option<AckSlot>,
     settings: Settings,
 }
 
 impl ServerCommon {
     /// Get this server's shared state for Ack/Nack routing
     #[must_use]
-    pub fn state(&self) -> Option<SharedState> {
+    pub fn state(&self) -> Option<AckSlot> {
         self.state.clone()
     }
 
@@ -349,7 +345,7 @@ impl ServerCommon {
             effect_handler,
             state: settings
                 .wait_for_result
-                .then(|| SharedState::new(settings.max_concurrent_requests)),
+                .then(|| AckSlot::new(settings.max_concurrent_requests)),
             settings: settings.clone(),
         }
     }
