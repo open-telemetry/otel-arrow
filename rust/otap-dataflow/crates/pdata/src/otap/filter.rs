@@ -190,7 +190,7 @@ fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
 /// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
 /// that contain those ids
 /// This will return an error if the column is not DataType::UInt16
-fn build_uint16_id_filter(
+pub fn build_uint16_id_filter(
     id_column: &Arc<dyn Array>,
     id_set: HashSet<u16>,
 ) -> Result<BooleanArray> {
