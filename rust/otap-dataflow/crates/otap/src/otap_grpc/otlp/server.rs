@@ -144,6 +144,23 @@ impl Encoder for OtlpResponseEncoder {
     type Item = ();
 
     fn encode(&mut self, _item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
+        // Reserve to avoid EncodeBuf growth during prost encode.
+        let reserve = match self.signal {
+            SignalType::Logs => ExportLogsServiceResponse {
+                partial_success: None,
+            }
+            .encoded_len(),
+            SignalType::Metrics => ExportMetricsServiceResponse {
+                partial_success: None,
+            }
+            .encoded_len(),
+            SignalType::Traces => ExportTraceServiceResponse {
+                partial_success: None,
+            }
+            .encoded_len(),
+        };
+        dst.reserve(reserve);
+
         match self.signal {
             SignalType::Logs => {
                 let response = ExportLogsServiceResponse {
@@ -185,14 +202,14 @@ impl Decoder for OtlpBytesDecoder {
     type Error = Status;
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        let buf = src.chunk();
-        let bytes = Bytes::copy_from_slice(buf);
+        // Use copy_to_bytes so we copy once while advancing the buffer.
+        let len = src.remaining();
+        let bytes = src.copy_to_bytes(len);
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
             SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes),
         };
-        src.advance(buf.len());
         Ok(Some(OtapPdata::new(Context::default(), result.into())))
     }
 }
