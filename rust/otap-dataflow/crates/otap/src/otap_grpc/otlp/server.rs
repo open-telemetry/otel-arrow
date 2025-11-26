@@ -13,7 +13,7 @@ use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::pdata::{Context, OtapPdata};
-use bytes::Bytes;
+use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
@@ -32,6 +32,7 @@ use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
+use std::sync::OnceLock;
 
 /// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
 /// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
@@ -101,14 +102,76 @@ pub struct Settings {
     pub response_compression_encodings: EnabledCompressionEncodings,
 }
 
+/// Precomputed empty responses per signal to avoid per-call prost encoding.
+fn precomputed_response(signal: SignalType) -> &'static [u8] {
+    static LOGS: OnceLock<Bytes> = OnceLock::new();
+    static METRICS: OnceLock<Bytes> = OnceLock::new();
+    static TRACES: OnceLock<Bytes> = OnceLock::new();
+
+    match signal {
+        SignalType::Logs => LOGS
+            .get_or_init(|| {
+                let mut buf = Vec::with_capacity(
+                    ExportLogsServiceResponse {
+                        partial_success: None,
+                    }
+                    .encoded_len(),
+                );
+                ExportLogsServiceResponse {
+                    partial_success: None,
+                }
+                .encode(&mut buf)
+                .expect("encode logs response");
+                Bytes::from(buf)
+            })
+            .as_ref(),
+        SignalType::Metrics => METRICS
+            .get_or_init(|| {
+                let mut buf = Vec::with_capacity(
+                    ExportMetricsServiceResponse {
+                        partial_success: None,
+                    }
+                    .encoded_len(),
+                );
+                ExportMetricsServiceResponse {
+                    partial_success: None,
+                }
+                .encode(&mut buf)
+                .expect("encode metrics response");
+                Bytes::from(buf)
+            })
+            .as_ref(),
+        SignalType::Traces => TRACES
+            .get_or_init(|| {
+                let mut buf = Vec::with_capacity(
+                    ExportTraceServiceResponse {
+                        partial_success: None,
+                    }
+                    .encoded_len(),
+                );
+                ExportTraceServiceResponse {
+                    partial_success: None,
+                }
+                .encode(&mut buf)
+                .expect("encode trace response");
+                Bytes::from(buf)
+            })
+            .as_ref(),
+    }
+}
+
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
 struct OtlpBytesCodec {
     signal: SignalType,
+    preallocate_frame: bool,
 }
 
 impl OtlpBytesCodec {
-    fn new(signal: SignalType) -> Self {
-        Self { signal }
+    fn new(signal: SignalType, preallocate_frame: bool) -> Self {
+        Self {
+            signal,
+            preallocate_frame,
+        }
     }
 }
 
@@ -124,7 +187,7 @@ impl Codec for OtlpBytesCodec {
     }
 
     fn decoder(&mut self) -> Self::Decoder {
-        OtlpBytesDecoder::new(self.signal)
+        OtlpBytesDecoder::new(self.signal, self.preallocate_frame)
     }
 }
 
@@ -144,55 +207,26 @@ impl Encoder for OtlpResponseEncoder {
     type Item = ();
 
     fn encode(&mut self, _item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
-        // Reserve to avoid EncodeBuf growth during prost encode.
-        let reserve = match self.signal {
-            SignalType::Logs => ExportLogsServiceResponse {
-                partial_success: None,
-            }
-            .encoded_len(),
-            SignalType::Metrics => ExportMetricsServiceResponse {
-                partial_success: None,
-            }
-            .encoded_len(),
-            SignalType::Traces => ExportTraceServiceResponse {
-                partial_success: None,
-            }
-            .encoded_len(),
-        };
-        dst.reserve(reserve);
-
-        match self.signal {
-            SignalType::Logs => {
-                let response = ExportLogsServiceResponse {
-                    partial_success: None,
-                };
-                response.encode(dst)
-            }
-            SignalType::Metrics => {
-                let response = ExportMetricsServiceResponse {
-                    partial_success: None,
-                };
-                response.encode(dst)
-            }
-            SignalType::Traces => {
-                let response = ExportTraceServiceResponse {
-                    partial_success: None,
-                };
-                response.encode(dst)
-            }
-        }
-        .map_err(|e| Status::internal(format!("unexpected error encoding response: {e}")))
+        // Reuse precomputed protobuf responses to avoid per-request prost encoding
+        // and heap allocations.
+        let bytes = precomputed_response(self.signal);
+        dst.put_slice(bytes);
+        Ok(())
     }
 }
 
 /// Tonic codec `Decoder` implementation that decodes OtapBatch from protobuf request bytes
 struct OtlpBytesDecoder {
     signal: SignalType,
+    preallocate_frame: bool,
 }
 
 impl OtlpBytesDecoder {
-    fn new(signal: SignalType) -> Self {
-        Self { signal }
+    fn new(signal: SignalType, preallocate_frame: bool) -> Self {
+        Self {
+            signal,
+            preallocate_frame,
+        }
     }
 }
 
@@ -210,7 +244,13 @@ impl Decoder for OtlpBytesDecoder {
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
             SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(bytes),
         };
-        Ok(Some(OtapPdata::new(Context::default(), result.into())))
+        let context = if self.preallocate_frame {
+            // Pre-reserve a single frame since wait_for_result uses one slot.
+            Context::with_capacity(1)
+        } else {
+            Context::default()
+        };
+        Ok(Some(OtapPdata::new(context, result.into())))
     }
 }
 
@@ -219,7 +259,7 @@ impl Decoder for OtlpBytesDecoder {
 /// each request instead of a Clone + Sync + Send trait binding that
 /// would require Arc<Mutex<_>>.
 fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
-    let codec = OtlpBytesCodec::new(signal);
+    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result);
     let mut grpc = Grpc::new(codec);
     if let Some(limit) = settings.max_decoding_message_size {
         grpc = grpc.max_decoding_message_size(limit);
