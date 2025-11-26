@@ -102,6 +102,12 @@ impl Context {
     pub fn current_calldata(&self) -> Option<CallData> {
         self.stack.last().map(|f| f.calldata.clone())
     }
+
+    /// Are there any subscribers?
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        !self.stack.is_empty()
+    }
 }
 
 /// Per-node interests, context, and identity.
