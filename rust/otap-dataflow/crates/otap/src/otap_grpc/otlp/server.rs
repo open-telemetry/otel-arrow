@@ -1,13 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementations of OTLP grpc service servers that can produce Otap Pdata.
+//! Implementations of OTLP gRPC service servers that produce `OtapPdata` for the pipeline.
 //!
-//! The Pdata it produces contain the serialized protobuf messages. This means that we can
-//! use these servers to receive telemetry data and deserialize it lazily only if some pipeline
-//! requires it
+//! Request lifecycle:
+//! - decode: wrap incoming OTLP bytes into `OtapPdata` without deserializing
+//! - subscribe (optional): when `wait_for_result` is set, register ACK/NACK interests with calldata
+//! - send: forward the payload into the pipeline
+//! - wait (optional): block until an ACK/NACK arrives through the routed slot
+//! - respond: return success or convert NACK/channel errors into gRPC status
 
 use std::convert::Infallible;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::task::Poll;
 
@@ -160,6 +164,18 @@ fn precomputed_response(signal: SignalType) -> &'static [u8] {
             })
             .as_ref(),
     }
+}
+
+fn pipeline_send_status<E: Display>(err: E) -> Status {
+    Status::internal(format!("Failed to send to pipeline: {err}"))
+}
+
+fn nack_to_status(nack: NackMsg<OtapPdata>) -> Status {
+    Status::unavailable(format!("Pipeline processing failed: {}", nack.reason))
+}
+
+fn response_channel_closed_status() -> Status {
+    Status::internal("Response channel closed unexpectedly")
 }
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
@@ -344,7 +360,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             match effect_handler.send_message(otap_batch).await {
                 Ok(_) => {}
                 Err(e) => {
-                    return Err(Status::internal(format!("Failed to send to pipeline: {e}")));
+                    return Err(pipeline_send_status(e));
                 }
             };
 
@@ -356,13 +372,10 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                     Ok(Err(nack)) => {
                         // TODO: Use more specific status codes based on nack reason/type
                         // when more detailed error information is available from the pipeline
-                        return Err(Status::unavailable(format!(
-                            "Pipeline processing failed: {}",
-                            nack.reason
-                        )));
+                        return Err(nack_to_status(nack));
                     }
                     Err(_) => {
-                        return Err(Status::internal("Response channel closed unexpectedly"));
+                        return Err(response_channel_closed_status());
                     }
                 }
             }

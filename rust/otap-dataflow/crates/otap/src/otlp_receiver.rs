@@ -18,7 +18,7 @@
 //! behaviour today.
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, TraceServiceServer};
+use crate::otap_grpc::otlp::server::{LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer};
 use crate::pdata::OtapPdata;
 
 use async_trait::async_trait;
@@ -27,7 +27,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -49,6 +49,9 @@ use crate::otap_grpc::server_settings::GrpcServerSettings;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
+
+/// Interval for periodic telemetry collection.
+const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Configuration for OTLP Receiver
 #[derive(Debug, Deserialize)]
@@ -122,6 +125,95 @@ impl OTLPReceiver {
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
         common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
     }
+
+    fn build_signal_services(
+        &self,
+        effect_handler: &shared::EffectHandler<OtapPdata>,
+        settings: &OtlpServerSettings,
+    ) -> (
+        LogsServiceServer,
+        MetricsServiceServer,
+        TraceServiceServer,
+        AckRegistry,
+    ) {
+        let logs_server = LogsServiceServer::new(effect_handler.clone(), settings);
+        let metrics_server = MetricsServiceServer::new(effect_handler.clone(), settings);
+        let traces_server = TraceServiceServer::new(effect_handler.clone(), settings);
+
+        let ack_registry = AckRegistry::new(
+            logs_server.common.state(),
+            metrics_server.common.state(),
+            traces_server.common.state(),
+        );
+
+        (logs_server, metrics_server, traces_server, ack_registry)
+    }
+
+    fn handle_ack(&mut self, registry: &AckRegistry, ack: AckMsg<OtapPdata>) {
+        let resp = common::route_ack_response(registry, ack);
+        common::handle_route_response(
+            resp,
+            &mut self.metrics,
+            |metrics| metrics.acks_received.inc(),
+            |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
+        );
+    }
+
+    fn handle_nack(&mut self, registry: &AckRegistry, nack: NackMsg<OtapPdata>) {
+        let resp = common::route_nack_response(registry, nack);
+        common::handle_route_response(
+            resp,
+            &mut self.metrics,
+            |metrics| metrics.nacks_received.inc(),
+            |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
+        );
+    }
+
+    async fn handle_control_message(
+        &mut self,
+        msg: NodeControlMsg<OtapPdata>,
+        registry: &AckRegistry,
+        telemetry_cancel_handle: &mut Option<
+            otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
+        >,
+    ) -> Result<Option<TerminalState>, Error> {
+        match msg {
+            NodeControlMsg::Shutdown { deadline, .. } => {
+                let snapshot = self.metrics.snapshot();
+                if let Some(handle) = telemetry_cancel_handle.take() {
+                    _ = handle.cancel().await;
+                }
+                Ok(Some(TerminalState::new(deadline, [snapshot])))
+            }
+            NodeControlMsg::CollectTelemetry { mut metrics_reporter } => {
+                _ = metrics_reporter.report(&mut self.metrics);
+                Ok(None)
+            }
+            NodeControlMsg::Ack(ack) => {
+                self.handle_ack(registry, ack);
+                Ok(None)
+            }
+            NodeControlMsg::Nack(nack) => {
+                self.handle_nack(registry, nack);
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn map_transport_error<E: std::error::Error + Send + Sync + 'static>(
+        &self,
+        effect_handler: &shared::EffectHandler<OtapPdata>,
+        error: E,
+    ) -> Error {
+        let source_detail = format_error_sources(&error);
+        Error::ReceiverError {
+            receiver: effect_handler.receiver_id(),
+            kind: ReceiverErrorKind::Transport,
+            error: error.to_string(),
+            source_detail,
+        }
+    }
 }
 
 /// OTLP receiver metrics.
@@ -138,13 +230,13 @@ impl OTLPReceiver {
 #[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {
-    /// Number of acks sent.
+    /// Number of acks received.
     #[metric(unit = "{acks}")]
-    pub acks_sent: Counter<u64>,
+    pub acks_received: Counter<u64>,
 
-    /// Number of nacks sent.
+    /// Number of nacks received.
     #[metric(unit = "{nacks}")]
-    pub nacks_sent: Counter<u64>,
+    pub nacks_received: Counter<u64>,
 
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
@@ -165,31 +257,21 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let incoming = config.build_tcp_incoming(listener);
         let settings = config.build_settings();
 
-        let logs_server = LogsServiceServer::new(effect_handler.clone(), &settings);
-        let metrics_server = MetricsServiceServer::new(effect_handler.clone(), &settings);
-        let traces_server = TraceServiceServer::new(effect_handler.clone(), &settings);
-
-        // Gather the per-signal subscription maps so ACK/NACK routing stays signal-aware.
-        let ack_registry = AckRegistry::new(
-            logs_server.common.state(),
-            metrics_server.common.state(),
-            traces_server.common.state(),
-        );
+        let (logs_server, metrics_server, traces_server, ack_registry) =
+            self.build_signal_services(&effect_handler, &settings);
         let max_concurrent_requests = config.max_concurrent_requests.max(1);
-        let global_limit =
-            GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
-        let mut server_builder =
-            common::apply_server_tuning(Server::builder(), config).layer(global_limit);
+        let server = {
+            let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
+            let mut builder = common::apply_server_tuning(Server::builder(), config).layer(global_limit);
+            builder
+                .add_service(logs_server)
+                .add_service(metrics_server)
+                .add_service(traces_server)
+        };
 
-        let server = server_builder
-            .add_service(logs_server)
-            .add_service(metrics_server)
-            .add_service(traces_server);
-
-        // Start periodic telemetry collection
         let mut telemetry_cancel_handle = Some(
             effect_handler
-                .start_periodic_telemetry(Duration::from_secs(1))
+                .start_periodic_telemetry(TELEMETRY_INTERVAL)
                 .await?,
         );
         let mut server_task = Box::pin(server.serve_with_incoming(incoming));
@@ -197,70 +279,37 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         loop {
             tokio::select! {
                 biased;
-
+                // Control-plane messages take priority over serving to react quickly to shutdown/telemetry.
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            let snapshot = self.metrics.snapshot();
-                            if let Some(handle) = telemetry_cancel_handle.take() {
-                                _ = handle.cancel().await;
+                        Ok(msg) => {
+                            if let Some(terminal) = self
+                                .handle_control_message(msg, &ack_registry, &mut telemetry_cancel_handle)
+                                .await?
+                            {
+                                return Ok(terminal);
                             }
-                            return Ok(TerminalState::new(deadline, [snapshot]));
-                        },
-                        Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            // Report current receiver metrics.
-                            _ = metrics_reporter.report(&mut self.metrics);
-                        },
-                        Ok(NodeControlMsg::Ack(ack)) => {
-                            let resp = common::route_ack_response(&ack_registry, ack);
-                            common::handle_route_response(
-                                resp,
-                                &mut self.metrics,
-                                |metrics| metrics.acks_sent.inc(),
-                                |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
-                            );
-                        },
-                        Ok(NodeControlMsg::Nack(nack)) => {
-                            let resp = common::route_nack_response(&ack_registry, nack);
-                            common::handle_route_response(
-                                resp,
-                                &mut self.metrics,
-                                |metrics| metrics.nacks_sent.inc(),
-                                |metrics| metrics.acks_nacks_invalid_or_expired.inc(),
-                            );
-                        },
+                        }
                         Err(e) => {
                             if let Some(handle) = telemetry_cancel_handle.take() {
                                 _ = handle.cancel().await;
                             }
                             return Err(Error::ChannelRecvError(e));
                         }
-                        _ => {
-                            // unknown control message do nothing
-                        }
                     }
                 },
 
+                // gRPC serving loop; exits on transport error or graceful stop.
                 result = &mut server_task => {
                     if let Some(handle) = telemetry_cancel_handle.take() {
                         _ = handle.cancel().await;
                     }
                     if let Err(error) = result {
-                        let source_detail = format_error_sources(&error);
-                        return Err(Error::ReceiverError {
-                            receiver: effect_handler.receiver_id(),
-                            kind: ReceiverErrorKind::Transport,
-                            error: error.to_string(),
-                            source_detail,
-                        });
+                        return Err(self.map_transport_error(&effect_handler, error));
                     }
                     break;
                 }
             }
-        }
-
-        if let Some(handle) = telemetry_cancel_handle.take() {
-            _ = handle.cancel().await;
         }
 
         Ok(TerminalState::new(

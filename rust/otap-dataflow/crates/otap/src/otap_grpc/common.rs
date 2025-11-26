@@ -2,6 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Shared helpers for gRPC receivers.
+//!
+//! Request lifecycle (see `otlp::server` for the per-signal services):
+//! - decode: gRPC body stays as OTLP bytes, wrapped into `OtapPdata`
+//! - subscribe: when `wait_for_result` is enabled, a slot is allocated and calldata recorded
+//! - send: payload is forwarded into the pipeline
+//! - wait (optional): task awaits an ACK or NACK routed by the subscription maps
+//! - respond: ACK/NACK is mapped back to the waiting gRPC request
 
 use crate::otap_grpc::otlp::server::{AckSlot, RouteResponse};
 use crate::pdata::OtapPdata;
