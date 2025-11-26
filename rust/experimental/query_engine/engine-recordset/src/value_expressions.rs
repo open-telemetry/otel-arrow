@@ -8,7 +8,7 @@ use data_engine_expressions::*;
 use crate::{execution_context::*, resolved_value_mut::*, scalars::*, *};
 
 pub fn execute_mutable_value_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
 ) -> Result<Option<ResolvedValueMut<'b, 'c>>, ExpressionError>
 where
@@ -119,7 +119,7 @@ where
 }
 
 fn capture_selector_values_for_mutable_write<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
     selectors: &'a [ScalarExpression],
 ) -> Result<Vec<(&'a ScalarExpression, ResolvedValue<'c>)>, ExpressionError>
@@ -146,7 +146,7 @@ where
 }
 
 fn log_mutable_value_expression_evaluated<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
     value: &Option<ResolvedValueMut<'_, '_>>,
 ) {
@@ -173,7 +173,7 @@ fn log_mutable_value_expression_evaluated<'a, TRecord: Record>(
 }
 
 fn select_from_borrowed_root_map<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     root_expression: &'a dyn Expression,
     root: RefMut<'b, dyn MapValueMut + 'static>,
     mut selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
@@ -198,7 +198,7 @@ where
 }
 
 fn select_from_map_value_mut<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     current_borrow: RefMut<'b, dyn MapValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
@@ -264,7 +264,7 @@ where
 }
 
 fn select_from_array_value_mut<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     current_borrow: RefMut<'b, dyn ArrayValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
@@ -340,7 +340,7 @@ where
 }
 
 fn select_from_as_value_mut<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     current_borrow: RefMut<'b, dyn AsStaticValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
@@ -397,7 +397,7 @@ where
 }
 
 fn validate_array_index<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a ScalarExpression,
     mut index: i64,
     array: &dyn ArrayValueMut,

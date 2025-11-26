@@ -38,7 +38,7 @@ use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
-// TODO: Uncomment when geneva-uploader supports pdata-views (after 0.3.0)
+// Zero-copy view import (currently unused, for future optimization)
 // use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::metrics::MetricSet;
@@ -243,48 +243,30 @@ impl GenevaExporter {
 
         // Handle based on payload type
         match payload {
-            // New zero-copy path: Direct OTAP Arrow → Geneva
+            // OTAP Arrow path: Convert OTAP → OTLP bytes → deserialize → use existing Geneva client methods
             OtapPayload::OtapArrowRecords(otap_records) => {
                 match otap_records {
-                    OtapArrowRecords::Logs(_) => {
-                        // TODO: Uncomment when geneva-uploader supports pdata-views (after 0.3.0)
+                    OtapArrowRecords::Logs(otap_records) => {
+                        // TODO: Zero-copy view path for future optimization
+                        // Currently commented to keep behavior consistent with main branch
+                        //
                         // effect_handler
                         //     .info("Uploading logs to Geneva using zero-copy views")
                         //     .await;
-                        // // Create zero-copy view over OTAP data
                         // let logs_view = OtapLogsView::try_from(&otap_records)
                         //     .map_err(|e| format!("Failed to build logs view: {}", e))?;
-                        //
-                        // // Encode and compress using view-based API
                         // let batches = self
                         //     .geneva_client
                         //     .encode_and_compress_logs_view(&logs_view)
                         //     .map_err(|e| format!("Failed to encode logs from view: {}", e))?;
-                        //
-                        // // TODO: This is sequential batch upload.
-                        // // Consider revisiting to implementing concurrent uploads
-                        // // Upload each batch
-                        // for batch in &batches {
-                        //     self.geneva_client
-                        //         .upload_batch(batch)
-                        //         .await
-                        //         .map_err(|e| format!("Failed to upload log batch: {}", e))?;
-                        // }
-                        //
-                        // effect_handler
-                        //     .info(&format!(
-                        //         "Successfully uploaded {} log batches to Geneva (zero-copy path)",
-                        //         batches.len()
-                        //     ))
-                        //     .await;
 
-                        // Temporary fallback: Convert OTAP Arrow → OTLP bytes until geneva-uploader 0.4.0
+                        // Fallback path: Convert OTAP Arrow → OTLP bytes
                         effect_handler
                             .info("Converting OTAP logs to OTLP bytes (fallback path)")
                             .await;
 
                         let otlp_bytes: OtlpProtoBytes =
-                            OtapPayload::OtapArrowRecords(otap_records)
+                            OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(otap_records))
                                 .try_into()
                                 .map_err(|e| format!("Failed to convert OTAP to OTLP: {:?}", e))?;
 
@@ -320,8 +302,9 @@ impl GenevaExporter {
                             .await;
                     }
                     OtapArrowRecords::Traces(otap_records) => {
-                        // TODO: Implement traces view when TracesView is ready
-                        // Temporary fallback: Convert OTAP Arrow → OTLP bytes
+                        // TODO: Zero-copy view path for future optimization (when TracesView is ready)
+
+                        // Fallback path: Convert OTAP Arrow → OTLP bytes
                         effect_handler
                             .info("Converting OTAP traces to OTLP bytes (fallback path)")
                             .await;
@@ -515,113 +498,119 @@ mod tests {
     use super::*;
     use serde_json;
 
-    // TODO: Uncomment when geneva-uploader supports pdata-views (after 0.3.0)
-    // use arrow::array::{
-    //     ArrayRef, Int32Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
-    //     UInt16Array, UInt32Array,
-    // };
-    // use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    // use otap_df_pdata::otap::OtapArrowRecords;
-    // use std::sync::Arc;
+    use arrow::array::{
+        ArrayRef, Int32Array, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
+        UInt16Array, UInt32Array,
+    };
+    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use otap_df_pdata::otap::OtapArrowRecords;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use std::sync::Arc;
 
-    // /// Helper to create a simple OTAP logs RecordBatch for testing Geneva exporter
-    // fn create_test_logs_batch() -> RecordBatch {
-    //     // Define schema matching OTAP logs structure
-    //     let resource_field = Field::new(
-    //         "resource",
-    //         DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
-    //         false,
-    //     );
-    //
-    //     let scope_field = Field::new(
-    //         "scope",
-    //         DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
-    //         false,
-    //     );
-    //
-    //     let schema = Arc::new(Schema::new(vec![
-    //         Field::new("id", DataType::UInt16, false),
-    //         resource_field,
-    //         scope_field,
-    //         Field::new(
-    //             "time_unix_nano",
-    //             DataType::Timestamp(TimeUnit::Nanosecond, None),
-    //             true,
-    //         ),
-    //         Field::new(
-    //             "observed_time_unix_nano",
-    //             DataType::Timestamp(TimeUnit::Nanosecond, None),
-    //             true,
-    //         ),
-    //         Field::new("severity_number", DataType::Int32, true),
-    //         Field::new("severity_text", DataType::Utf8, true),
-    //         Field::new("body", DataType::Utf8, true),
-    //         Field::new("flags", DataType::UInt32, true),
-    //         Field::new("event_name", DataType::Utf8, true),
-    //     ]));
-    //
-    //     // Create test data (3 log records)
-    //     let id_array = UInt16Array::from(vec![1, 2, 3]);
-    //
-    //     // Resource structs (all from resource_id=1)
-    //     let resource_id_array = UInt16Array::from(vec![1, 1, 1]);
-    //     let resource_struct = StructArray::from(vec![(
-    //         Arc::new(Field::new("id", DataType::UInt16, false)),
-    //         Arc::new(resource_id_array) as ArrayRef,
-    //     )]);
-    //
-    //     // Scope structs (logs 1-2 from scope_id=10, log 3 from scope_id=11)
-    //     let scope_id_array = UInt16Array::from(vec![10, 10, 11]);
-    //     let scope_struct = StructArray::from(vec![(
-    //         Arc::new(Field::new("id", DataType::UInt16, false)),
-    //         Arc::new(scope_id_array) as ArrayRef,
-    //     )]);
-    //
-    //     let time_array = TimestampNanosecondArray::from(vec![
-    //         Some(1000000000),
-    //         Some(2000000000),
-    //         Some(3000000000),
-    //     ]);
-    //
-    //     let observed_time_array = TimestampNanosecondArray::from(vec![
-    //         Some(1000000100),
-    //         Some(2000000100),
-    //         Some(3000000100),
-    //     ]);
-    //
-    //     let severity_array = Int32Array::from(vec![Some(9), Some(17), Some(13)]); // INFO, ERROR, WARN
-    //     let severity_text_array =
-    //         StringArray::from(vec![Some("INFO"), Some("ERROR"), Some("WARN")]);
-    //
-    //     let body_array = StringArray::from(vec![
-    //         Some("Log message 1"),
-    //         Some("Error occurred"),
-    //         Some("Warning message"),
-    //     ]);
-    //
-    //     let flags_array = UInt32Array::from(vec![Some(1), Some(1), Some(0)]);
-    //     let event_name_array =
-    //         StringArray::from(vec![Some("event1"), Some("event2"), Some("event3")]);
-    //
-    //     RecordBatch::try_new(
-    //         schema,
-    //         vec![
-    //             Arc::new(id_array),
-    //             Arc::new(resource_struct),
-    //             Arc::new(scope_struct),
-    //             Arc::new(time_array),
-    //             Arc::new(observed_time_array),
-    //             Arc::new(severity_array),
-    //             Arc::new(severity_text_array),
-    //             Arc::new(body_array),
-    //             Arc::new(flags_array),
-    //             Arc::new(event_name_array),
-    //         ],
-    //     )
-    //     .expect("Failed to create test logs batch")
-    // }
+    // View imports for future zero-copy path tests
+    use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    use otap_df_pdata::views::otap::OtapLogsView;
 
-    // TODO: Uncomment when geneva-uploader supports pdata-views (after 0.3.0)
+    // TODO: Re-enable when zero-copy view tests are uncommented
+    /// Helper to create a simple OTAP logs RecordBatch for testing Geneva exporter
+    #[allow(dead_code)]
+    fn create_test_logs_batch() -> RecordBatch {
+        // Define schema matching OTAP logs structure
+        let resource_field = Field::new(
+            "resource",
+            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            false,
+        );
+
+        let scope_field = Field::new(
+            "scope",
+            DataType::Struct(vec![Field::new("id", DataType::UInt16, false)].into()),
+            false,
+        );
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt16, false),
+            resource_field,
+            scope_field,
+            Field::new(
+                "time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "observed_time_unix_nano",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("severity_number", DataType::Int32, true),
+            Field::new("severity_text", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("flags", DataType::UInt32, true),
+            Field::new("event_name", DataType::Utf8, true),
+        ]));
+
+        // Create test data (3 log records)
+        let id_array = UInt16Array::from(vec![1, 2, 3]);
+
+        // Resource structs (all from resource_id=1)
+        let resource_id_array = UInt16Array::from(vec![1, 1, 1]);
+        let resource_struct = StructArray::from(vec![(
+            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(resource_id_array) as ArrayRef,
+        )]);
+
+        // Scope structs (logs 1-2 from scope_id=10, log 3 from scope_id=11)
+        let scope_id_array = UInt16Array::from(vec![10, 10, 11]);
+        let scope_struct = StructArray::from(vec![(
+            Arc::new(Field::new("id", DataType::UInt16, false)),
+            Arc::new(scope_id_array) as ArrayRef,
+        )]);
+
+        let time_array = TimestampNanosecondArray::from(vec![
+            Some(1000000000),
+            Some(2000000000),
+            Some(3000000000),
+        ]);
+
+        let observed_time_array = TimestampNanosecondArray::from(vec![
+            Some(1000000100),
+            Some(2000000100),
+            Some(3000000100),
+        ]);
+
+        let severity_array = Int32Array::from(vec![Some(9), Some(17), Some(13)]); // INFO, ERROR, WARN
+        let severity_text_array =
+            StringArray::from(vec![Some("INFO"), Some("ERROR"), Some("WARN")]);
+
+        let body_array = StringArray::from(vec![
+            Some("Log message 1"),
+            Some("Error occurred"),
+            Some("Warning message"),
+        ]);
+
+        let flags_array = UInt32Array::from(vec![Some(1), Some(1), Some(0)]);
+        let event_name_array =
+            StringArray::from(vec![Some("event1"), Some("event2"), Some("event3")]);
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(id_array),
+                Arc::new(resource_struct),
+                Arc::new(scope_struct),
+                Arc::new(time_array),
+                Arc::new(observed_time_array),
+                Arc::new(severity_array),
+                Arc::new(severity_text_array),
+                Arc::new(body_array),
+                Arc::new(flags_array),
+                Arc::new(event_name_array),
+            ],
+        )
+        .expect("Failed to create test logs batch")
+    }
+
+    // TODO: Re-enable these tests when zero-copy view path is uncommented
     // #[test]
     // fn test_geneva_exporter_creates_view_from_otap_records() {
     //     // This test verifies that the Geneva exporter can successfully create
@@ -631,7 +620,7 @@ mod tests {
     //
     //     // Create OtapArrowRecords (simulating what batch processor would send)
     //     let mut otap_records = OtapArrowRecords::Logs(Default::default());
-    //     otap_records.set(otap_df_pdata::otap::PayloadType::Logs, logs_batch.clone());
+    //     otap_records.set(ArrowPayloadType::Logs, logs_batch.clone());
     //
     //     // This is what the Geneva exporter does internally
     //     let logs_view = OtapLogsView::try_from(&otap_records)

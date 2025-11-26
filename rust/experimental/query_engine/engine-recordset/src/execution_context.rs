@@ -9,13 +9,12 @@ use data_engine_expressions::{AsStaticValue, Expression, MapValue, PipelineExpre
 use crate::TestRecord;
 use crate::*;
 
-pub(crate) struct ExecutionContext<'a, 'b, 'c, TRecord>
+pub(crate) struct ExecutionContext<'a, 'b, TRecord>
 where
-    'a: 'c,
     TRecord: MapValue + 'static,
 {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
-    diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'c>>>,
+    diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'a>>>,
     pipeline: &'a PipelineExpression,
     variables: ExecutionContextVariables<'b>,
     summaries: &'b Summaries<'a>,
@@ -23,7 +22,7 @@ where
     record: Option<RefCell<TRecord>>,
 }
 
-impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord> {
+impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
     pub fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
         pipeline: &'a PipelineExpression,
@@ -31,7 +30,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         summaries: &'b Summaries<'a>,
         attached_records: Option<&'b dyn AttachedRecords>,
         record: Option<TRecord>,
-    ) -> ExecutionContext<'a, 'b, 'c, TRecord> {
+    ) -> ExecutionContext<'a, 'b, TRecord> {
         Self {
             diagnostic_level,
             diagnostics: RefCell::new(Vec::new()),
@@ -69,7 +68,7 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         }
     }
 
-    pub fn add_diagnostic(&self, diagnostic: RecordSetEngineDiagnostic<'c>) {
+    pub fn add_diagnostic(&self, diagnostic: RecordSetEngineDiagnostic<'a>) {
         self.diagnostics.borrow_mut().push(diagnostic);
     }
 
@@ -93,11 +92,11 @@ impl<'a, 'b, 'c, TRecord: Record + 'static> ExecutionContext<'a, 'b, 'c, TRecord
         self.summaries
     }
 
-    pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'c>> {
+    pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
         self.diagnostics.take()
     }
 
-    pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, 'c, TRecord> {
+    pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, TRecord> {
         RecordSetEngineRecord::new(
             self.pipeline,
             self.record.expect("record wasn't set").into_inner(),
@@ -199,7 +198,7 @@ impl<'a> TestExecutionContext<'a> {
         self.global_variables.borrow_mut().set(name, value);
     }
 
-    pub fn create_execution_context(&mut self) -> ExecutionContext<'_, 'a, '_, TestRecord> {
+    pub fn create_execution_context(&mut self) -> ExecutionContext<'_, 'a, TestRecord> {
         ExecutionContext::new(
             RecordSetEngineDiagnosticLevel::Verbose,
             &self.pipeline,

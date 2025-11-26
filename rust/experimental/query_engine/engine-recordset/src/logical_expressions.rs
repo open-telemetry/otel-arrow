@@ -6,7 +6,7 @@ use data_engine_expressions::*;
 use crate::{execution_context::*, scalars::*, *};
 
 pub fn execute_logical_expression<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     logical_expression: &'a LogicalExpression,
 ) -> Result<bool, ExpressionError> {
     let value = match logical_expression {

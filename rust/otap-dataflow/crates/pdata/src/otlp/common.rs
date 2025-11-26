@@ -24,6 +24,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
+use bytes::Bytes;
 use std::cmp::Ordering;
 use std::fmt;
 use std::fmt::Write;
@@ -338,9 +339,17 @@ impl ProtoBuffer {
         Self { buffer: Vec::new() }
     }
 
+    /// Construct a new buffer with at least the provided capacity.
     #[must_use]
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.buffer
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffer: Vec::with_capacity(capacity),
+        }
+    }
+
+    #[must_use]
+    pub fn into_bytes(self) -> Bytes {
+        Bytes::from(self.buffer)
     }
 
     pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {
@@ -387,6 +396,12 @@ impl ProtoBuffer {
         self.buffer.len()
     }
 
+    /// Returns the current capacity of the underlying buffer.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.buffer.capacity()
+    }
+
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.buffer.is_empty()
@@ -406,6 +421,21 @@ impl ProtoBuffer {
         self.encode_field_tag(field_tag, wire_types::LEN);
         self.encode_varint(val.len() as u64);
         self.extend_from_slice(val);
+    }
+
+    /// Take the encoded bytes, returning them as `Bytes`, and reserve the original capacity.
+    /// This lets callers reuse the same buffer (growth preserved) without a second temporary.
+    pub fn take_into_bytes(&mut self) -> (Bytes, usize) {
+        let buffer = std::mem::take(&mut self.buffer);
+        let capacity = buffer.capacity();
+        (Bytes::from(buffer), capacity)
+    }
+
+    /// Ensure the underlying buffer has at least the requested capacity.
+    pub fn ensure_capacity(&mut self, capacity: usize) {
+        if capacity > self.buffer.capacity() {
+            self.buffer.reserve(capacity - self.buffer.capacity());
+        }
     }
 }
 

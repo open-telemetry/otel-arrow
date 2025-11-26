@@ -16,7 +16,7 @@ use crate::{
 };
 
 pub fn execute_rename_map_keys_transform_expression<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     rename_map_keys_transform_expression: &'a RenameMapKeysTransformExpression,
 ) -> Result<(), ExpressionError> {
     let target = rename_map_keys_transform_expression.get_target();
@@ -69,7 +69,7 @@ pub fn execute_rename_map_keys_transform_expression<'a, TRecord: Record>(
 }
 
 fn resolve_map_keys<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     target: &'a MutableValueExpression,
     map_keys: &'a [MapKeyRenameSelector],
 ) -> Result<(MapRename<'c>, MapRename<'c>), ExpressionError>
@@ -102,7 +102,7 @@ where
 }
 
 fn process_map_key_accessor<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     target: &'a MutableValueExpression,
     mut selectors: Iter<'a, ScalarExpression>,
     current_reduction: &mut MapRename<'c>,
@@ -161,7 +161,7 @@ where
 }
 
 fn remove<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     values: &mut HashMap<usize, OwnedValue>,
     root: StaticValueMut,
@@ -294,7 +294,7 @@ fn remove<'a, TRecord: Record>(
 }
 
 fn set<'a, TRecord: Record>(
-    execution_context: &ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &ExecutionContext<'a, '_, TRecord>,
     expression: &'a dyn Expression,
     values: &mut HashMap<usize, OwnedValue>,
     root: StaticValueMut,
