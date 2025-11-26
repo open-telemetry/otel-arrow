@@ -170,7 +170,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let traces_server = TraceServiceServer::new(effect_handler.clone(), &settings);
 
         // Gather the per-signal subscription maps so ACK/NACK routing stays signal-aware.
-        let ack_routing_states = AckRegistry::new(
+        let ack_registry = AckRegistry::new(
             logs_server.common.state(),
             metrics_server.common.state(),
             traces_server.common.state(),
@@ -212,7 +212,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            let resp = common::route_ack_response(&ack_routing_states, ack);
+                            let resp = common::route_ack_response(&ack_registry, ack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,
@@ -221,7 +221,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             );
                         },
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            let resp = common::route_nack_response(&ack_routing_states, nack);
+                            let resp = common::route_nack_response(&ack_registry, nack);
                             common::handle_route_response(
                                 resp,
                                 &mut self.metrics,

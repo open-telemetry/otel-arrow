@@ -4,7 +4,7 @@
 //! Shared configuration for gRPC-based receivers.
 
 use crate::compression::{self, CompressionMethod};
-use crate::otap_grpc::otlp::server::Settings;
+use crate::otap_grpc::otlp::server::OtlpServerSettings;
 use otap_df_config::byte_units;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -231,11 +231,11 @@ impl GrpcServerSettings {
 
     /// Builds the gRPC server settings from this configuration.
     #[must_use]
-    pub fn build_settings(&self) -> Settings {
+    pub fn build_settings(&self) -> OtlpServerSettings {
         let (request_compression_encodings, response_compression_encodings) =
             self.compression_encodings();
 
-        Settings {
+        OtlpServerSettings {
             max_concurrent_requests: self.max_concurrent_requests,
             wait_for_result: self.wait_for_result,
             max_decoding_message_size: self.max_decoding_message_size.map(|value| value as usize),

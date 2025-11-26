@@ -36,7 +36,7 @@ use std::sync::OnceLock;
 
 /// Tracks outstanding request subscriptions for a single signal so ACK/NACK responses can be routed
 /// back to the waiting caller. When `wait_for_result` is disabled the receiver skips creating this
-/// map entirely.
+/// map entirely, avoiding extra allocations on the hot path.
 #[derive(Clone)]
 pub struct AckSlot(
     // parking_lot mutex keeps the hot ACK/NACK path lock-free from poisoning.
@@ -44,6 +44,7 @@ pub struct AckSlot(
 );
 
 impl AckSlot {
+    /// Build a new per-signal slot map sized for the configured concurrency.
     pub(crate) fn new(max_size: usize) -> Self {
         Self(Arc::new(Mutex::new(SlotsState::new(max_size))))
     }
@@ -88,8 +89,9 @@ impl AckSlot {
 }
 
 /// Common settings for OTLP receivers.
+/// Per-signal server settings derived from user configuration and shared with the services.
 #[derive(Clone, Debug)]
-pub struct Settings {
+pub struct OtlpServerSettings {
     /// Maximum concurrent requests per receiver instance (per core).
     pub max_concurrent_requests: usize,
     /// Whether the receiver should wait.
@@ -161,8 +163,11 @@ fn precomputed_response(signal: SignalType) -> &'static [u8] {
 }
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
+/// Custom tonic codec that keeps OTLP request bodies as raw bytes and writes minimal responses.
 struct OtlpBytesCodec {
+    /// Which OTLP signal this service handles.
     signal: SignalType,
+    /// Whether to pre-reserve a context frame (when wait_for_result is on).
     preallocate_frame: bool,
 }
 
@@ -258,7 +263,7 @@ impl Decoder for OtlpBytesDecoder {
 /// appropriate signal.  Note! This is an inexpensive call, called for
 /// each request instead of a Clone + Sync + Send trait binding that
 /// would require Arc<Mutex<_>>.
-fn new_grpc(signal: SignalType, settings: Settings) -> Grpc<OtlpBytesCodec> {
+fn new_grpc(signal: SignalType, settings: OtlpServerSettings) -> Grpc<OtlpBytesCodec> {
     let codec = OtlpBytesCodec::new(signal, settings.wait_for_result);
     let mut grpc = Grpc::new(codec);
     if let Some(limit) = settings.max_decoding_message_size {
@@ -387,7 +392,7 @@ fn unimplemented_resp() -> Response<Body> {
 pub struct ServerCommon {
     effect_handler: EffectHandler<OtapPdata>,
     state: Option<AckSlot>,
-    settings: Settings,
+    settings: OtlpServerSettings,
 }
 
 impl ServerCommon {
@@ -397,7 +402,7 @@ impl ServerCommon {
         self.state.clone()
     }
 
-    fn new(effect_handler: EffectHandler<OtapPdata>, settings: &Settings) -> Self {
+    fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
         Self {
             effect_handler,
             state: settings
@@ -418,7 +423,7 @@ pub struct LogsServiceServer {
 impl LogsServiceServer {
     /// create a new instance of `LogsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &Settings) -> Self {
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
         Self {
             common: ServerCommon::new(effect_handler, settings),
         }
@@ -461,7 +466,7 @@ pub struct MetricsServiceServer {
 impl MetricsServiceServer {
     /// create a new instance of `MetricsServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &Settings) -> Self {
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
         Self {
             common: ServerCommon::new(effect_handler, settings),
         }
@@ -504,7 +509,7 @@ pub struct TraceServiceServer {
 impl TraceServiceServer {
     /// create a new instance of `TracesServiceServer`
     #[must_use]
-    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &Settings) -> Self {
+    pub fn new(effect_handler: EffectHandler<OtapPdata>, settings: &OtlpServerSettings) -> Self {
         Self {
             common: ServerCommon::new(effect_handler, settings),
         }
