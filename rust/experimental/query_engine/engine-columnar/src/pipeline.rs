@@ -261,7 +261,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
-    use otap_df_pdata::testing::round_trip::encode_otlp;
+    use otap_df_pdata::testing::round_trip::otlp_to_otap;
 
     use super::*;
 
@@ -280,7 +280,7 @@ mod test {
 
     /// helper function for converting OTLP logs to OTAP batch
     pub fn to_otap(log_records: Vec<LogRecord>) -> OtapArrowRecords {
-        encode_otlp(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
+        otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
     }
 
     #[tokio::test]
