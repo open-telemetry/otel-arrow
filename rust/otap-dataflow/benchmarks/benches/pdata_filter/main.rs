@@ -3,7 +3,6 @@
 
 //! Benchmarks for functions involved with filtering pdata
 
-use std::collections::HashSet;
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -15,6 +14,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use roaring::RoaringBitmap;
 
 /// Benchmark for [`build_uint16_id_filter`]
 ///
@@ -26,7 +26,7 @@ use otap_df_pdata::testing::round_trip::otlp_to_otap;
 /// bottleneck when filtering, so this benchmark is here to measure its performance.
 ///
 fn bench_build_uint16_id_filter(c: &mut Criterion) {
-    let batch_sizes = [32, 1024, 8192];
+    let batch_sizes = [32, 8192]; //[32, 1024, 8192];
     let attrs_per_parents = [2, 5, 10, 20];
     let proportions_selected = [0.01, 0.10, 0.5, 0.75, 0.90, 0.99];
 
@@ -43,13 +43,15 @@ fn bench_build_uint16_id_filter(c: &mut Criterion) {
                         transport_sorted,
                     };
                     let args = gen_build_uint16_id_filter_args(params);
+
                     let id = format!(
                         "{batch_size};{attrs_per_parent};{proportion_ids_selected};{transport_sorted}"
                     );
                     _ = group.bench_with_input(id, &args, |b, args| {
                         b.iter(|| {
                             let (id_column, id_set) = &args;
-                            let result = build_uint16_id_filter(id_column, id_set.clone()).unwrap();
+                            let result =
+                                build_uint16_id_filter(id_column, id_set).expect("wont fail");
                             _ = black_box(result);
                         })
                     });
@@ -89,7 +91,7 @@ struct IdFilterGenParameters {
 /// generate arguments for [`build_uint16_id_filter`]
 fn gen_build_uint16_id_filter_args(
     params: IdFilterGenParameters,
-) -> (Arc<dyn Array>, HashSet<u16>) {
+) -> (Arc<dyn Array>, RoaringBitmap) {
     let mut id_set = vec![];
     let mut log_records = vec![];
 
@@ -108,7 +110,7 @@ fn gen_build_uint16_id_filter_args(
         log_records.push(LogRecord::build().attributes(attrs).finish());
 
         if i % select_id_mod == 0 {
-            id_set.push(i as u16);
+            id_set.push(i as u32);
         }
     }
 
@@ -124,16 +126,26 @@ fn gen_build_uint16_id_filter_args(
 
     let mut otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
     if params.transport_sorted {
-        otap_batch.encode_transport_optimized().unwrap();
-        otap_batch.decode_transport_optimized_ids().unwrap();
+        otap_batch
+            .encode_transport_optimized()
+            .expect("can encode tx optimized");
+        otap_batch
+            .decode_transport_optimized_ids()
+            .expect("can decode transport optimized")
     }
 
-    let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap().clone();
+    let log_attrs = otap_batch
+        .get(ArrowPayloadType::LogAttrs)
+        .expect("rb is present for payload type")
+        .clone();
 
-    return (
-        log_attrs.column_by_name("parent_id").unwrap().clone(),
+    (
+        log_attrs
+            .column_by_name("parent_id")
+            .expect("column exists")
+            .clone(),
         id_set.into_iter().collect(),
-    );
+    )
 }
 
 #[allow(missing_docs)]

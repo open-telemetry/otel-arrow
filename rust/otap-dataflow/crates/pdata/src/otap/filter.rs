@@ -6,6 +6,7 @@ use arrow::array::{
     RecordBatch, StringArray, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
+use roaring::RoaringBitmap;
 
 use crate::arrays::get_required_array;
 use crate::otap::OtapArrowRecords;
@@ -21,7 +22,8 @@ pub mod traces;
 // threshold numbers to determine which method to use for building id filter
 // ToDo: determine optimimal numbers
 const ID_COLUMN_LENGTH_MIN_THRESHOLD: usize = 2000;
-const IDS_PERCENTAGE_MAX_THRESHOLD: f64 = 0.1;
+const IDS_PERCENTAGE_MAX_THRESHOLD: f64 = 0.05;
+const ID_SET_MAX_LENGTH_THRESHOLD: usize = 20;
 
 // default boolean array length to use for filter if there is no record batch set
 // when attempting to build a filter for a optional record batch
@@ -87,7 +89,7 @@ fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
 }
 
 enum IdSet {
-    U16(HashSet<u16>),
+    U16(RoaringBitmap),
     U32(HashSet<u32>),
 }
 
@@ -187,20 +189,20 @@ fn regex_match_column(src: &ArrayRef, regex: &str) -> Result<BooleanArray> {
 
 /// build_uint16_id_filter() takes a id_set which contains ids of u16 we want to remove and the id_column that
 /// the set of id's should map to. The function then iterates through the ids and builds a filter
-/// that matches those ids and inverts it so the returned BooleanArray when applied will remove rows
-/// that contain those ids
+/// that matches those ids
 /// This will return an error if the column is not DataType::UInt16
 pub fn build_uint16_id_filter(
     id_column: &Arc<dyn Array>,
-    id_set: HashSet<u16>,
+    id_set: &RoaringBitmap,
 ) -> Result<BooleanArray> {
     if (id_column.len() >= ID_COLUMN_LENGTH_MIN_THRESHOLD)
         && ((id_set.len() as f64 / id_column.len() as f64) <= IDS_PERCENTAGE_MAX_THRESHOLD)
+        && (id_set.len() as usize) <= ID_SET_MAX_LENGTH_THRESHOLD
     {
         let mut combined_id_filter = BooleanArray::new_null(id_column.len());
         // build id filter using the id hashset
         for id in id_set {
-            let id_scalar = UInt16Array::new_scalar(id);
+            let id_scalar = UInt16Array::new_scalar(id as u16);
             // since we use a scalar here we don't have to worry a column length mismatch when we compare
             let id_filter =
                 arrow::compute::kernels::cmp::eq(id_column, &id_scalar).map_err(|_| {
@@ -228,15 +230,32 @@ pub fn build_uint16_id_filter(
             })?;
 
         let mut id_filter = BooleanBuilder::new();
+
+        // we'll build up the filter by appending to it in contiguous segments of selected IDs
+        // as this is usually faster way to append to BooleanBuilder
+        let mut segment_validity = false;
+        let mut segment_len = 0usize;
+
         for uint16_id in uint16_id_array {
-            match uint16_id {
-                Some(uint16) => {
-                    id_filter.append_value(id_set.contains(&uint16));
+            let row_validity = match uint16_id {
+                Some(uint16) => id_set.contains(uint16 as u32),
+                None => false,
+            };
+
+            if segment_validity != row_validity {
+                if segment_len > 0 {
+                    id_filter.append_n(segment_len, segment_validity);
                 }
-                None => {
-                    id_filter.append_value(false);
-                }
+                segment_validity = row_validity;
+                segment_len = 0;
             }
+
+            segment_len += 1;
+        }
+
+        // append the final segment
+        if segment_len > 0 {
+            id_filter.append_n(segment_len, segment_validity);
         }
 
         Ok(id_filter.finish())
@@ -403,7 +422,7 @@ fn build_uint32_id_filter(
 /// and then returns a boolean array that masks a column based on the set of ids provided
 fn build_id_filter(id_column: &Arc<dyn Array>, id_set: IdSet) -> Result<BooleanArray> {
     match id_set {
-        IdSet::U16(u16_ids) => build_uint16_id_filter(id_column, u16_ids),
+        IdSet::U16(u16_ids) => build_uint16_id_filter(id_column, &u16_ids),
         IdSet::U32(u32_ids) => build_uint32_id_filter(id_column, u32_ids),
     }
 }
@@ -424,7 +443,9 @@ fn get_ids(id_column: &Arc<dyn Array>, filter: &BooleanArray) -> Result<IdSet> {
                 .as_any()
                 .downcast_ref::<UInt16Array>()
                 .expect("Data type is uint16 so we can safely downcast");
-            Ok(IdSet::U16(filtered_ids.iter().flatten().collect()))
+            Ok(IdSet::U16(
+                filtered_ids.iter().flatten().map(|i| i as u32).collect(),
+            ))
         }
         DataType::UInt32 => {
             let filtered_ids = filtered_ids
@@ -757,7 +778,7 @@ fn get_resource_attr_filter(
     // return filter built with the ids
     build_id_filter(
         parent_id_column,
-        IdSet::U16(ids_counted.into_keys().collect()),
+        IdSet::U16(ids_counted.into_keys().map(|i| i as u32).collect()),
     )
 }
 
@@ -887,4 +908,142 @@ fn get_attr_filter(
     let ids = get_ids(parent_id_column, &attributes_filter)?;
     // build filter around the ids and return the filter
     build_id_filter(parent_id_column, ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, BooleanArray, UInt16Array};
+    use roaring::RoaringBitmap;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_build_uint16_id_filter_basic() {
+        // Test with basic filtering
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![1, 2, 3, 4, 5]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(2);
+        _ = id_set.insert(4);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![false, true, false, true, false]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_with_nulls() {
+        // Test with null values in the column
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![
+            Some(1),
+            None,
+            Some(3),
+            None,
+            Some(5),
+        ]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(1);
+        _ = id_set.insert(3);
+        _ = id_set.insert(5);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![true, false, true, false, true]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_all_nulls() {
+        // Test with all null values
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![None, None, None]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(1);
+        _ = id_set.insert(2);
+        _ = id_set.insert(3);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![false, false, false]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_contiguous_runs() {
+        // Test with contiguous runs of the same value
+        let id_column: Arc<dyn Array> =
+            Arc::new(UInt16Array::from(vec![1, 1, 1, 2, 2, 3, 3, 3, 3, 4]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(1);
+        _ = id_set.insert(3);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![
+            true, true, true, false, false, true, true, true, true, false,
+        ]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_contiguous_with_nulls() {
+        // Test with contiguous runs including nulls
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![
+            Some(5),
+            Some(5),
+            None,
+            None,
+            Some(5),
+            Some(10),
+            Some(10),
+        ]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(5);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![true, true, false, false, true, false, false]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_empty_set() {
+        // Test with empty id_set (should filter out everything)
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![1, 2, 3, 4]));
+        let id_set = RoaringBitmap::new();
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![false, false, false, false]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_no_matches() {
+        // Test where no IDs in column match the set
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![1, 2, 3]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(10);
+        _ = id_set.insert(20);
+        _ = id_set.insert(30);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![false, false, false]);
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_build_uint16_id_filter_all_match() {
+        // Test where all IDs match
+        let id_column: Arc<dyn Array> = Arc::new(UInt16Array::from(vec![7, 8, 9]));
+        let mut id_set = RoaringBitmap::new();
+        _ = id_set.insert(7);
+        _ = id_set.insert(8);
+        _ = id_set.insert(9);
+
+        let result = build_uint16_id_filter(&id_column, &id_set).unwrap();
+        let expected = BooleanArray::from(vec![true, true, true]);
+
+        assert_eq!(result, expected);
+    }
 }
