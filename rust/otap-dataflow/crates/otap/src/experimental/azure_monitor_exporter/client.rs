@@ -145,7 +145,7 @@ impl LogsIngestionClient {
     pub async fn send(&self, body: Vec<u8>) -> Result<(), String> {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("System time should be after UNIX_EPOCH")
             .as_secs();
         let time_of_day = secs % 86400; // seconds since midnight UTC
         let hours = time_of_day / 3600;

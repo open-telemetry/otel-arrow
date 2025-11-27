@@ -45,7 +45,6 @@ impl Transformer {
             resource_logs.scope_logs.iter().flat_map(move |scope_logs| {
                 // Clone resource_attrs for each scope (cheap if map is small, unavoidable for flat_map)
                 let resource_attrs = resource_attrs.clone();
-                
                 let scope_attrs = if !self.schema.disable_schema_mapping {
                     self.apply_scope_mapping(&scope_logs.scope)
                 } else {
