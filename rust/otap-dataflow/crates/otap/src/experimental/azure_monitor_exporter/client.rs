@@ -143,16 +143,6 @@ impl LogsIngestionClient {
     /// * `Ok(())` - If the request was successful
     /// * `Err(String)` - Error message if the request failed
     pub async fn send(&self, body: Vec<u8>) -> Result<(), String> {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("System time should be after UNIX_EPOCH")
-            .as_secs();
-        let time_of_day = secs % 86400; // seconds since midnight UTC
-        let hours = time_of_day / 3600;
-        let minutes = (time_of_day % 3600) / 60;
-        let seconds = time_of_day % 60;
-        println!("{:02}:{:02}:{:02}: send called", hours, minutes, seconds);
-
         // Use scope from config instead of hardcoded value
         let token_response = self
             .credential

@@ -28,7 +28,6 @@ impl Transformer {
 
     /// Convert OTLP logs to JSON bytes for Log Analytics.
     /// Returns an iterator that yields serialized JSON bytes for each log record.
-    #[must_use]
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
     pub fn convert_to_log_analytics<'a>(

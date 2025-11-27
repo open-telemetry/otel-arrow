@@ -143,7 +143,7 @@ impl AzureMonitorExporter {
     }
 }
 
-const SEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const SEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for AzureMonitorExporter {
