@@ -54,6 +54,10 @@ name = "otap_encoder"
 harness = false
 
 [[bench]]
+name = "pdata_filter"
+harness = false
+
+[[bench]]
 name = "pdata_views"
 harness = false
 
