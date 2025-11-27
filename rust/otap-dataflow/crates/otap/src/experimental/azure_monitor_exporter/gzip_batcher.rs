@@ -9,6 +9,7 @@ pub struct GzipBatcher {
     remaining_size: usize,
     current_uncompressed_size: usize,
     total_uncompressed_size: usize,
+    record_count: usize,
 }
 
 pub enum PushResult {
@@ -22,6 +23,8 @@ pub enum FlushResult {
     Flush(Vec<u8>),
 }
 
+// TODO: actual logging instead of print statements
+#[allow(clippy::print_stdout)]
 impl GzipBatcher {
     pub fn new() -> Self {
         Self {
@@ -29,6 +32,7 @@ impl GzipBatcher {
             remaining_size: ONE_MB,
             current_uncompressed_size: 0,
             total_uncompressed_size: 0,
+            record_count: 0,
         }
     }
 
@@ -38,11 +42,11 @@ impl GzipBatcher {
         }
 
         if self.total_uncompressed_size == 0 {
-            self.buf.write_all(b"[").unwrap();
+            self.buf.write_all(b"[").expect("write to memory buffer failed");
             self.total_uncompressed_size += 1;
             self.current_uncompressed_size += 1;
         } else {
-            self.buf.write_all(b",").unwrap();
+            self.buf.write_all(b",").expect("write to memory buffer failed");
             self.total_uncompressed_size += 1;
             self.current_uncompressed_size += 1;
         }
@@ -50,7 +54,7 @@ impl GzipBatcher {
         let next_size = self.current_uncompressed_size + data.len() + 1;
 
         if next_size > self.remaining_size {
-            self.buf.flush().unwrap();
+            self.buf.flush().expect("flush to memory buffer failed");
             let compressed_size = self.buf.get_ref().len();
 
             self.remaining_size = ONE_MB.saturating_sub(compressed_size + 1);
@@ -68,41 +72,56 @@ impl GzipBatcher {
                 FlushResult::Flush(compressed_data) => PushResult::Full(compressed_data),
             }
         } else {
-            self.buf.write_all(&data).unwrap();
+            self.buf.write_all(data).expect("write to memory buffer failed");
             self.current_uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
+            self.record_count += 1;
 
             PushResult::Ok
         }
     }
 
     pub fn flush(&mut self) -> FlushResult {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let time_of_day = secs % 86400; // seconds since midnight UTC
-        let hours = time_of_day / 3600;
-        let minutes = (time_of_day % 3600) / 60;
-        let seconds = time_of_day % 60;
-        println!("{:02}:{:02}:{:02}: flush called", hours, minutes, seconds);
-
         if self.buf.get_ref().is_empty() {
             return FlushResult::Empty;
         }
 
-        self.buf.write_all(b"]").unwrap();
-
-        self.remaining_size = ONE_MB;
-        self.current_uncompressed_size = 0;
-        self.total_uncompressed_size = 0;
+        self.buf.write_all(b"]").expect("write to memory buffer failed");
 
         let old_buf = std::mem::replace(
             &mut self.buf,
             GzEncoder::new(Vec::default(), Compression::default()),
         );
 
-        FlushResult::Flush(old_buf.finish().unwrap())
+        let compressed_data = old_buf.finish().expect("compression failed");
+        let compressed_size = compressed_data.len();
+        let uncompressed_size = self.total_uncompressed_size;
+        let records = self.record_count;
+
+        // Calculate compression ratio
+        let compression_ratio = if uncompressed_size > 0 {
+            (compressed_size as f64 / uncompressed_size as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Get human-readable timestamp
+        let now = std::time::SystemTime::now();
+        let datetime = chrono::DateTime::<chrono::Utc>::from(now);
+        let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
+
+        println!(
+            "[{}] Flushed batch: {} records, {} bytes -> {} bytes (compression ratio: {:.2}%)",
+            timestamp, records, uncompressed_size, compressed_size, compression_ratio
+        );
+
+        // Reset state
+        self.remaining_size = ONE_MB;
+        self.current_uncompressed_size = 0;
+        self.total_uncompressed_size = 0;
+        self.record_count = 0;
+
+        FlushResult::Flush(compressed_data)
     }
 }
 
