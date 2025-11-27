@@ -4,11 +4,14 @@
 //! This module contains traits and utilities for OTLP (OpenTelemetry
 //! Protocol) message types.
 
+use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
+use crate::{error::Result, otap::OtapArrowRecords};
 use bytes::Bytes;
+use otap_df_config::SignalType;
+
+pub use common::ProtoBuffer;
 pub use otap_df_pdata_otlp_macros::Message; // Required for derived code
 pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
-
-use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
 
 /// Common methods for OTLP/OTAP attributes.
 pub mod attributes;
@@ -20,10 +23,6 @@ pub mod metrics;
 pub mod traces;
 
 mod common;
-pub use common::ProtoBuffer;
-
-use crate::{error::Result, otap::OtapArrowRecords};
-
 #[cfg(test)]
 mod tests;
 
@@ -39,6 +38,17 @@ pub enum OtlpProtoBytes {
 }
 
 impl OtlpProtoBytes {
+    /// Create a new empty request object of a certain signal type.
+    #[must_use]
+    pub fn empty(signal: SignalType) -> Self {
+        let b = Bytes::new();
+        match signal {
+            SignalType::Logs => Self::ExportLogsRequest(b),
+            SignalType::Metrics => Self::ExportMetricsRequest(b),
+            SignalType::Traces => Self::ExportTracesRequest(b),
+        }
+    }
+
     /// Get a borrowed reference to the serialized proto bytes slice
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
