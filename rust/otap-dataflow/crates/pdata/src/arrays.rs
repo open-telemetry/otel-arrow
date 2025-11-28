@@ -219,12 +219,12 @@ pub fn get_required_array_from_struct_array<'a>(
 
 /// Get reference to array that the caller requires to be in a struct array
 /// in a record batch.
-/// If the column is not in the struct array/record batch, returns `ColumnNotFound` error
-pub fn get_required_array_from_struct_array_from_record_batch<'a>(
+/// If the column is not in the struct array/record batch, returns None
+pub fn get_optional_array_from_struct_array_from_record_batch<'a>(
     record_batch: &'a RecordBatch,
     record_batch_column_name: &str,
     struct_array_column_name: &str,
-) -> Result<&'a ArrayRef> {
+) -> Result<Option<&'a ArrayRef>> {
     let struct_arr = record_batch
         .column_by_name(record_batch_column_name)
         .ok_or_else(|| Error::ColumnNotFound {
@@ -239,11 +239,26 @@ pub fn get_required_array_from_struct_array_from_record_batch<'a>(
             actual: struct_arr.data_type().clone(),
             expect: DataType::Struct(Fields::empty()),
         })?;
-    struct_arr
-        .column_by_name(struct_array_column_name)
-        .ok_or_else(|| Error::ColumnNotFound {
-            name: struct_array_column_name.into(),
-        })
+
+    Ok(struct_arr.column_by_name(struct_array_column_name))
+}
+
+/// Get reference to array that the caller requires to be in a struct array
+/// in a record batch.
+/// If the column is not in the struct array/record batch, returns `ColumnNotFound` error
+pub fn get_required_array_from_struct_array_from_record_batch<'a>(
+    record_batch: &'a RecordBatch,
+    record_batch_column_name: &str,
+    struct_array_column_name: &str,
+) -> Result<&'a ArrayRef> {
+    get_optional_array_from_struct_array_from_record_batch(
+        record_batch,
+        record_batch_column_name,
+        struct_array_column_name,
+    )?
+    .ok_or_else(|| Error::ColumnNotFound {
+        name: struct_array_column_name.into(),
+    })
 }
 
 #[allow(dead_code)]
