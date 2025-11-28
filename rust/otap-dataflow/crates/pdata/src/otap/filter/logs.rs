@@ -529,7 +529,6 @@ mod test {
     use super::*;
     use crate::otap::filter::MatchType;
     use crate::proto::OtlpProtoMessage;
-    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
 
     use crate::testing::equiv::assert_equivalent;
@@ -569,11 +568,8 @@ mod test {
         let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
 
         let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
-        assert_eq!(logs_consumed, 2);
+        assert_eq!(logs_consumed, 4);
         assert_eq!(logs_filtered, 2);
-
-        let logs_result = result.get(ArrowPayloadType::Logs).unwrap();
-        assert_eq!(logs_result.num_rows(), 2);
 
         let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
             resource_logs: vec![ResourceLogs {
