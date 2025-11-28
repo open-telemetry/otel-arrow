@@ -6,8 +6,9 @@
 //!
 
 use crate::arrays::{
-    get_required_array, get_required_array_from_struct_array,
-    get_required_array_from_struct_array_from_record_batch, get_required_struct_array,
+    get_optional_array_from_struct_array_from_record_batch, get_required_array,
+    get_required_array_from_struct_array, get_required_array_from_struct_array_from_record_batch,
+    get_required_struct_array,
 };
 use crate::otap::OtapArrowRecords;
 use crate::otap::error::{Error, Result};
@@ -103,6 +104,8 @@ impl LogFilter {
     }
 
     /// take a logs payload and return the filtered result
+    ///
+    /// returns tuple of (filtered batch, logs_consumed, logs_filtered)
     pub fn filter(
         &self,
         mut logs_payload: OtapArrowRecords,
@@ -148,12 +151,24 @@ impl LogFilter {
             return Ok((logs_payload, num_rows, num_rows));
         };
 
+        println!("pre sync:");
+        println!("resource_attr_filter = {:?}", resource_attr_filter);
+        println!("log_record_filter = {:?}", log_record_filter);
+        println!("log_attr_filter = {:?}", log_attr_filter);
+
         let (log_record_filter, child_record_batch_filters) = self.sync_up_filters(
             &logs_payload,
             resource_attr_filter,
             log_record_filter,
             log_attr_filter,
         )?;
+
+        println!("post sync:");
+        println!("log_record_filter = {:?}", log_record_filter);
+        println!(
+            "child_record_batch_filters = {:?}",
+            child_record_batch_filters
+        );
 
         let (log_rows_before, log_rows_removed) = apply_filter(
             &mut logs_payload,
@@ -186,25 +201,22 @@ impl LogFilter {
         let scope_attrs = logs_payload.get(ArrowPayloadType::ScopeAttrs);
 
         // get the id columns from record batch
-        let log_record_ids_column = get_required_array(log_records, consts::ID)?;
+        let log_record_ids_column = log_records.column_by_name(consts::ID);
         let log_record_resource_ids_column =
-            get_required_array_from_struct_array_from_record_batch(
+            get_optional_array_from_struct_array_from_record_batch(
                 log_records,
                 consts::RESOURCE,
                 consts::ID,
             )?;
-        let log_record_scope_ids_column = get_required_array_from_struct_array_from_record_batch(
-            log_records,
-            consts::SCOPE,
-            consts::ID,
-        )?;
 
         // optional record batch
         match resource_attrs {
             Some(resource_attrs_record_batch) => {
                 log_record_filter = update_parent_record_batch_filter(
                     resource_attrs_record_batch,
-                    log_record_resource_ids_column,
+                    log_record_resource_ids_column.ok_or_else(|| Error::ColumnNotFound {
+                        name: format!("{}.{}", consts::RESOURCE, consts::ID),
+                    })?,
                     &resource_attr_filter,
                     &log_record_filter,
                 )?;
@@ -221,11 +233,18 @@ impl LogFilter {
             }
         }
 
+        println!(
+            "before log attrs filter applied log_record_filter = {:?}",
+            log_record_filter
+        );
+
         match log_attrs {
             Some(log_attrs_record_batch) => {
                 log_record_filter = update_parent_record_batch_filter(
                     log_attrs_record_batch,
-                    log_record_ids_column,
+                    log_record_ids_column.ok_or_else(|| Error::ColumnNotFound {
+                        name: consts::ID.into(),
+                    })?,
                     &log_attr_filter,
                     &log_record_filter,
                 )?;
@@ -242,6 +261,11 @@ impl LogFilter {
             }
         }
 
+        println!(
+            "after log attrs filter applied log_record_filter = {:?}",
+            log_record_filter
+        );
+
         // now using the updated log_record_filter we need to update the rest of the filers
 
         // use hashmap to map filters to their payload types to return,
@@ -253,7 +277,9 @@ impl LogFilter {
                 ArrowPayloadType::LogAttrs,
                 update_child_record_batch_filter(
                     log_attrs_record_batch,
-                    log_record_ids_column,
+                    log_record_ids_column.ok_or_else(|| Error::ColumnNotFound {
+                        name: consts::ID.into(),
+                    })?,
                     &log_attr_filter,
                     &log_record_filter,
                 )?,
@@ -265,7 +291,9 @@ impl LogFilter {
                 ArrowPayloadType::ResourceAttrs,
                 update_child_record_batch_filter(
                     resource_attrs_record_batch,
-                    log_record_resource_ids_column,
+                    log_record_resource_ids_column.ok_or_else(|| Error::ColumnNotFound {
+                        name: format!("{}.{}", consts::RESOURCE, consts::ID),
+                    })?,
                     &resource_attr_filter,
                     &log_record_filter,
                 )?,
@@ -273,6 +301,12 @@ impl LogFilter {
         }
 
         if let Some(scope_attrs_record_batch) = scope_attrs {
+            let log_record_scope_ids_column =
+                get_required_array_from_struct_array_from_record_batch(
+                    log_records,
+                    consts::SCOPE,
+                    consts::ID,
+                )?;
             _ = child_record_batch_filters.insert(
                 ArrowPayloadType::ScopeAttrs,
                 new_child_record_batch_filter(
@@ -510,5 +544,129 @@ impl LogSeverityNumberMatchProperties {
             min,
             match_undefined,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::otap::filter::MatchType;
+    use crate::proto::OtlpProtoMessage;
+    use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+
+    use crate::testing::equiv::assert_equivalent;
+    use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+
+    #[test]
+    fn test_filter_include_no_attributes() {
+        // Filter only for WARN logs
+        let include = LogMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),
+            Vec::new(),
+            vec!["WARN".into()],
+            None,
+            Vec::new(),
+        );
+
+        let filter = LogFilter::new(Some(include), None, Vec::new());
+
+        let log_records = vec![
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
+        assert_eq!(logs_consumed, 2);
+        assert_eq!(logs_filtered, 2);
+
+        let logs_result = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(logs_result.num_rows(), 2);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records[0..2].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_exclude_only_filter_no_attributes() {
+        let exclude = LogMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),          // don't exclude any resource attrs
+            Vec::new(),          // don't exclude any log attrs,
+            vec!["WARN".into()], // exclude severity_text == "WARN",
+            None,                // don't exclude any severity_numbers
+            Vec::new(),          // don't exclude any bodies
+        );
+
+        let filter = LogFilter::new(
+            None, // no filters for what to include
+            Some(exclude),
+            Vec::new(), // no ottr filters
+        );
+
+        let log_records = vec![
+            // WARN rows should be excluded
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("WARN").finish(),
+            // INFO rows should not be excluded
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                // TODO can maybe remove the attributes once we've fixed the other bug
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("y"))])
+                .finish(),
+        ];
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+        let (result, _, _) = filter.filter(input).unwrap();
+
+        let logs_result = result.get(ArrowPayloadType::Logs).unwrap();
+        assert_eq!(logs_result.num_rows(), 2);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records[2..4].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_eq!(result, expected);
     }
 }
