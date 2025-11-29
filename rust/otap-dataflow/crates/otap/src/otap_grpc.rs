@@ -59,20 +59,6 @@ pub struct Settings {
     pub wait_for_result: bool,
 }
 
-/// Abstraction over inbound OTAP Arrow request streams.
-#[async_trait]
-pub trait ArrowRequestStream: Send + 'static {
-    /// Returns the next OTAP Arrow batch in the stream.
-    async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status>;
-}
-
-#[async_trait]
-impl ArrowRequestStream for tonic::Streaming<BatchArrowRecords> {
-    async fn next_message(&mut self) -> Result<Option<BatchArrowRecords>, Status> {
-        self.message().await
-    }
-}
-
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OtapPdata>,
