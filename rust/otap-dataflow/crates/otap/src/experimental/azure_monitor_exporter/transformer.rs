@@ -32,7 +32,10 @@ impl Transformer {
     /// Returns an iterator that yields serialized JSON bytes for each log record.
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
-    pub fn convert_to_log_analytics<'a>(&'a self, request: &'a ExportLogsServiceRequest) -> impl Iterator<Item = Vec<u8>> + 'a {
+    pub fn convert_to_log_analytics<'a>(
+        &'a self,
+        request: &'a ExportLogsServiceRequest,
+    ) -> impl Iterator<Item = Vec<u8>> + 'a {
         request.resource_logs.iter().flat_map(move |resource_logs| {
             let resource_attrs = if !self.schema.disable_schema_mapping {
                 self.apply_resource_mapping(&resource_logs.resource)
