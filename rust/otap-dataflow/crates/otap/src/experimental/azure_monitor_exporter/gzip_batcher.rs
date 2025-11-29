@@ -9,18 +9,18 @@ pub struct GzipBatcher {
     remaining_size: usize,
     current_uncompressed_size: usize,
     total_uncompressed_size: usize,
-    record_count: usize,
+    row_count: f64,
 }
 
 pub enum PushResult {
     Ok,
     TooLarge,
-    Full(Vec<u8>),
+    Full(Vec<u8>, f64),
 }
 
 pub enum FlushResult {
     Empty,
-    Flush(Vec<u8>),
+    Flush(Vec<u8>, f64),
 }
 
 // TODO: actual logging instead of print statements
@@ -28,12 +28,16 @@ pub enum FlushResult {
 impl GzipBatcher {
     pub fn new() -> Self {
         Self {
-            buf: GzEncoder::new(Vec::default(), Compression::default()),
+            buf: Self::new_encoder(),
             remaining_size: ONE_MB,
             current_uncompressed_size: 0,
             total_uncompressed_size: 0,
-            record_count: 0,
+            row_count: 0.0,
         }
+    }
+
+    fn new_encoder() -> GzEncoder<Vec<u8>> {
+        GzEncoder::new(Vec::with_capacity(ONE_MB), Compression::default())
     }
 
     pub fn push(&mut self, data: &[u8]) -> PushResult {
@@ -77,7 +81,7 @@ impl GzipBatcher {
 
             match flush_result {
                 FlushResult::Empty => PushResult::Ok,
-                FlushResult::Flush(compressed_data) => PushResult::Full(compressed_data),
+                FlushResult::Flush(compressed_data, row_count) => PushResult::Full(compressed_data, row_count),
             }
         } else {
             self.buf
@@ -85,7 +89,7 @@ impl GzipBatcher {
                 .expect("write to memory buffer failed");
             self.current_uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
-            self.record_count += 1;
+            self.row_count += 1.0;
 
             PushResult::Ok
         }
@@ -102,13 +106,13 @@ impl GzipBatcher {
 
         let old_buf = std::mem::replace(
             &mut self.buf,
-            GzEncoder::new(Vec::default(), Compression::default()),
+            Self::new_encoder(),
         );
 
         let compressed_data = old_buf.finish().expect("compression failed");
         let compressed_size = compressed_data.len();
         let uncompressed_size = self.total_uncompressed_size;
-        let records = self.record_count;
+        let row_count = self.row_count;
 
         // Calculate compression ratio
         let compression_ratio = if uncompressed_size > 0 {
@@ -123,17 +127,17 @@ impl GzipBatcher {
         let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
 
         println!(
-            "[{}] Flushed batch: {} records, {} bytes -> {} bytes (compression ratio: {:.2}%)",
-            timestamp, records, uncompressed_size, compressed_size, compression_ratio
+            "[{}] Flushed batch: {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%)",
+            timestamp, row_count, uncompressed_size, compressed_size, compression_ratio
         );
 
         // Reset state
         self.remaining_size = ONE_MB;
         self.current_uncompressed_size = 0;
         self.total_uncompressed_size = 0;
-        self.record_count = 0;
+        self.row_count = 0.0;
 
-        FlushResult::Flush(compressed_data)
+        FlushResult::Flush(compressed_data, row_count)
     }
 }
 
@@ -197,7 +201,7 @@ mod tests {
                     total_uncompressed_sent += data_len;
                     // Continue pushing
                 }
-                PushResult::Full(compressed_data) => {
+                PushResult::Full(compressed_data, row_count) => {
                     push_count += 1;
                     total_uncompressed_sent += data_len;
 
@@ -274,7 +278,7 @@ mod tests {
                 PushResult::Ok => {
                     total_push_count += 1;
                 }
-                PushResult::Full(compressed_data) => {
+                PushResult::Full(compressed_data, _) => {
                     total_push_count += 1;
                     full_count += 1;
 
@@ -355,7 +359,7 @@ mod tests {
         let large_data = vec![b'x'; 2 * 1024 * 1024]; // 2MB
 
         match batcher.push(&large_data) {
-            PushResult::Full(_) => {
+            PushResult::Full(_, _) => {
                 panic!("Large entry should not be accepted, got Full instead");
             }
             PushResult::Ok => {
