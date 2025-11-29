@@ -8,7 +8,7 @@ use reqwest::{
     header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use tokio::time::{Duration, Instant};
 
 use crate::experimental::azure_monitor_exporter::auth::Auth;
 use crate::experimental::azure_monitor_exporter::config::Config;
@@ -22,12 +22,15 @@ pub struct LogsIngestionClient {
     http_client: Client,
     endpoint: String,
     auth: Auth,
+
     // Pre-formatted authorization header for zero-allocation reuse
     auth_header: HeaderValue,
-    // Use Instant for faster comparisons (monotonic clock)
-    token_valid_until: Instant,
+
     // Pre-built static headers that never change
     static_headers: HeaderMap,
+
+    /// Token expiry time using monotonic clock for faster comparisons
+    pub token_valid_until: Instant,
 }
 
 impl LogsIngestionClient {
@@ -75,6 +78,7 @@ impl LogsIngestionClient {
             .timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(10) // Reuse connections
             .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
+            .tcp_nodelay(true) // Reduces latency for large payloads significantly by disabling Nagle's algorithm
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
@@ -105,7 +109,7 @@ impl LogsIngestionClient {
 
     /// Refresh the token if needed and update the pre-formatted header
     #[inline]
-    async fn ensure_valid_token(&mut self) -> Result<(), String> {
+    pub async fn ensure_valid_token(&mut self) -> Result<(), String> {
         let now = Instant::now();
 
         // Fast path: token is still valid
