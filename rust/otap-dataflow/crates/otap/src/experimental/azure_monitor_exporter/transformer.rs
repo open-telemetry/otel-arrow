@@ -9,6 +9,8 @@ use super::config::{Config, SchemaConfig};
 
 const ATTRIBUTES_FIELD: &str = "attributes";
 
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
 // TODO: Performance review and improvements
 // TODO: Make sure mapping of all fields are covered
 /// Converts OTLP logs to Azure Log Analytics format
@@ -30,10 +32,7 @@ impl Transformer {
     /// Returns an iterator that yields serialized JSON bytes for each log record.
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
-    pub fn convert_to_log_analytics<'a>(
-        &'a self,
-        request: &'a ExportLogsServiceRequest,
-    ) -> impl Iterator<Item = Vec<u8>> + 'a {
+    pub fn convert_to_log_analytics<'a>(&'a self, request: &'a ExportLogsServiceRequest) -> impl Iterator<Item = Vec<u8>> + 'a {
         request.resource_logs.iter().flat_map(move |resource_logs| {
             let resource_attrs = if !self.schema.disable_schema_mapping {
                 self.apply_resource_mapping(&resource_logs.resource)
@@ -276,10 +275,6 @@ impl Transformer {
 
     /// Convert bytes to hex string
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        // Pre-allocate the exact size needed (2 hex chars per byte)
-        // This avoids repeated allocations
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-
         let mut hex = String::with_capacity(bytes.len() * 2);
         for &byte in bytes {
             hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
