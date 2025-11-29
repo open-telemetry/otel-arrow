@@ -399,7 +399,7 @@ mod tests {
 
         let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
         assert_eq!(result.len(), 1);
-        
+
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert!(json["TimeGenerated"].as_str().is_some());
         assert_eq!(json["RawData"], "test body");
@@ -455,7 +455,7 @@ mod tests {
 
         let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
         assert_eq!(result.len(), 1);
-        
+
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json["ServiceName"], "my-service");
         assert_eq!(json["ScopeName"], "my-scope");
@@ -500,7 +500,7 @@ mod tests {
 
         let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        
+
         assert!(json["Time"].as_str().unwrap().contains("1970"));
         assert!(json["ObservedTime"].as_str().unwrap().contains("1970"));
         assert_eq!(json["TraceId"], "ff00");
@@ -682,11 +682,6 @@ mod tests {
 
         let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        assert!(
-            json["TimeGenerated"]
-                .as_str()
-                .unwrap()
-                .contains("1970")
-        );
+        assert!(json["TimeGenerated"].as_str().unwrap().contains("1970"));
     }
 }
