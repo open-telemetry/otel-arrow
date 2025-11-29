@@ -228,8 +228,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         }
                     }
                     else {
-                        // This can happen if the flush took longer than SEND_INTERVAL
-                        println!("[AzureMonitorExporter] Last flush still recent");
+                        // if we already flushed and sent, we don't need to do it again yet
                     }
 
                     next_send = max(self.last_send_started, tokio::time::Instant::now()) + SEND_INTERVAL;
