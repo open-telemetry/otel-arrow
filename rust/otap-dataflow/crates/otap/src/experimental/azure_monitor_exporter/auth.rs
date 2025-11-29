@@ -103,3 +103,100 @@ impl Auth {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use azure_core::credentials::TokenRequestOptions;
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct MockCredential {
+        token: String,
+        expires_in: azure_core::time::Duration,
+        call_count: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TokenCredential for MockCredential {
+        async fn get_token(
+            &self,
+            _scopes: &[&str],
+            _options: Option<TokenRequestOptions<'_>>,
+        ) -> azure_core::Result<AccessToken> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+
+            Ok(AccessToken {
+                token: self.token.clone().into(),
+                expires_on: OffsetDateTime::now_utc() + self.expires_in,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_token_caches_result() {
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
+
+        let mut auth = Auth::from_credential(credential, "scope".to_string());
+
+        // First call should hit the credential
+        let token1 = auth.get_token().await.unwrap();
+        assert_eq!(token1.token.secret(), "test_token");
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Second call should use cache (token valid for 60 mins, buffer is 5 mins)
+        let token2 = auth.get_token().await.unwrap();
+        assert_eq!(token2.token.secret(), "test_token");
+        assert_eq!(*call_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_get_token_refreshes_when_expired() {
+        let call_count = Arc::new(Mutex::new(0));
+        // Token expires in 4 minutes (less than 5 min buffer)
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(4),
+            call_count: call_count.clone(),
+        });
+
+        let mut auth = Auth::from_credential(credential, "scope".to_string());
+
+        // First call
+        let _ = auth.get_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Second call - should refresh because 4 mins < 5 mins buffer
+        let _ = auth.get_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_token() {
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
+
+        let mut auth = Auth::from_credential(credential, "scope".to_string());
+
+        // First call
+        let _ = auth.get_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Invalidate
+        auth.invalidate_token();
+
+        // Should refresh
+        let _ = auth.get_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 2);
+    }
+}
