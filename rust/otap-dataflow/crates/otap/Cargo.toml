@@ -40,6 +40,7 @@ prost = { workspace = true }
 smallvec = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
+parking_lot = { workspace = true }
 
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
@@ -61,6 +62,7 @@ weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
+tower = { workspace = true }
 
 # Geneva exporter dependencies
 geneva-uploader = { version = "0.3.0", optional = true }

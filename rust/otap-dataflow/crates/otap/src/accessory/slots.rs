@@ -49,7 +49,10 @@ impl<UData> State<UData> {
     #[must_use]
     pub fn new(max_size: usize) -> Self {
         Self {
-            slots: SlotMap::with_key(),
+            // Pre-size the slot map so we do not allocate on the hot path for
+            // the common case where concurrency stays within the configured
+            // limit.
+            slots: SlotMap::with_capacity_and_key(max_size),
             max_size,
         }
     }
@@ -131,7 +134,8 @@ mod tests {
     fn test_take_current() {
         let mut state = create_test_state();
 
-        assert_eq!(state.slots.capacity(), 0);
+        // Pre-fill to capacity
+        assert_eq!(state.slots.capacity(), 3);
 
         let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
         assert_eq!(state.slots.len(), 1);

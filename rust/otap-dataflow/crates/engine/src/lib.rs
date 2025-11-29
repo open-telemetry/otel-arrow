@@ -39,7 +39,7 @@ mod attributes;
 pub mod config;
 pub mod context;
 pub mod control;
-mod effect_handler;
+pub mod effect_handler;
 pub mod local;
 pub mod node;
 pub mod pipeline_ctrl;
