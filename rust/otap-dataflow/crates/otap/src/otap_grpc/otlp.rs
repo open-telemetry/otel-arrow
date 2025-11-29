@@ -6,6 +6,7 @@
 
 pub mod client;
 
+pub mod server_new;
 pub mod server;
 
 const LOGS_SERVICE_NAME: &str = "opentelemetry.proto.collector.logs.v1.LogsService";

@@ -4,7 +4,7 @@
 //! Shared configuration for gRPC-based receivers.
 
 use crate::compression::{self, CompressionMethod};
-use crate::otap_grpc::otlp::server::OtlpServerSettings;
+use crate::otap_grpc::otlp::server_new::OtlpServerSettings;
 use otap_df_config::byte_units;
 use serde::Deserialize;
 use std::net::SocketAddr;

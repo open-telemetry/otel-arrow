@@ -18,7 +18,7 @@
 //! behaviour today.
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::otap_grpc::otlp::server::{
+use crate::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
@@ -74,7 +74,7 @@ pub struct Config {
 ///
 /// Several optimisations keep the hot path inexpensive:
 /// - Incoming request bodies stay in their serialized OTLP form thanks to the custom
-///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server::OtlpBytesCodec), allowing downstream stages
+///   [`OtlpBytesCodec`](crate::otap_grpc::otlp::server_new::OtlpBytesCodec), allowing downstream stages
 ///   to decode lazily.
 /// - `AckRegistry` maintains per-signal ACK subscription slots so `wait_for_result` lookups avoid
 ///   extra bookkeeping and route responses directly back to callers.

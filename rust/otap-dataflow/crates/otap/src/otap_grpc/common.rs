@@ -10,7 +10,7 @@
 //! - wait (optional): task awaits an ACK or NACK routed by the subscription maps
 //! - respond: ACK/NACK is mapped back to the waiting gRPC request
 
-use crate::otap_grpc::otlp::server::{AckSlot, RouteResponse};
+use crate::otap_grpc::otlp::server_new::{AckSlot, RouteResponse};
 use crate::otap_grpc::server_settings::GrpcServerSettings;
 use crate::pdata::OtapPdata;
 use otap_df_config::SignalType;
