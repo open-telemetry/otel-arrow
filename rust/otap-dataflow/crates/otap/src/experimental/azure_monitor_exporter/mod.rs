@@ -23,6 +23,7 @@ mod config;
 mod exporter;
 mod gzip_batcher;
 mod transformer;
+mod auth;
 
 pub use client::LogsIngestionClient;
 pub use config::Config;

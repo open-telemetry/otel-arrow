@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::cmp::max;
+
 use async_trait::async_trait;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_engine::control::NodeControlMsg;
@@ -9,6 +11,7 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use prost::Message as _;
 
 use crate::experimental::azure_monitor_exporter::client::LogsIngestionClient;
@@ -56,86 +59,128 @@ impl AzureMonitorExporter {
         })
     }
 
-    /// Spawns a background task to send a batch of data.
-    fn spawn_send_batch(
-        client: LogsIngestionClient,
-        batch: Vec<u8>,
-        effect_handler: EffectHandler<OtapPdata>,
-    ) {
-        _ = tokio::spawn(async move {
-            if let Err(e) = client.send(batch).await {
-                effect_handler
-                    .info(&format!("[AzureMonitorExporter] Failed to send batch: {e}"))
-                    .await;
-            }
-        });
-    }
-
     /// Handle a single pdata message.
     async fn handle_pdata(
         &mut self,
         pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), String> {
         // TODO: Ack/Nack handling
         // Split pdata into context and payload
         let (_context, payload) = pdata.into_parts();
 
-        // Convert OTAP payload to OTLP bytes
-        // TODO: This conversion step should be eliminated
-        let otlp_bytes: OtlpProtoBytes =
-            payload
-                .try_into()
-                .map_err(|e| Error::PdataConversionError {
-                    error: format!("Failed to convert OTAP to OTLP: {e:?}"),
-                })?;
+        match payload {
+            OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
+                OtapArrowRecords::Logs(otap_records) => {
+                    effect_handler
+                        .info("Converting OTAP logs to OTLP bytes (fallback path)")
+                        .await;
 
-        match otlp_bytes {
-            OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                let request = ExportLogsServiceRequest::decode(bytes.as_ref()).map_err(|e| {
-                    Error::PDataError {
-                        reason: format!("Failed to decode OTLP logs request: {e}"),
-                    }
-                })?;
+                    let otlp_bytes: OtlpProtoBytes =
+                        OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(otap_records))
+                            .try_into()
+                            .map_err(|e| format!("Failed to convert OTAP to OTLP: {:?}", e))?;
 
-                // Use the transformer with config
-                let log_entries_iter = self.transformer.convert_to_log_analytics(&request);
+                    let OtlpProtoBytes::ExportLogsRequest(bytes) = otlp_bytes else {
+                        return Err("Expected ExportLogsRequest bytes".to_string());
+                    };
 
-                for json_bytes in log_entries_iter {
-                    match self.gzip_batcher.push(&json_bytes) {
-                        gzip_batcher::PushResult::Ok => {
-                            // Successfully added to batch
-                        }
-                        gzip_batcher::PushResult::Full(batch) => {
-                            self.last_send_started = tokio::time::Instant::now();
-                            Self::spawn_send_batch(
-                                self.client.clone(),
-                                batch,
-                                effect_handler.clone(),
-                            );
-                        }
-                        gzip_batcher::PushResult::TooLarge => {
-                            // Log entry too large to send
-                            effect_handler
+                    let request = ExportLogsServiceRequest::decode(&bytes[..])
+                        .map_err(|e| format!("Failed to decode logs request: {}", e))?;
+
+                    let log_entries_iter = self.transformer.convert_to_log_analytics(&request);
+
+                    for json_bytes in log_entries_iter {
+                        match self.gzip_batcher.push(&json_bytes) {
+                            gzip_batcher::PushResult::Ok => {
+                                // Nothing to flush
+                            }
+                            gzip_batcher::PushResult::Full(batch) => {
+                                self.last_send_started = tokio::time::Instant::now();
+                                self.client
+                                    .send(batch)
+                                    .await
+                                    .map_err(|e| format!("Failed to send batch: {}", e))?;
+
+                                // Yield to allow the spawned task to start processing
+                                tokio::task::yield_now().await;
+                            }
+                            gzip_batcher::PushResult::TooLarge => {
+                                // Log entry too large to send
+                                effect_handler
                                 .info(
                                     "[AzureMonitorExporter] Log entry too large to send; dropping",
                                 )
                                 .await;
+                            }
                         }
                     }
                 }
-            }
-            OtlpProtoBytes::ExportMetricsRequest(_) => {
-                // TODO: Use debug level when logging is integrated
-                effect_handler
-                    .info("[AzureMonitorExporter] Metrics not supported; dropping payload")
-                    .await;
-            }
-            OtlpProtoBytes::ExportTracesRequest(_) => {
-                // TODO: Use debug level when logging is integrated
-                effect_handler
-                    .info("[AzureMonitorExporter] Traces not supported; dropping payload")
-                    .await;
+
+                OtapArrowRecords::Metrics(_) => {
+                    // TODO: Use debug level when logging is integrated
+                    effect_handler
+                        .info("[AzureMonitorExporter] Metrics not supported; dropping payload")
+                        .await;
+                }
+
+                OtapArrowRecords::Traces(_) => {
+                    // TODO: Use debug level when logging is integrated
+                    effect_handler
+                        .info("[AzureMonitorExporter] Traces not supported; dropping payload")
+                        .await;
+                }
+            },
+
+            OtapPayload::OtlpBytes(otlp_bytes) => {
+                match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                        let request = ExportLogsServiceRequest::decode(bytes.as_ref())
+                            .map_err(|e| format!("Failed to decode OTLP logs request: {e}"))?;
+
+                        // Use the transformer with config
+                        let log_entries_iter = self.transformer.convert_to_log_analytics(&request);
+                        tokio::task::yield_now().await;
+
+                        for json_bytes in log_entries_iter {
+                            match self.gzip_batcher.push(&json_bytes) {
+                                gzip_batcher::PushResult::Ok => {
+                                    // Nothing to flush
+                                }
+                                gzip_batcher::PushResult::Full(batch) => {
+                                    self.last_send_started = tokio::time::Instant::now();
+                                    self.client
+                                        .send(batch)
+                                        .await
+                                        .map_err(|e| format!("Failed to send batch: {}", e))?;
+
+                                    // Yield to allow the spawned task to start processing
+                                    tokio::task::yield_now().await;
+                                }
+                                gzip_batcher::PushResult::TooLarge => {
+                                    // Log entry too large to send
+                                    effect_handler
+                                        .info(
+                                            "[AzureMonitorExporter] Log entry too large to send; dropping",
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                    OtlpProtoBytes::ExportMetricsRequest(_) => {
+                        // TODO: Use debug level when logging is integrated
+                        effect_handler
+                            .info("[AzureMonitorExporter] Metrics not supported; dropping payload")
+                            .await;
+                    }
+                    OtlpProtoBytes::ExportTracesRequest(_) => {
+                        // TODO: Use debug level when logging is integrated
+                        effect_handler
+                            .info("[AzureMonitorExporter] Traces not supported; dropping payload")
+                            .await;
+                    }
+                }
             }
         }
 
@@ -143,7 +188,7 @@ impl AzureMonitorExporter {
     }
 }
 
-const SEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const SEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for AzureMonitorExporter {
@@ -159,28 +204,35 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             ))
             .await;
 
-        // Initialize the flush deadline
-        let mut next_send = self.last_send_started + SEND_INTERVAL;
+        let mut next_send = tokio::time::Instant::now() + SEND_INTERVAL;
 
         loop {
+            // 1. Always calculate the deadline based on the LAST time we tried to flush
             tokio::select! {
-                // 1. Handle flush timeout
                 _ = tokio::time::sleep_until(next_send) => {
                     if self.last_send_started + SEND_INTERVAL <= tokio::time::Instant::now() {
-                            match self.gzip_batcher.flush() {
-                                gzip_batcher::FlushResult::Empty => {}
-                                gzip_batcher::FlushResult::Flush(batch) => {
-                                    Self::spawn_send_batch(
-                                        self.client.clone(),
-                                        batch,
-                                        effect_handler.clone(),
-                                    );
-                                }
+                        // 2. Attempt flush
+                        match self.gzip_batcher.flush() {
+                            gzip_batcher::FlushResult::Empty => {
+                                // Nothing to flush
                             }
+                            gzip_batcher::FlushResult::Flush(batch) => {
+                                self.last_send_started = tokio::time::Instant::now();
+                                self.client.send(batch)
+                                    .await
+                                    .map_err(|e| Error::InternalError { message: format!("Failed to send batch: {}", e) })?;
+
+                                // Yield to allow spawned send tasks to run, especially in single-threaded runtimes
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    }
+                    else {
+                        // This can happen if the flush took longer than SEND_INTERVAL
+                        println!("[AzureMonitorExporter] Last flush still recent");
                     }
 
-                    // Reset the timer
-                    next_send = tokio::time::Instant::now() + SEND_INTERVAL;
+                    next_send = max(self.last_send_started, tokio::time::Instant::now()) + SEND_INTERVAL;
                 }
 
                 // 2. Handle incoming messages
@@ -194,11 +246,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             match self.gzip_batcher.flush() {
                                 gzip_batcher::FlushResult::Empty => {}
                                 gzip_batcher::FlushResult::Flush(batch) => {
-                                    Self::spawn_send_batch(
-                                        self.client.clone(),
-                                        batch,
-                                        effect_handler.clone(),
-                                    );
+                                    self.last_send_started = tokio::time::Instant::now();
+                                    self.client.send(batch)
+                                        .await
+                                        .map_err(|e| Error::InternalError { message: format!("Failed to send batch: {}", e) })?;
                                 }
                             }
 
@@ -216,6 +267,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     ))
                                     .await;
                             }
+                            // Yield to allow spawned send tasks to run, especially in single-threaded runtimes
+                            tokio::task::yield_now().await;
                         }
                         Ok(_) => {
                             // Ignore other message types
