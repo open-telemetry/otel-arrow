@@ -46,11 +46,15 @@ impl GzipBatcher {
         }
 
         if self.total_uncompressed_size == 0 {
-            self.buf.write_all(b"[").expect("write to memory buffer failed");
+            self.buf
+                .write_all(b"[")
+                .expect("write to memory buffer failed");
             self.total_uncompressed_size += 1;
             self.current_uncompressed_size += 1;
         } else {
-            self.buf.write_all(b",").expect("write to memory buffer failed");
+            self.buf
+                .write_all(b",")
+                .expect("write to memory buffer failed");
             self.total_uncompressed_size += 1;
             self.current_uncompressed_size += 1;
         }
@@ -76,7 +80,9 @@ impl GzipBatcher {
                 FlushResult::Flush(compressed_data) => PushResult::Full(compressed_data),
             }
         } else {
-            self.buf.write_all(data).expect("write to memory buffer failed");
+            self.buf
+                .write_all(data)
+                .expect("write to memory buffer failed");
             self.current_uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
             self.record_count += 1;
@@ -90,7 +96,9 @@ impl GzipBatcher {
             return FlushResult::Empty;
         }
 
-        self.buf.write_all(b"]").expect("write to memory buffer failed");
+        self.buf
+            .write_all(b"]")
+            .expect("write to memory buffer failed");
 
         let old_buf = std::mem::replace(
             &mut self.buf,
