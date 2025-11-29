@@ -10,7 +10,6 @@
 //! ToDo: Handle Ack and Nack, return proper batch status
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
-use async_trait::async_trait;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
 use otap_df_pdata::{
     Consumer,
