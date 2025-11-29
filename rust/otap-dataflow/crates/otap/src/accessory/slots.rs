@@ -134,7 +134,8 @@ mod tests {
     fn test_take_current() {
         let mut state = create_test_state();
 
-        assert_eq!(state.slots.capacity(), 0);
+        // Pre-fill to capacity
+        assert_eq!(state.slots.capacity(), 3);
 
         let (key, rx) = state.allocate(|| oneshot::channel()).unwrap();
         assert_eq!(state.slots.len(), 1);
