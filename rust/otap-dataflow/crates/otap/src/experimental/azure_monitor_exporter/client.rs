@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use azure_core::credentials::TokenCredential;
+use azure_core::credentials::{TokenCredential, AccessToken};
 use azure_core::time::OffsetDateTime;
 use reqwest::{
     Client,
@@ -192,210 +192,150 @@ impl LogsIngestionClient {
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
-//     use time::{Duration, OffsetDateTime};
-//     use wiremock::{
-//         Mock, MockServer, ResponseTemplate,
-//         matchers::{header, method},
-//     };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use azure_core::credentials::TokenRequestOptions;
+    use std::sync::Mutex;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
-//     #[derive(Debug)]
-//     struct FakeCredential;
+    #[derive(Debug)]
+    struct MockCredential {
+        token: String,
+        expires_in: azure_core::time::Duration,
+        call_count: Arc<Mutex<usize>>,
+    }
 
-//     #[async_trait::async_trait]
-//     impl TokenCredential for FakeCredential {
-//         async fn get_token(
-//             &self,
-//             _scopes: &[&str],
-//             _options: Option<TokenRequestOptions<'_>>,
-//         ) -> azure_core::Result<AccessToken> {
-//             Ok(AccessToken::new(
-//                 "fake-token",
-//                 OffsetDateTime::now_utc() + Duration::hours(1),
-//             ))
-//         }
-//     }
+    #[async_trait::async_trait]
+    impl TokenCredential for MockCredential {
+        async fn get_token(
+            &self,
+            _scopes: &[&str],
+            _options: Option<TokenRequestOptions<'_>>,
+        ) -> azure_core::Result<AccessToken> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
 
-//     #[tokio::test]
-//     async fn test_send_success() {
-//         let server = MockServer::start().await;
+            Ok(AccessToken {
+                token: self.token.clone().into(),
+                expires_on: OffsetDateTime::now_utc() + self.expires_in,
+            })
+        }
+    }
 
-//         Mock::given(method("POST"))
-//             .and(header("content-encoding", "gzip"))
-//             .and(header("authorization", "Bearer fake-token"))
-//             .respond_with(ResponseTemplate::new(200))
-//             .mount(&server)
-//             .await;
+    #[tokio::test]
+    async fn test_send_success() {
+        let mock_server = MockServer::start().await;
 
-//         let client = LogsIngestionClient::from_parts(
-//             Client::new(),
-//             server.uri(),
-//             Arc::new(FakeCredential),
-//             "https://monitor.azure.com/.default".into(),
-//         );
+        Mock::given(method("POST"))
+            .and(path("/dataCollectionRules/dcr1/streams/stream1"))
+            .and(header("Content-Type", "application/json"))
+            .and(header("Content-Encoding", "gzip"))
+            .and(header("Authorization", "Bearer test_token"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
 
-//         let body = serde_json::json!({"test": "data"});
-//         let result = client.send(body).await;
-//         assert!(result.is_ok());
-//     }
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
 
-//     #[tokio::test]
-//     async fn test_send_auth_failure() {
-//         let server = MockServer::start().await;
+        let mut client = LogsIngestionClient::from_parts(
+            Client::new(),
+            format!(
+                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
+                mock_server.uri()
+            ),
+            credential,
+            "scope".to_string(),
+        );
 
-//         Mock::given(method("POST"))
-//             .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
-//             .mount(&server)
-//             .await;
+        let result = client.send(vec![1, 2, 3]).await;
+        assert!(result.is_ok());
+        assert_eq!(*call_count.lock().unwrap(), 1); // Token fetched once
+    }
 
-//         let client = LogsIngestionClient::from_parts(
-//             Client::new(),
-//             server.uri(),
-//             Arc::new(FakeCredential),
-//             "https://monitor.azure.com/.default".into(),
-//         );
+    #[tokio::test]
+    async fn test_send_auth_failure_refreshes_token() {
+        let mock_server = MockServer::start().await;
 
-//         let result = client.send(serde_json::json!({"test": "data"})).await;
-//         assert!(result.is_err());
-//         assert!(result.unwrap_err().contains("Authentication failed"));
-//     }
+        // First request fails with 401
+        Mock::given(method("POST"))
+            .and(path("/dataCollectionRules/dcr1/streams/stream1"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
 
-//     #[test]
-//     fn test_gzip_compress() {
-//         let client = LogsIngestionClient::from_parts(
-//             Client::new(),
-//             String::new(),
-//             Arc::new(FakeCredential),
-//             String::new(),
-//         );
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
 
-//         let data = b"test data to compress";
-//         let compressed = client.gzip_compress(data).unwrap();
+        let mut client = LogsIngestionClient::from_parts(
+            Client::new(),
+            format!(
+                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
+                mock_server.uri()
+            ),
+            credential,
+            "scope".to_string(),
+        );
 
-//         // Verify it's actually compressed (should be smaller for repetitive data)
-//         assert!(!compressed.is_empty());
+        // This should fail with 401, but invalidate the token
+        let result = client.send(vec![1, 2, 3]).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Authentication failed"));
 
-//         // Verify gzip magic bytes
-//         assert_eq!(compressed[0], 0x1f);
-//         assert_eq!(compressed[1], 0x8b);
-//     }
+        // Token should have been fetched once initially
+        assert_eq!(*call_count.lock().unwrap(), 1);
 
-//     #[tokio::test]
-//     async fn test_error_responses() {
-//         use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        // Next call should fetch token again because it was invalidated
+        mock_server.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
 
-//         let cases = vec![
-//             (403, "Authorization failed"),
-//             (413, "Payload too large"),
-//             (429, "Rate limited"),
-//             (500, "Request failed"),
-//         ];
+        let result = client.send(vec![1, 2, 3]).await;
+        assert!(result.is_ok());
+        assert_eq!(*call_count.lock().unwrap(), 2); // Token fetched again
+    }
 
-//         for (status, expected_msg) in cases {
-//             let server = MockServer::start().await;
+    #[tokio::test]
+    async fn test_send_rate_limited() {
+        let mock_server = MockServer::start().await;
 
-//             Mock::given(method("POST"))
-//                 .respond_with(ResponseTemplate::new(status))
-//                 .mount(&server)
-//                 .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&mock_server)
+            .await;
 
-//             let client = LogsIngestionClient::from_parts(
-//                 Client::new(),
-//                 server.uri(),
-//                 Arc::new(FakeCredential),
-//                 "scope".into(),
-//             );
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
 
-//             let result = client.send(serde_json::json!({"test": "data"})).await;
-//             assert!(result.is_err());
-//             assert!(result.unwrap_err().contains(expected_msg));
-//         }
-//     }
+        let mut client = LogsIngestionClient::from_parts(
+            Client::new(),
+            format!(
+                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
+                mock_server.uri()
+            ),
+            credential,
+            "scope".to_string(),
+        );
 
-//     #[tokio::test]
-//     async fn send_happy_path_compresses_and_posts() {
-//         use wiremock::{
-//             Mock, MockServer, ResponseTemplate,
-//             matchers::{header, method, path, query_param},
-//         };
-//         let server = MockServer::start().await;
-
-//         Mock::given(method("POST"))
-//             .and(header("content-encoding", "gzip"))
-//             .and(path("/dataCollectionRules/dcr/streams/stream"))
-//             .and(query_param("api-version", "2021-11-01-preview"))
-//             .respond_with(ResponseTemplate::new(200))
-//             .mount(&server)
-//             .await;
-
-//         let client = Client::new();
-//         let logs_client = LogsIngestionClient::from_parts(
-//             client,
-//             format!(
-//                 "{}/dataCollectionRules/dcr/streams/stream?api-version=2021-11-01-preview",
-//                 server.uri()
-//             ),
-//             Arc::new(FakeCredential),
-//             "https://monitor.azure.com/.default".to_string(),
-//         );
-
-//         logs_client
-//             .send(vec![serde_json::json!({"foo": "bar"})])
-//             .await
-//             .unwrap();
-//     }
-
-//     #[test]
-//     fn test_create_credential_managed_identity_system_assigned() {
-//         use crate::experimental::azure_monitor_exporter::config::AuthConfig;
-
-//         let auth_config = AuthConfig {
-//             method: AuthMethod::ManagedIdentity,
-//             client_id: None,
-//             scope: "https://monitor.azure.com/.default".to_string(),
-//         };
-
-//         let result = LogsIngestionClient::create_credential(&auth_config);
-//         assert!(
-//             result.is_ok(),
-//             "Should successfully create system-assigned managed identity credential"
-//         );
-//     }
-
-//     #[test]
-//     fn test_create_credential_managed_identity_user_assigned() {
-//         use crate::experimental::azure_monitor_exporter::config::AuthConfig;
-
-//         let auth_config = AuthConfig {
-//             method: AuthMethod::ManagedIdentity,
-//             client_id: Some("test-client-id-12345".to_string()),
-//             scope: "https://monitor.azure.com/.default".to_string(),
-//         };
-
-//         let result = LogsIngestionClient::create_credential(&auth_config);
-//         assert!(
-//             result.is_ok(),
-//             "Should successfully create user-assigned managed identity credential"
-//         );
-//     }
-
-//     #[test]
-//     fn test_create_credential_development() {
-//         use crate::experimental::azure_monitor_exporter::config::AuthConfig;
-
-//         let auth_config = AuthConfig {
-//             method: AuthMethod::Development,
-//             client_id: None,
-//             scope: "https://monitor.azure.com/.default".to_string(),
-//         };
-
-//         let result = LogsIngestionClient::create_credential(&auth_config);
-//         assert!(
-//             result.is_ok(),
-//             "Should successfully create developer tools credential"
-//         );
-//     }
-// }
+        let result = client.send(vec![1, 2, 3]).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Rate limited"));
+    }
+}
