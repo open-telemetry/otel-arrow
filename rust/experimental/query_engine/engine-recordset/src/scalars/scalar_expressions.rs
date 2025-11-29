@@ -460,6 +460,8 @@ where
                 }
             }
         }
+        ScalarExpression::Argument(_) => todo!(),
+        ScalarExpression::InvokeFunction(_) => todo!(),
     };
 
     execution_context.add_diagnostic_if_enabled(
