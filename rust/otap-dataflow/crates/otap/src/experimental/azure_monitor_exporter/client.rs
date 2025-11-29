@@ -195,6 +195,7 @@ impl LogsIngestionClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use azure_core::credentials::{AccessToken, TokenCredential};
     use azure_core::credentials::TokenRequestOptions;
     use std::sync::Mutex;
     use wiremock::matchers::{header, method, path};
