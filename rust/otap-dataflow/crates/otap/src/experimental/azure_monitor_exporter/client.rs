@@ -2,18 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use azure_core::credentials::TokenCredential;
-use azure_identity::{
-    DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
-    ManagedIdentityCredentialOptions, UserAssignedId,
-};
+use azure_core::time::OffsetDateTime;
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderValue},
 };
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::experimental::azure_monitor_exporter::config::{AuthMethod, Config};
+use crate::experimental::azure_monitor_exporter::auth::Auth;
+use crate::experimental::azure_monitor_exporter::config::Config;
 
 /// HTTP client for Azure Log Analytics Data Collection Rule (DCR) endpoint.
 ///
@@ -23,8 +21,13 @@ use crate::experimental::azure_monitor_exporter::config::{AuthMethod, Config};
 pub struct LogsIngestionClient {
     http_client: Client,
     endpoint: String,
-    credential: Arc<dyn TokenCredential>,
-    scope: String,
+    auth: Auth,
+    // Pre-formatted authorization header for zero-allocation reuse
+    auth_header: HeaderValue,
+    // Use Instant for faster comparisons (monotonic clock)
+    token_valid_until: Instant,
+    // Pre-built static headers that never change
+    static_headers: HeaderMap,
 }
 
 impl LogsIngestionClient {
@@ -44,11 +47,18 @@ impl LogsIngestionClient {
         credential: Arc<dyn TokenCredential>,
         scope: String,
     ) -> Self {
+        // Pre-build static headers
+        let mut static_headers = HeaderMap::with_capacity(2);
+        _ = static_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        _ = static_headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+
         Self {
             http_client,
             endpoint,
-            credential,
-            scope,
+            auth: Auth::from_credential(credential, scope),
+            auth_header: HeaderValue::from_static("Bearer "),
+            token_valid_until: Instant::now(),
+            static_headers,
         }
     }
 
@@ -63,6 +73,8 @@ impl LogsIngestionClient {
     pub fn new(config: &Config) -> Result<Self, String> {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(10) // Reuse connections
+            .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
@@ -72,64 +84,55 @@ impl LogsIngestionClient {
             config.api.dcr_endpoint, config.api.dcr, config.api.stream_name
         );
 
-        // Create credential based on auth method in config
-        let credential = Self::create_credential(&config.auth)?;
+        // Create auth handler
+        let auth =
+            Auth::new(&config.auth).map_err(|e| format!("Failed to create auth handler: {e}"))?;
+
+        // Pre-build static headers
+        let mut static_headers = HeaderMap::with_capacity(2);
+        _ = static_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        _ = static_headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
 
         Ok(Self {
             http_client,
             endpoint,
-            credential,
-            scope: config.auth.scope.clone(),
+            auth,
+            auth_header: HeaderValue::from_static("Bearer "),
+            token_valid_until: Instant::now(),
+            static_headers,
         })
     }
 
-    // TODO: Remove print_stdout after logging is set up
-    #[allow(clippy::print_stdout)]
-    /// Creates the appropriate credential based on the authentication method in config.
-    ///
-    /// # Arguments
-    /// * `config` - The authentication configuration
-    ///
-    /// # Returns
-    /// * `Ok(Arc<dyn TokenCredential>)` - The configured credential
-    /// * `Err(String)` - Error message if credential creation fails
-    fn create_credential(
-        auth_config: &crate::experimental::azure_monitor_exporter::config::AuthConfig,
-    ) -> Result<Arc<dyn TokenCredential>, String> {
-        match auth_config.method {
-            AuthMethod::ManagedIdentity => {
-                let mut options = ManagedIdentityCredentialOptions::default();
+    /// Refresh the token if needed and update the pre-formatted header
+    #[inline]
+    async fn ensure_valid_token(&mut self) -> Result<(), String> {
+        let now = Instant::now();
 
-                if let Some(client_id) = &auth_config.client_id {
-                    // User-assigned managed identity
-                    println!("Using user-assigned managed identity with client_id: {client_id}");
-                    options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
-                } else {
-                    // System-assigned managed identity
-                    println!("Using system-assigned managed identity");
-                    // user_assigned_id remains None for system-assigned
-                }
-
-                let credential = ManagedIdentityCredential::new(Some(options))
-                    .map_err(|e| format!("Failed to create managed identity credential: {e}"))?;
-
-                Ok(credential as Arc<dyn TokenCredential>)
-            }
-            AuthMethod::Development => {
-                println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
-                // DeveloperToolsCredential tries Azure CLI and Azure Developer CLI
-                let credential =
-                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                        .map_err(|e| {
-                            format!(
-                                "Failed to create developer tools credential: {e}. \
-                            Ensure Azure CLI or Azure Developer CLI is installed and logged in"
-                            )
-                        })?;
-
-                Ok(credential as Arc<dyn TokenCredential>)
-            }
+        // Fast path: token is still valid
+        if now < self.token_valid_until {
+            return Ok(());
         }
+
+        // Slow path: need to refresh token
+        let token = self
+            .auth
+            .get_token()
+            .await
+            .map_err(|e| format!("Failed to acquire token: {e}"))?;
+
+        // Pre-format the authorization header to avoid repeated allocation
+        self.auth_header = HeaderValue::from_str(&format!("Bearer {}", token.token.secret()))
+            .map_err(|_| "Invalid token format".to_string())?;
+
+        // Calculate validity using Instant for faster comparisons
+        // Refresh 5 minutes before expiry
+        let valid_seconds = (token.expires_on - OffsetDateTime::now_utc())
+            .whole_seconds()
+            .saturating_sub(300); // 5 minutes = 300 seconds
+
+        self.token_valid_until = now + Duration::from_secs(valid_seconds.max(0) as u64);
+
+        Ok(())
     }
 
     // TODO: Remove print_stdout after logging is set up
@@ -142,28 +145,15 @@ impl LogsIngestionClient {
     /// # Returns
     /// * `Ok(())` - If the request was successful
     /// * `Err(String)` - Error message if the request failed
-    pub async fn send(&self, body: Vec<u8>) -> Result<(), String> {
-        // Use scope from config instead of hardcoded value
-        let token_response = self
-            .credential
-            .get_token(
-                &[&self.scope],
-                Some(azure_core::credentials::TokenRequestOptions::default()),
-            )
-            .await
-            .map_err(|e| format!("Failed to get token: {e}"))?;
+    pub async fn send(&mut self, body: Vec<u8>) -> Result<(), String> {
+        // Ensure we have a valid token (fast path when cached)
+        self.ensure_valid_token().await?;
 
-        let token = token_response.token.secret();
+        // Clone static headers and add the auth header
+        let mut headers = self.static_headers.clone();
+        _ = headers.insert(AUTHORIZATION, self.auth_header.clone());
 
-        // Build headers
-        let mut headers = HeaderMap::new();
-        let _ = headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        let _ = headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-        let _ = headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {token}"))
-                .map_err(|_| "Invalid token format".to_string())?,
-        );
+        let start = Instant::now();
 
         // Send compressed body
         let response = self
@@ -175,20 +165,30 @@ impl LogsIngestionClient {
             .await
             .map_err(|e| format!("Failed to send request: {e}"))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error = response.text().await.unwrap_or_default();
+        let duration = start.elapsed();
+        println!("[AzureMonitorExporter] Sent batch in {:?}", duration);
 
-            match status.as_u16() {
-                401 => return Err(format!("Authentication failed: {error}")),
-                403 => return Err(format!("Authorization failed: {error}")),
-                413 => return Err("Payload too large - reduce batch size".to_string()),
-                429 => return Err(format!("Rate limited: {error}")),
-                _ => return Err(format!("Request failed ({status}): {error}")),
-            }
+        // Fast path for success
+        if response.status().is_success() {
+            return Ok(());
         }
 
-        Ok(())
+        // Slow path: handle errors
+        let status = response.status();
+        let error = response.text().await.unwrap_or_default();
+
+        match status.as_u16() {
+            401 => {
+                // Invalidate token and force refresh on next call
+                self.token_valid_until = Instant::now();
+                self.auth.invalidate_token();
+                Err(format!("Authentication failed: {error}"))
+            }
+            403 => Err(format!("Authorization failed: {error}")),
+            413 => Err("Payload too large - reduce batch size".to_string()),
+            429 => Err(format!("Rate limited: {error}")),
+            _ => Err(format!("Request failed ({status}): {error}")),
+        }
     }
 }
 

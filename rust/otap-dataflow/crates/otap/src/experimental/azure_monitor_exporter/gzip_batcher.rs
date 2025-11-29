@@ -37,6 +37,10 @@ impl GzipBatcher {
     }
 
     pub fn push(&mut self, data: &[u8]) -> PushResult {
+        // This limits uncompressed data size to a maximum of 1MB
+        // Is this a good compromise for code simplicity vs efficiency?
+        // This algorithm is still very good up to 100KB per entry, which
+        // can be considered quite abnormal for log entries.
         if data.len() > (ONE_MB - 2) {
             return PushResult::TooLarge;
         }
