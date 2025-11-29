@@ -113,14 +113,19 @@ impl AzureMonitorExporter {
                                 }
                                 self.time_of_last_send = tokio::time::Instant::now();
                                 self.total_rows_sent += row_count;
-                                let rows_per_second = self.total_rows_sent
-                                    / (self.time_of_last_send - self.time_of_first_send.unwrap())
-                                        .as_secs_f64();
 
-                                println!(
-                                    "\r[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
-                                    self.total_rows_sent, rows_per_second
-                                );
+                                // Only calculate rate if we have a first send time
+                                if let Some(first_send) = self.time_of_first_send {
+                                    let rows_per_second = self.total_rows_sent
+                                        / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                    effect_handler
+                                        .info(&format!(
+                                            "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                            self.total_rows_sent, rows_per_second
+                                        ))
+                                        .await;
+                                }
 
                                 // Yield to allow the spawned task to start processing
                                 tokio::task::yield_now().await;
@@ -178,15 +183,19 @@ impl AzureMonitorExporter {
                                     }
                                     self.time_of_last_send = tokio::time::Instant::now();
                                     self.total_rows_sent += row_count;
-                                    let rows_per_second = self.total_rows_sent
-                                        / (self.time_of_last_send
-                                            - self.time_of_first_send.unwrap())
-                                        .as_secs_f64();
 
-                                    println!(
-                                        "\r[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
-                                        self.total_rows_sent, rows_per_second
-                                    );
+                                    // Only calculate rate if we have a first send time
+                                    if let Some(first_send) = self.time_of_first_send {
+                                        let rows_per_second = self.total_rows_sent
+                                            / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                        effect_handler
+                                            .info(&format!(
+                                                "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                                self.total_rows_sent, rows_per_second
+                                            ))
+                                            .await;
+                                    }
 
                                     // Yield to allow the spawned task to start processing
                                     tokio::task::yield_now().await;
@@ -268,7 +277,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     if let Some(duration) = next_token_refresh.checked_duration_since(now_instant) {
                         let refresh_system_time = now_system + duration;
                         let datetime: chrono::DateTime<chrono::Local> = refresh_system_time.into();
-                        println!("Next token refresh scheduled at {}", datetime.format("%Y-%m-%d %H:%M:%S"));
+                        effect_handler
+                            .info(&format!(
+                                "Next token refresh scheduled at {}",
+                                datetime.format("%Y-%m-%d %H:%M:%S")
+                            ))
+                            .await;
                     }
                 }
 
@@ -290,15 +304,19 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                 }
                                 self.time_of_last_send = tokio::time::Instant::now();
                                 self.total_rows_sent += row_count;
-                                let rows_per_second = self.total_rows_sent
-                                    / (self.time_of_last_send
-                                        - self.time_of_first_send.unwrap())
-                                    .as_secs_f64();
 
-                                println!(
-                                    "\r[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
-                                    self.total_rows_sent, rows_per_second
-                                );
+                                // Only calculate rate if we have a first send time
+                                if let Some(first_send) = self.time_of_first_send {
+                                    let rows_per_second = self.total_rows_sent
+                                        / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                    effect_handler
+                                        .info(&format!(
+                                            "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                            self.total_rows_sent, rows_per_second
+                                        ))
+                                        .await;
+                                }
 
                                 // Yield to allow the spawned task to start processing
                                 tokio::task::yield_now().await;
@@ -334,15 +352,19 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     }
                                     self.time_of_last_send = tokio::time::Instant::now();
                                     self.total_rows_sent += row_count;
-                                    let rows_per_second = self.total_rows_sent
-                                        / (self.time_of_last_send
-                                            - self.time_of_first_send.unwrap())
-                                        .as_secs_f64();
 
-                                    println!(
-                                        "\r[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
-                                        self.total_rows_sent, rows_per_second
-                                    );
+                                    // Only calculate rate if we have a first send time
+                                    if let Some(first_send) = self.time_of_first_send {
+                                        let rows_per_second = self.total_rows_sent
+                                            / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                        effect_handler
+                                            .info(&format!(
+                                                "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                                self.total_rows_sent, rows_per_second
+                                            ))
+                                            .await;
+                                    }
 
                                     // Yield to allow the spawned task to start processing
                                     tokio::task::yield_now().await;
