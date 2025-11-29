@@ -81,7 +81,9 @@ impl GzipBatcher {
 
             match flush_result {
                 FlushResult::Empty => PushResult::Ok,
-                FlushResult::Flush(compressed_data, row_count) => PushResult::Full(compressed_data, row_count),
+                FlushResult::Flush(compressed_data, row_count) => {
+                    PushResult::Full(compressed_data, row_count)
+                }
             }
         } else {
             self.buf
@@ -104,10 +106,7 @@ impl GzipBatcher {
             .write_all(b"]")
             .expect("write to memory buffer failed");
 
-        let old_buf = std::mem::replace(
-            &mut self.buf,
-            Self::new_encoder(),
-        );
+        let old_buf = std::mem::replace(&mut self.buf, Self::new_encoder());
 
         let compressed_data = old_buf.finish().expect("compression failed");
         let compressed_size = compressed_data.len();
