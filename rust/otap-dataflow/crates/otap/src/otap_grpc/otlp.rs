@@ -6,8 +6,8 @@
 
 pub mod client;
 
-pub mod server_new;
 pub mod server;
+pub mod server_new;
 
 const LOGS_SERVICE_NAME: &str = "opentelemetry.proto.collector.logs.v1.LogsService";
 const LOGS_SERVICE_EXPORT_PATH: &str = "/opentelemetry.proto.collector.logs.v1.LogsService/Export";

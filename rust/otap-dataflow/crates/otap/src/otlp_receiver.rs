@@ -866,7 +866,9 @@ mod tests {
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: test_config(addr),
-                metrics: Arc::new(Mutex::new(pipeline_ctx.register_metrics::<OtlpReceiverMetrics>())),
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -898,7 +900,9 @@ mod tests {
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 config: test_config(addr),
-                metrics: Arc::new(Mutex::new(pipeline_ctx.register_metrics::<OtlpReceiverMetrics>())),
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,

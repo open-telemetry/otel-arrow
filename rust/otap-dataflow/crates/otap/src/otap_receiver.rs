@@ -13,7 +13,9 @@ use crate::OTAP_RECEIVER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::otap_grpc::middleware::zstd_header::ZstdRequestHeaderAdapter;
 use crate::otap_grpc::otlp::server::{RouteResponse, SharedState};
-use crate::otap_grpc::{ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings};
+use crate::otap_grpc::{
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, Settings,
+};
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -223,7 +225,12 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        effect_handler.info(&format!("Starting OTAP Receiver on {}", self.config.listening_addr)).await;
+        effect_handler
+            .info(&format!(
+                "Starting OTAP Receiver on {}",
+                self.config.listening_addr
+            ))
+            .await;
 
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;

@@ -167,7 +167,7 @@ impl Encoder for OtlpResponseEncoder {
                 response.encode(dst)
             }
         }
-            .map_err(|e| Status::internal(format!("unexpected error encoding response: {e}")))
+        .map_err(|e| Status::internal(format!("unexpected error encoding response: {e}")))
     }
 }
 
