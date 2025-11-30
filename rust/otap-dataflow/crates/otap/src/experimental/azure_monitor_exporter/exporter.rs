@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::cmp::max;
+
 use async_trait::async_trait;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_engine::control::NodeControlMsg;
@@ -9,10 +11,12 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use prost::Message as _;
 
 use crate::experimental::azure_monitor_exporter::client::LogsIngestionClient;
 use crate::experimental::azure_monitor_exporter::config::Config;
+use crate::experimental::azure_monitor_exporter::gzip_batcher::{self, GzipBatcher};
 use crate::experimental::azure_monitor_exporter::transformer::Transformer;
 use crate::pdata::OtapPdata;
 
@@ -24,6 +28,11 @@ pub struct AzureMonitorExporter {
     config: Config,
     client: LogsIngestionClient,
     transformer: Transformer,
+    gzip_batcher: GzipBatcher,
+    last_send_started: tokio::time::Instant,
+    total_rows_sent: f64,
+    time_of_first_send: Option<tokio::time::Instant>,
+    time_of_last_send: tokio::time::Instant,
 }
 
 impl AzureMonitorExporter {
@@ -41,104 +50,188 @@ impl AzureMonitorExporter {
         // Create log transformer
         let transformer = Transformer::new(&config);
 
+        // Create Gzip batcher
+        let gzip_batcher = GzipBatcher::new();
+
         Ok(Self {
             config,
             client,
             transformer,
+            gzip_batcher,
+            last_send_started: tokio::time::Instant::now(),
+            total_rows_sent: 0.0,
+            time_of_first_send: None,
+            time_of_last_send: tokio::time::Instant::now(),
         })
     }
 
     /// Handle a single pdata message.
     async fn handle_pdata(
-        &self,
+        &mut self,
         pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), String> {
         // TODO: Ack/Nack handling
         // Split pdata into context and payload
         let (_context, payload) = pdata.into_parts();
 
-        // Convert OTAP payload to OTLP bytes
-        // TODO: This conversion step should be eliminated
-        let otlp_bytes: OtlpProtoBytes =
-            payload
-                .try_into()
-                .map_err(|e| Error::PdataConversionError {
-                    error: format!("Failed to convert OTAP to OTLP: {e:?}"),
-                })?;
+        match payload {
+            OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
+                OtapArrowRecords::Logs(otap_records) => {
+                    effect_handler
+                        .info("Converting OTAP logs to OTLP bytes (fallback path)")
+                        .await;
 
-        match otlp_bytes {
-            OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                let request = ExportLogsServiceRequest::decode(bytes.as_ref()).map_err(|e| {
-                    Error::PDataError {
-                        reason: format!("Failed to decode OTLP logs request: {e}"),
+                    let otlp_bytes: OtlpProtoBytes =
+                        OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(otap_records))
+                            .try_into()
+                            .map_err(|e| format!("Failed to convert OTAP to OTLP: {:?}", e))?;
+
+                    let OtlpProtoBytes::ExportLogsRequest(bytes) = otlp_bytes else {
+                        return Err("Expected ExportLogsRequest bytes".to_string());
+                    };
+
+                    let request = ExportLogsServiceRequest::decode(&bytes[..])
+                        .map_err(|e| format!("Failed to decode logs request: {}", e))?;
+
+                    let log_entries_iter = self.transformer.convert_to_log_analytics(&request);
+
+                    for json_bytes in log_entries_iter {
+                        match self.gzip_batcher.push(&json_bytes) {
+                            gzip_batcher::PushResult::Ok => {
+                                // Nothing to flush
+                            }
+                            gzip_batcher::PushResult::Full(batch, row_count) => {
+                                self.last_send_started = tokio::time::Instant::now();
+                                self.client
+                                    .send(batch)
+                                    .await
+                                    .map_err(|e| format!("Failed to send batch: {}", e))?;
+
+                                if self.time_of_first_send.is_none() {
+                                    self.time_of_first_send = Some(tokio::time::Instant::now());
+                                }
+                                self.time_of_last_send = tokio::time::Instant::now();
+                                self.total_rows_sent += row_count;
+
+                                // Only calculate rate if we have a first send time
+                                if let Some(first_send) = self.time_of_first_send {
+                                    let rows_per_second = self.total_rows_sent
+                                        / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                    effect_handler
+                                        .info(&format!(
+                                            "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                            self.total_rows_sent, rows_per_second
+                                        ))
+                                        .await;
+                                }
+
+                                // Yield to allow the spawned task to start processing
+                                tokio::task::yield_now().await;
+                            }
+                            gzip_batcher::PushResult::TooLarge => {
+                                // Log entry too large to send
+                                effect_handler
+                                .info(
+                                    "[AzureMonitorExporter] Log entry too large to send; dropping",
+                                )
+                                .await;
+                            }
+                        }
                     }
-                })?;
-
-                // Use the transformer with config
-                let log_entries = self.transformer.convert_to_log_analytics(&request);
-
-                if log_entries.is_empty() {
-                    // TODO: Use debug level when logging is integrated
-                    effect_handler
-                        .info("[AzureMonitorExporter] No logs to send")
-                        .await;
-                    return Ok(());
                 }
 
-                // TODO: Use debug level when logging is integrated
-                effect_handler
-                    .info(&format!(
-                        "[AzureMonitorExporter] Sending {} log entries to stream '{}'",
-                        log_entries.len(),
-                        self.config.api.stream_name,
-                    ))
-                    .await;
-
-                // Debug: Print first entry as sample
-                if let Some(first) = log_entries.first() {
+                OtapArrowRecords::Metrics(_) => {
                     // TODO: Use debug level when logging is integrated
                     effect_handler
-                        .info(&format!(
-                            "[AzureMonitorExporter] Sample entry: {}",
-                            serde_json::to_string_pretty(first).unwrap_or_default()
-                        ))
+                        .info("[AzureMonitorExporter] Metrics not supported; dropping payload")
                         .await;
                 }
 
-                // Send to Azure Log Analytics
-                self.client
-                    .send(&log_entries)
-                    .await
-                    .map_err(|e| Error::InternalError {
-                        message: format!("Azure Monitor HTTP send failed: {e}"),
-                    })?;
+                OtapArrowRecords::Traces(_) => {
+                    // TODO: Use debug level when logging is integrated
+                    effect_handler
+                        .info("[AzureMonitorExporter] Traces not supported; dropping payload")
+                        .await;
+                }
+            },
 
-                // TODO: Use debug level when logging is integrated
-                effect_handler
-                    .info(&format!(
-                        "[AzureMonitorExporter] Successfully sent {} logs",
-                        log_entries.len()
-                    ))
-                    .await;
-            }
-            OtlpProtoBytes::ExportMetricsRequest(_) => {
-                // TODO: Use debug level when logging is integrated
-                effect_handler
-                    .info("[AzureMonitorExporter] Metrics not supported; dropping payload")
-                    .await;
-            }
-            OtlpProtoBytes::ExportTracesRequest(_) => {
-                // TODO: Use debug level when logging is integrated
-                effect_handler
-                    .info("[AzureMonitorExporter] Traces not supported; dropping payload")
-                    .await;
+            OtapPayload::OtlpBytes(otlp_bytes) => {
+                match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(bytes) => {
+                        let request = ExportLogsServiceRequest::decode(bytes.as_ref())
+                            .map_err(|e| format!("Failed to decode OTLP logs request: {e}"))?;
+
+                        // Use the transformer with config
+                        let log_entries_iter = self.transformer.convert_to_log_analytics(&request);
+
+                        for json_bytes in log_entries_iter {
+                            match self.gzip_batcher.push(&json_bytes) {
+                                gzip_batcher::PushResult::Ok => {
+                                    // Nothing to flush
+                                }
+                                gzip_batcher::PushResult::Full(batch, row_count) => {
+                                    self.last_send_started = tokio::time::Instant::now();
+                                    self.client
+                                        .send(batch)
+                                        .await
+                                        .map_err(|e| format!("Failed to send batch: {}", e))?;
+
+                                    if self.time_of_first_send.is_none() {
+                                        self.time_of_first_send = Some(tokio::time::Instant::now());
+                                    }
+                                    self.time_of_last_send = tokio::time::Instant::now();
+                                    self.total_rows_sent += row_count;
+
+                                    // Only calculate rate if we have a first send time
+                                    if let Some(first_send) = self.time_of_first_send {
+                                        let rows_per_second = self.total_rows_sent
+                                            / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                        effect_handler
+                                            .info(&format!(
+                                                "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                                self.total_rows_sent, rows_per_second
+                                            ))
+                                            .await;
+                                    }
+
+                                    // Yield to allow the spawned task to start processing
+                                    tokio::task::yield_now().await;
+                                }
+                                gzip_batcher::PushResult::TooLarge => {
+                                    // Log entry too large to send
+                                    effect_handler
+                                        .info(
+                                            "[AzureMonitorExporter] Log entry too large to send; dropping",
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                    OtlpProtoBytes::ExportMetricsRequest(_) => {
+                        // TODO: Use debug level when logging is integrated
+                        effect_handler
+                            .info("[AzureMonitorExporter] Metrics not supported; dropping payload")
+                            .await;
+                    }
+                    OtlpProtoBytes::ExportTracesRequest(_) => {
+                        // TODO: Use debug level when logging is integrated
+                        effect_handler
+                            .info("[AzureMonitorExporter] Traces not supported; dropping payload")
+                            .await;
+                    }
+                }
             }
         }
 
         Ok(())
     }
 }
+
+const SEND_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for AzureMonitorExporter {
@@ -154,28 +247,155 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             ))
             .await;
 
+        let mut next_send = tokio::time::Instant::now() + SEND_INTERVAL;
+        let mut next_token_refresh = tokio::time::Instant::now();
+
         loop {
-            match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+            tokio::select! {
+                _ = tokio::time::sleep_until(next_token_refresh) => {
+                    // Token is expiring soon or has expired, refresh it
                     effect_handler
-                        .info("[AzureMonitorExporter] Shutting down")
+                        .info("[AzureMonitorExporter] Refreshing token")
                         .await;
-                    return Ok(TerminalState::new(
-                        deadline,
-                        std::iter::empty::<otap_df_telemetry::metrics::MetricSetSnapshot>(),
-                    ));
-                }
-                Message::PData(pdata) => {
-                    if let Err(e) = self.handle_pdata(pdata, &effect_handler).await {
+
+                    self.client
+                        .ensure_valid_token()
+                        .await
+                        .map_err(|e| Error::InternalError { message: format!("Failed to refresh token: {}", e) })?;
+
+                    // token valid until is 5 minutes before expiry
+                    // we schedule refresh even earlier to account for
+                    // any possible delays
+                    let refresh_target = self.client.token_valid_until - tokio::time::Duration::from_secs(300);
+                    let min_refresh_time = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+
+                    next_token_refresh = max(refresh_target, min_refresh_time);
+
+                    // Convert Instant to SystemTime for display
+                    let now_instant = tokio::time::Instant::now();
+                    let now_system = std::time::SystemTime::now();
+                    if let Some(duration) = next_token_refresh.checked_duration_since(now_instant) {
+                        let refresh_system_time = now_system + duration;
+                        let datetime: chrono::DateTime<chrono::Local> = refresh_system_time.into();
                         effect_handler
                             .info(&format!(
-                                "[AzureMonitorExporter] Error processing data: {e}"
+                                "Next token refresh scheduled at {}",
+                                datetime.format("%Y-%m-%d %H:%M:%S")
                             ))
                             .await;
                     }
                 }
-                _ => {
-                    // Ignore other message types
+
+                _ = tokio::time::sleep_until(next_send) => {
+                    if self.last_send_started + SEND_INTERVAL <= tokio::time::Instant::now() {
+                        match self.gzip_batcher.flush() {
+                            gzip_batcher::FlushResult::Empty => {
+                                // Nothing to flush
+                            }
+                            gzip_batcher::FlushResult::Flush(batch, row_count) => {
+                                self.last_send_started = tokio::time::Instant::now();
+                                self.client
+                                    .send(batch)
+                                    .await
+                                    .map_err(|e| Error::InternalError { message: format!("Failed to send batch: {}", e) })?;
+
+                                if self.time_of_first_send.is_none() {
+                                    self.time_of_first_send = Some(tokio::time::Instant::now());
+                                }
+                                self.time_of_last_send = tokio::time::Instant::now();
+                                self.total_rows_sent += row_count;
+
+                                // Only calculate rate if we have a first send time
+                                if let Some(first_send) = self.time_of_first_send {
+                                    let rows_per_second = self.total_rows_sent
+                                        / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                    effect_handler
+                                        .info(&format!(
+                                            "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                            self.total_rows_sent, rows_per_second
+                                        ))
+                                        .await;
+                                }
+
+                                // Yield to allow the spawned task to start processing
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                    }
+                    else {
+                        // if we already flushed and sent, we don't need to do it again yet
+                    }
+
+                    next_send = max(self.last_send_started, tokio::time::Instant::now()) + SEND_INTERVAL;
+                }
+
+                // 2. Handle incoming messages
+                msg = msg_chan.recv() => {
+                    match msg {
+                        Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
+                            effect_handler
+                                .info("[AzureMonitorExporter] Shutting down")
+                                .await;
+
+                            match self.gzip_batcher.flush() {
+                                gzip_batcher::FlushResult::Empty => {}
+                                gzip_batcher::FlushResult::Flush(batch, row_count) => {
+                                    self.last_send_started = tokio::time::Instant::now();
+                                    self.client
+                                        .send(batch)
+                                        .await
+                                        .map_err(|e| Error::InternalError { message: format!("Failed to send batch: {}", e) })?;
+
+                                    if self.time_of_first_send.is_none() {
+                                        self.time_of_first_send = Some(tokio::time::Instant::now());
+                                    }
+                                    self.time_of_last_send = tokio::time::Instant::now();
+                                    self.total_rows_sent += row_count;
+
+                                    // Only calculate rate if we have a first send time
+                                    if let Some(first_send) = self.time_of_first_send {
+                                        let rows_per_second = self.total_rows_sent
+                                            / (self.time_of_last_send - first_send).as_secs_f64();
+
+                                        effect_handler
+                                            .info(&format!(
+                                                "[AzureMonitorExporter] Total rows sent: {}, Rate: {:.2} rows/s",
+                                                self.total_rows_sent, rows_per_second
+                                            ))
+                                            .await;
+                                    }
+
+                                    // Yield to allow the spawned task to start processing
+                                    tokio::task::yield_now().await;
+                                }
+                            }
+
+                            return Ok(TerminalState::new(
+                                deadline,
+                                std::iter::empty::<otap_df_telemetry::metrics::MetricSetSnapshot>(),
+                            ));
+                        }
+                        Ok(Message::PData(pdata)) => {
+                            // Process data
+                            if let Err(e) = self.handle_pdata(pdata, &effect_handler).await {
+                                effect_handler
+                                    .info(&format!(
+                                        "[AzureMonitorExporter] Error processing data: {e}"
+                                    ))
+                                    .await;
+                            }
+                            // Yield to allow spawned send tasks to run, especially in single-threaded runtimes
+                            tokio::task::yield_now().await;
+                        }
+                        Ok(_) => {
+                            // Ignore other message types
+                        }
+                        Err(e) => {
+                            // Channel error, likely closed
+                            return Err(Error::InternalError { message: format!("Channel error: {e}") });
+                        }
+                    }
                 }
             }
         }
