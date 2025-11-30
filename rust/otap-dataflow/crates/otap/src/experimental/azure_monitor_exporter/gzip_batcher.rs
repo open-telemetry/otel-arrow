@@ -296,9 +296,9 @@ mod tests {
                     use std::io::Read;
                     let mut decoder = GzDecoder::new(&compressed_data[..]);
                     let mut decompressed = String::new();
-                    let _ = decoder
+                    _ = decoder
                         .read_to_string(&mut decompressed)
-                        .expect(&format!("Batch {} should be valid gzip", full_count));
+                        .unwrap_or_else(|_| panic!("Batch {} should be valid gzip", full_count));
 
                     // Check JSON array structure
                     assert!(
@@ -368,7 +368,7 @@ mod tests {
                 panic!("Large entry should trigger Full result");
             }
             PushResult::TooLarge => {
-                assert!(true, "Correctly identified too large entry");
+                // Expected result - large entry correctly identified
             }
         }
     }
