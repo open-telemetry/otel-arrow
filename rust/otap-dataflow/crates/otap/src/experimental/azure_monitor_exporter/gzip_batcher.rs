@@ -200,7 +200,7 @@ mod tests {
                     total_uncompressed_sent += data_len;
                     // Continue pushing
                 }
-                PushResult::Full(compressed_data, row_count) => {
+                PushResult::Full(compressed_data, _) => {
                     push_count += 1;
                     total_uncompressed_sent += data_len;
 

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use azure_core::credentials::{AccessToken, TokenCredential};
 use azure_core::time::OffsetDateTime;
 use azure_identity::{
@@ -198,5 +201,142 @@ mod tests {
         // Should refresh
         let _ = auth.get_token().await.unwrap();
         assert_eq!(*call_count.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_new_with_managed_identity() {
+        let auth_config = AuthConfig {
+            method: AuthMethod::ManagedIdentity,
+            client_id: Some("test-client-id".to_string()),
+            scope: "https://test.scope".to_string(),
+        };
+
+        let auth = Auth::new(&auth_config);
+        assert!(auth.is_ok());
+        let auth = auth.unwrap();
+        assert_eq!(auth.scope, "https://test.scope");
+        assert_eq!(auth.cached_token.token.secret(), "");
+    }
+
+    #[test]
+    fn test_new_with_system_assigned_managed_identity() {
+        let auth_config = AuthConfig {
+            method: AuthMethod::ManagedIdentity,
+            client_id: None,
+            scope: "https://test.scope".to_string(),
+        };
+
+        let auth = Auth::new(&auth_config);
+        assert!(auth.is_ok());
+        let auth = auth.unwrap();
+        assert_eq!(auth.scope, "https://test.scope");
+        assert_eq!(auth.cached_token.token.secret(), "");
+    }
+
+    #[test]
+    fn test_new_with_development_auth() {
+        let auth_config = AuthConfig {
+            method: AuthMethod::Development,
+            client_id: None,
+            scope: "https://test.scope".to_string(),
+        };
+
+        let auth = Auth::new(&auth_config);
+        // This might fail if Azure CLI is not installed, but we can still test the code path
+        match auth {
+            Ok(auth) => {
+                assert_eq!(auth.scope, "https://test.scope");
+                assert_eq!(auth.cached_token.token.secret(), "");
+            }
+            Err(err) => {
+                // Expected if Azure CLI/Azure Developer CLI is not installed
+                assert!(err.contains("Failed to create developer tools credential"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_token_with_exactly_5_minute_buffer() {
+        let call_count = Arc::new(Mutex::new(0));
+        // Token expires in exactly 5 minutes (at the buffer boundary)
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(5),
+            call_count: call_count.clone(),
+        });
+
+        let mut auth = Auth::from_credential(credential, "scope".to_string());
+
+        // First call
+        let _ = auth.get_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Second call - should not use cache because expires_on is not > now + 5 minutes
+        let _ = auth.get_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_token_error_handling() {
+        #[derive(Debug)]
+        struct FailingCredential;
+
+        #[async_trait::async_trait]
+        impl TokenCredential for FailingCredential {
+            async fn get_token(
+                &self,
+                _scopes: &[&str],
+                _options: Option<TokenRequestOptions<'_>>,
+            ) -> azure_core::Result<AccessToken> {
+                Err(azure_core::error::Error::new(
+                    azure_core::error::ErrorKind::Credential,
+                    "Mock credential failure",
+                ))
+            }
+        }
+
+        let credential = Arc::new(FailingCredential);
+        let mut auth = Auth::from_credential(credential, "scope".to_string());
+
+        let result = auth.get_token().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to get token"));
+    }
+
+    #[tokio::test]
+    async fn test_cached_token_is_cloned() {
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
+
+        let mut auth = Auth::from_credential(credential, "scope".to_string());
+
+        // Get token twice and verify they are different instances (cloned)
+        let token1 = auth.get_token().await.unwrap();
+        let token2 = auth.get_token().await.unwrap();
+
+        // Both should have same value
+        assert_eq!(token1.token.secret(), token2.token.secret());
+        // But only one call should have been made
+        assert_eq!(*call_count.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_from_credential_initializes_with_expired_token() {
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: Arc::new(Mutex::new(0)),
+        });
+
+        let auth = Auth::from_credential(credential, "test_scope".to_string());
+
+        // Check that initial cached token is expired
+        assert_eq!(auth.cached_token.token.secret(), "");
+        assert!(auth.cached_token.expires_on <= OffsetDateTime::now_utc());
+        assert_eq!(auth.scope, "test_scope");
     }
 }
