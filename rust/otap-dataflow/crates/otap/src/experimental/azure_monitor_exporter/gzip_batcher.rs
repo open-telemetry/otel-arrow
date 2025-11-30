@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
