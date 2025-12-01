@@ -1,9 +1,13 @@
+//! Criterion micro-benchmark for the placeholder Quiver ingest path.
+
+#![allow(missing_docs)]
+
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use quiver::config::QuiverConfig;
 use quiver::engine::QuiverEngine;
 use quiver::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId};
@@ -48,11 +52,12 @@ impl RecordBundle for DummyBundle {
     }
 }
 
+/// Measures the placeholder ingest path so we can wire perf tooling later.
 fn ingest_placeholder(c: &mut Criterion) {
     let engine = QuiverEngine::new(QuiverConfig::default()).expect("config valid");
     let bundle = DummyBundle::new();
 
-    c.bench_function("ingest_placeholder", |b| {
+    let _ = c.bench_function("ingest_placeholder", |b| {
         b.iter(|| {
             let _ = engine.ingest(&bundle);
         });
