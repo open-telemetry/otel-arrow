@@ -37,8 +37,17 @@ impl QuiverEngine {
 
     /// Placeholder ingest method; later phases will implement WAL + segment logic.
     pub fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
-        let _ = bundle;
         self.metrics.record_ingest_attempt();
+
+        let descriptor = bundle.descriptor();
+        let _ingestion_time = bundle.ingestion_time();
+
+        for slot in &descriptor.slots {
+            if let Some(payload) = bundle.payload(slot.id) {
+                drop(payload);
+            }
+        }
+
         Err(QuiverError::unimplemented("ingest path"))
     }
 }
@@ -102,5 +111,22 @@ mod tests {
         let err = engine.ingest(&bundle).expect_err("not implemented");
         assert!(matches!(err, QuiverError::Unimplemented { .. }));
         assert_eq!(engine.metrics().ingest_attempts(), 1);
+    }
+
+    #[test]
+    fn config_returns_engine_configuration() {
+        let config = QuiverConfig::builder()
+            .data_dir("./config_return_test")
+            .build()
+            .expect("builder should produce valid config");
+        let engine = QuiverEngine::new(config.clone()).expect("config valid");
+
+        assert_eq!(engine.config(), &config);
+    }
+
+    #[test]
+    fn dummy_bundle_payload_handles_missing_slot() {
+        let bundle = DummyBundle::new();
+        assert!(bundle.payload(SlotId::new(10)).is_none());
     }
 }

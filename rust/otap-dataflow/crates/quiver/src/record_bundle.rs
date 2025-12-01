@@ -136,7 +136,29 @@ mod tests {
     fn descriptor_lookup_succeeds() {
         let bundle = DummyBundle::new();
         assert!(bundle.descriptor.get(SlotId::new(0)).is_some());
-        assert!(bundle.payload(SlotId::new(0)).is_some());
+    }
+
+    #[test]
+    fn ingestion_time_is_not_in_future() {
+        let bundle = DummyBundle::new();
+        let observed = bundle.ingestion_time();
+        assert!(observed.elapsed().is_ok());
+    }
+
+    #[test]
+    fn payload_round_trip_matches_expected_slot() {
+        let bundle = DummyBundle::new();
+        let payload = bundle
+            .payload(SlotId::new(0))
+            .expect("slot 0 should be populated");
+
+        assert_eq!(payload.schema_fingerprint, [0; 16]);
+        assert!(std::ptr::eq(payload.batch, &bundle.batch));
+    }
+
+    #[test]
+    fn payload_returns_none_for_missing_slot() {
+        let bundle = DummyBundle::new();
         assert!(bundle.payload(SlotId::new(42)).is_none());
     }
 }

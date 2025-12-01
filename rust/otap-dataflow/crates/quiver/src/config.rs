@@ -232,6 +232,7 @@ impl Default for RetentionConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU64;
 
     #[test]
     fn builder_round_trip() {
@@ -252,5 +253,87 @@ mod tests {
             ..QuiverConfig::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn empty_data_dir_is_rejected() {
+        let cfg = QuiverConfig {
+            data_dir: PathBuf::new(),
+            ..QuiverConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn with_data_dir_overrides_path() {
+        let cfg = QuiverConfig::default();
+        let new_dir = cfg.with_data_dir("/tmp/with-data-dir");
+
+        assert_eq!(new_dir.data_dir, PathBuf::from("/tmp/with-data-dir"));
+        assert_eq!(cfg.wal, new_dir.wal);
+        assert_eq!(cfg.segment, new_dir.segment);
+        assert_eq!(cfg.retention, new_dir.retention);
+    }
+
+    #[test]
+    fn builder_overrides_sub_configs() {
+        let wal = WalConfig {
+            max_size_bytes: NonZeroU64::new(1).unwrap(),
+            max_chunk_count: 1,
+            flush_interval: Duration::from_millis(1),
+        };
+        let segment = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1024).unwrap(),
+            max_open_duration: Duration::from_secs(1),
+            max_stream_count: 1,
+        };
+        let retention = RetentionConfig {
+            size_cap_bytes: NonZeroU64::new(2048).unwrap(),
+            policy: RetentionPolicy::DropOldest,
+            max_age: Duration::from_secs(1),
+        };
+
+        let cfg = QuiverConfig::builder()
+            .wal(wal.clone())
+            .segment(segment.clone())
+            .retention(retention.clone())
+            .build()
+            .expect("builder should validate overrides");
+
+        assert_eq!(cfg.wal, wal);
+        assert_eq!(cfg.segment, segment);
+        assert_eq!(cfg.retention, retention);
+    }
+
+    #[test]
+    fn builder_falls_back_to_default_data_dir() {
+        let cfg = QuiverConfig::builder()
+            .data_dir("")
+            .build()
+            .expect("builder should fill default data dir");
+
+        assert_eq!(cfg.data_dir, PathBuf::from("./quiver_data"));
+    }
+
+    #[test]
+    fn wal_validate_rejects_zero_chunk_count() {
+        let wal = WalConfig {
+            max_size_bytes: NonZeroU64::new(1).unwrap(),
+            max_chunk_count: 0,
+            flush_interval: Duration::from_millis(1),
+        };
+
+        assert!(wal.validate().is_err());
+    }
+
+    #[test]
+    fn segment_validate_rejects_zero_streams() {
+        let segment = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1).unwrap(),
+            max_open_duration: Duration::from_secs(1),
+            max_stream_count: 0,
+        };
+
+        assert!(segment.validate().is_err());
     }
 }
