@@ -44,6 +44,8 @@ impl Auth {
     }
 
     pub async fn get_token(&mut self) -> Result<AccessToken, String> {
+        println!("[AzureMonitorExporter][Auth] Acquiring token");
+
         if self.cached_token.expires_on
             > OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(5)
         {

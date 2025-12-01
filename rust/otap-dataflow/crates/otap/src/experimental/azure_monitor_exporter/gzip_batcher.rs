@@ -6,6 +6,7 @@ use flate2::write::GzEncoder;
 use std::io::Write;
 
 const ONE_MB: usize = 1024 * 1024; // 1 MB
+const MAX_GZIP_FLUSH_COUNT: usize = 100;
 
 pub struct GzipBatcher {
     buf: GzEncoder<Vec<u8>>,
@@ -13,6 +14,7 @@ pub struct GzipBatcher {
     current_uncompressed_size: usize,
     total_uncompressed_size: usize,
     row_count: f64,
+    flush_count: usize,
 }
 
 pub enum PushResult {
@@ -36,6 +38,7 @@ impl GzipBatcher {
             current_uncompressed_size: 0,
             total_uncompressed_size: 0,
             row_count: 0.0,
+            flush_count: 0,
         }
     }
 
@@ -78,8 +81,9 @@ impl GzipBatcher {
 
         let next_size = self.current_uncompressed_size + data.len() + 1;
 
-        if next_size > self.remaining_size {
+        if next_size > self.remaining_size || self.flush_count >= MAX_GZIP_FLUSH_COUNT {
             let flush_result = self.flush();
+            self.flush_count += 1;
             _ = self.push(data);
 
             match flush_result {
@@ -129,8 +133,8 @@ impl GzipBatcher {
         let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
 
         println!(
-            "[{}] Flushed batch: {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%)",
-            timestamp, row_count, uncompressed_size, compressed_size, compression_ratio
+            "[{}] Flushed batch: flush count: {}, {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%)",
+            timestamp, self.flush_count, row_count, uncompressed_size, compressed_size, compression_ratio
         );
 
         // Reset state
@@ -138,6 +142,7 @@ impl GzipBatcher {
         self.current_uncompressed_size = 0;
         self.total_uncompressed_size = 0;
         self.row_count = 0.0;
+        self.flush_count = 0;
 
         FlushResult::Flush(compressed_data, row_count)
     }

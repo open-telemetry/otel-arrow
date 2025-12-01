@@ -29,30 +29,30 @@ impl Transformer {
     }
 
     /// Convert OTLP logs to JSON bytes for Log Analytics.
-    /// Returns an iterator that yields serialized JSON bytes for each log record.
+    /// Returns a vector of serialized JSON bytes for each log record.
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
-    pub fn convert_to_log_analytics<'a>(
-        &'a self,
-        request: &'a ExportLogsServiceRequest,
-    ) -> impl Iterator<Item = Vec<u8>> + 'a {
-        request.resource_logs.iter().flat_map(move |resource_logs| {
+    pub fn convert_to_log_analytics(
+        &self,
+        request: &ExportLogsServiceRequest,
+    ) -> Vec<Vec<u8>> {
+        let mut results = Vec::new();
+        
+        for resource_logs in &request.resource_logs {
             let resource_attrs = if !self.schema.disable_schema_mapping {
                 self.apply_resource_mapping(&resource_logs.resource)
             } else {
                 serde_json::Map::new()
             };
 
-            resource_logs.scope_logs.iter().flat_map(move |scope_logs| {
-                // Clone resource_attrs for each scope (cheap if map is small, unavoidable for flat_map)
-                let resource_attrs = resource_attrs.clone();
+            for scope_logs in &resource_logs.scope_logs {
                 let scope_attrs = if !self.schema.disable_schema_mapping {
                     self.apply_scope_mapping(&scope_logs.scope)
                 } else {
                     serde_json::Map::new()
                 };
 
-                scope_logs.log_records.iter().filter_map(move |log_record| {
+                for log_record in &scope_logs.log_records {
                     let mut entry = serde_json::Map::new();
 
                     if self.schema.disable_schema_mapping {
@@ -69,22 +69,23 @@ impl Transformer {
                         if let Err(e) = self.transform_log_record(&mut entry, log_record) {
                             // TODO: log error
                             println!("[AzureMonitorExporter] Skipping log record due to transformation error: {e}");
-                            return None;
+                            continue;
                         }
                     }
 
                     // Serialize directly from the Map
                     match serde_json::to_vec(&entry) {
-                        Ok(bytes) => Some(bytes),
+                        Ok(bytes) => results.push(bytes),
                         Err(e) => {
                             // TODO: Log this error properly
                             println!("Failed to serialize log entry: {e}");
-                            None
                         }
                     }
-                })
-            })
-        })
+                }
+            }
+        }
+        
+        results
     }
 
     /// Legacy transform when schema mapping is disabled (matches Go implementation)
@@ -397,7 +398,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 1);
 
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
@@ -453,7 +454,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 1);
 
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
@@ -498,7 +499,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
 
         assert!(json["Time"].as_str().unwrap().contains("1970"));
@@ -540,7 +541,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json["Body"], "[4.14, dead]");
     }
@@ -576,7 +577,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert!(json["Body"].as_str().unwrap().contains("nested"));
     }
@@ -619,7 +620,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json["TraceId"], json!(null));
         assert_eq!(json["SpanId"], json!(null));
@@ -649,7 +650,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 0); // Record skipped due to error
     }
 
@@ -680,7 +681,7 @@ mod tests {
             }],
         };
 
-        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request).collect();
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert!(json["TimeGenerated"].as_str().unwrap().contains("1970"));
     }
