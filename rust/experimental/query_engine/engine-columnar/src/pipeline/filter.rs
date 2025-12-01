@@ -412,19 +412,17 @@ impl FilterExec {
         };
 
         if let Some(attrs_filter) = &mut self.attributes_filter {
+            let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
+                Some(id_col) => id_col,
+                None => {
+                    // None of the records have any attributes, so for now we just assume that all
+                    // the records would be filtered out by the predicate. Eventually we need to
+                    // handle this in a more intelligent way (see comment below about null attrs)
+                    return Ok(BooleanArray::new(BooleanBuffer::new_unset(root_rb.num_rows()), None));
+                }
+            };
+
             let id_mask = attrs_filter.execute(otap_batch, session_ctx, false)?;
-
-            let id_col =
-                get_id_col_from_parent(root_rb, attrs_filter.payload_type())?.ok_or_else(|| {
-                    // TODO we should handle if the ID column is missing from the root record batch.
-                    // This would happen if there were no attributes. If someone tries to filter if
-                    // there are no attributes, the correct behaviour is to treat every record as if
-                    // it was null. See the comment below about null handling ...
-                    Error::ExecutionError {
-                        cause: "ID column not found on root record batch".into(),
-                    }
-                })?;
-
             let mut attrs_selection_vec_builder = BooleanBufferBuilder::new(root_rb.num_rows());
 
             // we append to the selection vector in contiguous segments rather than doing it 1-by-1
@@ -445,6 +443,8 @@ impl FilterExec {
                     // passes. But b/c we don't currently support any predicates like this, we just
                     // assume no attr means the row gets filtered out
                     //
+                    // Note: when we fix this TODO, we should also fix the case above where there
+                    // were no attributes at all for any rows (so the id_col is not present).
                     false
                 };
 
@@ -1568,9 +1568,6 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
     }
 
-    // TODO ignored as this test is not current passing b/c we've not implemented the correct
-    // planning logic for when the root record batch is missing
-    #[ignore]
     #[tokio::test]
     async fn test_empty_batch() {
         let input = OtapArrowRecords::Logs(Logs::default());
@@ -1580,9 +1577,6 @@ mod test {
         assert_eq!(result, input);
     }
 
-    // TODO ignored as this test is currently not passing b/c we've not implemented the correct
-    // planning logic for when filtering by attributes if the attrs record batches are missing
-    #[ignore]
     #[tokio::test]
     async fn test_filter_no_attrs() {
         let log_records = vec![
@@ -1629,6 +1623,22 @@ mod test {
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // check that inverting the filters above basically just return the original record batch
+        for inverted_attrs_filter in [
+            "logs | where not(attributes[\"a\"] == \"1234\")",
+            "logs | where not(resource.attributes[\"a\"] == \"1234\")",
+            "logs | where not(instrumentation_scope.attributes[\"a\"] == \"1234\")",
+        ] {
+            let pipeline_expr = KqlParser::parse(inverted_attrs_filter).unwrap();
+            let mut pipeline = Pipeline::new(pipeline_expr);
+            let input = to_otap(log_records.clone());
+            let result = pipeline
+                .execute(input.clone())
+                .await
+                .unwrap();
+            assert_eq!(result, input);
+        }
     }
 
     #[tokio::test]
