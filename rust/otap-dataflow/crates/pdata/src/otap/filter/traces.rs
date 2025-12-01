@@ -679,3 +679,62 @@ impl TraceMatchProperties {
         Ok(nulls_to_false(&filter))
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::proto::OtlpProtoMessage;
+    use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData};
+    use crate::testing::equiv::assert_equivalent;
+    use crate::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+
+    #[test]
+    fn test_filter_no_attributes() {
+        let include = TraceMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),
+            Vec::new(),
+            vec!["span_name_1".into()],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let filter = TraceFilter::new(Some(include), None);
+
+        let spans = vec![
+            Span::build().name("span_name_1").finish(),
+            Span::build().name("span_name_1").finish(),
+            Span::build().name("span_name_2").finish(),
+            Span::build().name("span_name_2").finish(),
+        ];
+
+        let traces_data = TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: spans.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let (result, spans_consumed, spans_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(spans_consumed, 4);
+        assert_eq!(spans_filtered, 2);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: spans[0..2].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+}
