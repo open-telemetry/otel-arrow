@@ -44,7 +44,7 @@ impl QuiverEngine {
 
         for slot in &descriptor.slots {
             if let Some(payload) = bundle.payload(slot.id) {
-                drop(payload);
+                let _ = payload.schema_fingerprint;
             }
         }
 
