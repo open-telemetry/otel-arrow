@@ -54,6 +54,7 @@ pub trait ToExec {
 
     fn to_exec(
         &self,
+        // TODO this might not be needed in this trait anymore
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Self::ExecutablePlan>;
@@ -306,24 +307,10 @@ impl ToExec for FilterPlan {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Self::ExecutablePlan> {
-        let root_rb = match otap_batch.root_record_batch() {
-            Some(rb) => rb,
-            None => {
-                // TODO eventually we need to handle this case. We should possibly handle this
-                // somewhere up the call-stack. For example in Pipeline, which lazily plans the
-                // execution when it receives the first batch, it should not do it's planning until
-                // it receives a non-empty batch.
-                return Err(Error::NotYetSupportedError {
-                    message: "planning when root batch is empty not yet supported".into(),
-                });
-            }
-        };
-
         let physical_expr = self
             .source_filter
             .as_ref()
-            .map(|expr| to_physical_exprs(expr, root_rb, session_ctx))
-            .transpose()?;
+            .map(|expr| AdaptivePhysicalExprExec::new(expr.clone()));
 
         let attrs_filter = self
             .attribute_filter
@@ -358,7 +345,7 @@ impl ToExec for AttributesFilterPlan {
 
     fn to_exec(
         &self,
-        session_ctx: &SessionContext,
+        _session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Self::ExecutablePlan> {
         let attrs_payload_type = match self.attrs_identifier {
@@ -370,20 +357,8 @@ impl ToExec for AttributesFilterPlan {
             AttributesIdentifier::NonRoot(payload_type) => payload_type,
         };
 
-        let attrs_rb = match otap_batch.get(attrs_payload_type) {
-            Some(rb) => rb,
-            None => {
-                // TODO we should eventually handle this -- most likely we'll try to optimize
-                // to have the filtering do a noop that returns no rows, unless the filter is
-                // attributes["x"] == null in which case return all rows.
-                return Err(Error::NotYetSupportedError {
-                    message: "attributes record batch not present when planning".into(),
-                });
-            }
-        };
-
         Ok(AttributeFilterExec {
-            filter: to_physical_exprs(&self.filter, attrs_rb, session_ctx)?,
+            filter: AdaptivePhysicalExprExec::new(self.filter.clone()),
             payload_type: attrs_payload_type,
         })
     }
@@ -405,13 +380,17 @@ fn to_physical_exprs(
 }
 
 pub struct FilterExec {
-    predicate: Option<PhysicalExprRef>,
+    predicate: Option<AdaptivePhysicalExprExec>,
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 }
 
 impl FilterExec {
     /// execute the filter expression. returns a selection vector for the passed record batch
-    fn execute(&self, otap_batch: &OtapArrowRecords) -> Result<BooleanArray> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+    ) -> Result<BooleanArray> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
             None => {
@@ -424,16 +403,16 @@ impl FilterExec {
             }
         };
 
-        let mut selection_vec = match self.predicate.as_ref() {
-            Some(predicate) => evaluate_filter(predicate, root_rb)?,
+        let mut selection_vec = match self.predicate.as_mut() {
+            Some(predicate) => predicate.evaluate_filter(root_rb, session_ctx)?,
 
             // TODO -- we might be able to optimize this method by not allocating this here
             // and instead returning None
             None => BooleanArray::new(BooleanBuffer::new_set(root_rb.num_rows()), None),
         };
 
-        if let Some(attrs_filter) = &self.attributes_filter {
-            let id_mask = attrs_filter.execute(otap_batch, false)?;
+        if let Some(attrs_filter) = &mut self.attributes_filter {
+            let id_mask = attrs_filter.execute(otap_batch, session_ctx, false)?;
 
             let id_col =
                 get_id_col_from_parent(root_rb, attrs_filter.payload_type())?.ok_or_else(|| {
@@ -498,18 +477,22 @@ impl FilterExec {
 }
 
 impl Composite<FilterExec> {
-    fn execute(&self, otap_batch: &OtapArrowRecords) -> Result<BooleanArray> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+    ) -> Result<BooleanArray> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch),
-            Self::Not(filter) => Ok(not(&filter.execute(otap_batch)?)?),
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx),
+            Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx)?)?),
             Self::And((left, right)) => {
-                let left_result = left.execute(otap_batch)?;
-                let right_result = right.execute(otap_batch)?;
+                let left_result = left.execute(otap_batch, session_ctx)?;
+                let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(and(&left_result, &right_result)?)
             }
             Self::Or((left, right)) => {
-                let left_result = left.execute(otap_batch)?;
-                let right_result = right.execute(otap_batch)?;
+                let left_result = left.execute(otap_batch, session_ctx)?;
+                let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(or(&left_result, &right_result)?)
             }
         }
@@ -517,7 +500,7 @@ impl Composite<FilterExec> {
 }
 
 struct AttributeFilterExec {
-    filter: PhysicalExprRef,
+    filter: AdaptivePhysicalExprExec,
     payload_type: ArrowPayloadType,
 }
 
@@ -525,7 +508,12 @@ impl AttributeFilterExec {
     /// execute the filter on the attributes. This returns a bitmap of parent_ids that were
     /// selected by the filter. Conversely if invert = `true` it creates a bitmap of parent_ids
     /// not selected by the filter.
-    fn execute(&self, otap_batch: &OtapArrowRecords, inverted: bool) -> Result<RoaringBitmap> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+        inverted: bool,
+    ) -> Result<RoaringBitmap> {
         let record_batch = match otap_batch.get(self.payload_type) {
             Some(rb) => rb,
             None => {
@@ -535,7 +523,7 @@ impl AttributeFilterExec {
             }
         };
 
-        let selection_vec = evaluate_filter(&self.filter, record_batch)?;
+        let selection_vec = self.filter.evaluate_filter(record_batch, session_ctx)?;
         let parent_id_col = get_parent_id_column(record_batch)?;
 
         // create a bitmap containing the parent_ids that passed the filter predicate
@@ -576,13 +564,18 @@ impl Composite<AttributeFilterExec> {
     /// defined by the composite tree. The reason we do here, instead of say combining everything
     /// in `Composite<FilterExec>`, is that this saves us from doing additional conversions between
     /// the parent_id bitmap to a selection vector for the parent record batch.
-    fn execute(&self, otap_batch: &OtapArrowRecords, inverted: bool) -> Result<RoaringBitmap> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+        inverted: bool,
+    ) -> Result<RoaringBitmap> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch, inverted),
-            Self::Not(filter) => filter.execute(otap_batch, !inverted),
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted),
+            Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
             Self::And((left, right)) => {
-                let left_result = left.execute(otap_batch, inverted)?;
-                let right_result = right.execute(otap_batch, inverted)?;
+                let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+                let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A and B) = (not A) or (not B)
                     left_result | right_result
@@ -591,8 +584,8 @@ impl Composite<AttributeFilterExec> {
                 })
             }
             Self::Or((left, right)) => {
-                let left_result = left.execute(otap_batch, inverted)?;
-                let right_result = right.execute(otap_batch, inverted)?;
+                let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+                let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A or B) = (not A) and (not B)
                     left_result & right_result
@@ -616,22 +609,61 @@ impl Composite<AttributeFilterExec> {
     }
 }
 
-fn evaluate_filter(
-    predicate: &PhysicalExprRef,
-    record_batch: &RecordBatch,
-) -> Result<BooleanArray> {
-    let arr = predicate
-        .evaluate(record_batch)?
-        .into_array(record_batch.num_rows())?;
+/// This is responsible for evaluating a  [`PhysicalExpr`](datafusion::physical_expr::PhysicalExpr)
+/// while adapting to "schema" changes that may be encountered between evaluations.
+///
+/// OTAP data might have minor changes the "schema" between batches.
+/// - Optional payload type's [`RecordBatch`]s may change presence
+/// - Optional columns within a [`RecordBatch`] may change presence
+/// - The type of a column may change between Dict<u8, V>, Dict<16, V>, and the native array type
+/// - The order of columns may change
+///
+struct AdaptivePhysicalExprExec {
+    /// The physical expression that should be evaluated for each batch. This is initialized lazily
+    /// when the first non-`None` batch is passed to `evaluate`
+    physical_expr: Option<PhysicalExprRef>,
 
-    as_boolean_array(&arr)
-        .cloned()
-        .map_err(|_| Error::ExecutionError {
-            cause: format!(
-                "Cannot create selection vector from non-boolean predicates. Found {}",
-                arr.data_type()
-            ),
-        })
+    /// The original logical plan used to produce the [`PhysicalExpr`]
+    logical_expr: Expr,
+}
+
+impl AdaptivePhysicalExprExec {
+    fn new(logical_expr: Expr) -> Self {
+        Self {
+            physical_expr: None,
+            logical_expr,
+        }
+    }
+
+    fn evaluate_filter(
+        &mut self,
+        record_batch: &RecordBatch,
+        session_ctx: &SessionContext,
+    ) -> Result<BooleanArray> {
+        // lazily initialize the physical expr if not already initialized
+        if self.physical_expr.is_none() {
+            let physical_expr = to_physical_exprs(&self.logical_expr, record_batch, session_ctx)?;
+            self.physical_expr = Some(physical_expr);
+        }
+
+        // safety: this is already initialized
+        let predicate = self.physical_expr.as_ref().expect("initialized");
+
+        // evaluate the predicate
+        let arr = predicate
+            .evaluate(record_batch)?
+            .into_array(record_batch.num_rows())?;
+
+        // ensure it actually evaluated to a boolean expression, and if so return that as selection vec
+        as_boolean_array(&arr)
+            .cloned()
+            .map_err(|_| Error::ExecutionError {
+                cause: format!(
+                    "Cannot create selection vector from non-boolean predicates. Found {}",
+                    arr.data_type()
+                ),
+            })
+    }
 }
 
 /// helper function for getting the ID column associated with the parent_id in the child record
@@ -766,7 +798,7 @@ impl PipelineStage for FilterPipelineStage {
     async fn execute(
         &mut self,
         mut otap_batch: OtapArrowRecords,
-        _session_context: &SessionContext,
+        session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
     ) -> Result<OtapArrowRecords> {
@@ -781,7 +813,7 @@ impl PipelineStage for FilterPipelineStage {
         // TODO -- we need to check here if the schema has changed or if any attribute
         // record batches have gone missing and if so, replan the internal FilterExec
 
-        let selection_vec = self.filter_exec.execute(&otap_batch)?;
+        let selection_vec = self.filter_exec.execute(&otap_batch, session_context)?;
 
         // check if nothing was filtered
         if selection_vec.true_count() == root_batch.num_rows() {
@@ -1687,7 +1719,9 @@ mod test {
                 .to_exec(&session_ctx, &otap_batch)
                 .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([0])
         );
 
@@ -1696,7 +1730,9 @@ mod test {
             .to_exec(&session_ctx, &otap_batch)
             .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([1, 2])
         );
 
@@ -1708,7 +1744,9 @@ mod test {
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([0])
         );
 
@@ -1720,7 +1758,9 @@ mod test {
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([1, 2])
         );
 
@@ -1732,7 +1772,9 @@ mod test {
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([0, 1])
         );
 
@@ -1744,7 +1786,9 @@ mod test {
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([2])
         );
     }
