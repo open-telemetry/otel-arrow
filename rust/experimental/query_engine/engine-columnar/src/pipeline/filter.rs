@@ -9,16 +9,20 @@ use arrow::array::{
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
+use arrow::datatypes::{Schema, SchemaRef};
 use async_trait::async_trait;
 use data_engine_expressions::{LogicalExpression, ScalarExpression};
-use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
+use datafusion::common::{DFSchema, HashMap};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
+use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
+use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::build_uint16_id_filter;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
@@ -310,7 +314,8 @@ impl ToExec for FilterPlan {
         let physical_expr = self
             .source_filter
             .as_ref()
-            .map(|expr| AdaptivePhysicalExprExec::new(expr.clone()));
+            .map(|expr| AdaptivePhysicalExprExec::try_new(expr.clone()))
+            .transpose()?;
 
         let attrs_filter = self
             .attribute_filter
@@ -358,7 +363,7 @@ impl ToExec for AttributesFilterPlan {
         };
 
         Ok(AttributeFilterExec {
-            filter: AdaptivePhysicalExprExec::new(self.filter.clone()),
+            filter: AdaptivePhysicalExprExec::try_new(self.filter.clone())?,
             payload_type: attrs_payload_type,
         })
     }
@@ -628,24 +633,49 @@ struct AdaptivePhysicalExprExec {
 
     /// The original logical plan used to produce the [`PhysicalExpr`]
     logical_expr: Expr,
+
+    projection: FilterProjection,
 }
 
 impl AdaptivePhysicalExprExec {
-    fn new(logical_expr: Expr) -> Self {
-        Self {
+    fn try_new(logical_expr: Expr) -> Result<Self> {
+        let projection = FilterProjection::try_new(&logical_expr)?;
+
+        Ok(Self {
             physical_expr: None,
             logical_expr,
-        }
+            projection,
+        })
     }
 
+    /// Evaluates the [`PhysicalExpr`] for the passed record batch and returns a selection
+    /// vector for the rows that pass the predicate.
     fn evaluate_filter(
         &mut self,
         record_batch: &RecordBatch,
         session_ctx: &SessionContext,
     ) -> Result<BooleanArray> {
+        let record_batch = match self.projection.project(record_batch) {
+            Some(rb) => rb,
+            None => {
+                // we weren't able to project the record batch into the schema expected by the
+                // physical expr. This means that there were some columns referenced in the logical
+                // expr that are missing from the input batch. for now, we assume that this just
+                // means no rows pass the predicate
+                //
+                // TODO the assumption we're making here isn't sound for some predicates, things
+                // like `some_col == null`, so eventually we'll need to handle this
+
+                return Ok(BooleanArray::new(
+                    BooleanBuffer::new_unset(record_batch.num_rows()),
+                    None,
+                ));
+            }
+        };
+
         // lazily initialize the physical expr if not already initialized
         if self.physical_expr.is_none() {
-            let physical_expr = to_physical_exprs(&self.logical_expr, record_batch, session_ctx)?;
+            let physical_expr = to_physical_exprs(&self.logical_expr, &record_batch, session_ctx)?;
             self.physical_expr = Some(physical_expr);
         }
 
@@ -654,7 +684,7 @@ impl AdaptivePhysicalExprExec {
 
         // evaluate the predicate
         let arr = predicate
-            .evaluate(record_batch)?
+            .evaluate(&record_batch)?
             .into_array(record_batch.num_rows())?;
 
         // ensure it actually evaluated to a boolean expression, and if so return that as selection vec
@@ -666,6 +696,133 @@ impl AdaptivePhysicalExprExec {
                     arr.data_type()
                 ),
             })
+    }
+}
+
+// TODO comments and tests
+pub struct FilterProjection {
+    schema: ProjectedSchema,
+}
+
+impl FilterProjection {
+    fn try_new(logical_expr: &Expr) -> Result<Self> {
+        let mut visitor = ProjectedSchemaExprVisitor::default();
+        logical_expr.visit(&mut visitor)?;
+        Ok(Self {
+            schema: visitor.into(),
+        })
+    }
+
+    fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
+        let original_schema = record_batch.schema_ref();
+
+        // TODO we could probably change this to return an &RecordBatch and avoid the
+        // vec allocations for the columns & schema when we project
+        let mut columns = Vec::new();
+        let mut fields = Vec::new();
+
+        for projected_col in &self.schema {
+            match projected_col {
+                ProjectedSchemaColumn::Root(col_name) => {
+                    let index = original_schema.index_of(&col_name).ok()?;
+                    let column = record_batch.column(index).clone();
+                    let field = original_schema.fields[index].clone();
+                    columns.push(column);
+                    fields.push(field)
+                }
+                _ => {
+                    todo!("project structs")
+                }
+            }
+        }
+
+        // TODO comment on safety
+        // TODO for better performance we could use new_unchecked
+        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("can project record batch");
+
+        Some(rb)
+    }
+}
+
+// TODO comments
+type ProjectedSchema = Vec<ProjectedSchemaColumn>;
+
+// TODO comments
+#[derive(Debug, Eq, Hash, PartialEq, PartialOrd)]
+enum ProjectedSchemaColumn {
+    Root(String),
+    Struct(String, Vec<String>),
+}
+
+// TODO comments and tests
+#[derive(Debug, Default)]
+struct ProjectedSchemaExprVisitor {
+    root_columns: HashSet<String>,
+    struct_columns: HashMap<String, HashSet<String>>,
+}
+
+impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
+    type Node = Expr;
+
+    fn f_down(&mut self, node: &'a Self::Node) -> datafusion::error::Result<TreeNodeRecursion> {
+        // TODO comments
+        if let Expr::Column(col) = node {
+            self.root_columns.insert(col.name.clone());
+        }
+
+        // TODO comments
+        if let Expr::ScalarFunction(scalar_udf) = node {
+            let func = &scalar_udf.func;
+            let inner = func.as_ref().inner();
+            if inner.as_any().is::<GetFieldFunc>() {
+                let source = scalar_udf.args.get(0);
+                let field = scalar_udf.args.get(1);
+                match (source, field) {
+                    (
+                        Some(Expr::Column(col)),
+                        Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
+                    ) => {
+                        let struct_fields = self
+                            .struct_columns
+                            .entry(col.name.clone())
+                            .or_insert(HashSet::new());
+                        struct_fields.insert(nested_col.clone());
+                    }
+                    unexpected => {
+                        // TODO handle
+                        todo!()
+                    }
+                }
+            }
+        }
+
+        Ok(TreeNodeRecursion::Continue)
+    }
+}
+
+impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
+    fn from(visitor: ProjectedSchemaExprVisitor) -> Self {
+        let num_cols = visitor.root_columns.len()
+            + visitor
+                .struct_columns
+                .values()
+                .map(|cols| cols.len())
+                .sum::<usize>();
+        let mut schema = Vec::with_capacity(num_cols);
+
+        for col in visitor.root_columns.into_iter() {
+            schema.push(ProjectedSchemaColumn::Root(col))
+        }
+
+        for (struct_name, cols) in visitor.struct_columns.into_iter() {
+            schema.push(ProjectedSchemaColumn::Struct(
+                struct_name,
+                cols.into_iter().collect(),
+            ));
+        }
+
+        schema
     }
 }
 
@@ -1840,7 +1997,7 @@ mod test {
     #[tokio::test]
     async fn test_adaptive_physical_expr_type_change() {
         let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
-        let mut phys_expr = AdaptivePhysicalExprExec::new(logical_expr);
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
 
         let session_ctx = Pipeline::create_session_context();
 
@@ -1898,5 +2055,51 @@ mod test {
         .unwrap();
         let result = phys_expr.evaluate_filter(&rb3, &session_ctx).unwrap();
         assert_eq!(result, BooleanArray::from_iter([false, true, true]));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_optional_column() {
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let session_ctx = Pipeline::create_session_context();
+
+        // TODO need to add a test case where the optional column was not present in the
+        // batch where planning happens, and only appears later on ..
+
+        // first batch has the column
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new(consts::EVENT_NAME, DataType::Utf8, false),
+            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, false),
+        ]));
+
+        let rb1 = RecordBatch::try_new(
+            schema1.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(["a", "b", "a", "b", "a"])),
+                Arc::new(StringArray::from_iter_values([
+                    "WARN", "INFO", "WARN", "ERROR", "DEBUG",
+                ])),
+            ],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb1, &session_ctx).unwrap();
+        assert_eq!(
+            result,
+            BooleanArray::from_iter([true, false, true, false, false])
+        );
+
+        // next batch, the optional column is omitted
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            consts::EVENT_NAME,
+            DataType::Utf8,
+            false,
+        )]));
+        let rb2 = RecordBatch::try_new(
+            schema2.clone(),
+            vec![Arc::new(StringArray::from_iter_values(["a", "b", "a"]))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, false, false]));
     }
 }
