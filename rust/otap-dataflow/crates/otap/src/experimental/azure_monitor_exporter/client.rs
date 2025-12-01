@@ -26,8 +26,8 @@ pub struct LogsIngestionClient {
     // Pre-formatted authorization header for zero-allocation reuse
     auth_header: HeaderValue,
 
-    // Pre-built static headers that never change
-    static_headers: HeaderMap,
+    // Headers to send repeatedly that includes auth
+    headers: HeaderMap,
 
     /// Token expiry time using monotonic clock for faster comparisons
     pub token_valid_until: Instant,
@@ -50,10 +50,10 @@ impl LogsIngestionClient {
         credential: Arc<dyn TokenCredential>,
         scope: String,
     ) -> Self {
-        // Pre-build static headers
-        let mut static_headers = HeaderMap::with_capacity(2);
-        _ = static_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        _ = static_headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        // Pre-build headers with capacity for 3 (including auth)
+        let mut headers = HeaderMap::with_capacity(3);
+        _ = headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        _ = headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
 
         Self {
             http_client,
@@ -61,7 +61,7 @@ impl LogsIngestionClient {
             auth: Auth::from_credential(credential, scope),
             auth_header: HeaderValue::from_static("Bearer "),
             token_valid_until: Instant::now(),
-            static_headers,
+            headers,
         }
     }
 
@@ -76,26 +76,24 @@ impl LogsIngestionClient {
     pub fn new(config: &Config) -> Result<Self, String> {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(10) // Reuse connections
-            .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
-            .tcp_nodelay(true) // Reduces latency for large payloads significantly by disabling Nagle's algorithm
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_nodelay(true)
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
 
-        // Build the endpoint URL from config components
         let endpoint = format!(
             "{}/dataCollectionRules/{}/streams/{}?api-version=2021-11-01-preview",
             config.api.dcr_endpoint, config.api.dcr, config.api.stream_name
         );
 
-        // Create auth handler
         let auth =
             Auth::new(&config.auth).map_err(|e| format!("Failed to create auth handler: {e}"))?;
 
-        // Pre-build static headers
-        let mut static_headers = HeaderMap::with_capacity(2);
-        _ = static_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        _ = static_headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        // Pre-build headers with capacity for 3 (including auth)
+        let mut headers = HeaderMap::with_capacity(3);
+        _ = headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        _ = headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
 
         Ok(Self {
             http_client,
@@ -103,7 +101,7 @@ impl LogsIngestionClient {
             auth,
             auth_header: HeaderValue::from_static("Bearer "),
             token_valid_until: Instant::now(),
-            static_headers,
+            headers,
         })
     }
 
@@ -127,6 +125,8 @@ impl LogsIngestionClient {
         // Pre-format the authorization header to avoid repeated allocation
         self.auth_header = HeaderValue::from_str(&format!("Bearer {}", token.token.secret()))
             .map_err(|_| "Invalid token format".to_string())?;
+
+        _ = self.headers.insert(AUTHORIZATION, self.auth_header.clone());
 
         // Calculate validity using Instant for faster comparisons
         // Refresh 5 minutes before expiry
@@ -154,16 +154,13 @@ impl LogsIngestionClient {
         self.ensure_valid_token().await?;
 
         // Clone static headers and add the auth header
-        let mut headers = self.static_headers.clone();
-        _ = headers.insert(AUTHORIZATION, self.auth_header.clone());
-
         let start = Instant::now();
 
         // Send compressed body
         let response = self
             .http_client
             .post(&self.endpoint)
-            .headers(headers)
+            .headers(self.headers.clone())
             .body(body)
             .send()
             .await
@@ -199,6 +196,7 @@ impl LogsIngestionClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::config::{ApiConfig, AuthConfig, AuthMethod};
     use azure_core::credentials::TokenRequestOptions;
     use azure_core::credentials::{AccessToken, TokenCredential};
     use std::sync::Mutex;
@@ -226,6 +224,38 @@ mod tests {
                 token: self.token.clone().into(),
                 expires_on: OffsetDateTime::now_utc() + self.expires_in,
             })
+        }
+    }
+
+    #[test]
+    fn test_new_builds_correct_endpoint() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://test.azure.com".to_string(),
+                dcr: "test-dcr-id".to_string(),
+                stream_name: "test-stream".to_string(),
+                schema: Default::default(),
+            },
+            auth: AuthConfig {
+                method: AuthMethod::ManagedIdentity,
+                client_id: Some("test-client-id".to_string()),
+                scope: "https://monitor.azure.com/.default".to_string(),
+            },
+        };
+
+        // We can at least test that new() doesn't panic and builds the correct endpoint
+        match LogsIngestionClient::new(&config) {
+            Ok(client) => {
+                assert_eq!(
+                    client.endpoint,
+                    "https://test.azure.com/dataCollectionRules/test-dcr-id/streams/test-stream?api-version=2021-11-01-preview"
+                );
+                assert_eq!(client.headers.len(), 2);
+            }
+            Err(e) => {
+                // This is acceptable if running in an environment without proper Azure setup
+                assert!(e.contains("Failed to create auth handler"));
+            }
         }
     }
 
