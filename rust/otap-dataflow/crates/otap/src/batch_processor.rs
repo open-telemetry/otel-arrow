@@ -899,7 +899,7 @@ mod tests {
     use otap_df_engine::message::Message;
     use otap_df_engine::node::Node;
     use crate::testing::TestCallData;
-    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_engine::testing::processor::{TestRuntime, TestContext};
     use otap_df_engine::testing::test_node;
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otap_df_pdata::otap::OtapArrowRecords;
@@ -912,6 +912,8 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+    use std::pin::Pin;
+    use std::future::Future;
 
     /// Helper to create test pipeline context
     fn create_test_pipeline_context() -> (
@@ -1098,15 +1100,16 @@ mod tests {
         assert!(cfg.validate().is_err());
     }
 
-    /// Generic test helper for size-based flush
-    fn test_size_flush(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
-        let cfg = json!({
-            "send_batch_size": 4,
-            "send_batch_max_size": 5,
-            "timeout": "1s"
-        });
-
-        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
+    /// Unified test harness for all batch processor scenarios
+    fn run_batch_processor_test<F>(
+        inputs_otlp: impl Iterator<Item = OtlpProtoMessage>,
+        subscribe: bool,
+        config: Value,
+        verify_outputs: F,
+    ) where
+        F: FnOnce(&[OtapPdata], &[OtlpProtoMessage]) + Send + 'static,
+    {
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(config);
 
         let inputs_otlp: Vec<_> = inputs_otlp.collect();
         let signal = inputs_otlp[0].signal_type();
@@ -1118,14 +1121,20 @@ mod tests {
                 let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_tx);
 
-                // Spawn controller task to handle timer events
-                let controller_task = tokio::spawn(async move {
-                    while let Ok(msg) = pipeline_rx.recv().await {
-                        if let PipelineControlMsg::DelayData { .. } = msg {}
-                    }
-                });
+                // Setup controller task or keep pipeline_rx for verification
+                let (controller_task, pipeline_rx) = if !subscribe {
+                    let task = tokio::spawn(async move {
+                        while let Ok(msg) = pipeline_rx.recv().await {
+                            if let PipelineControlMsg::DelayData { .. } = msg {}
+                        }
+                    });
+                    (Some(task), None)
+                } else {
+                    (None, Some(pipeline_rx))
+                };
 
-                for input_otlp in &inputs_otlp {
+                // Process inputs with optional subscription
+                for (i, input_otlp) in inputs_otlp.iter().enumerate() {
                     let otap_records = match input_otlp {
                         OtlpProtoMessage::Traces(t) => encode_spans_otap_batch(t).expect("encode"),
                         OtlpProtoMessage::Logs(l) => encode_logs_otap_batch(l).expect("encode"),
@@ -1133,34 +1142,21 @@ mod tests {
                     };
                     let pdata = OtapPdata::new_default(otap_records.into());
                     let pdata = if subscribe {
-                        pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, CallData::default(), 1)
+                        pdata.test_subscribe_to(
+                            Interests::ACKS | Interests::NACKS,
+                            TestCallData::new_with(i as u64, 0).into(),
+                            1
+                        )
                     } else {
                         pdata
                     };
                     ctx.process(Message::PData(pdata)).await.expect("process");
                 }
 
-                // Should flush once when threshold (4) is reached
-                let mut emitted = ctx.drain_pdata().await;
-                assert_eq!(emitted.len(), 1, "expected one batch after size threshold");
-
-                let first_batch_rec: OtapArrowRecords =
-                    emitted.remove(0).payload().try_into().unwrap();
-                assert!(
-                    first_batch_rec.batch_length() >= 4,
-                    "first batch has at least threshold items"
-                );
-
-                // Simulate downstream exporter acking the output
-                if subscribe {
-                    ctx.process(Message::Control(NodeControlMsg::Ack(AckMsg::new(
-                        OtapPdata::new_default(first_batch_rec.clone().into()),
-                    ))))
-                    .await
-                    .expect("ack");
-                }
-
-                // Shutdown should flush remaining items
+                // Run scenario-specific verification of first drain
+                let mut all_emitted = ctx.drain_pdata().await;
+                
+                // Shutdown to flush any remaining data
                 ctx.process(Message::Control(NodeControlMsg::Shutdown {
                     deadline: Instant::now() + Duration::from_millis(100),
                     reason: "test".into(),
@@ -1168,53 +1164,102 @@ mod tests {
                 .await
                 .expect("shutdown");
 
-                let remaining_emitted = ctx.drain_pdata().await;
-                assert!(
-                    !remaining_emitted.is_empty(),
-                    "should flush remaining items"
-                );
+                // Drain any remaining data after shutdown
+                let remaining = ctx.drain_pdata().await;
+                all_emitted.extend(remaining);
 
-                // Simulate acks for remaining batches
+                // Now verify all outputs
+                (verify_outputs)(&all_emitted, &inputs_otlp);
+
+                // Verify acks if subscribed
                 if subscribe {
-                    for batch in &remaining_emitted {
-                        let rec: OtapArrowRecords = batch.clone().payload().try_into().unwrap();
-                        ctx.process(Message::Control(NodeControlMsg::Ack(AckMsg::new(
-                            OtapPdata::new_default(rec.into()),
-                        ))))
-                        .await
-                        .expect("ack");
+                    let mut pipeline_rx = pipeline_rx.expect("pipeline_rx available");
+                    
+                    // Send acks for outputs using Context::next_ack to properly route them
+                    for output_pdata in &all_emitted {
+                        let ack = AckMsg::new(output_pdata.clone());
+                        if let Some((_, ack_ctx)) = Context::next_ack(ack) {
+                            ctx.process(Message::ack_ctrl_msg(ack_ctx))
+                                .await
+                                .expect("process ack");
+                        }
+                    }
+
+                    // Verify processor sends DeliverAck for each input
+                    let mut received_acks: Vec<TestCallData> = Vec::new();
+                    while received_acks.len() < num_inputs {
+                        match tokio::time::timeout(Duration::from_secs(2), pipeline_rx.recv()).await {
+                            Ok(Ok(PipelineControlMsg::DeliverAck { ack, .. })) => {
+                                let calldata: TestCallData = ack.calldata.try_into().expect("calldata");
+                                let expected_inputs: Vec<TestCallData> = (0..num_inputs)
+                                    .map(|i| TestCallData::new_with(i as u64, 0))
+                                    .collect();
+                                assert!(expected_inputs.contains(&calldata), "ack has valid calldata: {:?}", calldata);
+                                assert!(!received_acks.contains(&calldata), "unique ack");
+                                received_acks.push(calldata);
+                            }
+                            Ok(Ok(PipelineControlMsg::DelayData { .. })) => {
+                                // Ignore timer messages, continue waiting for acks
+                            }
+                            Ok(Ok(other)) => panic!("unexpected control message: {:?}", other),
+                            Ok(Err(e)) => panic!("pipeline channel error: {:?}", e),
+                            Err(_) => {
+                                panic!("timeout waiting for DeliverAck, received {} of {}", received_acks.len(), num_inputs);
+                            }
+                        }
                     }
                 }
 
-                // Verify equivalence across all outputs
-                let all_outputs: Vec<OtlpProtoMessage> = std::iter::once(first_batch_rec)
-                    .chain(remaining_emitted.iter().map(|p| {
-                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
-                        rec
-                    }))
-                    .map(|r| otap_to_otlp(&r))
-                    .collect();
-                assert_equivalent(&inputs_otlp, &all_outputs);
-
-                // When subscribed, the processor tracks acks internally
-                // Test verifies subscription paths are exercised
-
-                // Trigger telemetry collection
+                // Collect telemetry
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
                 }))
                 .await
                 .expect("collect telemetry");
 
-                controller_task.abort();
+                if let Some(task) = controller_task {
+                    task.abort();
+                }
             })
             .validate(move |_| async move {
-                // Allow metrics to be reported
                 tokio::time::sleep(Duration::from_millis(50)).await;
-
-                // Verify metrics
                 verify_item_metrics(&metrics_registry, signal, input_item_count);
             });
+    }
+
+    /// Generic test helper for size-based flush
+    fn test_size_flush(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
+        run_batch_processor_test(
+            inputs_otlp,
+            subscribe,
+            json!({
+                "send_batch_size": 4,
+                "send_batch_max_size": 5,
+                "timeout": "1s"
+            }),
+            |emitted, inputs_otlp| {
+                // Should have multiple batches: one from threshold, others from shutdown
+                assert!(!emitted.is_empty(), "should have emitted batches");
+                
+                // Verify first batch had at least threshold items
+                let first_batch_rec: OtapArrowRecords =
+                    emitted[0].clone().payload().try_into().unwrap();
+                assert!(
+                    first_batch_rec.batch_length() >= 4,
+                    "first batch has at least threshold items"
+                );
+
+                // Verify all outputs are equivalent to inputs
+                let outputs: Vec<OtlpProtoMessage> = emitted
+                    .iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                        otap_to_otlp(&rec)
+                    })
+                    .collect();
+                assert_equivalent(inputs_otlp, &outputs);
+            }
+        );
     }
 
     #[test]
@@ -1243,90 +1288,26 @@ mod tests {
 
     /// Generic test helper for timer flush
     fn test_timer_flush(input_otlp: OtlpProtoMessage, subscribe: bool) {
-        let cfg = json!({
-            "send_batch_size": 10,
-            "send_batch_max_size": 10,
-            "timeout": "50ms"
-        });
+        run_batch_processor_test(
+            std::iter::once(input_otlp.clone()),
+            subscribe,
+            json!({
+                "send_batch_size": 10,
+                "send_batch_max_size": 10,
+                "timeout": "50ms"
+            }),
+            |emitted, inputs_otlp| {
+                // Timer flush: shutdown should trigger flush of pending data
+                assert_eq!(emitted.len(), 1, "timer flush should emit one batch");
+                
+                let output_rec: OtapArrowRecords =
+                    emitted[0].clone().payload().try_into().unwrap();
+                let output_otlp = otap_to_otlp(&output_rec);
 
-        let signal = input_otlp.signal_type();
-        let input_item_count = input_otlp.batch_length();
-
-        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_tx);
-
-                let otap_records = match &input_otlp {
-                    OtlpProtoMessage::Traces(t) => encode_spans_otap_batch(t).expect("encode"),
-                    OtlpProtoMessage::Logs(l) => encode_logs_otap_batch(l).expect("encode"),
-                    OtlpProtoMessage::Metrics(_) => panic!("metrics not supported"),
-                };
-                let pdata = OtapPdata::new_default(otap_records.into());
-                let pdata = if subscribe {
-                    pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, CallData::default(), 1)
-                } else {
-                    pdata
-                };
-
-                ctx.process(Message::PData(pdata)).await.expect("process");
-
-                // Should not flush immediately (below threshold of 10)
-                let emitted = ctx.drain_pdata().await;
-                assert_eq!(emitted.len(), 0, "no immediate flush below threshold");
-
-                // Simulate pipeline controller
-                let delayed_msg =
-                    tokio::time::timeout(Duration::from_millis(200), pipeline_rx.recv())
-                        .await
-                        .expect("timeout")
-                        .expect("channel closed");
-
-                if let PipelineControlMsg::DelayData { when, data, .. } = delayed_msg {
-                    ctx.sleep(when.duration_since(Instant::now())).await;
-                    ctx.process(Message::Control(NodeControlMsg::DelayedData { when, data }))
-                        .await
-                        .expect("process delayed");
-
-                    let emitted = ctx.drain_pdata().await;
-                    assert_eq!(emitted.len(), 1, "timer should flush");
-
-                    let output_rec: OtapArrowRecords =
-                        emitted[0].clone().payload().try_into().unwrap();
-                    let output_otlp = otap_to_otlp(&output_rec);
-
-                    use std::slice::from_ref;
-                    assert_equivalent(from_ref(&input_otlp), from_ref(&output_otlp));
-
-                    // Simulate downstream ack
-                    if subscribe {
-                        ctx.process(Message::Control(NodeControlMsg::Ack(AckMsg::new(
-                            OtapPdata::new_default(output_rec.into()),
-                        ))))
-                        .await
-                        .expect("ack");
-                        // Ack tracking is verified internally by processor
-                    }
-
-                    // Trigger telemetry collection
-                    ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                        metrics_reporter,
-                    }))
-                    .await
-                    .expect("collect telemetry");
-                } else {
-                    panic!("Expected DelayData");
-                }
-            })
-            .validate(move |_| async move {
-                // Allow metrics to be reported
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                // Verify metrics
-                verify_item_metrics(&metrics_registry, signal, input_item_count);
-            });
+                use std::slice::from_ref;
+                assert_equivalent(inputs_otlp, from_ref(&output_otlp));
+            }
+        );
     }
 
     #[test]
@@ -1355,106 +1336,34 @@ mod tests {
 
     /// Generic test helper for splitting oversize batches
     fn test_split_oversize(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
-        let cfg = json!({
-            "send_batch_size": 3,
-            "send_batch_max_size": 3,
-            "timeout": "1s"
-        });
-
-        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(cfg);
-
-        let inputs_otlp: Vec<_> = inputs_otlp.collect();
-        let signal = inputs_otlp[0].signal_type();
-        let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
-        let num_inputs = inputs_otlp.len();
-
-        phase
-            .run_test(move |mut ctx| async move {
-                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
-                ctx.set_pipeline_ctrl_sender(pipeline_tx);
-
-                // Spawn controller task to handle DelayData messages
-                let controller_task = tokio::spawn(async move {
-                    while let Ok(msg) = pipeline_rx.recv().await {
-                        if let PipelineControlMsg::DelayData { .. } = msg {}
-                    }
-                });
-
-                for input in &inputs_otlp {
-                    let otap_records = match input {
-                        OtlpProtoMessage::Traces(t) => encode_spans_otap_batch(t).expect("encode"),
-                        OtlpProtoMessage::Logs(l) => encode_logs_otap_batch(l).expect("encode"),
-                        OtlpProtoMessage::Metrics(_) => panic!("metrics not supported"),
-                    };
-                    let pdata = OtapPdata::new_default(otap_records.into());
-                    let pdata = if subscribe {
-                        pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, CallData::default(), 1)
-                    } else {
-                        pdata
-                    };
-                    ctx.process(Message::PData(pdata)).await.expect("process");
-                }
-
-                // Should emit 3 batches of 3 items each
-                let emitted = ctx.drain_pdata().await;
+        run_batch_processor_test(
+            inputs_otlp,
+            subscribe,
+            json!({
+                "send_batch_size": 3,
+                "send_batch_max_size": 3,
+                "timeout": "1s"
+            }),
+            |emitted, inputs_otlp| {
+                // Should emit 3 batches of 3 items each (splits at max size)
                 assert_eq!(emitted.len(), 3, "should emit 3 full batches");
 
-                for batch in &emitted {
+                for batch in emitted {
                     let rec: OtapArrowRecords = batch.clone().payload().try_into().unwrap();
                     assert_eq!(rec.batch_length(), 3, "each batch should have 3 items");
                 }
 
-                // Shutdown should have nothing remaining
-                ctx.process(Message::Control(NodeControlMsg::Shutdown {
-                    deadline: Instant::now() + Duration::from_millis(100),
-                    reason: "test".into(),
-                }))
-                .await
-                .expect("shutdown");
-
-                let final_emitted = ctx.drain_pdata().await;
-                assert_eq!(final_emitted.len(), 0, "no remaining data");
-
-                // Simulate acks for all batches
-                if subscribe {
-                    for batch in &emitted {
-                        let rec: OtapArrowRecords = batch.clone().payload().try_into().unwrap();
-                        ctx.process(Message::Control(NodeControlMsg::Ack(AckMsg::new(
-                            OtapPdata::new_default(rec.into()),
-                        ))))
-                        .await
-                        .expect("ack");
-                    }
-                }
-
                 // Verify equivalence
-                let all_outputs: Vec<OtlpProtoMessage> = emitted
-                    .into_iter()
+                let outputs: Vec<OtlpProtoMessage> = emitted
+                    .iter()
                     .map(|p| {
-                        let rec: OtapArrowRecords = p.payload().try_into().unwrap();
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
                         otap_to_otlp(&rec)
                     })
                     .collect();
-                assert_equivalent(&inputs_otlp, &all_outputs);
-
-                // When subscribed, ack tracking is verified internally by processor
-
-                // Trigger telemetry collection
-                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                }))
-                .await
-                .expect("collect telemetry");
-
-                controller_task.abort();
-            })
-            .validate(move |_| async move {
-                // Allow metrics to be reported
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                // Verify metrics
-                verify_item_metrics(&metrics_registry, signal, input_item_count);
-            });
+                assert_equivalent(inputs_otlp, &outputs);
+            }
+        );
     }
 
     #[test]
