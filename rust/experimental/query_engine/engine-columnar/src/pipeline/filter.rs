@@ -700,6 +700,7 @@ impl AdaptivePhysicalExprExec {
 }
 
 // TODO comments and tests
+#[derive(Debug)]
 pub struct FilterProjection {
     schema: ProjectedSchema,
 }
@@ -723,15 +724,41 @@ impl FilterProjection {
 
         for projected_col in &self.schema {
             match projected_col {
-                ProjectedSchemaColumn::Root(col_name) => {
-                    let index = original_schema.index_of(&col_name).ok()?;
+                ProjectedSchemaColumn::Root(desired_col_name) => {
+                    let index = original_schema.index_of(&desired_col_name).ok()?;
                     let column = record_batch.column(index).clone();
                     let field = original_schema.fields[index].clone();
                     columns.push(column);
                     fields.push(field)
                 }
-                _ => {
-                    todo!("project structs")
+                ProjectedSchemaColumn::Struct(desired_struct_name, desired_struct_fields) => {
+                    let struct_index = original_schema.index_of(&desired_struct_name).ok()?;
+                    let column = record_batch.column(struct_index);
+                    let col_as_struct = column.as_any().downcast_ref::<StructArray>()?;
+
+                    let mut struct_fields = Vec::new();
+                    let mut struct_field_defs = Vec::new();
+
+                    for field_name in desired_struct_fields {
+                        let (field_index, field) = col_as_struct.fields().find(field_name)?;
+                        struct_fields.push(col_as_struct.column(field_index).clone());
+                        struct_field_defs.push(field.clone());
+                    }
+
+                    // TODO safety comment here
+                    let projected_struct_arr = StructArray::try_new(
+                        struct_field_defs.into(),
+                        struct_fields,
+                        col_as_struct.nulls().cloned(),
+                    )
+                    .expect("TODO");
+
+                    let projected_field = original_schema.fields[struct_index]
+                        .as_ref()
+                        .clone()
+                        .with_data_type(projected_struct_arr.data_type().clone());
+                    fields.push(Arc::new(projected_field));
+                    columns.push(Arc::new(projected_struct_arr));
                 }
             }
         }
@@ -788,6 +815,9 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
                             .entry(col.name.clone())
                             .or_insert(HashSet::new());
                         struct_fields.insert(nested_col.clone());
+
+                        // don't continue recursing as we've found a column
+                        return Ok(TreeNodeRecursion::Jump);
                     }
                     unexpected => {
                         // TODO handle
