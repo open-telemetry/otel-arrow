@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Error types surfaced by the Quiver crate.
 
 use std::borrow::Cow;

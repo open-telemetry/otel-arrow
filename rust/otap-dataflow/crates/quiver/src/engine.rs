@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Placeholder engine entry-point so other crates can begin wiring dependencies.
 
 use crate::config::QuiverConfig;

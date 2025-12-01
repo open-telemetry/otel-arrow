@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal traits that adapters implement to feed data into Quiver.
 
 use std::borrow::Cow;

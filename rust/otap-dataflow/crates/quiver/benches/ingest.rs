@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Criterion micro-benchmark for the placeholder Quiver ingest path.
 
 #![allow(missing_docs)]
@@ -7,7 +10,7 @@ use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use quiver::config::QuiverConfig;
 use quiver::engine::QuiverEngine;
 use quiver::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId};

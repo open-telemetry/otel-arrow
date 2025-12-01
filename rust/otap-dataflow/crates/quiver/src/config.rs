@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration structures for Quiver's persistence engine.
 
 use std::num::NonZeroU64;
@@ -183,19 +186,14 @@ impl Default for SegmentConfig {
 }
 
 /// Policy that determines how storage pressure is relieved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RetentionPolicy {
     /// Strict durability: pause ingestion instead of deleting unprocessed data.
+    #[default]
     Backpressure,
     /// Trade durability for throughput by deleting the oldest data first.
     DropOldest,
-}
-
-impl Default for RetentionPolicy {
-    fn default() -> Self {
-        Self::Backpressure
-    }
 }
 
 /// Retention-related configuration.

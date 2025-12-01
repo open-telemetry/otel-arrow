@@ -19,8 +19,8 @@ explicitly enabled.
 ## Status
 
 **Not production-ready** This crate is being developed based on the
-specifications in `ARCHITECTURE.md` (which may be updated as development proceeds). It is not
-yet stable or suitable for taking a dependency on.
+specifications in `ARCHITECTURE.md` (which may be updated as development
+proceeds). It is not yet stable or suitable for taking a dependency on.
 
 ## Quick start
 

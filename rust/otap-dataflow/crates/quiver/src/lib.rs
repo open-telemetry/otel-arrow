@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Quiver is an Arrow-native persistence layer.
 //!
 //! The current implementation only provides configuration scaffolding and

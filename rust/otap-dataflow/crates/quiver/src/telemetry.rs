@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Minimal metric counters used by the scaffolding tests.
 
 use std::sync::atomic::{AtomicU64, Ordering};
