@@ -77,6 +77,28 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Get the root payload type for the signal type represented by this OTAP batch
+    #[must_use]
+    pub fn root_payload_type(&self) -> ArrowPayloadType {
+        match self {
+            Self::Logs(_) => ArrowPayloadType::Logs,
+            Self::Traces(_) => ArrowPayloadType::Spans,
+            Self::Metrics(metrics) => {
+                if metrics.get(ArrowPayloadType::MultivariateMetrics).is_some() {
+                    ArrowPayloadType::MultivariateMetrics
+                } else {
+                    ArrowPayloadType::UnivariateMetrics
+                }
+            }
+        }
+    }
+
+    /// Get the record batch for the signal type represented by this OTAP batch
+    #[must_use]
+    pub fn root_record_batch(&self) -> Option<&RecordBatch> {
+        self.get(self.root_payload_type())
+    }
+
     /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs
     /// on each Arrow Record Batch contained in this Otap Batch.
     pub fn decode_transport_optimized_ids(&mut self) -> Result<()> {
