@@ -418,7 +418,10 @@ impl FilterExec {
                     // None of the records have any attributes, so for now we just assume that all
                     // the records would be filtered out by the predicate. Eventually we need to
                     // handle this in a more intelligent way (see comment below about null attrs)
-                    return Ok(BooleanArray::new(BooleanBuffer::new_unset(root_rb.num_rows()), None));
+                    return Ok(BooleanArray::new(
+                        BooleanBuffer::new_unset(root_rb.num_rows()),
+                        None,
+                    ));
                 }
             };
 
@@ -864,7 +867,7 @@ mod test {
 
     use super::*;
 
-    use arrow::array::{RecordBatch, StringArray};
+    use arrow::array::{DictionaryArray, RecordBatch, StringArray, UInt8Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_pdata::otap::Logs;
@@ -1633,12 +1636,43 @@ mod test {
             let pipeline_expr = KqlParser::parse(inverted_attrs_filter).unwrap();
             let mut pipeline = Pipeline::new(pipeline_expr);
             let input = to_otap(log_records.clone());
-            let result = pipeline
-                .execute(input.clone())
-                .await
-                .unwrap();
+            let result = pipeline.execute(input.clone()).await.unwrap();
             assert_eq!(result, input);
         }
+    }
+
+    #[tokio::test]
+    async fn test_optional_attrs_existence_changes() {
+        // what happens if some optional attributes are present one batch, then not present in the
+        // next, then present in the next, etc.
+
+        // TODO we might want to add another similar test for when the root batch is disappearing
+
+        let query = "logs | where attributes[\"a\"] == \"1234\"";
+        let pipeline_expr = KqlParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(pipeline_expr.clone());
+
+        // no attrs to start
+        let batch1 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
+        let result = pipeline.execute(batch1).await.unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // now process a batch with some attrs
+        let log_records = vec![
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("1234"))])
+                .finish(),
+        ];
+        let batch2 = to_otap(log_records.clone());
+        let result = pipeline.execute(batch2).await.unwrap();
+        let expected = to_otap(log_records[1..2].to_vec());
+        assert_eq!(result, expected);
+
+        // handle another record batch with missing attributes
+        let batch3 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
+        let result = pipeline.execute(batch3).await.unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
     }
 
     #[tokio::test]
@@ -1801,5 +1835,68 @@ mod test {
                 .unwrap(),
             RoaringBitmap::from_iter([2])
         );
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_type_change() {
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::new(logical_expr);
+
+        let session_ctx = Pipeline::create_session_context();
+
+        // start of with column of type Dict<u8, utf8>
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let rb1 = RecordBatch::try_new(
+            schema1.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 2, 1]),
+                Arc::new(StringArray::from_iter_values(["DEBUG", "INFO", "WARN"])),
+            ))],
+        )
+        .unwrap();
+
+        let result = phys_expr.evaluate_filter(&rb1, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, false, true, false]));
+
+        // next batch has some column, with type utf8
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Utf8,
+            false,
+        )]));
+
+        let rb2 = RecordBatch::try_new(
+            schema2.clone(),
+            vec![Arc::new(StringArray::from_iter_values([
+                "WARN", "INFO", "WARN", "ERROR", "DEBUG",
+            ]))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
+        assert_eq!(
+            result,
+            BooleanArray::from_iter([true, false, true, false, false])
+        );
+
+        // next batch has some column with type Dict<u16, utf8>
+        let schema3 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let rb3 = RecordBatch::try_new(
+            schema3.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 1]),
+                Arc::new(StringArray::from_iter_values(["DEBUG", "WARN"])),
+            ))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb3, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, true, true]));
     }
 }
