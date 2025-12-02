@@ -7,6 +7,10 @@ use crate::otap_grpc::otlp::server::{
     TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
+#[cfg(feature = "experimental-tls")]
+use crate::tls_utils::{build_tls_acceptor, create_tls_stream};
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsServerConfig;
 
 use crate::compression::CompressionMethod;
 use async_trait::async_trait;
@@ -71,6 +75,10 @@ pub struct Config {
     /// Format: humantime format (e.g., "30s", "5m", "1h", "500ms")
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+
+    /// TLS configuration
+    #[cfg(feature = "experimental-tls")]
+    pub tls: Option<TlsServerConfig>,
 }
 
 const fn default_max_concurrent_requests() -> usize {
@@ -255,6 +263,16 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             server_builder = server_builder.timeout(timeout);
         }
 
+        #[cfg(feature = "experimental-tls")]
+        let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+            .await
+            .map_err(|e| Error::ReceiverError {
+                receiver: effect_handler.receiver_id(),
+                kind: ReceiverErrorKind::Configuration,
+                error: format!("Failed to configure TLS: {}", e),
+                source_detail: format_error_sources(&e),
+            })?;
+
         let server = server_builder
             .add_service(logs_server)
             .add_service(metrics_server)
@@ -300,7 +318,16 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             },
 
             // Run server
-            result = server.serve_with_incoming(listener_stream) => {
+            result = async {
+                #[cfg(feature = "experimental-tls")]
+                {
+                    serve_maybe_tls(server, listener_stream, maybe_tls_acceptor).await
+                }
+                #[cfg(not(feature = "experimental-tls"))]
+                {
+                    server.serve_with_incoming(listener_stream).await
+                }
+            } => {
                 if let Err(error) = result {
                     let source_detail = format_error_sources(&error);
                     return Err(Error::ReceiverError {
@@ -317,6 +344,21 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             Instant::now().add(Duration::from_secs(1)),
             [self.metrics],
         ))
+    }
+}
+
+#[cfg(feature = "experimental-tls")]
+async fn serve_maybe_tls(
+    server: tonic::transport::server::Router,
+    listener_stream: TcpListenerStream,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+) -> Result<(), tonic::transport::Error> {
+    match tls_acceptor {
+        Some(tls_acceptor) => {
+            let tls_stream = create_tls_stream(listener_stream, tls_acceptor);
+            server.serve_with_incoming(tls_stream).await
+        }
+        None => server.serve_with_incoming(listener_stream).await,
     }
 }
 
@@ -658,6 +700,8 @@ mod tests {
                     compression_method: None,
                     max_concurrent_requests: 1000,
                     timeout: None,
+                    #[cfg(feature = "experimental-tls")]
+                    tls: None,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
@@ -696,6 +740,8 @@ mod tests {
                     compression_method: None,
                     max_concurrent_requests: 1000,
                     timeout: None,
+                    #[cfg(feature = "experimental-tls")]
+                    tls: None,
                 },
                 metrics: pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
             },
