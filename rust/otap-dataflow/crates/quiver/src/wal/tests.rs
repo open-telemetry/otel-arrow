@@ -124,6 +124,7 @@ fn write_single_entry(body: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(true)
         .open(&path)
         .expect("create wal file");
     let header = WalHeader::new([0xEE; 16]);

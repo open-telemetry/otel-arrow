@@ -57,6 +57,7 @@ impl WalWriter {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(&options.path)?;
 
         let metadata = file.metadata()?;

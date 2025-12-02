@@ -7,9 +7,9 @@ use crate::record_bundle::SlotId;
 
 mod header;
 mod reader;
-mod writer;
 #[cfg(test)]
 mod tests;
+mod writer;
 
 // Keep reader exports visible even though only tests consume them today.
 #[allow(unused_imports)]
