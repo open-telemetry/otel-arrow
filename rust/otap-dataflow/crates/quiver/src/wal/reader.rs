@@ -6,6 +6,8 @@
 
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
+#[cfg(test)]
+use self::test_support::ReadFailure;
 use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
@@ -100,7 +102,7 @@ impl<'a> Iterator for WalEntryIter<'a> {
 
         let entry_len = u32::from_le_bytes(len_buf) as usize;
         self.buffer.resize(entry_len, 0);
-        if let Err(err) = self.file.read_exact(&mut self.buffer) {
+        if let Err(err) = read_entry_body(self.file, &mut self.buffer) {
             self.finished = true;
             let wal_err = if err.kind() == ErrorKind::UnexpectedEof {
                 WalError::UnexpectedEof("entry body")
@@ -111,7 +113,7 @@ impl<'a> Iterator for WalEntryIter<'a> {
         }
 
         let mut crc_buf = [0u8; 4];
-        if let Err(err) = self.file.read_exact(&mut crc_buf) {
+        if let Err(err) = read_entry_crc(self.file, &mut crc_buf) {
             self.finished = true;
             let wal_err = if err.kind() == ErrorKind::UnexpectedEof {
                 WalError::UnexpectedEof("entry crc")
@@ -190,7 +192,7 @@ enum ReadStatus {
 fn read_exact_or_eof(file: &mut File, buf: &mut [u8]) -> WalResult<ReadStatus> {
     let mut read = 0;
     while read < buf.len() {
-        match file.read(&mut buf[read..]) {
+        match read_length_chunk(file, &mut buf[read..]) {
             Ok(0) if read == 0 => return Ok(ReadStatus::Eof),
             Ok(0) => return Err(WalError::UnexpectedEof("entry length")),
             Ok(n) => read += n,
@@ -199,6 +201,30 @@ fn read_exact_or_eof(file: &mut File, buf: &mut [u8]) -> WalResult<ReadStatus> {
         }
     }
     Ok(ReadStatus::Filled)
+}
+
+fn read_length_chunk(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    #[cfg(test)]
+    if let Some(err) = test_support::take_failure(ReadFailure::EntryLength) {
+        return Err(err);
+    }
+    file.read(buf)
+}
+
+fn read_entry_body(file: &mut File, buffer: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(err) = test_support::take_failure(ReadFailure::EntryBody) {
+        return Err(err);
+    }
+    file.read_exact(buffer)
+}
+
+fn read_entry_crc(file: &mut File, buffer: &mut [u8; 4]) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(err) = test_support::take_failure(ReadFailure::EntryCrc) {
+        return Err(err);
+    }
+    file.read_exact(buffer)
 }
 
 fn decode_entry(entry_start: u64, next_offset: u64, body: &[u8]) -> WalResult<WalRecordBundle> {
@@ -304,4 +330,43 @@ fn read_i64(body: &[u8], cursor: &mut usize, ctx: &'static str) -> WalResult<i64
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(slice_bytes(body, cursor, 8, ctx)?);
     Ok(i64::from_le_bytes(bytes))
+}
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use std::cell::Cell;
+    use std::io::{Error, ErrorKind};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum ReadFailure {
+        EntryLength,
+        EntryBody,
+        EntryCrc,
+    }
+
+    thread_local! {
+        static NEXT_FAILURE: Cell<Option<ReadFailure>> = Cell::new(None);
+    }
+
+    pub fn fail_next_read(stage: ReadFailure) {
+        NEXT_FAILURE.with(|slot| slot.set(Some(stage)));
+    }
+
+    pub fn take_failure(stage: ReadFailure) -> Option<Error> {
+        NEXT_FAILURE.with(|slot| {
+            if slot.get() == Some(stage) {
+                slot.set(None);
+                Some(Error::new(
+                    ErrorKind::Other,
+                    "wal reader injected read failure",
+                ))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn reset_failures() {
+        NEXT_FAILURE.with(|slot| slot.set(None));
+    }
 }

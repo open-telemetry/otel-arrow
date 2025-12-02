@@ -7,7 +7,7 @@
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
@@ -20,6 +20,7 @@ use crate::record_bundle::{
 };
 
 use super::header::{WAL_HEADER_LEN, WalHeader};
+use super::reader::test_support::{self, ReadFailure};
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
     WalTruncateCursor, WalWriter, WalWriterOptions,
@@ -157,6 +158,21 @@ fn truncate_file_from_end(path: &Path, bytes: u64) {
     file.set_len(new_len).expect("truncate file");
 }
 
+struct FailureGuard;
+
+impl FailureGuard {
+    fn new() -> Self {
+        test_support::reset_failures();
+        Self
+    }
+}
+
+impl Drop for FailureGuard {
+    fn drop(&mut self) {
+        test_support::reset_failures();
+    }
+}
+
 #[test]
 fn wal_writer_reader_roundtrip_recovers_payloads() {
     let dir = tempdir().expect("tempdir");
@@ -186,6 +202,7 @@ fn wal_writer_reader_roundtrip_recovers_payloads() {
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     assert_eq!(reader.segment_cfg_hash(), hash);
+    assert_eq!(reader.path(), wal_path.as_path());
 
     let mut iter = reader.iter_from(0).expect("iterator");
     let record = iter.next().expect("entry present").expect("entry ok");
@@ -268,6 +285,166 @@ fn wal_writer_rejects_pre_epoch_timestamp() {
         .append_bundle(&bundle)
         .expect_err("timestamp validation");
     assert!(matches!(err, WalError::InvalidTimestamp));
+}
+
+#[test]
+fn wal_writer_rejects_truncated_existing_file() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("truncated.wal");
+    {
+        let mut file = std::fs::File::create(&wal_path).expect("create file");
+        file.write_all(&vec![0u8; WAL_HEADER_LEN - 1])
+            .expect("truncate header");
+    }
+
+    let options = WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO);
+    let err = WalWriter::open(options).expect_err("should reject truncated file");
+    assert!(matches!(err, WalError::InvalidHeader("file smaller than header")));
+}
+
+#[test]
+fn wal_writer_preserves_existing_header_on_open() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("existing.wal");
+    let original_hash = [0xAA; 16];
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&wal_path)
+            .expect("create file");
+        WalHeader::new(original_hash)
+            .write_to(&mut file)
+            .expect("write header");
+        file.flush().expect("flush");
+    }
+
+    let options = WalWriterOptions::new(wal_path.clone(), [0xBB; 16], Duration::ZERO);
+    let _writer = WalWriter::open(options).expect("open succeeds");
+    drop(_writer);
+
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&wal_path)
+        .expect("open for read");
+    let header = WalHeader::read_from(&mut file).expect("read header");
+    assert_eq!(header.segment_cfg_hash, original_hash);
+}
+
+#[test]
+fn wal_writer_flushes_after_interval_elapsed() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("flush.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        Duration::from_millis(10),
+    ))
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x42, &[1])],
+    );
+
+    let before = writer.test_last_flush();
+    writer.test_set_last_flush(Instant::now() - Duration::from_secs(1));
+    let _offset = writer
+        .append_bundle(&bundle)
+        .expect("append triggers flush");
+    assert!(writer.test_last_flush() > before);
+}
+
+#[test]
+fn wal_reader_rewind_allows_replay_from_start() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("rewind.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x10; 16],
+        Duration::ZERO,
+    ))
+    .expect("writer");
+
+    let first_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
+    );
+    let _ = writer.append_bundle(&first_bundle).expect("first append");
+
+    let second_bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[2])],
+    );
+    let _ = writer.append_bundle(&second_bundle).expect("second append");
+    drop(writer);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    {
+        let mut iter = reader.iter_from(0).expect("iterator");
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_some());
+        assert!(iter.next().is_none());
+    }
+
+    reader.rewind().expect("rewind succeeds");
+
+    let mut iter = reader.iter_from(0).expect("iterator after rewind");
+    let entry = iter.next().expect("entry present").expect("entry ok");
+    assert_eq!(entry.sequence, 0);
+}
+
+#[test]
+fn wal_reader_iterator_stays_finished_after_eof() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("empty.wal");
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&wal_path)
+            .expect("create wal");
+        WalHeader::new([0x44; 16])
+            .write_to(&mut file)
+            .expect("header");
+    }
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    assert!(iter.next().is_none(), "no entries present");
+    assert!(iter.next().is_none(), "iterator remains finished");
+}
+
+#[test]
+fn wal_reader_errors_on_truncated_entry_length() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("length_trunc.wal");
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&wal_path)
+            .expect("create wal");
+        WalHeader::new([0x55; 16])
+            .write_to(&mut file)
+            .expect("header");
+        file.write_all(&[0xAA, 0xBB])
+            .expect("write partial entry length");
+    }
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    match iter.next() {
+        Some(Err(WalError::UnexpectedEof("entry length"))) => {}
+        other => panic!("expected entry length eof, got {:?}", other),
+    }
 }
 
 #[test]
@@ -406,6 +583,54 @@ fn wal_reader_errors_on_truncated_entry_crc() {
     match iter.next() {
         Some(Err(WalError::UnexpectedEof("entry crc"))) => {}
         other => panic!("expected entry crc EOF, got {:?}", other),
+    }
+}
+
+#[test]
+fn wal_reader_reports_io_error_during_entry_length_read() {
+    let _guard = FailureGuard::new();
+    let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE, 0);
+    let (_dir, wal_path) = write_single_entry(&body);
+
+    test_support::fail_next_read(ReadFailure::EntryLength);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    match iter.next() {
+        Some(Err(WalError::Io(_))) => {}
+        other => panic!("expected io error for entry length read, got {:?}", other),
+    }
+}
+
+#[test]
+fn wal_reader_reports_io_error_during_entry_body_read() {
+    let _guard = FailureGuard::new();
+    let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE, 0);
+    let (_dir, wal_path) = write_single_entry(&body);
+
+    test_support::fail_next_read(ReadFailure::EntryBody);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    match iter.next() {
+        Some(Err(WalError::Io(_))) => {}
+        other => panic!("expected io error for entry body read, got {:?}", other),
+    }
+}
+
+#[test]
+fn wal_reader_reports_io_error_during_entry_crc_read() {
+    let _guard = FailureGuard::new();
+    let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE, 0);
+    let (_dir, wal_path) = write_single_entry(&body);
+
+    test_support::fail_next_read(ReadFailure::EntryCrc);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    match iter.next() {
+        Some(Err(WalError::Io(_))) => {}
+        other => panic!("expected io error for entry crc read, got {:?}", other),
     }
 }
 

@@ -184,6 +184,17 @@ impl WalWriter {
     }
 }
 
+#[cfg(test)]
+impl WalWriter {
+    pub(crate) fn test_set_last_flush(&mut self, instant: Instant) {
+        self.last_flush = instant;
+    }
+
+    pub(crate) fn test_last_flush(&self) -> Instant {
+        self.last_flush
+    }
+}
+
 fn system_time_to_nanos(ts: SystemTime) -> WalResult<i64> {
     let duration = ts
         .duration_since(UNIX_EPOCH)
