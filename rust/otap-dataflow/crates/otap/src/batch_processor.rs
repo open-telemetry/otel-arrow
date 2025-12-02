@@ -1097,13 +1097,21 @@ mod tests {
     }
 
     /// Unified test harness for all batch processor scenarios
-    fn run_batch_processor_test<F>(
+    /// Policy for acking or nacking an output
+    enum AckPolicy {
+        Ack,
+        Nack(&'static str),
+    }
+
+    fn run_batch_processor_test<F, P>(
         inputs_otlp: impl Iterator<Item = OtlpProtoMessage>,
         subscribe: bool,
         config: Value,
         verify_outputs: F,
+        ack_policy: Option<P>,
     ) where
-        F: FnOnce(&[OtapPdata], &[OtlpProtoMessage]) + Send + 'static,
+        F: FnOnce(&[OtapPdata], &[OtlpProtoMessage], &[TestCallData], &[TestCallData]) + Send + 'static,
+        P: Fn(usize, &OtapPdata) -> AckPolicy + Send + 'static,
     {
         let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(config);
 
@@ -1177,24 +1185,42 @@ mod tests {
                 // Run scenario-specific verification of first drain
                 let mut all_emitted = ctx.drain_pdata().await;
 
-                // Verify acks if subscribed - must happen BEFORE shutdown
+                // Initialize ack/nack tracking
+                let mut received_acks: Vec<TestCallData> = Vec::new();
+                let mut received_nacks: Vec<TestCallData> = Vec::new();
+
+                // Verify acks/nacks if subscribed - must happen BEFORE shutdown
                 if subscribe {
                     let mut pipeline_rx = pipeline_rx.expect("pipeline_rx available");
 
-                    // Send acks for outputs using Context::next_ack to properly route them
-                    for output_pdata in &all_emitted {
-                        let ack = AckMsg::new(output_pdata.clone());
-                        if let Some((_, ack_ctx)) = Context::next_ack(ack) {
-                            ctx.process(Message::ack_ctrl_msg(ack_ctx))
-                                .await
-                                .expect("process ack");
+                    // Send acks or nacks for outputs based on policy
+                    for (idx, output_pdata) in all_emitted.iter().enumerate() {
+                        let policy = ack_policy.as_ref().map_or(AckPolicy::Ack, |p| p(idx, output_pdata));
+                        match policy {
+                            AckPolicy::Ack => {
+                                let ack = AckMsg::new(output_pdata.clone());
+                                if let Some((_, ack_ctx)) = Context::next_ack(ack) {
+                                    ctx.process(Message::ack_ctrl_msg(ack_ctx))
+                                        .await
+                                        .expect("process ack");
+                                }
+                            }
+                            AckPolicy::Nack(reason) => {
+                                let nack = NackMsg::new(reason, output_pdata.clone());
+                                if let Some((_, nack_ctx)) = Context::next_nack(nack) {
+                                    ctx.process(Message::nack_ctrl_msg(nack_ctx))
+                                        .await
+                                        .expect("process nack");
+                                }
+                            }
                         }
                     }
 
-                    // Verify processor sends DeliverAck for each input
-                    let mut received_acks: Vec<TestCallData> = Vec::new();
-                    while received_acks.len() < num_inputs {
-                        match tokio::time::timeout(Duration::from_secs(2), pipeline_rx.recv()).await
+                    // Collect DeliverAck and DeliverNack messages
+                    let mut timeout_count = 0;
+
+                    while received_acks.len() + received_nacks.len() < num_inputs && timeout_count < 5 {
+                        match tokio::time::timeout(Duration::from_millis(500), pipeline_rx.recv()).await
                         {
                             Ok(Ok(PipelineControlMsg::DeliverAck { ack, .. })) => {
                                 let calldata: TestCallData =
@@ -1210,19 +1236,41 @@ mod tests {
                                 assert!(!received_acks.contains(&calldata), "unique ack");
                                 received_acks.push(calldata);
                             }
+                            Ok(Ok(PipelineControlMsg::DeliverNack { nack, .. })) => {
+                                let calldata: TestCallData =
+                                    nack.calldata.try_into().expect("calldata");
+                                let expected_inputs: Vec<TestCallData> = (0..num_inputs)
+                                    .map(|i| TestCallData::new_with(i as u64, 0))
+                                    .collect();
+                                assert!(
+                                    expected_inputs.contains(&calldata),
+                                    "nack has valid calldata: {:?}",
+                                    calldata
+                                );
+                                assert!(!received_nacks.contains(&calldata), "unique nack");
+                                received_nacks.push(calldata);
+                            }
                             Ok(Ok(PipelineControlMsg::DelayData { .. })) => {
-                                // Ignore timer messages, continue waiting for acks
+                                // Ignore timer messages, continue waiting for acks/nacks
                             }
                             Ok(Ok(other)) => panic!("unexpected control message: {:?}", other),
                             Ok(Err(e)) => panic!("pipeline channel error: {:?}", e),
                             Err(_) => {
-                                panic!(
-                                    "timeout waiting for DeliverAck, received {} of {}",
-                                    received_acks.len(),
-                                    num_inputs
-                                );
+                                timeout_count += 1;
                             }
                         }
+                    }
+
+                    // If ack_policy was provided, verification is done in verify_outputs
+                    // Otherwise, verify all inputs were acked
+                    if ack_policy.is_none() {
+                        assert_eq!(
+                            received_acks.len(),
+                            num_inputs,
+                            "expected {} acks, got {}",
+                            num_inputs,
+                            received_acks.len()
+                        );
                     }
                 }
 
@@ -1239,7 +1287,7 @@ mod tests {
                 all_emitted.extend(remaining);
 
                 // Now verify all outputs
-                (verify_outputs)(&all_emitted, &inputs_otlp);
+                (verify_outputs)(&all_emitted, &inputs_otlp, &received_acks, &received_nacks);
 
                 // Collect telemetry
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
@@ -1268,7 +1316,7 @@ mod tests {
                 "send_batch_max_size": 5,
                 "timeout": "1s"
             }),
-            |emitted, inputs_otlp| {
+            |emitted, inputs_otlp, _acks, _nacks| {
                 // Should have multiple batches: one from threshold, others from shutdown
                 assert!(!emitted.is_empty(), "should have emitted batches");
 
@@ -1290,6 +1338,7 @@ mod tests {
                     .collect();
                 assert_equivalent(inputs_otlp, &outputs);
             },
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1327,7 +1376,7 @@ mod tests {
                 "send_batch_max_size": 10,
                 "timeout": "50ms"
             }),
-            |emitted, inputs_otlp| {
+            |emitted, inputs_otlp, _acks, _nacks| {
                 // Timer flush: shutdown should trigger flush of pending data
                 assert_eq!(emitted.len(), 1, "timer flush should emit one batch");
 
@@ -1337,6 +1386,7 @@ mod tests {
                 use std::slice::from_ref;
                 assert_equivalent(inputs_otlp, from_ref(&output_otlp));
             },
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1374,7 +1424,7 @@ mod tests {
                 "send_batch_max_size": 3,
                 "timeout": "1s"
             }),
-            |emitted, inputs_otlp| {
+            |emitted, inputs_otlp, _acks, _nacks| {
                 // Should emit 3 batches of 3 items each (splits at max size)
                 assert_eq!(emitted.len(), 3, "should emit 3 full batches");
 
@@ -1393,6 +1443,7 @@ mod tests {
                     .collect();
                 assert_equivalent(inputs_otlp, &outputs);
             },
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1428,7 +1479,7 @@ mod tests {
             "timeout": "1s"
         });
 
-        run_batch_processor_test(inputs_otlp, subscribe, cfg, |all_emitted, inputs_otlp| {
+        run_batch_processor_test(inputs_otlp, subscribe, cfg, |all_emitted, inputs_otlp, _acks, _nacks| {
             // With send_batch_size=5, send_batch_max_size=10, 4 inputs of 3 items each = 12 items
             // Should emit 2 batches of 6 items each (concatenation/rebuffering)
             assert_eq!(all_emitted.len(), 2, "should emit 2 batches at threshold");
@@ -1447,7 +1498,7 @@ mod tests {
                 })
                 .collect();
             assert_equivalent(inputs_otlp, &all_outputs);
-        });
+        }, None::<fn(usize, &OtapPdata) -> AckPolicy>);
     }
 
     #[test]
@@ -1482,7 +1533,7 @@ mod tests {
             "timeout": "0s",
         });
 
-        run_batch_processor_test(inputs_otlp, subscribe, cfg, |all_emitted, inputs_otlp| {
+        run_batch_processor_test(inputs_otlp, subscribe, cfg, |all_emitted, inputs_otlp, _acks, _nacks| {
             // With no send_batch_size and no timeout, flushes immediately on every input
             // With send_batch_max_size=2, each 3-item input splits to [2, 1]
             assert_eq!(all_emitted.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
@@ -1509,7 +1560,7 @@ mod tests {
                 })
                 .collect();
             assert_equivalent(inputs_otlp, &all_outputs);
-        });
+        }, None::<fn(usize, &OtapPdata) -> AckPolicy>);
     }
 
     #[test]
@@ -1534,5 +1585,235 @@ mod tests {
     fn test_split_only_logs_with_ack() {
         let mut datagen = DataGenerator::new(1);
         test_split_only((0..2).map(|_| datagen.generate_logs().into()), true);
+    }
+
+    /// Test ordering guarantees when splitting and combining with nack failures.
+    /// This validates that the low-level groups.rs logic respects arrival order:
+    /// - When max size causes splits, remainder items in outputs[N-1] must be
+    ///   unconditionally emitted before items from subsequent requests
+    /// - When we nack an output, all inputs that contributed to it should be nacked
+    fn test_split_with_nack_ordering(
+        create_marked_input: impl Fn(usize) -> OtlpProtoMessage + Send + 'static,
+        extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
+        nack_position: usize,
+    ) {
+        let cfg = json!({
+            "send_batch_size": 3,
+            "send_batch_max_size": 3,
+            "timeout": "1s",
+        });
+
+        // Create inputs with unique markers (e.g., timestamps)
+        let num_inputs = 4;
+        let inputs_otlp: Vec<OtlpProtoMessage> = (0..num_inputs)
+            .map(|i| create_marked_input(i))
+            .collect();
+
+        // Clone for closures
+        let extract_markers_clone = extract_markers.clone();
+        let nack_position_for_policy = nack_position;
+
+        run_batch_processor_test(
+            inputs_otlp.into_iter(),
+            true,
+            cfg,
+            move |all_emitted, inputs_otlp, _acks, received_nacks| {
+                // Extract all input markers for verification
+                let input_markers: Vec<Vec<u64>> = inputs_otlp
+                    .iter()
+                    .map(|input| extract_markers_clone(input))
+                    .collect();
+
+                // Verify we got expected splits (with max_size=3, each 3-item input should split)
+                assert!(
+                    all_emitted.len() >= nack_position + 1,
+                    "Need at least {} outputs to nack position {}",
+                    nack_position + 1,
+                    nack_position
+                );
+
+                // Extract markers from each output
+                let output_markers: Vec<Vec<u64>> = all_emitted
+                    .iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                        let otlp = otap_to_otlp(&rec);
+                        extract_markers_clone(&otlp)
+                    })
+                    .collect();
+
+                // Verify: all inputs whose markers appear in the nacked output should be nacked
+                let nacked_markers = &output_markers[nack_position];
+                let mut expected_nacks: HashSet<TestCallData> = HashSet::new();
+
+                for (input_idx, markers) in input_markers.iter().enumerate() {
+                    // Check if any marker from this input appears in the nacked output
+                    if markers.iter().any(|m| nacked_markers.contains(m)) {
+                        let _ = expected_nacks.insert(TestCallData::new_with(input_idx as u64, 0));
+                    }
+                }
+
+                // Convert received nacks to set
+                let actual_nacks: HashSet<TestCallData> = received_nacks
+                    .iter()
+                    .cloned()
+                    .collect();
+
+                assert_eq!(
+                    expected_nacks, actual_nacks,
+                    "Nack position {}: expected inputs {:?} to be nacked, got {:?}. \
+                     Output markers: {:?}",
+                    nack_position,
+                    expected_nacks,
+                    actual_nacks,
+                    output_markers
+                );
+
+                // Verify ordering: markers in the nacked output should respect input order
+                let mut prev_marker = 0u64;
+                for marker in nacked_markers {
+                    assert!(
+                        *marker >= prev_marker,
+                        "Markers in output {} out of order: {} after {}",
+                        nack_position,
+                        marker,
+                        prev_marker
+                    );
+                    prev_marker = *marker;
+                }
+            },
+            Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
+                if idx == nack_position_for_policy {
+                    AckPolicy::Nack("test nack")
+                } else {
+                    AckPolicy::Ack
+                }
+            }),
+        );
+    }
+
+    /// Create traces with unique timestamps as markers
+    fn create_marked_traces(base_id: usize) -> OtlpProtoMessage {
+        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otap_df_pdata::proto::opentelemetry::trace::v1::{
+            ResourceSpans, ScopeSpans, Span, TracesData,
+        };
+
+        let base_time = 1_000_000_000 + (base_id * 1000) as u64;
+        let spans: Vec<Span> = (0..3)
+            .map(|i| Span {
+                name: format!("span_{}", base_id * 3 + i),
+                start_time_unix_nano: base_time + i as u64,
+                end_time_unix_nano: base_time + i as u64 + 100,
+                ..Default::default()
+            })
+            .collect();
+
+        OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope::default()),
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })
+    }
+
+    /// Extract timestamps from traces as markers
+    fn extract_trace_markers(msg: &OtlpProtoMessage) -> Vec<u64> {
+        if let OtlpProtoMessage::Traces(traces) = msg {
+            traces
+                .resource_spans
+                .iter()
+                .flat_map(|rs| &rs.scope_spans)
+                .flat_map(|ss| &ss.spans)
+                .map(|span| span.start_time_unix_nano)
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Create logs with unique timestamps as markers
+    fn create_marked_logs(base_id: usize) -> OtlpProtoMessage {
+        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::{
+            LogRecord, LogsData, ResourceLogs, ScopeLogs,
+        };
+
+        let base_time = 1_000_000_000 + (base_id * 1000) as u64;
+        let log_records: Vec<LogRecord> = (0..3)
+            .map(|i| LogRecord {
+                time_unix_nano: base_time + i,
+                ..Default::default()
+            })
+            .collect();
+
+        OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope::default()),
+                    log_records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })
+    }
+
+    /// Extract timestamps from logs as markers
+    fn extract_log_markers(msg: &OtlpProtoMessage) -> Vec<u64> {
+        if let OtlpProtoMessage::Logs(logs) = msg {
+            logs.resource_logs
+                .iter()
+                .flat_map(|rl| &rl.scope_logs)
+                .flat_map(|sl| &sl.log_records)
+                .map(|lr| lr.time_unix_nano)
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn test_traces_nack_ordering_position_0() {
+        test_split_with_nack_ordering(create_marked_traces, extract_trace_markers, 0);
+    }
+
+    #[test]
+    fn test_traces_nack_ordering_position_1() {
+        test_split_with_nack_ordering(create_marked_traces, extract_trace_markers, 1);
+    }
+
+    #[test]
+    fn test_traces_nack_ordering_position_2() {
+        test_split_with_nack_ordering(create_marked_traces, extract_trace_markers, 2);
+    }
+
+    #[test]
+    fn test_traces_nack_ordering_position_3() {
+        test_split_with_nack_ordering(create_marked_traces, extract_trace_markers, 3);
+    }
+
+    #[test]
+    fn test_logs_nack_ordering_position_0() {
+        test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 0);
+    }
+
+    #[test]
+    fn test_logs_nack_ordering_position_1() {
+        test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 1);
+    }
+
+    #[test]
+    fn test_logs_nack_ordering_position_2() {
+        test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 2);
+    }
+
+    #[test]
+    fn test_logs_nack_ordering_position_3() {
+        test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 3);
     }
 }
