@@ -772,6 +772,75 @@ fn wal_reader_iter_from_respects_offsets() {
 }
 
 #[test]
+fn wal_reader_iter_from_partial_length_reports_error() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("partial_offset.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+
+    {
+        let mut writer = WalWriter::open(WalWriterOptions::new(
+            wal_path.clone(),
+            [0x44; 16],
+            Duration::ZERO,
+        ))
+        .expect("writer");
+
+        let bundle = FixtureBundle::new(
+            descriptor.clone(),
+            vec![FixtureSlot::new(SlotId::new(0), 0xAA, &[1, 2])],
+        );
+        let _ = writer.append_bundle(&bundle).expect("append");
+    }
+
+    let metadata_len = std::fs::metadata(&wal_path)
+        .expect("metadata")
+        .len();
+    let misaligned_offset = metadata_len.saturating_sub(2);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader
+        .iter_from(misaligned_offset)
+        .expect("iterator from misaligned offset");
+    match iter.next() {
+        Some(Err(WalError::UnexpectedEof("entry length"))) => {}
+        other => panic!("expected entry length eof, got {:?}", other),
+    }
+}
+
+#[test]
+fn wal_reader_iter_from_offset_past_file_returns_none() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("past_end_offset.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+
+    {
+        let mut writer = WalWriter::open(WalWriterOptions::new(
+            wal_path.clone(),
+            [0x55; 16],
+            Duration::ZERO,
+        ))
+        .expect("writer");
+
+        let bundle = FixtureBundle::new(
+            descriptor,
+            vec![FixtureSlot::new(SlotId::new(0), 0xCC, &[3, 4])],
+        );
+        let _ = writer.append_bundle(&bundle).expect("append");
+    }
+
+    let metadata_len = std::fs::metadata(&wal_path)
+        .expect("metadata")
+        .len();
+    let offset_beyond_file = metadata_len + 128;
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader
+        .iter_from(offset_beyond_file)
+        .expect("iterator past end");
+    assert!(iter.next().is_none());
+}
+
+#[test]
 fn wal_truncate_cursor_recovers_after_partial_entry() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("recovery.wal");
