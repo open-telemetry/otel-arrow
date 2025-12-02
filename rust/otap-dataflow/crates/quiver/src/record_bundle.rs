@@ -161,4 +161,13 @@ mod tests {
         let bundle = DummyBundle::new();
         assert!(bundle.payload(SlotId::new(42)).is_none());
     }
+
+    #[test]
+    fn descriptor_trait_method_returns_bundle_descriptor() {
+        let bundle = DummyBundle::new();
+        let descriptor = RecordBundle::descriptor(&bundle);
+
+        assert_eq!(descriptor.slots.len(), 1);
+        assert_eq!(descriptor.get(SlotId::new(0)).unwrap().label, "Logs");
+    }
 }
