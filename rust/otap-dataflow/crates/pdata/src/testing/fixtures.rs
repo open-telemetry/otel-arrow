@@ -273,6 +273,59 @@ pub fn logs_multiple_resources_mixed_content() -> LogsData {
     ])
 }
 
+/// Generate logs with varying attributes and properties that follow some semantic
+/// conventions. This can be used to generate somewhat realistic set of records that
+/// of various batch sizes that could be used to test transformations such as filtering
+#[must_use]
+pub fn logs_with_varying_attributes_and_properties(batch_size: usize) -> LogsData {
+    let log_records = (0..batch_size)
+        .map(|i| {
+            // generate some log attributes that somewhat follow semantic conventions
+            let attrs = vec![
+                KeyValue::new(
+                    "code.namespace",
+                    AnyValue::new_string(match i % 3 {
+                        0 => "main",
+                        1 => "otap_dataflow_engine",
+                        _ => "arrow::array",
+                    }),
+                ),
+                KeyValue::new("code.line.number", AnyValue::new_int((i % 5) as i64)),
+            ];
+
+            // cycle through severity numbers
+            // 5 = DEBUG, 9 = INFO, 13 = WARN, 17 = ERROR
+            let severity_number =
+                SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).expect("valid severity_number");
+            let severity_text = severity_number
+                .as_str_name()
+                .split("_") // Note: this splitting something like SEVERITY_NUMBER_INFO
+                .nth(2)
+                .expect("can parse severity_text");
+            let event_name = format!("event {}", i);
+            let time_unix_nano = i as u64;
+
+            LogRecord::build()
+                .attributes(attrs)
+                .event_name(event_name)
+                .severity_number(severity_number)
+                .severity_text(severity_text)
+                .time_unix_nano(time_unix_nano)
+                .finish()
+        })
+        .collect::<Vec<_>>();
+
+    LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
 //
 // Traces Fixtures
 //

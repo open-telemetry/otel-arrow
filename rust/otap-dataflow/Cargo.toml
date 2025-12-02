@@ -34,6 +34,7 @@ otap-df-config.workspace = true
 otap-df-controller.workspace = true
 otap-df-otap.workspace = true
 thiserror.workspace = true
+quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
 mimalloc-rust.workspace = true
@@ -44,12 +45,14 @@ otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
+quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 
 ahash = "0.8.11"
 arrayvec = "0.7.6"
 arrow = { version = "57.0", features=["prettyprint"] }
 arrow-ipc = { version = "57.0", features=["zstd"] }
 arrow-schema = { version = "57.0" }
+arrow-array = { version = "57.0" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
@@ -97,7 +100,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.142" }
 serde_with = { version = "3.14.1", features = ["std", "macros", "json"] }
-serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
+serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
@@ -149,6 +152,8 @@ default = []
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+# Experimental persistence prototype (opt-in)
+quiver-persistence = ["quiver"]
 # Experimental exporters (opt-in)
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
@@ -220,6 +225,11 @@ debug = "line-tables-only"  # minimum required for profiling
 
 [profile.bench]
 inherits = "release"
+opt-level = 3
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
 # Potentially override lto for faster builds:
 # lto = "thin"
 # Potentially override debug/strip for easier debugging:

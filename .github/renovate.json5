@@ -17,6 +17,8 @@
     // this reference implementation has been removed from our build pipelines
     "rust/beaubourg/**"
   ],
+  // NOTE: Rule ordering matters here
+  // Later rules will override earlier rules
   "packageRules": [
     {
       // reduces the number of Renovate PRs
@@ -55,6 +57,7 @@
       // reduces frequency of digest-only updates
       "groupName": "docker digest updates",
       "matchUpdateTypes": ["digest"],
+      "matchFileNames": ["**/Dockerfile"],
       "schedule": [
         "before 8am on the first day of the month"
       ]

@@ -7,14 +7,114 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use arrow::array::Array;
-use criterion::{Criterion, criterion_group, criterion_main};
-use otap_df_pdata::otap::filter::build_uint16_id_filter;
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::filter::logs::{LogFilter, LogMatchProperties};
+use otap_df_pdata::otap::filter::{self, MatchType, build_uint16_id_filter};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use roaring::RoaringBitmap;
+
+fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
+    let logs_data = logs_with_varying_attributes_and_properties(batch_size);
+    otlp_to_otap(&OtlpProtoMessage::Logs(logs_data))
+}
+
+fn bench_log_filter(
+    c: &mut Criterion,
+    batch_sizes: &[usize],
+    bench_group_name: &str,
+    include: Option<LogMatchProperties>,
+    exclude: Option<LogMatchProperties>,
+) {
+    let mut group = c.benchmark_group(format!("log_filter/{bench_group_name}"));
+    for batch_size in batch_sizes {
+        let benchmark_id = BenchmarkId::new("batch_size", batch_size);
+
+        let filter = LogFilter::new(include.clone(), exclude.clone(), Vec::new());
+        let batch = generate_logs_batch(*batch_size);
+        _ = group.bench_with_input(benchmark_id, &(batch, filter), |b, input| {
+            b.iter_batched(
+                || input,
+                |input| {
+                    let (batch, filter) = &input;
+                    let (result, _, _) = filter.filter(batch.clone()).expect("shouldn't fail");
+                    black_box(result)
+                },
+                BatchSize::SmallInput,
+            );
+        })
+    }
+
+    group.finish();
+}
+
+fn bench_filter(c: &mut Criterion) {
+    let batch_sizes = [32, 1024, 8092];
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(),          // no resource attr filter,
+        Vec::new(),          // no record attrs filter,
+        vec!["WARN".into()], // severity_text = "WARN",
+        None,                // no severity number filter,
+        Vec::new(),          // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "simple_field_filter", Some(include), None);
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(), // no resource attr filter,
+        vec![
+            // attrs["code.namespace"] == "main"
+            filter::KeyValue::new(
+                "code.namespace".into(),
+                filter::AnyValue::String("main".into()),
+            ),
+        ],
+        Vec::new(), // no severity text filter
+        None,       // no severity number filter,
+        Vec::new(), // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "simple_attrs_filter", Some(include), None);
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(),
+        vec![
+            // attrs["code.namespace"] == "main" or attrs["code.line.number"] == 2
+            filter::KeyValue::new(
+                "code.namespace".into(),
+                filter::AnyValue::String("main".into()),
+            ),
+            filter::KeyValue::new("code.line.number".into(), filter::AnyValue::Int(2)),
+        ],
+        Vec::new(), // no severity text filter
+        None,       // no severity number filter,
+        Vec::new(), // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "attrs_or_filter", Some(include), None);
+
+    let include = LogMatchProperties::new(
+        MatchType::Strict,
+        Vec::new(),
+        vec![
+            // attrs["code.namespace"] == "main"
+            filter::KeyValue::new(
+                "code.namespace".into(),
+                filter::AnyValue::String("main".into()),
+            ),
+        ],
+        vec!["WARN".into()], // severity_text == "WARN"
+        None,                // no severity number filter,
+        Vec::new(),          // no bodies filter
+    );
+    bench_log_filter(c, &batch_sizes, "attr_and_prop_filter", Some(include), None);
+}
 
 /// Benchmark for [`build_uint16_id_filter`]
 ///
@@ -155,7 +255,7 @@ mod benches {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_build_uint16_id_filter
+        targets = bench_filter, bench_build_uint16_id_filter
     );
 }
 
