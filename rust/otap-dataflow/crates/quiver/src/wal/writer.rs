@@ -10,11 +10,7 @@ use crc32fast::Hasher;
 use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
 
 use super::header::{WalHeader, WAL_HEADER_LEN};
-use super::{WalError, WalResult, ENTRY_TYPE_RECORD_BUNDLE};
-
-const ENTRY_HEADER_LEN: usize = 1 + 8 + 8 + 8;
-const SCHEMA_FINGERPRINT_LEN: usize = 32;
-const SLOT_HEADER_LEN: usize = 2 + SCHEMA_FINGERPRINT_LEN + 4 + 4;
+use super::{WalError, WalResult, ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WalWriterOptions {
