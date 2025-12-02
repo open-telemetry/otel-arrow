@@ -282,14 +282,15 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         }
 
         #[cfg(feature = "experimental-tls")]
-        let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
-            .await
-            .map_err(|e| Error::ReceiverError {
-                receiver: effect_handler.receiver_id(),
-                kind: ReceiverErrorKind::Configuration,
-                error: format!("Failed to configure TLS: {}", e),
-                source_detail: format_error_sources(&e),
-            })?;
+        let maybe_tls_acceptor =
+            build_tls_acceptor(self.config.tls.as_ref())
+                .await
+                .map_err(|e| Error::ReceiverError {
+                    receiver: effect_handler.receiver_id(),
+                    kind: ReceiverErrorKind::Configuration,
+                    error: format!("Failed to configure TLS: {}", e),
+                    source_detail: format_error_sources(&e),
+                })?;
 
         let server = server_builder
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))

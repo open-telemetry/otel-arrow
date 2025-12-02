@@ -7,7 +7,7 @@ use otap_df_config::tls::TlsServerConfig;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -238,8 +238,9 @@ impl LazyReloadableCertResolver {
         let is_reloading = Arc::clone(&self.is_reloading);
 
         // Spawn async reload - doesn't block the current handshake
-        // Fire-and-forget: we intentionally don't await the task
-        let _ = tokio::spawn(async move {
+        // Fire-and-forget: we intentionally don't await the task.
+        // Using drop() to explicitly ignore the JoinHandle and satisfy clippy::let_underscore_future.
+        drop(tokio::spawn(async move {
             match load_certified_key_async(&cert_path, &key_path).await {
                 Ok(new_cert) => {
                     cert_key.store(Arc::new(new_cert));
@@ -259,7 +260,7 @@ impl LazyReloadableCertResolver {
                 }
             }
             is_reloading.store(false, Ordering::Release);
-        });
+        }));
 
         // Return immediately - current handshake uses existing (valid) cert
         false
@@ -298,8 +299,8 @@ fn get_mtime(path: &PathBuf) -> Result<u64, io::Error> {
 
 /// Async version for background reloads - doesn't block handshakes
 async fn load_certified_key_async(
-    cert_path: &PathBuf,
-    key_path: &PathBuf,
+    cert_path: &Path,
+    key_path: &Path,
 ) -> Result<CertifiedKey, io::Error> {
     use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
@@ -336,8 +337,8 @@ async fn load_certified_key_async(
 
 /// Sync version for initial load in constructor
 fn load_certified_key_sync(
-    cert_path: &PathBuf,
-    key_path: &PathBuf,
+    cert_path: &Path,
+    key_path: &Path,
 ) -> Result<CertifiedKey, io::Error> {
     use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
@@ -450,7 +451,7 @@ pub async fn build_tls_acceptor(
     }
 }
 
-async fn read_file_with_limit_async(path: &std::path::Path) -> Result<Vec<u8>, io::Error> {
+async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = tokio::fs::metadata(path).await?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(
@@ -466,7 +467,7 @@ async fn read_file_with_limit_async(path: &std::path::Path) -> Result<Vec<u8>, i
     tokio::fs::read(path).await
 }
 
-fn read_file_with_limit_sync(path: &std::path::Path) -> Result<Vec<u8>, io::Error> {
+fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(
@@ -552,7 +553,7 @@ mod tests {
     /// # Panics
     /// Panics if OpenSSL is not installed or if cert generation fails.
     /// Tests using this should call `skip_if_no_openssl()` first for graceful handling.
-    fn generate_cert(dir: &std::path::Path, name: &str, cn: &str) {
+    fn generate_cert(dir: &Path, name: &str, cn: &str) {
         // Generate Key and Cert in one go (self-signed)
         let output = Command::new("openssl")
             .args([
