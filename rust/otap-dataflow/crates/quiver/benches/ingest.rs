@@ -46,7 +46,7 @@ impl RecordBundle for DummyBundle {
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
         if slot == SlotId::new(0) {
             Some(PayloadRef {
-                schema_fingerprint: [0; 16],
+                schema_fingerprint: [0; 32],
                 batch: &self.batch,
             })
         } else {

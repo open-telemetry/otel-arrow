@@ -60,8 +60,8 @@ impl BundleDescriptor {
     }
 }
 
-/// Stable fingerprint for a payload schema (currently 128 bits).
-pub type SchemaFingerprint = [u8; 16];
+/// Stable fingerprint for a payload schema (currently 256 bits).
+pub type SchemaFingerprint = [u8; 32];
 
 /// Borrowed view into a payload slot; callers reuse their in-memory `RecordBatch`
 /// instances to avoid copies.
@@ -123,7 +123,7 @@ mod tests {
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
             if slot == SlotId::new(0) {
                 Some(PayloadRef {
-                    schema_fingerprint: [0; 16],
+                    schema_fingerprint: [0; 32],
                     batch: &self.batch,
                 })
             } else {
@@ -152,7 +152,7 @@ mod tests {
             .payload(SlotId::new(0))
             .expect("slot 0 should be populated");
 
-        assert_eq!(payload.schema_fingerprint, [0; 16]);
+        assert_eq!(payload.schema_fingerprint, [0; 32]);
         assert!(std::ptr::eq(payload.batch, &bundle.batch));
     }
 
