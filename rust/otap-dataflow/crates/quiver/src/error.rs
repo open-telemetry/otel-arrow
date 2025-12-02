@@ -9,7 +9,7 @@ use std::borrow::Cow;
 pub type Result<T> = std::result::Result<T, QuiverError>;
 
 /// Errors that can be produced by Quiver APIs.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
 pub enum QuiverError {
     /// Raised when a caller provides an invalid configuration.
     #[error("invalid configuration: {message}")]
@@ -22,6 +22,13 @@ pub enum QuiverError {
     Unimplemented {
         /// Context string identifying the missing component.
         context: &'static str,
+    },
+    /// Wrapper for WAL-specific failures.
+    #[error("wal error: {source}")]
+    Wal {
+        /// Underlying WAL error.
+        #[from]
+        source: crate::wal::WalError,
     },
 }
 

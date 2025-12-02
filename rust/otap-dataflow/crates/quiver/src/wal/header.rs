@@ -1,6 +1,6 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 
-use super::{WalError, WAL_MAGIC};
+use super::{WAL_MAGIC, WalError};
 
 pub(crate) const WAL_VERSION: u16 = 1;
 pub(crate) const WAL_HEADER_LEN: usize = WAL_MAGIC.len() + 2 + 2 + 16;

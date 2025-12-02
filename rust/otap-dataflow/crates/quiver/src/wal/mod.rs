@@ -20,30 +20,48 @@ pub(crate) const SLOT_HEADER_LEN: usize = 2 + SCHEMA_FINGERPRINT_LEN + 4 + 4;
 
 pub(crate) type WalResult<T> = Result<T, WalError>;
 
+/// Errors produced while reading or writing WAL data.
 #[derive(Error, Debug)]
-pub(crate) enum WalError {
+pub enum WalError {
+    /// Underlying filesystem failure.
     #[error("wal io error: {0}")]
     Io(#[from] io::Error),
+    /// File header contained unexpected bytes.
     #[error("invalid wal header: {0}")]
     InvalidHeader(&'static str),
+    /// Slot id exceeded the current bitmap encoding.
     #[error("slot id {0:?} is out of supported bitmap range (>= 64)")]
     SlotOutOfRange(SlotId),
+    /// Payload row count cannot be encoded as `u32`.
     #[error("row count {0} exceeds u32::MAX")]
     RowCountOverflow(usize),
+    /// Serialized payload exceeds allowed size.
     #[error("payload length {0} exceeds u32::MAX")]
     PayloadTooLarge(usize),
+    /// Entry body is larger than the framing supports.
     #[error("entry body length {0} exceeds u32::MAX")]
     EntryTooLarge(usize),
+    /// Ingestion timestamp could not be normalized.
     #[error("invalid ingestion timestamp")]
     InvalidTimestamp,
+    /// Encountered an unexpected EOF while parsing.
     #[error("wal truncated while reading {0}")]
     UnexpectedEof(&'static str),
+    /// CRC mismatch detected during validation.
     #[error("wal crc mismatch: stored {stored:#010x} computed {computed:#010x}")]
-    CrcMismatch { stored: u32, computed: u32 },
+    CrcMismatch {
+        /// CRC value persisted alongside the entry.
+        stored: u32,
+        /// CRC recomputed from the decoded entry.
+        computed: u32,
+    },
+    /// Entry type not supported by this build.
     #[error("unsupported wal entry type {0}")]
     UnsupportedEntry(u8),
+    /// Entry body failed structural validation.
     #[error("invalid wal entry: {0}")]
     InvalidEntry(&'static str),
+    /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),
 }

@@ -3,25 +3,35 @@
 
 //! Placeholder engine entry-point so other crates can begin wiring dependencies.
 
+use std::path::PathBuf;
+
+use blake3::Hasher;
+use parking_lot::Mutex;
+
 use crate::config::QuiverConfig;
 use crate::error::{QuiverError, Result};
 use crate::record_bundle::RecordBundle;
 use crate::telemetry::PersistenceMetrics;
+use crate::wal::{WalWriter, WalWriterOptions};
 
 /// Primary entry point for the persistence engine.
 #[derive(Debug)]
 pub struct QuiverEngine {
     config: QuiverConfig,
     metrics: PersistenceMetrics,
+    wal_writer: Mutex<WalWriter>,
 }
 
 impl QuiverEngine {
     /// Validates configuration and returns a placeholder engine instance.
     pub fn new(config: QuiverConfig) -> Result<Self> {
         config.validate()?;
+        let wal_writer = initialize_wal_writer(&config)?;
+
         Ok(Self {
             config,
             metrics: PersistenceMetrics::new(),
+            wal_writer: Mutex::new(wal_writer),
         })
     }
 
@@ -39,6 +49,11 @@ impl QuiverEngine {
     pub fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
 
+        {
+            let mut writer = self.wal_writer.lock();
+            let _wal_offset = writer.append_bundle(bundle)?;
+        }
+
         let descriptor = bundle.descriptor();
         let _ingestion_time = bundle.ingestion_time();
 
@@ -52,14 +67,44 @@ impl QuiverEngine {
     }
 }
 
+fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
+    let wal_path = wal_path(config);
+    let options = WalWriterOptions::new(
+        wal_path,
+        segment_cfg_hash(config),
+        config.wal.flush_interval,
+    );
+    Ok(WalWriter::open(options)?)
+}
+
+fn wal_path(config: &QuiverConfig) -> PathBuf {
+    config.data_dir.join("wal").join("quiver.wal")
+}
+
+fn segment_cfg_hash(config: &QuiverConfig) -> [u8; 16] {
+    // Placeholder fingerprint derived from segment configuration; later phases will
+    // mix in adapter-specific layout metadata once available.
+    let mut hasher = Hasher::new();
+    let _ = hasher.update(&config.segment.target_size_bytes.get().to_le_bytes());
+    let _ = hasher.update(&config.segment.max_stream_count.to_le_bytes());
+    let _ = hasher.update(&config.segment.max_open_duration.as_nanos().to_le_bytes());
+
+    let digest = hasher.finalize();
+    let mut hash = [0u8; 16];
+    hash.copy_from_slice(&digest.as_bytes()[..16]);
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
+    use crate::wal::WalReader;
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
+    use tempfile::tempdir;
 
     struct DummyBundle {
         descriptor: BundleDescriptor,
@@ -106,7 +151,9 @@ mod tests {
 
     #[test]
     fn ingest_is_currently_unimplemented() {
-        let engine = QuiverEngine::new(QuiverConfig::default()).expect("config valid");
+        let temp_dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+        let engine = QuiverEngine::new(config).expect("config valid");
         let bundle = DummyBundle::new();
         let err = engine.ingest(&bundle).expect_err("not implemented");
         assert!(matches!(err, QuiverError::Unimplemented { .. }));
@@ -115,13 +162,38 @@ mod tests {
 
     #[test]
     fn config_returns_engine_configuration() {
+        let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::builder()
-            .data_dir("./config_return_test")
+            .data_dir(temp_dir.path())
             .build()
             .expect("builder should produce valid config");
         let engine = QuiverEngine::new(config.clone()).expect("config valid");
 
         assert_eq!(engine.config(), &config);
+    }
+
+    #[test]
+    fn ingest_appends_to_wal_before_placeholder_error() {
+        let temp_dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+        let engine = QuiverEngine::new(config).expect("config valid");
+        let bundle = DummyBundle::new();
+
+        let err = engine
+            .ingest(&bundle)
+            .expect_err("segment still unimplemented");
+        assert!(matches!(err, QuiverError::Unimplemented { .. }));
+
+        drop(engine);
+
+        let wal_path = temp_dir.path().join("wal").join("quiver.wal");
+        let mut reader = WalReader::open(&wal_path).expect("wal opens");
+        let mut iter = reader.iter_from(0).expect("iterator");
+        let entry = iter.next().expect("entry exists").expect("entry decodes");
+
+        assert_eq!(entry.sequence, 0);
+        assert_eq!(entry.slots.len(), 1);
+        assert_eq!(entry.slot_bitmap.count_ones(), 1);
     }
 
     #[test]

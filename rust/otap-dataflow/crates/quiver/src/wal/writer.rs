@@ -9,8 +9,11 @@ use crc32fast::Hasher;
 
 use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
 
-use super::header::{WalHeader, WAL_HEADER_LEN};
-use super::{WalError, WalResult, ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN};
+use super::header::{WAL_HEADER_LEN, WalHeader};
+use super::{
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError,
+    WalResult,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WalWriterOptions {
@@ -29,6 +32,7 @@ impl WalWriterOptions {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct WalWriter {
     file: File,
     payload_buffer: Vec<u8>,
@@ -125,8 +129,8 @@ impl WalWriter {
         entry_header[cursor..cursor + 8].copy_from_slice(&slot_bitmap.to_le_bytes());
 
         let entry_body_len = ENTRY_HEADER_LEN + self.payload_buffer.len();
-        let entry_len = u32::try_from(entry_body_len)
-            .map_err(|_| WalError::EntryTooLarge(entry_body_len))?;
+        let entry_len =
+            u32::try_from(entry_body_len).map_err(|_| WalError::EntryTooLarge(entry_body_len))?;
 
         let mut hasher = Hasher::new();
         hasher.update(&entry_header);
@@ -187,8 +191,7 @@ fn encode_record_batch(batch: &RecordBatch) -> WalResult<Vec<u8>> {
     let schema = batch.schema();
     let mut buffer = Vec::new();
     {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema)
-            .map_err(WalError::Arrow)?;
+        let mut writer = StreamWriter::try_new(&mut buffer, &schema).map_err(WalError::Arrow)?;
         writer.write(batch).map_err(WalError::Arrow)?;
         writer.finish().map_err(WalError::Arrow)?;
     }
@@ -216,8 +219,7 @@ impl EncodedSlot {
         let mut cursor = start;
         buffer[cursor..cursor + 2].copy_from_slice(&self.slot_id_raw.to_le_bytes());
         cursor += 2;
-        buffer[cursor..cursor + SCHEMA_FINGERPRINT_LEN]
-            .copy_from_slice(&self.schema_fingerprint);
+        buffer[cursor..cursor + SCHEMA_FINGERPRINT_LEN].copy_from_slice(&self.schema_fingerprint);
         cursor += SCHEMA_FINGERPRINT_LEN;
         buffer[cursor..cursor + 4].copy_from_slice(&self.row_count.to_le_bytes());
         cursor += 4;

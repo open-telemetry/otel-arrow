@@ -63,6 +63,7 @@ base64 = "0.22.1"
 bitflags = "2.10"
 bytes = "1.11"
 bytemuck = "1.24"
+blake3 = "1.5.5"
 chrono = { version = "0.4", features = ["serde"] }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }

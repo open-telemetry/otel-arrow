@@ -6,10 +6,10 @@ use crc32fast::Hasher;
 
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
-use super::header::{WalHeader, WAL_HEADER_LEN};
+use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::{
-    WalError, WalOffset, WalResult, ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN,
-    SLOT_HEADER_LEN,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError,
+    WalOffset, WalResult,
 };
 
 pub(crate) struct WalReader {
@@ -195,11 +195,7 @@ fn read_exact_or_eof(file: &mut File, buf: &mut [u8]) -> WalResult<ReadStatus> {
     Ok(ReadStatus::Filled)
 }
 
-fn decode_entry(
-    entry_start: u64,
-    next_offset: u64,
-    body: &[u8],
-) -> WalResult<WalRecordBundle> {
+fn decode_entry(entry_start: u64, next_offset: u64, body: &[u8]) -> WalResult<WalRecordBundle> {
     if body.len() < ENTRY_HEADER_LEN {
         return Err(WalError::InvalidEntry("body shorter than header"));
     }
@@ -266,7 +262,12 @@ fn decode_entry(
     })
 }
 
-fn slice_bytes<'a>(body: &'a [u8], cursor: &mut usize, len: usize, ctx: &'static str) -> WalResult<&'a [u8]> {
+fn slice_bytes<'a>(
+    body: &'a [u8],
+    cursor: &mut usize,
+    len: usize,
+    ctx: &'static str,
+) -> WalResult<&'a [u8]> {
     if *cursor + len > body.len() {
         return Err(WalError::InvalidEntry(ctx));
     }
