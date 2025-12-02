@@ -72,7 +72,8 @@ mod tests {
         }
 
         let ext_file = dir.join(format!("{}.ext", name));
-        fs::write(&ext_file, "subjectAltName=DNS:localhost,IP:127.0.0.1").unwrap();
+        fs::write(&ext_file, "subjectAltName=DNS:localhost,IP:127.0.0.1")
+            .expect("Failed to write extension file");
 
         let status = Command::new("openssl")
             .args([
@@ -90,7 +91,7 @@ mod tests {
                 "-days",
                 "1",
                 "-extfile",
-                ext_file.to_str().unwrap(),
+                ext_file.to_str().expect("Invalid UTF-8 path"),
             ])
             .current_dir(dir)
             .output()
@@ -104,20 +105,20 @@ mod tests {
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
     ) -> Arc<rustls::ServerConfig> {
-        let cert_pem = fs::read(cert_path).unwrap();
-        let key_pem = fs::read(key_path).unwrap();
+        let cert_pem = fs::read(cert_path).expect("Failed to read cert file");
+        let key_pem = fs::read(key_path).expect("Failed to read key file");
 
         let certs = rustls_pemfile::certs(&mut io::BufReader::new(&cert_pem[..]))
             .collect::<Result<Vec<_>, _>>()
-            .unwrap();
+            .expect("Failed to parse certs");
         let key = rustls_pemfile::private_key(&mut io::BufReader::new(&key_pem[..]))
-            .unwrap()
-            .unwrap();
+            .expect("Failed to parse key")
+            .expect("No private key found");
 
         let mut config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(certs, key)
-            .unwrap();
+            .expect("Failed to build server config");
         config.alpn_protocols = vec![b"h2".to_vec()];
         Arc::new(config)
     }

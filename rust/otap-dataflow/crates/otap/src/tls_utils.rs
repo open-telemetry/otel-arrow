@@ -336,10 +336,7 @@ async fn load_certified_key_async(
 }
 
 /// Sync version for initial load in constructor
-fn load_certified_key_sync(
-    cert_path: &Path,
-    key_path: &Path,
-) -> Result<CertifiedKey, io::Error> {
+fn load_certified_key_sync(cert_path: &Path, key_path: &Path) -> Result<CertifiedKey, io::Error> {
     use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
 

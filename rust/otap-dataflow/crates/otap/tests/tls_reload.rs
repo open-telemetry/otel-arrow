@@ -73,7 +73,8 @@ mod tests {
         }
 
         let ext_file = dir.join(format!("{}.ext", name));
-        fs::write(&ext_file, "subjectAltName=DNS:localhost,IP:127.0.0.1").unwrap();
+        fs::write(&ext_file, "subjectAltName=DNS:localhost,IP:127.0.0.1")
+            .expect("Failed to write extension file");
 
         let status = Command::new("openssl")
             .args([
@@ -91,7 +92,7 @@ mod tests {
                 "-days",
                 "1",
                 "-extfile",
-                ext_file.to_str().unwrap(),
+                ext_file.to_str().expect("Invalid UTF-8 path"),
             ])
             .current_dir(dir)
             .output()
@@ -120,14 +121,13 @@ mod tests {
                             let mut buf = [0; 1024];
                             match stream.read(&mut buf).await {
                                 Ok(n) => {
-                                    if let Err(e) = stream.write_all(&buf[..n]).await {
-                                        eprintln!("Server write failed: {}", e);
-                                    }
+                                    // Ignore write errors in test server
+                                    let _ = stream.write_all(&buf[..n]).await;
                                 }
-                                Err(e) => eprintln!("Server read failed: {}", e),
+                                Err(_) => {} // Ignore read errors in test server
                             }
                         }
-                        Err(e) => eprintln!("TLS accept failed: {}", e),
+                        Err(_) => {} // Ignore TLS accept errors in test server
                     }
                 });
             }
@@ -155,9 +155,9 @@ mod tests {
                 cert_file: Some(cert_path.clone()),
                 key_file: Some(key_path.clone()),
                 reload_interval: Some("1s".to_string()),
-                ..Default::default()
+                cert_pem: None,
+                key_pem: None,
             },
-            ..Default::default()
         };
 
         let addr: SocketAddr = "127.0.0.1:0".parse().expect("Invalid address");

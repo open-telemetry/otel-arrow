@@ -31,9 +31,10 @@ mod tests {
             config: TlsConfig {
                 cert_file: Some(cert_path),
                 key_file: Some(key_path),
-                ..Default::default()
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
             },
-            ..Default::default()
         };
 
         let result = load_server_tls_config(&config).await;
