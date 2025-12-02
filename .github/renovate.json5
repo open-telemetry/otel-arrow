@@ -55,6 +55,7 @@
       // reduces frequency of digest-only updates
       "groupName": "docker digest updates",
       "matchUpdateTypes": ["digest"],
+      "matchFileNames": ["**/Dockerfile"],
       "schedule": [
         "before 8am on the first day of the month"
       ]
