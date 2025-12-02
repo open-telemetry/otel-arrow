@@ -19,6 +19,7 @@ unchecked-index = []
 unchecked-arithmetic = []
 
 [dependencies]
+otap-df-config = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -27,3 +28,6 @@ thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
+opentelemetry_sdk = "0.31.0"
+opentelemetry-stdout = "0.31.0"
+opentelemetry = "0.31.0"

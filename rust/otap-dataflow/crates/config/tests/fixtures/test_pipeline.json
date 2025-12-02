@@ -17,6 +17,24 @@
       "config": null,
       "out_ports": {}
     }
+  },
+  "service": {
+    "telemetry": {
+      "metrics": {
+        "readers": [
+          {
+            "periodic": {
+              "exporter": {
+                "console": {}
+              }
+            }
+          }
+        ]
+      },
+      "resource": {
+        "service.name": "test_service",
+        "service.version": "1.0.0"
+      }
+    }
   }
 }
-
