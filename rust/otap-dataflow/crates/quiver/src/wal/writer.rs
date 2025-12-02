@@ -224,6 +224,7 @@ impl WalWriter {
 
     fn flush_now(&mut self) -> WalResult<()> {
         self.file.flush()?;
+        sync_file_data(&self.file)?;
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
         #[cfg(test)]
@@ -273,6 +274,13 @@ fn encode_record_batch(batch: &RecordBatch) -> WalResult<Vec<u8>> {
     Ok(buffer)
 }
 
+fn sync_file_data(file: &File) -> WalResult<()> {
+    #[cfg(test)]
+    test_support::record_sync_data();
+    file.sync_data()?;
+    Ok(())
+}
+
 struct EncodedSlot {
     slot_id_raw: u16,
     schema_fingerprint: SchemaFingerprint,
@@ -288,6 +296,7 @@ pub(super) mod test_support {
     thread_local! {
         static FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
         static DROP_FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
+        static SYNC_DATA_NOTIFIED: Cell<bool> = Cell::new(false);
     }
 
     pub fn record_flush() {
@@ -309,6 +318,19 @@ pub(super) mod test_support {
     pub fn reset_flush_notifications() {
         FLUSH_NOTIFIED.with(|cell| cell.set(false));
         DROP_FLUSH_NOTIFIED.with(|cell| cell.set(false));
+        SYNC_DATA_NOTIFIED.with(|cell| cell.set(false));
+    }
+
+    pub fn record_sync_data() {
+        SYNC_DATA_NOTIFIED.with(|cell| cell.set(true));
+    }
+
+    pub fn take_sync_data_notification() -> bool {
+        SYNC_DATA_NOTIFIED.with(|cell| {
+            let notified = cell.get();
+            cell.set(false);
+            notified
+        })
     }
 }
 

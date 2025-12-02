@@ -402,6 +402,31 @@ fn wal_writer_flushes_after_interval_elapsed() {
 }
 
 #[test]
+fn wal_writer_flush_syncs_file_data() {
+    writer_test_support::reset_flush_notifications();
+
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("flush_sync.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        Duration::ZERO,
+    ))
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0xAA, &[7])],
+    );
+
+    assert!(!writer_test_support::take_sync_data_notification());
+    let _offset = writer.append_bundle(&bundle).expect("append flush");
+    assert!(writer_test_support::take_sync_data_notification());
+}
+
+#[test]
 fn wal_writer_flushes_after_unflushed_byte_threshold() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("flush_bytes.wal");
