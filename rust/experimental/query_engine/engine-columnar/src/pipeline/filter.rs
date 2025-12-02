@@ -727,9 +727,6 @@ impl FilterProjection {
     /// the passed [`RecordBatch`] which are missing, this will return `None`.
     fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
         let original_schema = record_batch.schema_ref();
-
-        // TODO we could probably change this to return an &RecordBatch and avoid the
-        // vec allocations for the columns & schema when we project
         let mut columns = Vec::new();
         let mut fields = Vec::new();
 
