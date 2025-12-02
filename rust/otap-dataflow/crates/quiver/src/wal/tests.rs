@@ -21,6 +21,7 @@ use crate::record_bundle::{
 
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::test_support::{self, ReadFailure};
+use super::writer::test_support as writer_test_support;
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
     WalTruncateCursor, WalWriter, WalWriterOptions,
@@ -357,6 +358,56 @@ fn wal_writer_flushes_after_interval_elapsed() {
         .append_bundle(&bundle)
         .expect("append triggers flush");
     assert!(writer.test_last_flush() > before);
+}
+
+#[test]
+fn wal_writer_flushes_after_unflushed_byte_threshold() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("flush_bytes.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path, [0; 16], Duration::from_secs(60))
+            .with_max_unflushed_bytes(1),
+    )
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x99, &[1, 2, 3])],
+    );
+
+    writer.test_set_last_flush(Instant::now());
+    let before = writer.test_last_flush();
+    let _offset = writer.append_bundle(&bundle).expect("append triggers flush");
+    assert!(writer.test_last_flush() > before);
+}
+
+#[test]
+fn wal_writer_flushes_pending_bytes_on_drop() {
+    writer_test_support::reset_flush_notifications();
+
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("flush_drop.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let writer = WalWriter::open(
+        WalWriterOptions::new(wal_path, [0; 16], Duration::from_secs(60))
+            .with_max_unflushed_bytes(0),
+    )
+    .expect("writer");
+
+    {
+        let mut writer = writer;
+        let bundle = FixtureBundle::new(
+            descriptor,
+            vec![FixtureSlot::new(SlotId::new(0), 0x55, &[42])],
+        );
+        let _ = writer.append_bundle(&bundle).expect("append");
+        assert!(!writer_test_support::take_drop_flush_notification());
+    }
+
+    assert!(writer_test_support::take_drop_flush_notification());
 }
 
 #[test]

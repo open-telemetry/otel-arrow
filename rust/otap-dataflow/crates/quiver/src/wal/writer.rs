@@ -23,6 +23,7 @@ pub(crate) struct WalWriterOptions {
     pub path: PathBuf,
     pub segment_cfg_hash: [u8; 16],
     pub flush_interval: Duration,
+    pub max_unflushed_bytes: u64,
 }
 
 impl WalWriterOptions {
@@ -31,7 +32,15 @@ impl WalWriterOptions {
             path,
             segment_cfg_hash,
             flush_interval,
+            max_unflushed_bytes: 0,
         }
+    }
+
+    // Remove when integrated with real replay/compaction path.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_max_unflushed_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_unflushed_bytes = max_bytes;
+        self
     }
 }
 
@@ -42,6 +51,7 @@ pub(crate) struct WalWriter {
     options: WalWriterOptions,
     next_sequence: u64,
     last_flush: Instant,
+    unflushed_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +98,7 @@ impl WalWriter {
             options,
             next_sequence: 0,
             last_flush: Instant::now(),
+            unflushed_bytes: 0,
         })
     }
 
@@ -152,7 +163,8 @@ impl WalWriter {
         self.file.write_all(&self.payload_buffer)?;
         self.file.write_all(&crc.to_le_bytes())?;
 
-        self.maybe_flush()?;
+        let entry_total_bytes = 4u64 + entry_len as u64 + 4;
+        self.maybe_flush(entry_total_bytes)?;
 
         Ok(WalOffset {
             position: entry_start,
@@ -160,7 +172,8 @@ impl WalWriter {
         })
     }
 
-    #[allow(dead_code)] // Remove when integrated with real replay/compaction path.
+    // Remove when integrated with real replay/compaction path.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn truncate_to(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         let safe_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
         let metadata_len = self.file.metadata()?.len();
@@ -189,17 +202,45 @@ impl WalWriter {
         })
     }
 
-    fn maybe_flush(&mut self) -> WalResult<()> {
+    fn maybe_flush(&mut self, bytes_written: u64) -> WalResult<()> {
+        self.unflushed_bytes = self.unflushed_bytes.saturating_add(bytes_written);
+
         if self.options.flush_interval.is_zero() {
-            self.file.flush()?;
-            return Ok(());
+            return self.flush_now();
+        }
+
+        if self.options.max_unflushed_bytes > 0
+            && self.unflushed_bytes >= self.options.max_unflushed_bytes
+        {
+            return self.flush_now();
         }
 
         if self.last_flush.elapsed() >= self.options.flush_interval {
-            self.file.flush()?;
-            self.last_flush = Instant::now();
+            self.flush_now()?;
         }
+
         Ok(())
+    }
+
+    fn flush_now(&mut self) -> WalResult<()> {
+        self.file.flush()?;
+        self.last_flush = Instant::now();
+        self.unflushed_bytes = 0;
+        #[cfg(test)]
+        test_support::record_flush();
+        Ok(())
+    }
+}
+
+impl Drop for WalWriter {
+    fn drop(&mut self) {
+        if self.unflushed_bytes == 0 {
+            return;
+        }
+
+        let _ = self.flush_now();
+        #[cfg(test)]
+        test_support::record_drop_flush();
     }
 }
 
@@ -238,6 +279,37 @@ struct EncodedSlot {
     row_count: u32,
     payload_len: u32,
     payload_bytes: Vec<u8>,
+}
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
+        static DROP_FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
+    }
+
+    pub fn record_flush() {
+        FLUSH_NOTIFIED.with(|cell| cell.set(true));
+    }
+
+    pub fn record_drop_flush() {
+        DROP_FLUSH_NOTIFIED.with(|cell| cell.set(true));
+    }
+
+    pub fn take_drop_flush_notification() -> bool {
+        DROP_FLUSH_NOTIFIED.with(|cell| {
+            let notified = cell.get();
+            cell.set(false);
+            notified
+        })
+    }
+
+    pub fn reset_flush_notifications() {
+        FLUSH_NOTIFIED.with(|cell| cell.set(false));
+        DROP_FLUSH_NOTIFIED.with(|cell| cell.set(false));
+    }
 }
 
 impl EncodedSlot {
