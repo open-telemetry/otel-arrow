@@ -70,6 +70,14 @@ pub enum WalError {
     /// Entry body failed structural validation.
     #[error("invalid wal entry: {0}")]
     InvalidEntry(&'static str),
+    /// Existing WAL header does not match expected segment configuration.
+    #[error("segment config mismatch: expected {expected:02x?}, found {found:02x?}")]
+    SegmentConfigMismatch {
+        /// The hash the caller expected.
+        expected: [u8; 16],
+        /// The hash stored in the WAL header.
+        found: [u8; 16],
+    },
     /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),

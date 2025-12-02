@@ -303,7 +303,7 @@ fn wal_writer_rejects_truncated_existing_file() {
 }
 
 #[test]
-fn wal_writer_preserves_existing_header_on_open() {
+fn wal_writer_reopens_with_matching_header() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("existing.wal");
     let original_hash = [0xAA; 16];
@@ -320,7 +320,8 @@ fn wal_writer_preserves_existing_header_on_open() {
         file.flush().expect("flush");
     }
 
-    let options = WalWriterOptions::new(wal_path.clone(), [0xBB; 16], Duration::ZERO);
+    // Reopen with the same hash—should succeed and preserve the header.
+    let options = WalWriterOptions::new(wal_path.clone(), original_hash, Duration::ZERO);
     let _writer = WalWriter::open(options).expect("open succeeds");
     drop(_writer);
 
@@ -682,4 +683,82 @@ fn wal_reader_iter_from_respects_offsets() {
     assert!(iter_from_second.next().is_none());
     assert_eq!(first_offset.sequence, 0);
     assert_eq!(second_offset.sequence, 1);
+}
+
+#[test]
+fn wal_writer_rejects_segment_config_mismatch() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("mismatch.wal");
+    let original_hash = [0xAA; 16];
+
+    // Create a WAL with one config hash.
+    {
+        let options = WalWriterOptions::new(wal_path.clone(), original_hash, Duration::ZERO);
+        let _writer = WalWriter::open(options).expect("initial open");
+    }
+
+    // Attempt to reopen with a different hash.
+    let different_hash = [0xBB; 16];
+    let options = WalWriterOptions::new(wal_path, different_hash, Duration::ZERO);
+    match WalWriter::open(options) {
+        Err(WalError::SegmentConfigMismatch { expected, found }) => {
+            assert_eq!(expected, different_hash);
+            assert_eq!(found, original_hash);
+        }
+        other => panic!("expected segment config mismatch, got {:?}", other),
+    }
+}
+
+#[test]
+fn wal_reader_detects_unexpected_segment_config() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("reader_mismatch.wal");
+    let stored_hash = [0xDD; 16];
+
+    // Write a WAL with a known config hash.
+    {
+        let options = WalWriterOptions::new(wal_path.clone(), stored_hash, Duration::ZERO);
+        let _writer = WalWriter::open(options).expect("writer");
+    }
+
+    // Reader opens successfully and exposes the stored hash for the caller to verify.
+    let reader = WalReader::open(&wal_path).expect("reader opens");
+    assert_eq!(reader.segment_cfg_hash(), stored_hash);
+
+    // Caller can decide what to do if it doesn't match expectations.
+    let expected_hash = [0xEE; 16];
+    assert_ne!(
+        reader.segment_cfg_hash(),
+        expected_hash,
+        "caller detects mismatch"
+    );
+}
+
+#[test]
+fn wal_reader_fails_on_corrupt_header_version() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("bad_version.wal");
+
+    // Create a valid WAL first.
+    {
+        let options = WalWriterOptions::new(wal_path.clone(), [0x11; 16], Duration::ZERO);
+        let _writer = WalWriter::open(options).expect("writer");
+    }
+
+    // Corrupt the version field in the header.
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&wal_path)
+            .expect("open");
+        // Version is at offset WAL_MAGIC.len() (10 bytes).
+        let _ = file.seek(SeekFrom::Start(10)).expect("seek");
+        file.write_all(&99u16.to_le_bytes()).expect("corrupt version");
+    }
+
+    match WalReader::open(&wal_path) {
+        Err(WalError::InvalidHeader("unsupported version")) => {}
+        other => panic!("expected unsupported version error, got {:?}", other),
+    }
 }

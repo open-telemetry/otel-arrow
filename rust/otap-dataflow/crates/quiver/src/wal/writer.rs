@@ -71,7 +71,13 @@ impl WalWriter {
         } else if metadata.len() < WAL_HEADER_LEN as u64 {
             return Err(WalError::InvalidHeader("file smaller than header"));
         } else {
-            let _header = WalHeader::read_from(&mut file)?;
+            let header = WalHeader::read_from(&mut file)?;
+            if header.segment_cfg_hash != options.segment_cfg_hash {
+                return Err(WalError::SegmentConfigMismatch {
+                    expected: options.segment_cfg_hash,
+                    found: header.segment_cfg_hash,
+                });
+            }
         }
 
         let _ = file.seek(SeekFrom::End(0))?;

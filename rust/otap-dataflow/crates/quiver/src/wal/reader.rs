@@ -20,6 +20,7 @@ use super::{
     WalOffset, WalResult,
 };
 
+#[derive(Debug)]
 pub(crate) struct WalReader {
     file: File,
     path: PathBuf,
