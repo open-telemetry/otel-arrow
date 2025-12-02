@@ -118,4 +118,21 @@ mod tests {
             WalError::InvalidHeader("reserved bits non-zero")
         ));
     }
+
+    #[test]
+    fn decode_rejects_short_buffer() {
+        let mut buf = vec![0u8; WAL_HEADER_LEN - 1];
+        buf.copy_from_slice(&WalHeader::new(sample_hash()).encode()[..WAL_HEADER_LEN - 1]);
+        let err = WalHeader::decode(&buf).unwrap_err();
+        assert!(matches!(err, WalError::InvalidHeader("buffer too short")));
+    }
+
+    #[test]
+    fn decode_rejects_unsupported_version() {
+        let mut encoded = WalHeader::new(sample_hash()).encode();
+        let version_idx = WAL_MAGIC.len();
+        encoded[version_idx..version_idx + 2].copy_from_slice(&2u16.to_le_bytes());
+        let err = WalHeader::decode(&encoded).unwrap_err();
+        assert!(matches!(err, WalError::InvalidHeader("unsupported version")));
+    }
 }
