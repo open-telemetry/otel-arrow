@@ -24,6 +24,7 @@ pub mod engine;
 pub mod error;
 pub mod record_bundle;
 pub mod telemetry;
+pub(crate) mod wal;
 
 pub use config::{QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
 pub use engine::QuiverEngine;
