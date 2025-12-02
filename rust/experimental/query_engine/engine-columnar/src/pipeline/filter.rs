@@ -59,7 +59,6 @@ pub trait ToExec {
 
     fn to_exec(
         &self,
-        // TODO this might not be needed in this trait anymore
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Self::ExecutablePlan>;
@@ -422,8 +421,10 @@ impl FilterExec {
                 Some(id_col) => id_col,
                 None => {
                     // None of the records have any attributes, so for now we just assume that all
-                    // the records would be filtered out by the predicate. Eventually we need to
-                    // handle this in a more intelligent way (see comment below about null attrs)
+                    // the records would be filtered out by the predicate.
+                    //
+                    // TODO Eventually we need to handle this in a more intelligent way (see comment
+                    // below about null attrs)
                     return Ok(BooleanArray::new(
                         BooleanBuffer::new_unset(root_rb.num_rows()),
                         None,
@@ -629,12 +630,14 @@ impl Composite<AttributeFilterExec> {
 ///
 struct AdaptivePhysicalExprExec {
     /// The physical expression that should be evaluated for each batch. This is initialized lazily
-    /// when the first non-`None` batch is passed to `evaluate`
+    /// when the first non-`None` batch is passed to `evaluate`. This should evaluate to a boolean
     physical_expr: Option<PhysicalExprRef>,
 
     /// The original logical plan used to produce the [`PhysicalExpr`]
     logical_expr: Expr,
 
+    /// Definition for how the input record batch should be projected so that it's schema is
+    /// compatible with what is expected by the physical_expr
     projection: FilterProjection,
 }
 
@@ -666,7 +669,6 @@ impl AdaptivePhysicalExprExec {
                 //
                 // TODO the assumption we're making here isn't sound for some predicates, things
                 // like `some_col == null`, so eventually we'll need to handle this
-
                 return Ok(BooleanArray::new(
                     BooleanBuffer::new_unset(record_batch.num_rows()),
                     None,
@@ -992,7 +994,7 @@ impl FilterPipelineStage {
 
         // build the selection vector for the child record batch. This uses common code shared
         // with the filter processor
-        let id_mask: HashSet<u16> = id_col.iter().flatten().collect();
+        let id_mask = id_col.iter().flatten().map(|i| i as u32).collect();
         let child_parent_ids =
             child_rb
                 .column_by_name(consts::PARENT_ID)
@@ -1001,7 +1003,7 @@ impl FilterPipelineStage {
                 })?;
 
         let child_selection_vec =
-            build_uint16_id_filter(child_parent_ids, id_mask).map_err(|e| {
+            build_uint16_id_filter(child_parent_ids, &id_mask).map_err(|e| {
                 Error::ExecutionError {
                     cause: format!("error filtering child batch {:?}", e),
                 }
@@ -1035,9 +1037,6 @@ impl PipelineStage for FilterPipelineStage {
                 return Ok(otap_batch);
             }
         };
-
-        // TODO -- we need to check here if the schema has changed or if any attribute
-        // record batches have gone missing and if so, replan the internal FilterExec
 
         let selection_vec = self.filter_exec.execute(&otap_batch, session_context)?;
 
@@ -1868,8 +1867,6 @@ mod test {
     async fn test_optional_attrs_existence_changes() {
         // what happens if some optional attributes are present one batch, then not present in the
         // next, then present in the next, etc.
-
-        // TODO we might want to add another similar test for when the root batch is disappearing
 
         let query = "logs | where attributes[\"a\"] == \"1234\"";
         let pipeline_expr = KqlParser::parse(query).unwrap();
