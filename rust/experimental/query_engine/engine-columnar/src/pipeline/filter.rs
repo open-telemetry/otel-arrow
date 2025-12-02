@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -734,7 +733,7 @@ impl FilterPipelineStage {
 
         // build the selection vector for the child record batch. This uses common code shared
         // with the filter processor
-        let id_mask: HashSet<u16> = id_col.iter().flatten().collect();
+        let id_mask = id_col.iter().flatten().map(|i| i as u32).collect();
         let child_parent_ids =
             child_rb
                 .column_by_name(consts::PARENT_ID)
@@ -743,7 +742,7 @@ impl FilterPipelineStage {
                 })?;
 
         let child_selection_vec =
-            build_uint16_id_filter(child_parent_ids, id_mask).map_err(|e| {
+            build_uint16_id_filter(child_parent_ids, &id_mask).map_err(|e| {
                 Error::ExecutionError {
                     cause: format!("error filtering child batch {:?}", e),
                 }
