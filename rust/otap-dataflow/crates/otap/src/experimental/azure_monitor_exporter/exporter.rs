@@ -88,9 +88,6 @@ impl AzureMonitorExporter {
 
                 println!("[AzureMonitorExporter] Total rows: {:.0}, Total batches: {:.0}, Throughput 1: {:.2} rows/s, Throughput 2: {:.2} rows/s",
                     self.total_rows_sent, self.total_batches_sent, self.total_rows_sent / self.total_processing_duration.as_secs_f64(), self.total_rows_sent / self.processing_start_time.elapsed().as_secs_f64());
-
-                // Yield to allow the spawned task to start processing
-                tokio::task::yield_now().await;
             }
             gzip_batcher::PushResult::TooLarge => {
                 // Log entry too large to send
@@ -116,9 +113,6 @@ impl AzureMonitorExporter {
                 self.send_batch(batch).await?;
 
                 self.total_rows_sent += row_count;
-
-                // Yield to allow the spawned task to start processing
-                tokio::task::yield_now().await;
             }
         }
 
@@ -134,6 +128,8 @@ impl AzureMonitorExporter {
             .map_err(|e| format!("Failed to send batch: {}", e))?;
 
         self.total_batches_sent += 1.0;
+
+        tokio::task::yield_now().await;
 
         Ok(())
     }
@@ -269,12 +265,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     // Convert Instant to SystemTime for display
                     let duration_until_refresh = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
                     let refresh_time = std::time::SystemTime::now() + duration_until_refresh;
-                    let datetime: chrono::DateTime<chrono::Local> = refresh_time.into();
-                    
+                    let next_token_refresh_datetime: chrono::DateTime<chrono::Local> = refresh_time.into();
+                    let current_date_time: chrono::DateTime<chrono::Local> = std::time::SystemTime::now().into();
+
                     effect_handler
                         .info(&format!(
-                            "[AzureMonitorExporter] Next token refresh scheduled at {}",
-                            datetime.format("%Y-%m-%d %H:%M:%S")
+                            "[AzureMonitorExporter] Next token refresh scheduled at {} with local time {}",
+                            next_token_refresh_datetime.format("%Y-%m-%d %H:%M:%S"),
+                            current_date_time.format("%Y-%m-%d %H:%M:%S")
                         ))
                         .await;
                 }
@@ -319,8 +317,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     ))
                                     .await;
                             }
-                            // Yield to allow spawned send tasks to run, especially in single-threaded runtimes
-                            tokio::task::yield_now().await;
                         }
                         Ok(_) => {
                             // Ignore other message types

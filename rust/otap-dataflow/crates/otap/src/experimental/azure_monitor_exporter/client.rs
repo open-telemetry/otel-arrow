@@ -136,6 +136,8 @@ impl LogsIngestionClient {
 
         self.token_valid_until = now + Duration::from_secs(valid_seconds.max(0) as u64);
 
+        println!("[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}, current time {:?}", valid_seconds, self.token_valid_until, now);
+
         Ok(())
     }
 
