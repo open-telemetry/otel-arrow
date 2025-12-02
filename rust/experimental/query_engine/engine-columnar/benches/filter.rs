@@ -24,10 +24,6 @@ fn bench_log_pipeline(
     bench_group_name: &str,
     bench_pipeline_kql: &str,
 ) {
-    rt.block_on(async {
-        preview_result(bench_pipeline_kql).await;
-    });
-
     let mut group = c.benchmark_group(bench_group_name);
     for batch_size in batch_sizes {
         let benchmark_id = BenchmarkId::new("batch_size", batch_size);
@@ -51,23 +47,6 @@ fn bench_log_pipeline(
         });
     }
     group.finish();
-}
-
-// used for debugging to make sure we're not just filtering empty batches
-async fn preview_result(pipeline_kql: &str) {
-    let batch = generate_logs_batch(20);
-    let pipeline_expr = KqlParser::parse(pipeline_kql).unwrap();
-    let mut pipeline = Pipeline::new(pipeline_expr);
-    let result = pipeline.execute(batch).await.unwrap();
-
-    println!("Testing output of pipeline: {}", pipeline_kql);
-    for payload_type in result.allowed_payload_types() {
-        println!("{:?}:", payload_type);
-        match result.get(*payload_type) {
-            Some(rb) => arrow::util::pretty::print_batches(&[rb.clone()]).unwrap(),
-            None => println!("None"),
-        }
-    }
 }
 
 fn bench_filter_pipelines(c: &mut Criterion) {

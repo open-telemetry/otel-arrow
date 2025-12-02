@@ -276,6 +276,7 @@ pub fn logs_multiple_resources_mixed_content() -> LogsData {
 /// Generate logs with varying attributes and properties that follow some semantic
 /// conventions. This can be used to generate somewhat realistic set of records that
 /// of various batch sizes that could be used to test transformations such as filtering
+#[must_use]
 pub fn logs_with_varying_attributes_and_properties(batch_size: usize) -> LogsData {
     let log_records = (0..batch_size)
         .map(|i| {
@@ -294,8 +295,13 @@ pub fn logs_with_varying_attributes_and_properties(batch_size: usize) -> LogsDat
 
             // cycle through severity numbers
             // 5 = DEBUG, 9 = INFO, 13 = WARN, 17 = ERROR
-            let severity_number = SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).unwrap();
-            let severity_text = severity_number.as_str_name().split("_").nth(2).unwrap();
+            let severity_number =
+                SeverityNumber::try_from(((i % 4) * 4 + 1) as i32).expect("valid severity_number");
+            let severity_text = severity_number
+                .as_str_name()
+                .split("_") // Note: this splitting something like SEVERITY_NUMBER_INFO
+                .nth(2)
+                .expect("can parse severity_text");
             let event_name = format!("event {}", i);
             let time_unix_nano = i as u64;
 

@@ -7,16 +7,16 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use arrow::array::Array;
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
-use otap_df_pdata::otap::filter::{self, build_uint16_id_filter, MatchType};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::logs::{LogFilter, LogMatchProperties};
+use otap_df_pdata::otap::filter::{self, MatchType, build_uint16_id_filter};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
 use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
-use otap_df_pdata::OtapArrowRecords;
 use roaring::RoaringBitmap;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
@@ -31,9 +31,7 @@ fn bench_log_filter(
     include: Option<LogMatchProperties>,
     exclude: Option<LogMatchProperties>,
 ) {
-    preview_result(include.clone(), exclude.clone());
-
-    let mut group = c.benchmark_group(bench_group_name);
+    let mut group = c.benchmark_group(format!("log_filter/{bench_group_name}"));
     for batch_size in batch_sizes {
         let benchmark_id = BenchmarkId::new("batch_size", batch_size);
 
@@ -44,7 +42,7 @@ fn bench_log_filter(
                 || input,
                 |input| {
                     let (batch, filter) = &input;
-                    let (result, _, _) = filter.filter(batch.clone()).unwrap();
+                    let (result, _, _) = filter.filter(batch.clone()).expect("shouldn't fail");
                     black_box(result)
                 },
                 BatchSize::SmallInput,
@@ -53,24 +51,6 @@ fn bench_log_filter(
     }
 
     group.finish();
-}
-
-// used for debugging to make sure we're not just filtering empty batches
-fn preview_result(include: Option<LogMatchProperties>, exclude: Option<LogMatchProperties>) {
-    let batch = generate_logs_batch(20);
-    let filter = LogFilter::new(include.clone(), exclude.clone(), Vec::new());
-    let (result, _, _) = filter.filter(batch.clone()).unwrap();
-
-    println!("Testing output of filter:");
-    println!("include = {include:?}");
-    println!("exclude = {exclude:?}");
-    for payload_type in result.allowed_payload_types() {
-        println!("{:?}:", payload_type);
-        match result.get(*payload_type) {
-            Some(rb) => arrow::util::pretty::print_batches(&[rb.clone()]).unwrap(),
-            None => println!("None"),
-        }
-    }
 }
 
 fn bench_filter(c: &mut Criterion) {
@@ -91,7 +71,10 @@ fn bench_filter(c: &mut Criterion) {
         Vec::new(), // no resource attr filter,
         vec![
             // attrs["code.namespace"] == "main"
-            filter::KeyValue::new("code.namespace".into(), filter::AnyValue::String("main".into())),
+            filter::KeyValue::new(
+                "code.namespace".into(),
+                filter::AnyValue::String("main".into()),
+            ),
         ],
         Vec::new(), // no severity text filter
         None,       // no severity number filter,
@@ -104,8 +87,11 @@ fn bench_filter(c: &mut Criterion) {
         Vec::new(),
         vec![
             // attrs["code.namespace"] == "main" or attrs["code.line.number"] == 2
-            KeyValue::new("code.namespace".into(), AnyValue::String("main".into())),
-            KeyValue::new("code.line.number".into(), AnyValue::Int(2)),
+            filter::KeyValue::new(
+                "code.namespace".into(),
+                filter::AnyValue::String("main".into()),
+            ),
+            filter::KeyValue::new("code.line.number".into(), filter::AnyValue::Int(2)),
         ],
         Vec::new(), // no severity text filter
         None,       // no severity number filter,
@@ -118,7 +104,10 @@ fn bench_filter(c: &mut Criterion) {
         Vec::new(),
         vec![
             // attrs["code.namespace"] == "main"
-            KeyValue::new("code.namespace".into(), AnyValue::String("main".into())),
+            filter::KeyValue::new(
+                "code.namespace".into(),
+                filter::AnyValue::String("main".into()),
+            ),
         ],
         vec!["WARN".into()], // severity_text == "WARN"
         None,                // no severity number filter,
