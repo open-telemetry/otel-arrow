@@ -1072,15 +1072,6 @@ mod tests {
             ],
         );
 
-        //         let exclude_props = LogMatchProperties::new(
-        //     MatchType::Strict,
-        //     Vec::new(), // don't exclude any resource attrs
-        //     Vec::new(), // don't exclude any log attrs,
-        //     vec!["WARN".into()], // exclude severity_text == "WARN",
-        //     None, // don't exclude any severity_numbers
-        //     Vec::new(), // don't exclude any bodies
-        // );
-
         let log_filter = LogFilter::new(
             None,
             Some(exclude_props),
