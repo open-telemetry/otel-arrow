@@ -12,6 +12,7 @@ mod header;
 mod reader;
 #[cfg(test)]
 mod tests;
+mod truncate_sidecar;
 mod writer;
 
 // Keep reader exports visible even though only tests consume them today.
@@ -78,6 +79,9 @@ pub enum WalError {
         /// The hash stored in the WAL header.
         found: [u8; 16],
     },
+    /// Truncate sidecar contains invalid or corrupted bytes.
+    #[error("invalid truncate sidecar: {0}")]
+    InvalidTruncateSidecar(&'static str),
     /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),

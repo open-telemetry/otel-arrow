@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::io::{ErrorKind, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::RecordBatch;
@@ -13,6 +13,7 @@ use crc32fast::Hasher;
 use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
 
 use super::header::{WAL_HEADER_LEN, WalHeader};
+use super::truncate_sidecar::TruncateSidecar;
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError,
     WalResult, WalTruncateCursor,
@@ -52,6 +53,8 @@ pub(crate) struct WalWriter {
     next_sequence: u64,
     last_flush: Instant,
     unflushed_bytes: u64,
+    sidecar_path: PathBuf,
+    truncate_state: TruncateSidecar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +94,8 @@ impl WalWriter {
         }
 
         let _ = file.seek(SeekFrom::End(0))?;
+        let sidecar_path = truncate_sidecar_path(&options.path);
+        let truncate_state = load_truncate_state(&sidecar_path, metadata.len())?;
 
         Ok(Self {
             file,
@@ -99,6 +104,8 @@ impl WalWriter {
             next_sequence: 0,
             last_flush: Instant::now(),
             unflushed_bytes: 0,
+            sidecar_path,
+            truncate_state,
         })
     }
 
@@ -172,8 +179,6 @@ impl WalWriter {
         })
     }
 
-    // Remove when integrated with real replay/compaction path.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn truncate_to(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         let safe_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
         let metadata_len = self.file.metadata()?.len();
@@ -183,7 +188,12 @@ impl WalWriter {
 
         self.file.set_len(safe_offset)?;
         let _ = self.file.seek(SeekFrom::Start(safe_offset))?;
+        self.record_truncate_offset(safe_offset)?;
         Ok(())
+    }
+
+    pub(crate) fn record_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
+        self.record_truncate_offset(cursor.safe_offset)
     }
 
     fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {
@@ -279,6 +289,54 @@ fn sync_file_data(file: &File) -> WalResult<()> {
     test_support::record_sync_data();
     file.sync_data()?;
     Ok(())
+}
+
+fn truncate_sidecar_path(wal_path: &Path) -> PathBuf {
+    wal_path
+        .parent()
+        .map(|parent| parent.join("truncate.offset"))
+        .unwrap_or_else(|| PathBuf::from("truncate.offset"))
+}
+
+fn load_truncate_state(path: &Path, file_len: u64) -> WalResult<TruncateSidecar> {
+    match TruncateSidecar::read_from(path) {
+        Ok(mut state) => {
+            state.truncate_offset = clamp_offset(state.truncate_offset, file_len);
+            Ok(state)
+        }
+        Err(WalError::InvalidTruncateSidecar(_)) => Ok(default_truncate_state(file_len)),
+        Err(WalError::Io(err))
+            if matches!(err.kind(), ErrorKind::NotFound | ErrorKind::UnexpectedEof) =>
+        {
+            Ok(default_truncate_state(file_len))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn default_truncate_state(file_len: u64) -> TruncateSidecar {
+    let min_offset = WAL_HEADER_LEN as u64;
+    let clamped = min_offset.min(file_len);
+    TruncateSidecar::new(clamped, 0)
+}
+
+fn clamp_offset(offset: u64, file_len: u64) -> u64 {
+    let min_offset = WAL_HEADER_LEN as u64;
+    let upper = file_len.max(min_offset);
+    offset
+        .max(min_offset)
+        .min(upper)
+}
+
+impl WalWriter {
+    fn record_truncate_offset(&mut self, requested_offset: u64) -> WalResult<()> {
+        let safe_offset = requested_offset.max(WAL_HEADER_LEN as u64);
+        if self.truncate_state.truncate_offset == safe_offset {
+            return Ok(());
+        }
+        self.truncate_state.truncate_offset = safe_offset;
+        TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
+    }
 }
 
 struct EncodedSlot {

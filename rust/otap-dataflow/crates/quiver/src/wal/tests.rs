@@ -26,6 +26,7 @@ use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
     WalTruncateCursor, WalWriter, WalWriterOptions,
 };
+use super::truncate_sidecar::{TruncateSidecar, TRUNCATE_SIDECAR_LEN};
 
 struct FixtureSlot {
     id: SlotId,
@@ -424,6 +425,88 @@ fn wal_writer_flush_syncs_file_data() {
     assert!(!writer_test_support::take_sync_data_notification());
     let _offset = writer.append_bundle(&bundle).expect("append flush");
     assert!(writer_test_support::take_sync_data_notification());
+}
+
+#[test]
+fn wal_writer_persists_truncate_cursor_sidecar() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("truncate_sidecar.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x99; 16],
+        Duration::ZERO,
+    ))
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2])],
+    );
+    let _ = writer.append_bundle(&bundle).expect("append");
+
+    let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
+    let mut cursor = WalTruncateCursor::default();
+    cursor.safe_offset = file_len;
+    writer
+        .record_truncate_cursor(&cursor)
+        .expect("record cursor");
+    drop(writer);
+
+    let sidecar_path = wal_path
+        .parent()
+        .expect("dir")
+        .join("truncate.offset");
+    let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    assert_eq!(state.truncate_offset, file_len);
+}
+
+#[test]
+fn wal_writer_ignores_invalid_truncate_sidecar() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("bad_sidecar.wal");
+
+    // Create the WAL header so the file exists.
+    {
+        let _writer = WalWriter::open(WalWriterOptions::new(
+            wal_path.clone(),
+            [0x11; 16],
+            Duration::ZERO,
+        ))
+        .expect("writer");
+    }
+
+    let sidecar_path = wal_path
+        .parent()
+        .expect("dir")
+        .join("truncate.offset");
+    std::fs::write(&sidecar_path, vec![0u8; TRUNCATE_SIDECAR_LEN - 4]).expect("write corrupt");
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x11; 16],
+        Duration::ZERO,
+    ))
+    .expect("reopen");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[7])],
+    );
+    let _ = writer.append_bundle(&bundle).expect("append");
+    let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
+
+    let mut cursor = WalTruncateCursor::default();
+    cursor.safe_offset = file_len;
+    writer
+        .record_truncate_cursor(&cursor)
+        .expect("record cursor");
+    drop(writer);
+
+    let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    assert_eq!(state.truncate_offset, file_len);
 }
 
 #[test]
