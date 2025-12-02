@@ -86,11 +86,3 @@ harness = false
 name = "otap_logs_view"
 harness = false
 
-[profile.bench]
-opt-level = 3
-debug = false
-incremental = false
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-
