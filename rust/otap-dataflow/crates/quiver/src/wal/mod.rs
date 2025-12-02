@@ -8,8 +8,14 @@ use crate::record_bundle::SlotId;
 mod header;
 mod reader;
 mod writer;
+#[cfg(test)]
+mod tests;
 
+// Keep reader exports visible even though only tests consume them today.
+#[allow(unused_imports)]
 pub(crate) use reader::{DecodedWalSlot, WalReader, WalRecordBundle, WalTruncateCursor};
+// Writer is used broadly soon; suppress warnings while integration lands.
+#[allow(unused_imports)]
 pub(crate) use writer::{WalOffset, WalWriter, WalWriterOptions};
 
 pub(crate) const WAL_MAGIC: &[u8; 10] = b"QUIVER\0WAL";

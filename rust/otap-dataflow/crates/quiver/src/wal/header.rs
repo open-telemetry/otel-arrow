@@ -73,3 +73,46 @@ impl WalHeader {
         Ok(Self { segment_cfg_hash })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_hash() -> [u8; 16] {
+        let mut hash = [0u8; 16];
+        for (idx, byte) in hash.iter_mut().enumerate() {
+            *byte = (idx as u8).wrapping_mul(3).wrapping_add(1);
+        }
+        hash
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_preserves_segment_hash() {
+        let header = WalHeader::new(sample_hash());
+        let encoded = header.encode();
+        let decoded = WalHeader::decode(&encoded).expect("decode should succeed");
+        assert_eq!(decoded.segment_cfg_hash, sample_hash());
+    }
+
+    #[test]
+    fn decode_rejects_magic_mismatch() {
+        let header = WalHeader::new(sample_hash());
+        let mut encoded = header.encode();
+        encoded[0] ^= 0xFF;
+        let err = WalHeader::decode(&encoded).unwrap_err();
+        assert!(matches!(err, WalError::InvalidHeader("magic mismatch")));
+    }
+
+    #[test]
+    fn decode_rejects_reserved_bits() {
+        let header = WalHeader::new(sample_hash());
+        let mut encoded = header.encode();
+        let reserved_start = WAL_MAGIC.len() + 2;
+        encoded[reserved_start] = 1;
+        let err = WalHeader::decode(&encoded).unwrap_err();
+        assert!(matches!(
+            err,
+            WalError::InvalidHeader("reserved bits non-zero")
+        ));
+    }
+}

@@ -1,3 +1,6 @@
+// Reader is only exercised by tests until WAL replay wires into the engine.
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
