@@ -620,11 +620,9 @@ impl Composite<AttributeFilterExec> {
 }
 
 /// This is responsible for evaluating a  [`PhysicalExpr`](datafusion::physical_expr::PhysicalExpr)
-/// while adapting to "schema" changes that may be encountered between evaluations.
+/// while adapting to schema changes that may be encountered between evaluations.
 ///
-/// OTAP data might have minor changes the "schema" between batches.
-/// - Optional payload type's [`RecordBatch`]s may change presence
-/// - Optional columns within a [`RecordBatch`] may change presence
+/// A given payload type's [`RecordBatch`] might have minor changes the schema between batches
 /// - The type of a column may change between Dict<u8, V>, Dict<16, V>, and the native array type
 /// - The order of columns may change
 ///
