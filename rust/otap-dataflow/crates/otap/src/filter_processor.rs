@@ -181,7 +181,6 @@ impl local::Processor<OtapPdata> for FilterProcessor {
 mod tests {
     use crate::filter_processor::{FILTER_PROCESSOR_URN, FilterProcessor, config::Config};
     use crate::pdata::OtapPdata;
-    use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -623,12 +622,11 @@ mod tests {
         move |mut ctx| {
             Box::pin(async move {
                 //convert logsdata to otappdata
-                let mut bytes = BytesMut::new();
+                let mut bytes = vec![];
                 sent.encode(&mut bytes)
                     .expect("failed to encode log data into bytes");
-                let bytes = bytes.freeze();
                 let otlp_logs_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.into()).into());
                 ctx.process(Message::PData(otlp_logs_bytes))
                     .await
                     .expect("failed to process");
@@ -658,13 +656,13 @@ mod tests {
             Box::pin(async move {
                 //convert tracesdata to otappdata
                 let traces_data = build_traces();
-                let mut bytes = BytesMut::new();
+                let mut bytes = vec![];
                 traces_data
                     .encode(&mut bytes)
                     .expect("failed to encode trace data into bytes");
-                let bytes = bytes.freeze();
-                let otlp_traces_bytes =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportTracesRequest(bytes).into());
+                let otlp_traces_bytes = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportTracesRequest(bytes.into()).into(),
+                );
                 ctx.process(Message::PData(otlp_traces_bytes))
                     .await
                     .expect("failed to process");
@@ -1073,6 +1071,15 @@ mod tests {
                 AnyValueFilter::String("heartbeat".to_string()),
             ],
         );
+
+        //         let exclude_props = LogMatchProperties::new(
+        //     MatchType::Strict,
+        //     Vec::new(), // don't exclude any resource attrs
+        //     Vec::new(), // don't exclude any log attrs,
+        //     vec!["WARN".into()], // exclude severity_text == "WARN",
+        //     None, // don't exclude any severity_numbers
+        //     Vec::new(), // don't exclude any bodies
+        // );
 
         let log_filter = LogFilter::new(
             None,

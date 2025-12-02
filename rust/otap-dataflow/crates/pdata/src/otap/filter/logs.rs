@@ -338,12 +338,30 @@ impl LogMatchProperties {
 
         // invert flag depending on whether we are excluding or including
         if invert {
-            resource_attr_filter =
-                arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+            // default filter is all true
 
-            log_record_filter = arrow::compute::not(&log_record_filter).expect("not doesn't fail");
+            // if no resource_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.resource_attributes.is_empty() {
+                resource_attr_filter =
+                    arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+            }
 
-            log_attr_filter = arrow::compute::not(&log_attr_filter).expect("not doesn't fail");
+            // if no log records fields to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.bodies.is_empty()
+                || !self.severity_texts.is_empty()
+                || self.severity_number.is_some()
+            {
+                log_record_filter =
+                    arrow::compute::not(&log_record_filter).expect("not doesn't fail");
+            }
+
+            // if no record_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.record_attributes.is_empty() {
+                log_attr_filter = arrow::compute::not(&log_attr_filter).expect("not doesn't fail");
+            }
         }
 
         Ok((resource_attr_filter, log_record_filter, log_attr_filter))

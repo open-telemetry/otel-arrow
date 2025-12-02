@@ -562,20 +562,48 @@ impl TraceMatchProperties {
 
         // invert flag depending on whether we are excluding or including
         if invert {
-            resource_attr_filter =
-                arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+            // default filter is all true
 
-            span_filter = arrow::compute::not(&span_filter).expect("not doesn't fail");
+            // if no resource_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.resource_attributes.is_empty() {
+                resource_attr_filter =
+                    arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+            }
 
-            span_attr_filter = arrow::compute::not(&span_attr_filter).expect("not doesn't fail");
+            // if no span_names to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.span_names.is_empty() {
+                span_filter = arrow::compute::not(&span_filter).expect("not doesn't fail");
+            }
 
-            span_event_filter = arrow::compute::not(&span_event_filter).expect("not doesn't fail");
+            // if no span_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.span_attributes.is_empty() {
+                span_attr_filter =
+                    arrow::compute::not(&span_attr_filter).expect("not doesn't fail");
+            }
 
-            span_event_attr_filter =
-                arrow::compute::not(&span_event_attr_filter).expect("not doesn't fail");
+            // if no event_names to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.event_names.is_empty() {
+                span_event_filter =
+                    arrow::compute::not(&span_event_filter).expect("not doesn't fail");
+            }
 
-            span_link_attr_filter =
-                arrow::compute::not(&span_link_attr_filter).expect("not doesn't fail");
+            // if no event_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.event_attributes.is_empty() {
+                span_event_attr_filter =
+                    arrow::compute::not(&span_event_attr_filter).expect("not doesn't fail");
+            }
+
+            // if no link_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.link_attributes.is_empty() {
+                span_link_attr_filter =
+                    arrow::compute::not(&span_link_attr_filter).expect("not doesn't fail");
+            }
         }
 
         Ok((
