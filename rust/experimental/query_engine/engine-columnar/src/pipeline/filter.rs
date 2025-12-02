@@ -729,6 +729,9 @@ impl FilterProjection {
     /// the passed [`RecordBatch`] which are missing, this will return `None`.
     fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
         let original_schema = record_batch.schema_ref();
+
+        // TODO - if the heap allocations here have significant perf overhead, we could try reusing
+        // these arrays between batches.
         let mut columns = Vec::new();
         let mut fields = Vec::new();
 
