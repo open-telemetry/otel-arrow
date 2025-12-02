@@ -139,7 +139,7 @@ WAL entries belonging to:
         }
         [u8;payload_len] arrow_payload;  // streaming IPC bytes for the slot
     }
-    u32 crc32c;                      // trailer; covers EntryHeader..payloads
+    u32 crc32;                       // trailer; covers EntryHeader..payloads
     ```
 
   - Arrow payload blobs are serialized in the **streaming** IPC format. For each
@@ -150,8 +150,9 @@ WAL entries belonging to:
     [metadata1][payload1]...` Absent slots (bitmap bit cleared) contribute neither
     metadata nor bytes; they are implicitly `None` when reconstructing the
     bundle.
-  - Every entry ends with a 4-byte little-endian CRC32C checksum that covers the
-    entry header, bitmap, metadata blocks, and payload bytes (everything except
+  - Every entry ends with a 4-byte little-endian CRC32 (IEEE polynomial)
+    checksum that covers the entry header, bitmap, metadata blocks, and payload
+    bytes (everything except
     the leading length field and the checksum itself). Replay verifies the CRC
     before decoding Arrow IPC bytes; a mismatch marks the WAL as corrupted and
     triggers truncation back to the last known-good offset.
@@ -195,7 +196,7 @@ WAL entries belonging to:
       u16 reserved = 0;
       u64 truncate_offset;            // first byte still needed in wal/quiver.wal
       u64 rotation_generation;        // increments each WAL rotation
-      u32 crc32c;                     // covers magic..rotation_generation
+      u32 crc32;                      // covers magic..rotation_generation
   }
   ```
 
