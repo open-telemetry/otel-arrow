@@ -15,7 +15,7 @@ use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError,
-    WalResult,
+    WalResult, WalTruncateCursor,
 };
 
 #[derive(Debug, Clone)]
@@ -158,6 +158,19 @@ impl WalWriter {
             position: entry_start,
             sequence,
         })
+    }
+
+    #[allow(dead_code)] // Remove when integrated with real replay/compaction path.
+    pub fn truncate_to(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
+        let safe_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
+        let metadata_len = self.file.metadata()?.len();
+        if safe_offset > metadata_len {
+            return Err(WalError::InvalidHeader("truncate beyond end of file"));
+        }
+
+        self.file.set_len(safe_offset)?;
+        let _ = self.file.seek(SeekFrom::Start(safe_offset))?;
+        Ok(())
     }
 
     fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {

@@ -360,6 +360,41 @@ fn wal_writer_flushes_after_interval_elapsed() {
 }
 
 #[test]
+fn wal_writer_rejects_truncate_beyond_file_end() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("truncate_oob.wal");
+    let hash = [0xAB; 16];
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        hash,
+        Duration::ZERO,
+    ))
+    .expect("writer");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
+    );
+    let _ = writer.append_bundle(&bundle).expect("append entry");
+
+    let file_len = std::fs::metadata(&wal_path)
+        .expect("metadata")
+        .len()
+        .saturating_add(8);
+    let cursor = WalTruncateCursor {
+        safe_offset: file_len,
+        safe_sequence: 0,
+    };
+
+    match writer.truncate_to(&cursor) {
+        Err(WalError::InvalidHeader("truncate beyond end of file")) => {}
+        other => panic!("expected truncate bounds error, got {:?}", other),
+    }
+}
+
+#[test]
 fn wal_reader_rewind_allows_replay_from_start() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("rewind.wal");
@@ -683,6 +718,108 @@ fn wal_reader_iter_from_respects_offsets() {
     assert!(iter_from_second.next().is_none());
     assert_eq!(first_offset.sequence, 0);
     assert_eq!(second_offset.sequence, 1);
+}
+
+#[test]
+fn wal_truncate_cursor_recovers_after_partial_entry() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("recovery.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let hash = [0x99; 16];
+
+    // Start with a WAL containing two valid entries so the cursor has
+    // something to mark as safe.
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        hash,
+        Duration::ZERO,
+    ))
+    .expect("writer");
+
+    let first_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
+    );
+    let _ = writer.append_bundle(&first_bundle).expect("first append");
+
+    let second_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[2])],
+    );
+    let _ = writer.append_bundle(&second_bundle).expect("second append");
+    drop(writer);
+
+    // Replay the WAL and advance the truncate cursor to the end of the first
+    // entry—everything before this offset is known to be durable.
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    let first_entry = iter.next().expect("first entry").expect("ok");
+    let mut cursor = WalTruncateCursor::default();
+    cursor.advance(&first_entry);
+    drop(reader);
+
+    // Simulate a crash that truncates the file in the middle of the second
+    // entry body, making it unreadable.
+    {
+        let metadata = std::fs::metadata(&wal_path).expect("metadata");
+        assert!(metadata.len() > cursor.safe_offset + 1);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .expect("open for corruption");
+        file.set_len(cursor.safe_offset + 1)
+            .expect("truncate inside entry");
+    }
+
+    // Reader now sees the first entry but errors on the partial second entry.
+    let mut reader = WalReader::open(&wal_path).expect("reader after corruption");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    let _ = iter.next().expect("first entry remains").expect("ok");
+    match iter.next() {
+        Some(Err(WalError::UnexpectedEof("entry length"))) => {}
+        other => panic!("expected entry length eof, got {:?}", other),
+    }
+    drop(reader);
+
+    // Truncate the file back to the cursor's safe offset so future appends
+    // resume from a clean boundary.
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        hash,
+        Duration::ZERO,
+    ))
+    .expect("writer reopens");
+    writer
+        .truncate_to(&cursor)
+        .expect("truncate back to safe offset");
+
+    let recovery_bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x03, &[3])],
+    );
+    let recovery_offset = writer
+        .append_bundle(&recovery_bundle)
+        .expect("append recovery entry");
+    assert_eq!(recovery_offset.position, cursor.safe_offset);
+    drop(writer);
+
+    // Opening again now yields the original first entry and the repaired
+    // entry, with no lingering corruption.
+    let mut reader = WalReader::open(&wal_path).expect("reader after recovery");
+    let mut iter = reader.iter_from(0).expect("iterator");
+    let first = iter.next().expect("first entry").expect("ok");
+    assert_eq!(first.sequence, 0);
+    let repaired = iter.next().expect("repaired entry").expect("ok");
+    assert!(iter.next().is_none(), "only two entries remain");
+
+    assert_eq!(
+        repaired
+            .slots
+            .first()
+            .expect("slot present")
+            .schema_fingerprint,
+        [0x03; 32]
+    );
 }
 
 #[test]
