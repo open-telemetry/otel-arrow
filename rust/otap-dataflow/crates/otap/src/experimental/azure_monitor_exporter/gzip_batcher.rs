@@ -73,6 +73,8 @@ impl GzipBatcher {
 
         if next_size > self.remaining_size {
             self.buf.flush().expect("flush to memory buffer failed");
+
+            self.flush_count += 1;
             let compressed_size = self.buf.get_ref().len();
 
             self.remaining_size = ONE_MB.saturating_sub(compressed_size + 1);
@@ -83,7 +85,6 @@ impl GzipBatcher {
 
         if next_size > self.remaining_size || self.flush_count >= MAX_GZIP_FLUSH_COUNT {
             let flush_result = self.flush();
-            self.flush_count += 1;
             _ = self.push(data);
 
             match flush_result {
@@ -132,9 +133,11 @@ impl GzipBatcher {
         let datetime = chrono::DateTime::<chrono::Utc>::from(now);
         let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
 
+        let avg_row_size = uncompressed_size as f64 / row_count;
+
         println!(
-            "[{}] Flushed batch: flush count: {}, {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%)",
-            timestamp, self.flush_count, row_count, uncompressed_size, compressed_size, compression_ratio
+            "[{}] Flushed batch: flush count: {}, {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%), avg row size: {:.2} bytes",
+            timestamp, self.flush_count, row_count, uncompressed_size, compressed_size, compression_ratio, avg_row_size
         );
 
         // Reset state
