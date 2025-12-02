@@ -601,4 +601,54 @@ mod test {
 
         assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
     }
+
+    #[test]
+    fn test_filter_exclude_no_attributes() {
+        // Filter only for WARN logs
+        let exclude = LogMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),
+            Vec::new(),
+            vec!["WARN".into()],
+            None,
+            Vec::new(),
+        );
+
+        let filter = LogFilter::new(None, Some(exclude), Vec::new());
+
+        let log_records = vec![
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
+        assert_eq!(logs_consumed, 4);
+        assert_eq!(logs_filtered, 2);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records[2..4].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
 }
