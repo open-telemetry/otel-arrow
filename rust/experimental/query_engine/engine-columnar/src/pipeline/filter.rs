@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use data_engine_expressions::{LogicalExpression, ScalarExpression};
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::common::{DFSchema, HashMap};
+use datafusion::common::{DFSchema, HashMap, HashSet};
 use datafusion::config::ConfigOptions;
 use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
