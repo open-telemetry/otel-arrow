@@ -338,12 +338,30 @@ impl LogMatchProperties {
 
         // invert flag depending on whether we are excluding or including
         if invert {
-            resource_attr_filter =
-                arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+            // default filter is all true
 
-            log_record_filter = arrow::compute::not(&log_record_filter).expect("not doesn't fail");
+            // if no resource_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.resource_attributes.is_empty() {
+                resource_attr_filter =
+                    arrow::compute::not(&resource_attr_filter).expect("not doesn't fail");
+            }
 
-            log_attr_filter = arrow::compute::not(&log_attr_filter).expect("not doesn't fail");
+            // if no log records fields to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.bodies.is_empty()
+                || !self.severity_texts.is_empty()
+                || self.severity_number.is_some()
+            {
+                log_record_filter =
+                    arrow::compute::not(&log_record_filter).expect("not doesn't fail");
+            }
+
+            // if no record_attributes to filter on are defined then we can ignore them
+            // that is we will resort to the default filter otherwise we can invert if the flag is set
+            if !self.record_attributes.is_empty() {
+                log_attr_filter = arrow::compute::not(&log_attr_filter).expect("not doesn't fail");
+            }
         }
 
         Ok((resource_attr_filter, log_record_filter, log_attr_filter))
@@ -575,6 +593,56 @@ mod test {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
                     log_records: log_records[0..2].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    #[test]
+    fn test_filter_exclude_no_attributes() {
+        // Filter only for WARN logs
+        let exclude = LogMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),
+            Vec::new(),
+            vec!["WARN".into()],
+            None,
+            Vec::new(),
+        );
+
+        let filter = LogFilter::new(None, Some(exclude), Vec::new());
+
+        let log_records = vec![
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+        ];
+
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
+        assert_eq!(logs_consumed, 4);
+        assert_eq!(logs_filtered, 2);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records[2..4].to_vec(),
                     ..Default::default()
                 }],
                 ..Default::default()
