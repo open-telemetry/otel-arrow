@@ -84,7 +84,7 @@ local-sync = "0.1.1"
 log = "0.4"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc-rust = "0.2.1"
-nix = { version = "0.30.1", features = ["process", "signal"] }
+nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
 num_enum = "0.7"
 object_store = "0.12.3"
 once_cell = "1.20.2"

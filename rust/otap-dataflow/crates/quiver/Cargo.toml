@@ -30,6 +30,9 @@ parking_lot.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true

@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Seek, SeekFrom, Write};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
+
+#[cfg(unix)]
+use std::os::fd::AsFd;
 
 use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
 
@@ -25,6 +28,8 @@ pub(crate) struct WalWriterOptions {
     pub segment_cfg_hash: [u8; 16],
     pub flush_interval: Duration,
     pub max_unflushed_bytes: u64,
+    #[cfg(test)]
+    force_punch_capability: Option<bool>,
 }
 
 impl WalWriterOptions {
@@ -34,6 +39,8 @@ impl WalWriterOptions {
             segment_cfg_hash,
             flush_interval,
             max_unflushed_bytes: 0,
+            #[cfg(test)]
+            force_punch_capability: None,
         }
     }
 
@@ -41,6 +48,12 @@ impl WalWriterOptions {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_max_unflushed_bytes(mut self, max_bytes: u64) -> Self {
         self.max_unflushed_bytes = max_bytes;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_punch_capability(mut self, punch_capable: bool) -> Self {
+        self.force_punch_capability = Some(punch_capable);
         self
     }
 }
@@ -55,6 +68,7 @@ pub(crate) struct WalWriter {
     unflushed_bytes: u64,
     sidecar_path: PathBuf,
     truncate_state: TruncateSidecar,
+    punch_capable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +111,19 @@ impl WalWriter {
         let sidecar_path = truncate_sidecar_path(&options.path);
         let truncate_state = load_truncate_state(&sidecar_path, metadata.len())?;
 
+        let punch_capable = {
+            #[cfg(test)]
+            if let Some(force) = options.force_punch_capability {
+                force
+            } else {
+                detect_hole_punch(&options.path)
+            }
+            #[cfg(not(test))]
+            {
+                detect_hole_punch(&options.path)
+            }
+        };
+
         Ok(Self {
             file,
             payload_buffer: Vec::new(),
@@ -106,6 +133,7 @@ impl WalWriter {
             unflushed_bytes: 0,
             sidecar_path,
             truncate_state,
+            punch_capable,
         })
     }
 
@@ -188,12 +216,28 @@ impl WalWriter {
 
         self.file.set_len(safe_offset)?;
         let _ = self.file.seek(SeekFrom::Start(safe_offset))?;
-        self.record_truncate_offset(safe_offset)?;
-        Ok(())
+        self.record_truncate_offset(safe_offset)
     }
 
     pub(crate) fn record_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         self.record_truncate_offset(cursor.safe_offset)
+    }
+
+    pub fn reclaim_prefix(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
+        let safe_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
+        let metadata_len = self.file.metadata()?.len();
+        if safe_offset > metadata_len {
+            return Err(WalError::InvalidHeader("truncate beyond end of file"));
+        }
+        if safe_offset <= WAL_HEADER_LEN as u64 {
+            return Ok(());
+        }
+
+        self.record_truncate_offset(safe_offset)?;
+        if self.try_punch_prefix(safe_offset)? {
+            return Ok(());
+        }
+        self.rewrite_prefix_in_place(safe_offset)
     }
 
     fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {
@@ -337,6 +381,136 @@ impl WalWriter {
         self.truncate_state.truncate_offset = safe_offset;
         TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
     }
+
+    fn try_punch_prefix(&mut self, safe_offset: u64) -> WalResult<bool> {
+        if !self.punch_capable {
+            return Ok(false);
+        }
+        if safe_offset <= WAL_HEADER_LEN as u64 {
+            return Ok(true);
+        }
+        match punch_wal_prefix(&self.file, safe_offset) {
+            Ok(()) => Ok(true),
+            Err(err) => {
+                self.punch_capable = false;
+                #[cfg(test)]
+                test_support::record_punch_failure(&err);
+                Ok(false)
+            }
+        }
+    }
+
+    fn rewrite_prefix_in_place(&mut self, safe_offset: u64) -> WalResult<()> {
+        rewrite_wal_prefix_in_place(&mut self.file, safe_offset)?;
+        self.truncate_state.truncate_offset = WAL_HEADER_LEN as u64;
+        TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
+    }
+}
+
+fn detect_hole_punch(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = path;
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        const PROBE_LEN: i64 = 4096;
+        let dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let probe_path = dir.join("wal_punch_probe.tmp");
+        let result = (|| {
+            let file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(&probe_path)?;
+            file.set_len(PROBE_LEN as u64)?;
+            punch_file_region(&file, WAL_HEADER_LEN as u64, PROBE_LEN as u64)
+        })();
+        let _ = std::fs::remove_file(&probe_path);
+        result.is_ok()
+    }
+}
+
+#[cfg(unix)]
+fn punch_wal_prefix(file: &File, safe_offset: u64) -> io::Result<()> {
+    if safe_offset <= WAL_HEADER_LEN as u64 {
+        return Ok(());
+    }
+#[cfg(test)]
+    if test_support::should_inject_punch_error() {
+        return Err(io::Error::new(
+            ErrorKind::Other,
+            "injected punch failure",
+        ));
+    }
+    let punch_len = safe_offset - WAL_HEADER_LEN as u64;
+    punch_file_region(file, WAL_HEADER_LEN as u64, punch_len)
+}
+
+#[cfg(unix)]
+fn punch_file_region(file: &File, start: u64, len: u64) -> io::Result<()> {
+    use nix::fcntl::{fallocate, FallocateFlags};
+
+    if len == 0 {
+        return Ok(());
+    }
+    let fd = file.as_fd();
+    let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
+    fallocate(fd, flags, start as i64, len as i64).map_err(|err| io::Error::from_raw_os_error(err as i32))
+}
+
+#[cfg(windows)]
+fn punch_wal_prefix(_file: &File, _safe_offset: u64) -> io::Result<()> {
+    Err(io::Error::new(
+        ErrorKind::Unsupported,
+        "hole punch unsupported on windows",
+    ))
+}
+
+fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<()> {
+    let header_len = WAL_HEADER_LEN as u64;
+    if safe_offset <= header_len {
+        return Ok(());
+    }
+
+    let file_len = file.metadata()?.len();
+    if safe_offset >= file_len {
+        file.set_len(header_len)?;
+        let _ = file.seek(SeekFrom::End(0))?;
+        file.flush()?;
+        sync_file_data(file)?;
+        return Ok(());
+    }
+
+    let mut read_pos = safe_offset;
+    let mut write_pos = header_len;
+    let mut buffer = vec![0u8; 64 * 1024];
+
+    loop {
+        let _ = file.seek(SeekFrom::Start(read_pos))?;
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let _ = file.seek(SeekFrom::Start(write_pos))?;
+        file.write_all(&buffer[..read])?;
+        read_pos += read as u64;
+        write_pos += read as u64;
+    }
+
+    file.set_len(write_pos)?;
+    let _ = file.seek(SeekFrom::End(0))?;
+    file.flush()?;
+    sync_file_data(file)?;
+    Ok(())
 }
 
 struct EncodedSlot {
@@ -350,11 +524,14 @@ struct EncodedSlot {
 #[cfg(test)]
 pub(super) mod test_support {
     use std::cell::Cell;
+    use std::io::Error;
 
     thread_local! {
         static FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
         static DROP_FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
         static SYNC_DATA_NOTIFIED: Cell<bool> = Cell::new(false);
+        static FORCE_PUNCH_ERROR: Cell<bool> = Cell::new(false);
+        static PUNCH_FAILURE_NOTIFIED: Cell<bool> = Cell::new(false);
     }
 
     pub fn record_flush() {
@@ -377,6 +554,8 @@ pub(super) mod test_support {
         FLUSH_NOTIFIED.with(|cell| cell.set(false));
         DROP_FLUSH_NOTIFIED.with(|cell| cell.set(false));
         SYNC_DATA_NOTIFIED.with(|cell| cell.set(false));
+        FORCE_PUNCH_ERROR.with(|cell| cell.set(false));
+        PUNCH_FAILURE_NOTIFIED.with(|cell| cell.set(false));
     }
 
     pub fn record_sync_data() {
@@ -385,6 +564,26 @@ pub(super) mod test_support {
 
     pub fn take_sync_data_notification() -> bool {
         SYNC_DATA_NOTIFIED.with(|cell| {
+            let notified = cell.get();
+            cell.set(false);
+            notified
+        })
+    }
+
+    pub fn set_force_punch_error(flag: bool) {
+        FORCE_PUNCH_ERROR.with(|cell| cell.set(flag));
+    }
+
+    pub fn should_inject_punch_error() -> bool {
+        FORCE_PUNCH_ERROR.with(|cell| cell.get())
+    }
+
+    pub fn record_punch_failure(_err: &Error) {
+        PUNCH_FAILURE_NOTIFIED.with(|cell| cell.set(true));
+    }
+
+    pub fn take_punch_failure_notification() -> bool {
+        PUNCH_FAILURE_NOTIFIED.with(|cell| {
             let notified = cell.get();
             cell.set(false);
             notified

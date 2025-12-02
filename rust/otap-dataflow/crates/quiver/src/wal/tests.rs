@@ -428,6 +428,86 @@ fn wal_writer_flush_syncs_file_data() {
 }
 
 #[test]
+fn wal_writer_rewrite_compacts_prefix() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("rewrite_compact.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x20; 16], Duration::ZERO)
+            .with_punch_capability(false),
+    )
+    .expect("writer");
+
+    let first_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3])],
+    );
+    let _ = writer.append_bundle(&first_bundle).expect("first append");
+
+    let second_bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[4, 5, 6])],
+    );
+    let _ = writer.append_bundle(&second_bundle).expect("second append");
+
+    let len_before = std::fs::metadata(&wal_path).expect("metadata").len();
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let first_entry = iter.next().expect("entry").expect("ok");
+
+    let mut cursor = WalTruncateCursor::default();
+    cursor.safe_offset = first_entry.next_offset;
+    writer.reclaim_prefix(&cursor).expect("reclaim prefix");
+    drop(writer);
+
+    let len_after = std::fs::metadata(&wal_path).expect("metadata").len();
+    assert!(len_after < len_before);
+
+    let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
+    let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    assert_eq!(sidecar.truncate_offset, WAL_HEADER_LEN as u64);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let remaining = iter.next().expect("entry").expect("ok");
+    assert_eq!(remaining.sequence, first_entry.sequence + 1);
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn wal_writer_punch_failure_falls_back_to_rewrite() {
+    writer_test_support::reset_flush_notifications();
+    writer_test_support::set_force_punch_error(true);
+
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("punch_fallback.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x30; 16], Duration::ZERO)
+            .with_punch_capability(true),
+    )
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[10, 11])],
+    );
+    let _ = writer.append_bundle(&bundle).expect("append");
+
+    let mut cursor = WalTruncateCursor::default();
+    cursor.safe_offset = std::fs::metadata(&wal_path)
+        .expect("metadata")
+        .len();
+
+    writer.reclaim_prefix(&cursor).expect("reclaim prefix");
+    assert!(writer_test_support::take_punch_failure_notification());
+    writer_test_support::set_force_punch_error(false);
+}
+
+#[test]
 fn wal_writer_persists_truncate_cursor_sidecar() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("truncate_sidecar.wal");
