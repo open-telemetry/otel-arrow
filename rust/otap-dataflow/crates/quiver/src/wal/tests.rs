@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Cross-cutting WAL tests live here so shared fixtures can touch writer, reader,
 //! and helper plumbing without sprinkling large #[cfg(test)] blocks in each file.
 

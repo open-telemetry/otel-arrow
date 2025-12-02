@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Reader is only exercised by tests until WAL replay wires into the engine.
 #![allow(dead_code)]
 

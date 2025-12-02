@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::{WAL_MAGIC, WalError};
