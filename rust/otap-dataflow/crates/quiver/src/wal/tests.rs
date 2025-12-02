@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::{builder::StringBuilder, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Field, Schema};
 use crc32fast::Hasher;
@@ -37,6 +37,15 @@ impl FixtureSlot {
     fn new(id: SlotId, fingerprint_seed: u8, values: &[i64]) -> Self {
         let fingerprint = [fingerprint_seed; 32];
         let batch = build_batch(values);
+        Self {
+            id,
+            fingerprint,
+            batch,
+        }
+    }
+
+    fn with_batch(id: SlotId, fingerprint_seed: u8, batch: RecordBatch) -> Self {
+        let fingerprint = [fingerprint_seed; 32];
         Self {
             id,
             fingerprint,
@@ -105,8 +114,40 @@ fn read_batch(bytes: &[u8]) -> RecordBatch {
         .expect("record batch present")
 }
 
+fn build_complex_batch(rows: usize, prefix: &str, payload_repeat: usize) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("value", DataType::Int64, false),
+        Field::new("message", DataType::Utf8, false),
+    ]));
+
+    let values: Vec<i64> = (0..rows).map(|idx| idx as i64).collect();
+    let mut builder = StringBuilder::new();
+    let chunk = "x".repeat(payload_repeat);
+    for idx in 0..rows {
+        builder.append_value(&format!("{prefix}-{idx:05}-{}", chunk));
+    }
+
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(Int64Array::from(values)), Arc::new(builder.finish())],
+    )
+    .expect("complex batch");
+    batch
+}
+
 fn slot_descriptor(id: u16, label: &'static str) -> SlotDescriptor {
     SlotDescriptor::new(SlotId::new(id), label)
+}
+
+fn descriptor_with_all_slots() -> BundleDescriptor {
+    let slots = (0u16..64)
+        .map(|id| {
+            let leaked = Box::leak(format!("Slot{id}").into_boxed_str());
+            let label: &'static str = leaked;
+            SlotDescriptor::new(SlotId::new(id), label)
+        })
+        .collect();
+    BundleDescriptor::new(slots)
 }
 
 fn encode_entry_header(entry_type: u8, slot_bitmap: u64) -> Vec<u8> {
@@ -182,8 +223,8 @@ fn wal_writer_reader_roundtrip_recovers_payloads() {
 
     let descriptor = BundleDescriptor::new(vec![
         slot_descriptor(0, "Logs"),
-        slot_descriptor(1, "Metrics"),
-        slot_descriptor(2, "Traces"),
+        slot_descriptor(1, "LogsAttrs"),
+        slot_descriptor(2, "ScopeAttrs"),
     ]);
 
     let bundle = FixtureBundle::new(
@@ -837,6 +878,96 @@ fn wal_reader_iter_from_offset_past_file_returns_none() {
     let mut iter = reader
         .iter_from(offset_beyond_file)
         .expect("iterator past end");
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn wal_writer_reader_handles_all_bitmap_slots() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("all_slots.wal");
+    let descriptor = descriptor_with_all_slots();
+
+    let slots: Vec<_> = (0u16..64)
+        .map(|id| {
+            let values = [id as i64, (id as i64) * 2 + 1];
+            FixtureSlot::new(SlotId::new(id), id as u8, &values)
+        })
+        .collect();
+    let bundle = FixtureBundle::new(descriptor.clone(), slots);
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0xAA; 16],
+        Duration::ZERO,
+    ))
+    .expect("writer");
+    let _ = writer.append_bundle(&bundle).expect("append");
+    drop(writer);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let entry = iter.next().expect("entry present").expect("ok");
+    assert_eq!(entry.slot_bitmap, u64::MAX, "all 64 slots set");
+    assert_eq!(entry.slots.len(), 64);
+
+    for slot in entry.slots {
+        assert_eq!(slot.payload_len, slot.payload.len() as u32);
+        assert_eq!(slot.row_count, 2);
+    }
+
+    assert!(iter.next().is_none());
+}
+
+#[test]
+fn wal_writer_handles_large_payload_batches() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("large_payload.wal");
+    let descriptor = BundleDescriptor::new(vec![
+        slot_descriptor(0, "Logs"),
+        slot_descriptor(1, "LogsAttrs"),
+        slot_descriptor(2, "ScopeAttrs"),
+    ]);
+
+    let slot_specs = [
+        (SlotId::new(0), 0x10, 6_000usize, "alpha", 256usize),
+        (SlotId::new(1), 0x20, 5_000usize, "beta", 512usize),
+        (SlotId::new(2), 0x30, 4_000usize, "gamma", 768usize),
+    ];
+
+    let slots: Vec<_> = slot_specs
+        .iter()
+        .map(|(id, seed, rows, prefix, repeat)| {
+            FixtureSlot::with_batch(*id, *seed, build_complex_batch(*rows, prefix, *repeat))
+        })
+        .collect();
+
+    let bundle = FixtureBundle::new(descriptor.clone(), slots);
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0xBB; 16],
+        Duration::ZERO,
+    ))
+    .expect("writer");
+
+    let _ = writer.append_bundle(&bundle).expect("append large payload");
+    drop(writer);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let entry = iter.next().expect("entry present").expect("ok");
+
+    let expected_bitmap = (1u64 << 0) | (1u64 << 1) | (1u64 << 2);
+    assert_eq!(entry.slot_bitmap, expected_bitmap);
+    assert_eq!(entry.slots.len(), 3);
+
+    for (slot, (_, _, expected_rows, _, repeat)) in entry.slots.iter().zip(slot_specs.iter()) {
+        assert!(slot.payload_len as usize >= expected_rows * repeat);
+        let decoded = read_batch(&slot.payload);
+        assert_eq!(decoded.num_rows(), *expected_rows);
+        assert_eq!(slot.row_count as usize, *expected_rows);
+    }
+
     assert!(iter.next().is_none());
 }
 
