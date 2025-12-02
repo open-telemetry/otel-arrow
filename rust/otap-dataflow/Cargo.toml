@@ -49,7 +49,7 @@ quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 
 ahash = "0.8.11"
 arrayvec = "0.7.6"
-arrow = "57.0"
+arrow = { version = "57.0", features=["prettyprint"] }
 arrow-ipc = { version = "57.0", features=["zstd"] }
 arrow-schema = { version = "57.0" }
 arrow-array = { version = "57.0" }
