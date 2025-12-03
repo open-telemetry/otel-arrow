@@ -116,18 +116,12 @@ mod tests {
                 let (stream, _) = listener.accept().await.expect("Accept failed");
                 let acceptor = acceptor.clone();
                 tokio::spawn(async move {
-                    match acceptor.accept(stream).await {
-                        Ok(mut stream) => {
-                            let mut buf = [0; 1024];
-                            match stream.read(&mut buf).await {
-                                Ok(n) => {
-                                    // Ignore write errors in test server
-                                    let _ = stream.write_all(&buf[..n]).await;
-                                }
-                                Err(_) => {} // Ignore read errors in test server
-                            }
+                    if let Ok(mut stream) = acceptor.accept(stream).await {
+                        let mut buf = [0; 1024];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            // Ignore write errors in test server
+                            let _ = stream.write_all(&buf[..n]).await;
                         }
-                        Err(_) => {} // Ignore TLS accept errors in test server
                     }
                 });
             }
