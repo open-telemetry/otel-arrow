@@ -22,7 +22,13 @@ nodes:
     kind: exporter
     plugin_urn: "urn:otel:otap:parquet:exporter"
     config:
-      base_uri: /home/jakedern/local-fabric-test
+      storage:
+        # file:
+        #   base_uri: /home/jakedern/local-fabric-test
+        azure:
+          base_uri: https://barquettest.blob.core.windows.net/barquet1
+          auth:
+            type: AzureCli
       partitioning_strategies:
       - schema_metadata: ["_part_id"]
       writer_options:

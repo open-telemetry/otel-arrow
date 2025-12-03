@@ -39,6 +39,7 @@ serde_json.workspace = true
 clap.workspace = true
 mimalloc-rust.workspace = true
 azure_identity.workspace = true
+object_store = { workspace = true, features = ["azure"] }
 
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}

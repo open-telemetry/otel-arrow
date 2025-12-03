@@ -155,15 +155,16 @@ impl Exporter<OtapPdata> for ParquetExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
-        let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
-            let source_detail = format_error_sources(&e);
-            Error::ExporterError {
-                exporter: exporter_id.clone(),
-                kind: ExporterErrorKind::Configuration,
-                error: format!("error initializing object store {e}"),
-                source_detail,
-            }
-        })?;
+        let object_store =
+            object_store::from_storage_config(&self.config.storage).map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Configuration,
+                    error: format!("error initializing object store {e}"),
+                    source_detail,
+                }
+            })?;
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 

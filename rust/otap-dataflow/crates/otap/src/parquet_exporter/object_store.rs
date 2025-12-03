@@ -3,23 +3,53 @@
 
 use std::sync::Arc;
 
+use azure_core::credentials::TokenCredential;
 use object_store::ObjectStore;
+use object_store::azure::MicrosoftAzureBuilder;
 use object_store::local::LocalFileSystem;
 
-pub(crate) fn from_uri(uri: &str) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
-    // TODO eventually we should support choosing the correct object_store implementation
-    // from the URL. E.g. s3://my-bucket/path/ would signify using the S3 implementation instead
-    // related issue: https://github.com/open-telemetry/otel-arrow/issues/501
+use crate::parquet_exporter::cloud_auth::azure;
+use crate::parquet_exporter::config;
 
-    #[cfg(test)]
-    {
-        if uri.starts_with("testdelayed://") {
-            return test::delayed_test_object_store(uri);
+// TODO: Move the azure object store adapter into here
+
+pub(crate) fn from_storage_config(
+    storage: &config::Storage,
+) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    match storage {
+        config::Storage::File { base_uri } => {
+            #[cfg(test)]
+            {
+                if base_uri.starts_with("testdelayed://") {
+                    return test::delayed_test_object_store(base_uri);
+                }
+            }
+
+            let object_store = LocalFileSystem::new_with_prefix(base_uri)?;
+            Ok(Arc::new(object_store))
+        }
+        config::Storage::Azure {
+            base_uri,
+            storage_scope,
+            auth,
+        } => {
+            let token_credential: Arc<dyn TokenCredential> = azure::from_auth_method(auth.clone())
+                .map_err(|e| object_store::Error::Generic {
+                    store: "Azure",
+                    source: Box::new(e),
+                })?;
+
+            let credential_provider =
+                azure::AzureTokenCredentialProvider::new(token_credential, storage_scope.clone());
+
+            Ok(Arc::new(
+                MicrosoftAzureBuilder::new()
+                    .with_url(base_uri)
+                    .with_credentials(Arc::new(credential_provider))
+                    .build()?,
+            ))
         }
     }
-
-    let object_store = LocalFileSystem::new_with_prefix(uri)?;
-    Ok(Arc::new(object_store))
 }
 
 #[cfg(test)]
