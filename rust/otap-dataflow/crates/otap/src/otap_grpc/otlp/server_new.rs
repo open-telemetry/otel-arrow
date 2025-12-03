@@ -103,11 +103,22 @@ pub struct OtlpServerSettings {
     /// Whether the receiver should wait.
     pub wait_for_result: bool,
     /// Maximum size for inbound gRPC messages.
+    /// ToDo: Note the Collector calls this max_recv_msg_size_mib,
+    /// consider max_receive_message_size to reduce difference, add
+    /// serde::from byte sizes.
+    /// https://github.com/open-telemetry/opentelemetry-collector/blob/152042ebfa9d67731b23ae3cb5b23f585e13d2a2/config/configgrpc/configgrpc.go#L183
     pub max_decoding_message_size: Option<usize>,
     /// Request compression allowed
     pub request_compression_encodings: EnabledCompressionEncodings,
     /// Response compression used
     pub response_compression_encodings: EnabledCompressionEncodings,
+}
+
+/// Encodes a default response for repeated use.
+fn encode_response<T: Message + Default>() -> Bytes {
+    let mut buf = Vec::with_capacity(T::default().encoded_len());
+    T::default().encode(&mut buf).expect("encode response");
+    Bytes::from(buf)
 }
 
 /// Precomputed empty responses per signal to avoid per-call prost encoding.
@@ -118,52 +129,13 @@ fn precomputed_response(signal: SignalType) -> &'static [u8] {
 
     match signal {
         SignalType::Logs => LOGS
-            .get_or_init(|| {
-                let mut buf = Vec::with_capacity(
-                    ExportLogsServiceResponse {
-                        partial_success: None,
-                    }
-                    .encoded_len(),
-                );
-                ExportLogsServiceResponse {
-                    partial_success: None,
-                }
-                .encode(&mut buf)
-                .expect("encode logs response");
-                Bytes::from(buf)
-            })
+            .get_or_init(encode_response::<ExportLogsServiceResponse>)
             .as_ref(),
         SignalType::Metrics => METRICS
-            .get_or_init(|| {
-                let mut buf = Vec::with_capacity(
-                    ExportMetricsServiceResponse {
-                        partial_success: None,
-                    }
-                    .encoded_len(),
-                );
-                ExportMetricsServiceResponse {
-                    partial_success: None,
-                }
-                .encode(&mut buf)
-                .expect("encode metrics response");
-                Bytes::from(buf)
-            })
+            .get_or_init(encode_response::<ExportMetricsServiceResponse>)
             .as_ref(),
         SignalType::Traces => TRACES
-            .get_or_init(|| {
-                let mut buf = Vec::with_capacity(
-                    ExportTraceServiceResponse {
-                        partial_success: None,
-                    }
-                    .encoded_len(),
-                );
-                ExportTraceServiceResponse {
-                    partial_success: None,
-                }
-                .encode(&mut buf)
-                .expect("encode trace response");
-                Bytes::from(buf)
-            })
+            .get_or_init(encode_response::<ExportTraceServiceResponse>)
             .as_ref(),
     }
 }
