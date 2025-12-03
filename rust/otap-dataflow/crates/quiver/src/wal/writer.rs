@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::collections::VecDeque;
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
@@ -28,6 +29,9 @@ pub(crate) struct WalWriterOptions {
     pub segment_cfg_hash: [u8; 16],
     pub flush_interval: Duration,
     pub max_unflushed_bytes: u64,
+    pub max_wal_size: u64,
+    pub max_chunks: usize,
+    pub rotation_target_bytes: u64,
     #[cfg(test)]
     force_punch_capability: Option<bool>,
 }
@@ -39,6 +43,9 @@ impl WalWriterOptions {
             segment_cfg_hash,
             flush_interval,
             max_unflushed_bytes: 0,
+            max_wal_size: u64::MAX,
+            max_chunks: 8,
+            rotation_target_bytes: 64 * 1024 * 1024,
             #[cfg(test)]
             force_punch_capability: None,
         }
@@ -48,6 +55,21 @@ impl WalWriterOptions {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn with_max_unflushed_bytes(mut self, max_bytes: u64) -> Self {
         self.max_unflushed_bytes = max_bytes;
+        self
+    }
+
+    pub fn with_max_wal_size(mut self, max_bytes: u64) -> Self {
+        self.max_wal_size = max_bytes;
+        self
+    }
+
+    pub fn with_max_chunks(mut self, max_chunks: usize) -> Self {
+        self.max_chunks = max_chunks.max(1);
+        self
+    }
+
+    pub fn with_rotation_target(mut self, target_bytes: u64) -> Self {
+        self.rotation_target_bytes = target_bytes.max(1);
         self
     }
 
@@ -69,6 +91,11 @@ pub(crate) struct WalWriter {
     sidecar_path: PathBuf,
     truncate_state: TruncateSidecar,
     punch_capable: bool,
+    current_len: u64,
+    aggregate_bytes: u64,
+    rotated_chunks: VecDeque<RotatedChunk>,
+    data_offset_base: u64,
+    last_global_safe_offset: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +151,9 @@ impl WalWriter {
             }
         };
 
-        Ok(Self {
+        let current_len = metadata.len();
+
+        let mut writer = Self {
             file,
             payload_buffer: Vec::new(),
             options,
@@ -134,7 +163,14 @@ impl WalWriter {
             sidecar_path,
             truncate_state,
             punch_capable,
-        })
+            current_len,
+            aggregate_bytes: current_len,
+            rotated_chunks: VecDeque::new(),
+            data_offset_base: 0,
+            last_global_safe_offset: 0,
+        };
+        writer.last_global_safe_offset = writer.global_safe_offset(writer.truncate_state.truncate_offset);
+        Ok(writer)
     }
 
     pub fn append_bundle<B: RecordBundle>(&mut self, bundle: &B) -> WalResult<WalOffset> {
@@ -199,7 +235,11 @@ impl WalWriter {
         self.file.write_all(&crc.to_le_bytes())?;
 
         let entry_total_bytes = 4u64 + entry_len as u64 + 4;
+        self.current_len = self.current_len.saturating_add(entry_total_bytes);
+        self.aggregate_bytes = self.aggregate_bytes.saturating_add(entry_total_bytes);
         self.maybe_flush(entry_total_bytes)?;
+        self.maybe_rotate_after_append()?;
+        self.enforce_size_cap()?;
 
         Ok(WalOffset {
             position: entry_start,
@@ -220,7 +260,9 @@ impl WalWriter {
     }
 
     pub(crate) fn record_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
-        self.record_truncate_offset(cursor.safe_offset)
+        self.record_truncate_offset(cursor.safe_offset)?;
+        self.last_global_safe_offset = self.global_safe_offset(cursor.safe_offset);
+        self.purge_rotated_chunks()
     }
 
     pub fn reclaim_prefix(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
@@ -372,6 +414,34 @@ fn clamp_offset(offset: u64, file_len: u64) -> u64 {
         .min(upper)
 }
 
+fn shift_rotated_files(base_path: &Path, existing: usize) -> WalResult<()> {
+    for idx in (1..=existing).rev() {
+        let src = rotated_path(base_path, idx);
+        let dst = rotated_path(base_path, idx + 1);
+        if src.exists() {
+            std::fs::rename(src, &dst)?;
+        }
+    }
+    Ok(())
+}
+
+fn rotated_path(base_path: &Path, index: usize) -> PathBuf {
+    let mut name = base_path.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
+
+fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    WalHeader::new(segment_hash).write_to(&mut file)?;
+    Ok(file)
+}
+
 impl WalWriter {
     fn record_truncate_offset(&mut self, requested_offset: u64) -> WalResult<()> {
         let safe_offset = requested_offset.max(WAL_HEADER_LEN as u64);
@@ -401,9 +471,121 @@ impl WalWriter {
     }
 
     fn rewrite_prefix_in_place(&mut self, safe_offset: u64) -> WalResult<()> {
-        rewrite_wal_prefix_in_place(&mut self.file, safe_offset)?;
+        let (new_len, reclaimed) = rewrite_wal_prefix_in_place(&mut self.file, safe_offset)?;
+        self.current_len = new_len;
+        self.recalculate_aggregate_bytes();
+        self.data_offset_base = self.data_offset_base.saturating_add(reclaimed);
         self.truncate_state.truncate_offset = WAL_HEADER_LEN as u64;
         TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
+    }
+
+    fn recalculate_aggregate_bytes(&mut self) {
+        let rotated_total: u64 = self
+            .rotated_chunks
+            .iter()
+            .map(|chunk| chunk.total_bytes())
+            .sum();
+        self.aggregate_bytes = rotated_total.saturating_add(self.current_len);
+    }
+
+    fn maybe_rotate_after_append(&mut self) -> WalResult<()> {
+        let active_data_bytes = self
+            .current_len
+            .saturating_sub(WAL_HEADER_LEN as u64);
+        if active_data_bytes <= self.options.rotation_target_bytes {
+            return Ok(());
+        }
+        self.rotate_active_file()
+    }
+
+    fn rotate_active_file(&mut self) -> WalResult<()> {
+        self.purge_rotated_chunks()?;
+        if self.rotated_chunks.len() >= self.options.max_chunks {
+            return Err(WalError::WalAtCapacity(
+                "wal chunk cap reached; truncate more data before rotating",
+            ));
+        }
+
+        self.file.flush()?;
+        sync_file_data(&self.file)?;
+        let old_len = self.current_len;
+        if old_len <= WAL_HEADER_LEN as u64 {
+            return Ok(());
+        }
+        self.aggregate_bytes = self.aggregate_bytes.saturating_sub(old_len);
+
+        shift_rotated_files(&self.options.path, self.rotated_chunks.len())?;
+        self.update_rotated_chunk_paths();
+
+        let new_chunk_path = rotated_path(&self.options.path, 1);
+        std::fs::rename(&self.options.path, &new_chunk_path)?;
+
+        let data_bytes = old_len.saturating_sub(WAL_HEADER_LEN as u64);
+        let end_data_offset = self.data_offset_base.saturating_add(data_bytes);
+        self.rotated_chunks.push_back(RotatedChunk {
+            path: new_chunk_path,
+            file_bytes: old_len,
+            end_data_offset,
+        });
+        self.aggregate_bytes = self.aggregate_bytes.saturating_add(old_len);
+        self.data_offset_base = end_data_offset;
+
+        self.file = reopen_wal_file(&self.options.path, self.options.segment_cfg_hash)?;
+        self.current_len = WAL_HEADER_LEN as u64;
+        self.aggregate_bytes = self.aggregate_bytes.saturating_add(self.current_len);
+
+        self.truncate_state.rotation_generation = self
+            .truncate_state
+            .rotation_generation
+            .saturating_add(1);
+        TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)?;
+        Ok(())
+    }
+
+    fn update_rotated_chunk_paths(&mut self) {
+        let existing = self.rotated_chunks.len();
+        if existing == 0 {
+            return;
+        }
+        for (idx, chunk) in self.rotated_chunks.iter_mut().enumerate() {
+            let disk_index = existing - idx + 1;
+            chunk.path = rotated_path(&self.options.path, disk_index);
+        }
+    }
+
+    fn enforce_size_cap(&mut self) -> WalResult<()> {
+        if self.aggregate_bytes <= self.options.max_wal_size {
+            return Ok(());
+        }
+        self.purge_rotated_chunks()?;
+        if self.aggregate_bytes <= self.options.max_wal_size {
+            return Ok(());
+        }
+        Err(WalError::WalAtCapacity(
+            "wal size cap exceeded; truncate finalized segments",
+        ))
+    }
+
+    fn purge_rotated_chunks(&mut self) -> WalResult<()> {
+        while let Some(front) = self.rotated_chunks.front() {
+            if front.end_data_offset <= self.last_global_safe_offset_data() {
+                std::fs::remove_file(&front.path)?;
+                self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
+                let _ = self.rotated_chunks.pop_front();
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn last_global_safe_offset_data(&self) -> u64 {
+        self.last_global_safe_offset
+    }
+
+    fn global_safe_offset(&self, cursor_offset: u64) -> u64 {
+        let data_offset = cursor_offset.saturating_sub(WAL_HEADER_LEN as u64);
+        self.data_offset_base.saturating_add(data_offset)
     }
 }
 
@@ -475,10 +657,10 @@ fn punch_wal_prefix(_file: &File, _safe_offset: u64) -> io::Result<()> {
     ))
 }
 
-fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<()> {
+fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<(u64, u64)> {
     let header_len = WAL_HEADER_LEN as u64;
     if safe_offset <= header_len {
-        return Ok(());
+        return Ok((file.metadata()?.len(), 0));
     }
 
     let file_len = file.metadata()?.len();
@@ -487,7 +669,7 @@ fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<(
         let _ = file.seek(SeekFrom::End(0))?;
         file.flush()?;
         sync_file_data(file)?;
-        return Ok(());
+        return Ok((header_len, file_len.saturating_sub(header_len)));
     }
 
     let mut read_pos = safe_offset;
@@ -510,7 +692,8 @@ fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<(
     let _ = file.seek(SeekFrom::End(0))?;
     file.flush()?;
     sync_file_data(file)?;
-    Ok(())
+    let reclaimed = safe_offset.saturating_sub(header_len);
+    Ok((write_pos, reclaimed))
 }
 
 struct EncodedSlot {
@@ -519,6 +702,19 @@ struct EncodedSlot {
     row_count: u32,
     payload_len: u32,
     payload_bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+struct RotatedChunk {
+    path: PathBuf,
+    file_bytes: u64,
+    end_data_offset: u64,
+}
+
+impl RotatedChunk {
+    fn total_bytes(&self) -> u64 {
+        self.file_bytes
+    }
 }
 
 #[cfg(test)]

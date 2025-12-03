@@ -85,4 +85,7 @@ pub enum WalError {
     /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),
+    /// Writer cannot proceed because configured capacity limits were reached.
+    #[error("wal at capacity: {0}")]
+    WalAtCapacity(&'static str),
 }

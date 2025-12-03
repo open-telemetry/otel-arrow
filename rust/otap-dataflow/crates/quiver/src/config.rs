@@ -127,6 +127,8 @@ pub struct WalConfig {
     pub max_size_bytes: NonZeroU64,
     /// Maximum number of chunk files retained during rotation.
     pub max_chunk_count: u16,
+    /// Target data size to keep in the active WAL file before rotating.
+    pub rotation_target_bytes: NonZeroU64,
     /// Preferred fsync cadence for durability vs. latency.
     pub flush_interval: Duration,
 }
@@ -138,6 +140,11 @@ impl WalConfig {
                 "max_chunk_count must be at least 1",
             ));
         }
+        if self.rotation_target_bytes > self.max_size_bytes {
+            return Err(QuiverError::invalid_config(
+                "rotation_target_bytes must not exceed max_size_bytes",
+            ));
+        }
         Ok(())
     }
 }
@@ -147,6 +154,7 @@ impl Default for WalConfig {
         Self {
             max_size_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).expect("non-zero"),
             max_chunk_count: 10,
+            rotation_target_bytes: NonZeroU64::new(64 * 1024 * 1024).expect("non-zero"),
             flush_interval: Duration::from_millis(25),
         }
     }
@@ -280,6 +288,7 @@ mod tests {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1).unwrap(),
             max_chunk_count: 1,
+            rotation_target_bytes: NonZeroU64::new(1).unwrap(),
             flush_interval: Duration::from_millis(1),
         };
         let segment = SegmentConfig {
@@ -320,6 +329,19 @@ mod tests {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1).unwrap(),
             max_chunk_count: 0,
+            rotation_target_bytes: NonZeroU64::new(1).unwrap(),
+            flush_interval: Duration::from_millis(1),
+        };
+
+        assert!(wal.validate().is_err());
+    }
+
+    #[test]
+    fn wal_validate_rejects_rotation_target_exceeding_cap() {
+        let wal = WalConfig {
+            max_size_bytes: NonZeroU64::new(1024).unwrap(),
+            max_chunk_count: 1,
+            rotation_target_bytes: NonZeroU64::new(2048).unwrap(),
             flush_interval: Duration::from_millis(1),
         };
 

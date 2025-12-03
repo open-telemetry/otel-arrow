@@ -4,8 +4,9 @@
 //! Cross-cutting WAL tests live here so shared fixtures can touch writer, reader,
 //! and helper plumbing without sprinkling large #[cfg(test)] blocks in each file.
 
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+ use std::cmp;
+ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -164,7 +165,7 @@ fn encode_entry_header(entry_type: u8, slot_bitmap: u64) -> Vec<u8> {
     buf
 }
 
-fn write_single_entry(body: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+fn write_single_entry(body: &[u8]) -> (tempfile::TempDir, PathBuf) {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join("single.wal");
     let mut file = std::fs::OpenOptions::new()
@@ -199,6 +200,41 @@ fn truncate_file_from_end(path: &Path, bytes: u64) {
         .open(path)
         .expect("open for truncate");
     file.set_len(new_len).expect("truncate file");
+}
+
+fn rotated_path_for(base: &Path, index: usize) -> PathBuf {
+    let mut name = base.as_os_str().to_os_string();
+    name.push(format!(".{index}"));
+    PathBuf::from(name)
+}
+
+fn single_slot_bundle(
+    descriptor: &BundleDescriptor,
+    fingerprint_seed: u8,
+    values: &[i64],
+) -> FixtureBundle {
+    FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), fingerprint_seed, values)],
+    )
+}
+
+fn measure_bundle_data_bytes(mut build_bundle: impl FnMut() -> FixtureBundle) -> u64 {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("measure_bundle.wal");
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0xFE; 16],
+        Duration::ZERO,
+    ))
+    .expect("writer");
+    let bundle = build_bundle();
+    let _ = writer.append_bundle(&bundle).expect("append bundle");
+    drop(writer);
+    std::fs::metadata(&wal_path)
+        .expect("metadata")
+        .len()
+        .saturating_sub(WAL_HEADER_LEN as u64)
 }
 
 struct FailureGuard;
@@ -540,6 +576,144 @@ fn wal_writer_persists_truncate_cursor_sidecar() {
         .join("truncate.offset");
     let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(state.truncate_offset, file_len);
+}
+
+#[test]
+fn wal_writer_rotates_when_target_exceeded() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("force_rotate.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x51; 16], Duration::ZERO)
+            .with_rotation_target(1)
+            .with_max_chunks(4),
+    )
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3, 4])],
+    );
+    let _ = writer.append_bundle(&bundle).expect("append triggers rotation");
+    drop(writer);
+
+    let rotated_path = rotated_path_for(&wal_path, 1);
+    assert!(rotated_path.exists(), "rotated chunk missing at {:?}", rotated_path);
+    let rotated_len = std::fs::metadata(&rotated_path)
+        .expect("rotated metadata")
+        .len();
+    assert!(rotated_len > WAL_HEADER_LEN as u64);
+
+    let active_len = std::fs::metadata(&wal_path)
+        .expect("active metadata")
+        .len();
+    assert_eq!(active_len, WAL_HEADER_LEN as u64);
+
+    let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
+    let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    assert_eq!(sidecar.rotation_generation, 1);
+}
+
+#[test]
+fn wal_writer_errors_when_chunk_cap_reached() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("chunk_cap.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x52; 16], Duration::ZERO)
+            .with_rotation_target(1)
+            .with_max_chunks(1),
+    )
+    .expect("writer");
+
+    let payload = [10, 11, 12];
+    let first_bundle = single_slot_bundle(&descriptor, 0x02, &payload);
+    let _ = writer
+        .append_bundle(&first_bundle)
+        .expect("first append rotates");
+    assert!(
+        rotated_path_for(&wal_path, 1).exists(),
+        "expected rotated chunk to exist",
+    );
+
+    let err = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &payload))
+        .expect_err("second rotation should hit chunk cap");
+    match err {
+        WalError::WalAtCapacity(message) => {
+            assert!(
+                message.contains("chunk cap"),
+                "unexpected error message: {message}",
+            );
+        }
+        other => panic!("expected WalAtCapacity, got {other:?}"),
+    }
+}
+
+#[test]
+fn wal_writer_enforces_size_cap_and_purges_rotations() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("size_cap.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let payload: Vec<i64> = (0..64).collect();
+    let entry_bytes = measure_bundle_data_bytes(|| {
+        single_slot_bundle(&descriptor, 0x07, payload.as_slice())
+    });
+    let header_len = WAL_HEADER_LEN as u64;
+    let chunk_file_len = header_len + entry_bytes;
+    let slack = cmp::max(1, entry_bytes / 2);
+    let max_wal_size = chunk_file_len + header_len + slack;
+
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x53; 16], Duration::ZERO)
+            .with_rotation_target(1)
+            .with_max_chunks(4)
+            .with_max_wal_size(max_wal_size),
+    )
+    .expect("writer");
+
+    let first_bundle = single_slot_bundle(&descriptor, 0x07, payload.as_slice());
+    let _ = writer
+        .append_bundle(&first_bundle)
+        .expect("first append rotates under cap");
+    assert!(rotated_path_for(&wal_path, 1).exists());
+
+    let second_bundle = single_slot_bundle(&descriptor, 0x08, payload.as_slice());
+    let err = writer
+        .append_bundle(&second_bundle)
+        .expect_err("second rotation should exceed size cap");
+    match err {
+        WalError::WalAtCapacity(message) => {
+            assert!(
+                message.contains("size cap"),
+                "unexpected error message: {message}",
+            );
+        }
+        other => panic!("expected WalAtCapacity, got {other:?}"),
+    }
+
+    let mut cursor = WalTruncateCursor::default();
+    cursor.safe_offset = WAL_HEADER_LEN as u64;
+    writer
+        .record_truncate_cursor(&cursor)
+        .expect("record cursor purges rotated chunks");
+
+    assert!(
+        !rotated_path_for(&wal_path, 1).exists(),
+        "all rotated chunks should be purged",
+    );
+    assert!(
+        !rotated_path_for(&wal_path, 2).exists(),
+        "purge removes even shifted chunks",
+    );
+
+    let third_bundle = single_slot_bundle(&descriptor, 0x09, payload.as_slice());
+    let _ = writer
+        .append_bundle(&third_bundle)
+        .expect("append succeeds once space is reclaimed");
 }
 
 #[test]
