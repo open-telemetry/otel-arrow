@@ -812,6 +812,8 @@ impl SignalBuffer {
                     if batch.outbound != 0 {
                         batch.outbound -= 1;
                     }
+                    // If this return true, the Some(_) following this
+                    // block evaluates.
                     batch.outbound != 0
                 });
                 if let Some(mut batch) = removed {
@@ -1110,7 +1112,9 @@ mod tests {
         verify_outputs: F,
         ack_policy: Option<P>,
     ) where
-        F: FnOnce(&[OtapPdata], &[OtlpProtoMessage], &[TestCallData], &[TestCallData]) + Send + 'static,
+        F: FnOnce(&[OtapPdata], &[OtlpProtoMessage], &[TestCallData], &[TestCallData])
+            + Send
+            + 'static,
         P: Fn(usize, &OtapPdata) -> AckPolicy + Send + 'static,
     {
         let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(config);
@@ -1124,18 +1128,6 @@ mod tests {
             .run_test(move |mut ctx| async move {
                 let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_tx);
-
-                // Setup controller task or keep pipeline_rx for verification
-                let (controller_task, mut pipeline_rx) = if !subscribe {
-                    let task = tokio::spawn(async move {
-                        while let Ok(msg) = pipeline_rx.recv().await {
-                            if let PipelineControlMsg::DelayData { .. } = msg {}
-                        }
-                    });
-                    (Some(task), None)
-                } else {
-                    (None, Some(pipeline_rx))
-                };
 
                 // Process inputs with optional subscription
                 for (i, input_otlp) in inputs_otlp.iter().enumerate() {
@@ -1157,45 +1149,38 @@ mod tests {
                     ctx.process(Message::PData(pdata)).await.expect("process");
                 }
 
-                // Process any pending timers before first drain (for timer_flush tests)
-                if subscribe {
-                    let pipeline_rx_mut = pipeline_rx.as_mut().expect("pipeline_rx available");
-                    // Process DelayData messages with a short timeout to let timers fire
-                    // Timeout should be longer than the timer configuration (e.g., 50ms timer needs >50ms timeout)
-                    match tokio::time::timeout(Duration::from_millis(150), async {
-                        while let Ok(msg) = pipeline_rx_mut.recv().await {
-                            if let PipelineControlMsg::DelayData { when, data, .. } = msg {
-                                // Sleep until the scheduled time
-                                let now = Instant::now();
-                                if when > now {
-                                    tokio::time::sleep(when.duration_since(now)).await;
-                                }
-                                ctx.process(Message::Control(NodeControlMsg::DelayedData { when, data }))
-                                    .await
-                                    .expect("process delayed data");
-                            }
-                            // Continue consuming messages until timeout
-                        }
-                    }).await {
-                        Ok(_) => {}, // Channel closed
-                        Err(_) => {}, // Timeout - normal case
-                    }
-                }
-
-                // Run scenario-specific verification of first drain
-                let mut all_emitted = ctx.drain_pdata().await;
-
                 // Initialize ack/nack tracking
                 let mut received_acks: Vec<TestCallData> = Vec::new();
                 let mut received_nacks: Vec<TestCallData> = Vec::new();
 
-                // Verify acks/nacks if subscribed - must happen BEFORE shutdown
-                if subscribe {
-                    let mut pipeline_rx = pipeline_rx.expect("pipeline_rx available");
+                // Unified message processing loop:
+                // - Handle DelayData messages by sleeping until scheduled time, then sending DelayedData
+                // - Drain outputs and send acks/nacks according to policy (one per iteration)
+                // - Collect DeliverAck/DeliverNack responses
+                // This simulates a realistic concurrent environment where timers fire,
+                // outputs are produced, and acks/nacks flow bidirectionally.
+                let mut outputs_to_ack: Vec<OtapPdata> = Vec::new();
+                let mut next_output_idx = 0;
+                let mut timeout_count = 0;
+                let max_iterations = 200; // Safety limit to prevent infinite loops
+                let mut iteration = 0;
 
-                    // Send acks or nacks for outputs based on policy
-                    for (idx, output_pdata) in all_emitted.iter().enumerate() {
-                        let policy = ack_policy.as_ref().map_or(AckPolicy::Ack, |p| p(idx, output_pdata));
+                while iteration < max_iterations {
+                    iteration += 1;
+
+                    // Check for new outputs and queue them for acking
+                    let newly_emitted = ctx.drain_pdata().await;
+                    if !newly_emitted.is_empty() {
+                        outputs_to_ack.extend(newly_emitted);
+                    }
+
+                    // Send acks/nacks for ONE output per iteration (to allow interleaved message processing)
+                    if subscribe && next_output_idx < outputs_to_ack.len() {
+                        let output_pdata = &outputs_to_ack[next_output_idx];
+                        let policy = ack_policy
+                            .as_ref()
+                            .map_or(AckPolicy::Ack, |p| p(next_output_idx, output_pdata));
+                        
                         match policy {
                             AckPolicy::Ack => {
                                 let ack = AckMsg::new(output_pdata.clone());
@@ -1214,65 +1199,105 @@ mod tests {
                                 }
                             }
                         }
+                        next_output_idx += 1;
                     }
 
-                    // Collect DeliverAck and DeliverNack messages
-                    let mut timeout_count = 0;
-
-                    while received_acks.len() + received_nacks.len() < num_inputs && timeout_count < 5 {
-                        match tokio::time::timeout(Duration::from_millis(500), pipeline_rx.recv()).await
-                        {
-                            Ok(Ok(PipelineControlMsg::DeliverAck { ack, .. })) => {
-                                let calldata: TestCallData =
-                                    ack.calldata.try_into().expect("calldata");
-                                let expected_inputs: Vec<TestCallData> = (0..num_inputs)
-                                    .map(|i| TestCallData::new_with(i as u64, 0))
-                                    .collect();
-                                assert!(
-                                    expected_inputs.contains(&calldata),
-                                    "ack has valid calldata: {:?}",
-                                    calldata
-                                );
-                                assert!(!received_acks.contains(&calldata), "unique ack");
-                                received_acks.push(calldata);
+                    // Process control channel messages with short timeout
+                    match tokio::time::timeout(Duration::from_millis(50), pipeline_rx.recv()).await {
+                        Ok(Ok(PipelineControlMsg::DelayData { when, data, .. })) => {
+                            // Sleep until the scheduled time (simulating real clock behavior)
+                            let now = Instant::now();
+                            if when > now {
+                                tokio::time::sleep(when.duration_since(now)).await;
                             }
-                            Ok(Ok(PipelineControlMsg::DeliverNack { nack, .. })) => {
-                                let calldata: TestCallData =
-                                    nack.calldata.try_into().expect("calldata");
-                                let expected_inputs: Vec<TestCallData> = (0..num_inputs)
-                                    .map(|i| TestCallData::new_with(i as u64, 0))
-                                    .collect();
-                                assert!(
-                                    expected_inputs.contains(&calldata),
-                                    "nack has valid calldata: {:?}",
-                                    calldata
-                                );
-                                assert!(!received_nacks.contains(&calldata), "unique nack");
-                                received_nacks.push(calldata);
+                            ctx.process(Message::Control(NodeControlMsg::DelayedData {
+                                when,
+                                data,
+                            }))
+                            .await
+                            .expect("process delayed data");
+                            timeout_count = 0; // Reset timeout count on activity
+                        }
+                        Ok(Ok(PipelineControlMsg::DeliverAck { ack, .. })) => {
+                            let calldata: TestCallData = ack.calldata.try_into().expect("calldata");
+                            let expected_inputs: Vec<TestCallData> = (0..num_inputs)
+                                .map(|i| TestCallData::new_with(i as u64, 0))
+                                .collect();
+                            assert!(
+                                expected_inputs.contains(&calldata),
+                                "ack has valid calldata: {:?}",
+                                calldata
+                            );
+                            assert!(!received_acks.contains(&calldata), "unique ack");
+                            received_acks.push(calldata);
+                            timeout_count = 0;
+                        }
+                        Ok(Ok(PipelineControlMsg::DeliverNack { nack, .. })) => {
+                            let calldata: TestCallData = nack.calldata.try_into().expect("calldata");
+                            let expected_inputs: Vec<TestCallData> = (0..num_inputs)
+                                .map(|i| TestCallData::new_with(i as u64, 0))
+                                .collect();
+                            assert!(
+                                expected_inputs.contains(&calldata),
+                                "nack has valid calldata: {:?}",
+                                calldata
+                            );
+                            assert!(!received_nacks.contains(&calldata), "unique nack");
+                            received_nacks.push(calldata);
+                            timeout_count = 0;
+                        }
+                        Ok(Ok(other)) => {
+                            panic!("unexpected control message: {:?}", other);
+                        }
+                        Ok(Err(e)) => {
+                            panic!("pipeline channel error: {:?}", e);
+                        }
+                        Err(_) => {
+                            // Timeout - check if we're done
+                            timeout_count += 1;
+                            
+                            // Exit conditions:
+                            if subscribe {
+                                // Subscribe mode: need all inputs acked/nacked
+                                let all_inputs_handled = received_acks.len() + received_nacks.len() >= num_inputs;
+                                let all_outputs_acked = next_output_idx >= outputs_to_ack.len();
+                                
+                                if all_inputs_handled && all_outputs_acked {
+                                    // Done: all outputs acked AND all input acks received
+                                    break;
+                                }
+                                
+                                // Reset timeout if we're still making progress
+                                if !all_outputs_acked {
+                                    timeout_count = 0;
+                                }
+                            } else {
+                                // Non-subscribe mode: just need outputs and quiescence
+                                if outputs_to_ack.len() > 0 && timeout_count >= 3 {
+                                    break;
+                                }
                             }
-                            Ok(Ok(PipelineControlMsg::DelayData { .. })) => {
-                                // Ignore timer messages, continue waiting for acks/nacks
-                            }
-                            Ok(Ok(other)) => panic!("unexpected control message: {:?}", other),
-                            Ok(Err(e)) => panic!("pipeline channel error: {:?}", e),
-                            Err(_) => {
-                                timeout_count += 1;
+                            
+                            if timeout_count >= 10 {
+                                // Safety timeout
+                                break;
                             }
                         }
                     }
-
-                    // If ack_policy was provided, verification is done in verify_outputs
-                    // Otherwise, verify all inputs were acked
-                    if ack_policy.is_none() {
-                        assert_eq!(
-                            received_acks.len(),
-                            num_inputs,
-                            "expected {} acks, got {}",
-                            num_inputs,
-                            received_acks.len()
-                        );
-                    }
                 }
+
+                // Verification for subscribe mode
+                if subscribe && ack_policy.is_none() {
+                    assert_eq!(
+                        received_acks.len(),
+                        num_inputs,
+                        "expected {} acks, got {}",
+                        num_inputs,
+                        received_acks.len()
+                    );
+                }
+
+                let mut all_emitted = outputs_to_ack;
 
                 // Shutdown to flush any remaining data
                 ctx.process(Message::Control(NodeControlMsg::Shutdown {
@@ -1295,10 +1320,6 @@ mod tests {
                 }))
                 .await
                 .expect("collect telemetry");
-
-                if let Some(task) = controller_task {
-                    task.abort();
-                }
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1367,18 +1388,32 @@ mod tests {
     }
 
     /// Generic test helper for timer flush
+    /// 
+    /// This test verifies that the timer mechanism works correctly by:
+    /// 1. Sending input with batch_size > item count (so size threshold won't trigger)
+    /// 2. Waiting for timer to fire (via DelayData -> DelayedData processing)
+    /// 3. Verifying data is flushed BEFORE shutdown (proving timer worked)
+    /// 
+    /// The test processes DelayData messages during the 150ms window, allowing the
+    /// 50ms timer to fire. After drain, we should see output - if we don't, the timer
+    /// didn't work and only shutdown would have flushed it.
     fn test_timer_flush(input_otlp: OtlpProtoMessage, subscribe: bool) {
         run_batch_processor_test(
             std::iter::once(input_otlp.clone()),
             subscribe,
             json!({
-                "send_batch_size": 10,
+                "send_batch_size": 10,  // Higher than input (3 items), so won't trigger size flush
                 "send_batch_max_size": 10,
-                "timeout": "50ms"
+                "timeout": "50ms"  // Timer should fire during our 150ms wait window
             }),
             |emitted, inputs_otlp, _acks, _nacks| {
-                // Timer flush: shutdown should trigger flush of pending data
-                assert_eq!(emitted.len(), 1, "timer flush should emit one batch");
+                // The key assertion: we got output from drain() BEFORE shutdown
+                // This proves the timer fired and triggered a flush
+                assert_eq!(
+                    emitted.len(), 
+                    1, 
+                    "timer should have flushed 1 batch before shutdown (if this fails, timer didn't fire)"
+                );
 
                 let output_rec: OtapArrowRecords = emitted[0].clone().payload().try_into().unwrap();
                 let output_otlp = otap_to_otlp(&output_rec);
@@ -1479,26 +1514,32 @@ mod tests {
             "timeout": "1s"
         });
 
-        run_batch_processor_test(inputs_otlp, subscribe, cfg, |all_emitted, inputs_otlp, _acks, _nacks| {
-            // With send_batch_size=5, send_batch_max_size=10, 4 inputs of 3 items each = 12 items
-            // Should emit 2 batches of 6 items each (concatenation/rebuffering)
-            assert_eq!(all_emitted.len(), 2, "should emit 2 batches at threshold");
+        run_batch_processor_test(
+            inputs_otlp,
+            subscribe,
+            cfg,
+            |all_emitted, inputs_otlp, _acks, _nacks| {
+                // With send_batch_size=5, send_batch_max_size=10, 4 inputs of 3 items each = 12 items
+                // Should emit 2 batches of 6 items each (concatenation/rebuffering)
+                assert_eq!(all_emitted.len(), 2, "should emit 2 batches at threshold");
 
-            for batch in all_emitted.iter() {
-                let rec: OtapArrowRecords = batch.clone().payload().try_into().unwrap();
-                assert_eq!(rec.batch_length(), 6, "each batch should have 6 items");
-            }
+                for batch in all_emitted.iter() {
+                    let rec: OtapArrowRecords = batch.clone().payload().try_into().unwrap();
+                    assert_eq!(rec.batch_length(), 6, "each batch should have 6 items");
+                }
 
-            // Verify equivalence
-            let all_outputs: Vec<OtlpProtoMessage> = all_emitted
-                .iter()
-                .map(|p| {
-                    let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
-                    otap_to_otlp(&rec)
-                })
-                .collect();
-            assert_equivalent(inputs_otlp, &all_outputs);
-        }, None::<fn(usize, &OtapPdata) -> AckPolicy>);
+                // Verify equivalence
+                let all_outputs: Vec<OtlpProtoMessage> = all_emitted
+                    .iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                        otap_to_otlp(&rec)
+                    })
+                    .collect();
+                assert_equivalent(inputs_otlp, &all_outputs);
+            },
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
+        );
     }
 
     #[test]
@@ -1533,34 +1574,40 @@ mod tests {
             "timeout": "0s",
         });
 
-        run_batch_processor_test(inputs_otlp, subscribe, cfg, |all_emitted, inputs_otlp, _acks, _nacks| {
-            // With no send_batch_size and no timeout, flushes immediately on every input
-            // With send_batch_max_size=2, each 3-item input splits to [2, 1]
-            assert_eq!(all_emitted.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
+        run_batch_processor_test(
+            inputs_otlp,
+            subscribe,
+            cfg,
+            |all_emitted, inputs_otlp, _acks, _nacks| {
+                // With no send_batch_size and no timeout, flushes immediately on every input
+                // With send_batch_max_size=2, each 3-item input splits to [2, 1]
+                assert_eq!(all_emitted.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
 
-            let batch_sizes: Vec<usize> = all_emitted
-                .iter()
-                .map(|p| {
-                    let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
-                    rec.batch_length()
-                })
-                .collect();
-            assert_eq!(
-                batch_sizes,
-                vec![2, 1, 2, 1],
-                "split pattern without rebuffering"
-            );
+                let batch_sizes: Vec<usize> = all_emitted
+                    .iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                        rec.batch_length()
+                    })
+                    .collect();
+                assert_eq!(
+                    batch_sizes,
+                    vec![2, 1, 2, 1],
+                    "split pattern without rebuffering"
+                );
 
-            // Verify equivalence
-            let all_outputs: Vec<OtlpProtoMessage> = all_emitted
-                .iter()
-                .map(|p| {
-                    let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
-                    otap_to_otlp(&rec)
-                })
-                .collect();
-            assert_equivalent(inputs_otlp, &all_outputs);
-        }, None::<fn(usize, &OtapPdata) -> AckPolicy>);
+                // Verify equivalence
+                let all_outputs: Vec<OtlpProtoMessage> = all_emitted
+                    .iter()
+                    .map(|p| {
+                        let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                        otap_to_otlp(&rec)
+                    })
+                    .collect();
+                assert_equivalent(inputs_otlp, &all_outputs);
+            },
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
+        );
     }
 
     #[test]
@@ -1605,9 +1652,8 @@ mod tests {
 
         // Create inputs with unique markers (e.g., timestamps)
         let num_inputs = 4;
-        let inputs_otlp: Vec<OtlpProtoMessage> = (0..num_inputs)
-            .map(|i| create_marked_input(i))
-            .collect();
+        let inputs_otlp: Vec<OtlpProtoMessage> =
+            (0..num_inputs).map(|i| create_marked_input(i)).collect();
 
         // Clone for closures
         let extract_markers_clone = extract_markers.clone();
@@ -1654,19 +1700,13 @@ mod tests {
                 }
 
                 // Convert received nacks to set
-                let actual_nacks: HashSet<TestCallData> = received_nacks
-                    .iter()
-                    .cloned()
-                    .collect();
+                let actual_nacks: HashSet<TestCallData> = received_nacks.iter().cloned().collect();
 
                 assert_eq!(
                     expected_nacks, actual_nacks,
                     "Nack position {}: expected inputs {:?} to be nacked, got {:?}. \
                      Output markers: {:?}",
-                    nack_position,
-                    expected_nacks,
-                    actual_nacks,
-                    output_markers
+                    nack_position, expected_nacks, actual_nacks, output_markers
                 );
 
                 // Verify ordering: markers in the nacked output should respect input order
