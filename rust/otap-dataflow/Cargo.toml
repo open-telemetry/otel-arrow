@@ -51,7 +51,7 @@ quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
-arrow = "57.0"
+arrow = { version = "57.0", features=["prettyprint"] }
 arrow-ipc = { version = "57.0", features=["zstd"] }
 arrow-schema = { version = "57.0" }
 arrow-array = { version = "57.0" }
@@ -107,7 +107,7 @@ serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.142" }
 serde_with = { version = "3.14.1", features = ["std", "macros", "json"] }
-serde_yaml = "0.9.34+deprecated"        # Deprecated, but no good alternative yet
+serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
@@ -234,6 +234,11 @@ debug = "line-tables-only"  # minimum required for profiling
 
 [profile.bench]
 inherits = "release"
+opt-level = 3
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
 # Potentially override lto for faster builds:
 # lto = "thin"
 # Potentially override debug/strip for easier debugging:
