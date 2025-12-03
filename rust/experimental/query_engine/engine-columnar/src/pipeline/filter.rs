@@ -37,7 +37,7 @@ use crate::pipeline::planner::{
     try_static_scalar_to_literal,
 };
 
-mod optimize;
+pub mod optimize;
 
 /// A compositional tree structure for combining expressions with boolean operators.
 ///

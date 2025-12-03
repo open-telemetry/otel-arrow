@@ -7,7 +7,7 @@ use crate::pipeline::filter::{Composite, FilterPlan};
 pub struct AttrsFilterCombineOptimizerRule {}
 
 impl AttrsFilterCombineOptimizerRule {
-    fn optimize(input: Composite<FilterPlan>) -> Composite<FilterPlan> {
+    pub fn optimize(input: Composite<FilterPlan>) -> Composite<FilterPlan> {
         match input {
             Composite::And(left, right) => {
                 let left = Self::optimize(*left);
