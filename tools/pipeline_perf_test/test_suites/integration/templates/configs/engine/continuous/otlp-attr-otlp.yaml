@@ -14,7 +14,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       listening_addr: "0.0.0.0:4317"
-      compression_method: gzip
+      request_compression: gzip
 
   attr:
     kind: processor
