@@ -126,18 +126,17 @@ fn build_complex_batch(rows: usize, prefix: &str, payload_repeat: usize) -> Reco
     let mut builder = StringBuilder::new();
     let chunk = "x".repeat(payload_repeat);
     for idx in 0..rows {
-        builder.append_value(&format!("{prefix}-{idx:05}-{}", chunk));
+        builder.append_value(format!("{prefix}-{idx:05}-{}", chunk));
     }
 
-    let batch = RecordBatch::try_new(
+    RecordBatch::try_new(
         schema,
         vec![
             Arc::new(Int64Array::from(values)),
             Arc::new(builder.finish()),
         ],
     )
-    .expect("complex batch");
-    batch
+    .expect("complex batch")
 }
 
 fn slot_descriptor(id: u16, label: &'static str) -> SlotDescriptor {
@@ -375,7 +374,7 @@ fn wal_writer_rejects_truncated_existing_file() {
     let wal_path = dir.path().join("truncated.wal");
     {
         let mut file = std::fs::File::create(&wal_path).expect("create file");
-        file.write_all(&vec![0u8; WAL_HEADER_LEN - 1])
+        file.write_all(&[0u8; WAL_HEADER_LEN - 1])
             .expect("truncate header");
     }
 
@@ -495,8 +494,10 @@ fn wal_writer_rewrite_compacts_prefix() {
     let mut iter = reader.iter_from(0).expect("iter");
     let first_entry = iter.next().expect("entry").expect("ok");
 
-    let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = first_entry.next_offset;
+    let cursor = WalTruncateCursor {
+        safe_offset: first_entry.next_offset,
+        ..WalTruncateCursor::default()
+    };
     writer.reclaim_prefix(&cursor).expect("reclaim prefix");
     drop(writer);
 
@@ -542,9 +543,10 @@ fn wal_writer_enforces_safe_offset_boundaries() {
     let mut iter = reader.iter_from(0).expect("iter");
     let first_entry = iter.next().expect("entry").expect("ok");
 
-    let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = first_entry.offset.position + 4;
-    cursor.safe_sequence = first_entry.sequence;
+    let mut cursor = WalTruncateCursor {
+        safe_offset: first_entry.offset.position + 4,
+        safe_sequence: first_entry.sequence,
+    };
 
     match writer.reclaim_prefix(&cursor) {
         Err(WalError::InvalidTruncateCursor(message)) => {
@@ -587,8 +589,10 @@ fn wal_writer_punch_failure_falls_back_to_rewrite() {
     );
     let _ = writer.append_bundle(&bundle).expect("append");
 
-    let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = std::fs::metadata(&wal_path).expect("metadata").len();
+    let cursor = WalTruncateCursor {
+        safe_offset: std::fs::metadata(&wal_path).expect("metadata").len(),
+        ..WalTruncateCursor::default()
+    };
 
     writer.reclaim_prefix(&cursor).expect("reclaim prefix");
     assert!(writer_test_support::take_punch_failure_notification());
@@ -615,8 +619,10 @@ fn wal_writer_persists_truncate_cursor_sidecar() {
     let _ = writer.append_bundle(&bundle).expect("append");
 
     let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
-    let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = file_len;
+    let cursor = WalTruncateCursor {
+        safe_offset: file_len,
+        ..WalTruncateCursor::default()
+    };
     writer
         .record_truncate_cursor(&cursor)
         .expect("record cursor");
@@ -747,8 +753,10 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
         other => panic!("expected WalAtCapacity, got {other:?}"),
     }
 
-    let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = WAL_HEADER_LEN as u64;
+    let cursor = WalTruncateCursor {
+        safe_offset: WAL_HEADER_LEN as u64,
+        ..WalTruncateCursor::default()
+    };
     writer
         .record_truncate_cursor(&cursor)
         .expect("record cursor purges rotated chunks");
@@ -801,8 +809,10 @@ fn wal_writer_ignores_invalid_truncate_sidecar() {
     let _ = writer.append_bundle(&bundle).expect("append");
     let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
 
-    let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = file_len;
+    let cursor = WalTruncateCursor {
+        safe_offset: file_len,
+        ..WalTruncateCursor::default()
+    };
     writer
         .record_truncate_cursor(&cursor)
         .expect("record cursor");
@@ -1133,7 +1143,7 @@ fn wal_reader_reports_io_error_during_entry_length_read() {
     let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE, 0);
     let (_dir, wal_path) = write_single_entry(&body);
 
-    test_support::fail_next_read(ReadFailure::EntryLength);
+    test_support::fail_next_read(ReadFailure::Length);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iterator");
@@ -1149,7 +1159,7 @@ fn wal_reader_reports_io_error_during_entry_body_read() {
     let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE, 0);
     let (_dir, wal_path) = write_single_entry(&body);
 
-    test_support::fail_next_read(ReadFailure::EntryBody);
+    test_support::fail_next_read(ReadFailure::Body);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iterator");
@@ -1165,7 +1175,7 @@ fn wal_reader_reports_io_error_during_entry_crc_read() {
     let body = encode_entry_header(ENTRY_TYPE_RECORD_BUNDLE, 0);
     let (_dir, wal_path) = write_single_entry(&body);
 
-    test_support::fail_next_read(ReadFailure::EntryCrc);
+    test_support::fail_next_read(ReadFailure::Crc);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iterator");
@@ -1720,10 +1730,10 @@ fn assert_crash_recovery(
 fn assert_reader_clean(path: &Path, offset: u64, case_name: &str) {
     let mut reader = WalReader::open(path)
         .unwrap_or_else(|err| panic!("{}: reader open failed: {:?}", case_name, err));
-    let mut iter = reader
+    let iter = reader
         .iter_from(offset)
         .unwrap_or_else(|err| panic!("{}: iterator init failed: {:?}", case_name, err));
-    while let Some(entry) = iter.next() {
+    for entry in iter {
         let _ = entry.unwrap_or_else(|err| panic!("{}: wal entry error {:?}", case_name, err));
     }
 }

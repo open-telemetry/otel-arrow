@@ -528,7 +528,7 @@ impl WalWriter {
             return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
         }
 
-        let original_pos = self.file.seek(SeekFrom::Current(0))?;
+        let original_pos = self.file.stream_position()?;
         let mut cursor = self.validated_safe_offset;
         let _ = self.file.seek(SeekFrom::Start(cursor))?;
         while cursor < target {
@@ -759,6 +759,7 @@ fn detect_hole_punch(path: &Path) -> bool {
         let result = (|| {
             let file = OpenOptions::new()
                 .create(true)
+                .truncate(true)
                 .read(true)
                 .write(true)
                 .mode(0o600)
@@ -778,7 +779,7 @@ fn punch_wal_prefix(file: &File, safe_offset: u64) -> io::Result<()> {
     }
     #[cfg(test)]
     if test_support::should_inject_punch_error() {
-        return Err(io::Error::new(ErrorKind::Other, "injected punch failure"));
+        return Err(io::Error::other("injected punch failure"));
     }
     let punch_len = safe_offset - WAL_HEADER_LEN as u64;
     punch_file_region(file, WAL_HEADER_LEN as u64, punch_len)
@@ -875,18 +876,41 @@ impl RotatedChunk {
     }
 }
 
+impl EncodedSlot {
+    fn serialized_size(&self) -> usize {
+        SLOT_HEADER_LEN + self.payload_bytes.len()
+    }
+
+    fn write_into(self, buffer: &mut Vec<u8>) {
+        let total = self.serialized_size();
+        let start = buffer.len();
+        buffer.resize(start + total, 0);
+
+        let mut cursor = start;
+        buffer[cursor..cursor + 2].copy_from_slice(&self.slot_id_raw.to_le_bytes());
+        cursor += 2;
+        buffer[cursor..cursor + SCHEMA_FINGERPRINT_LEN].copy_from_slice(&self.schema_fingerprint);
+        cursor += SCHEMA_FINGERPRINT_LEN;
+        buffer[cursor..cursor + 4].copy_from_slice(&self.row_count.to_le_bytes());
+        cursor += 4;
+        buffer[cursor..cursor + 4].copy_from_slice(&self.payload_len.to_le_bytes());
+        cursor += 4;
+        buffer[cursor..cursor + self.payload_bytes.len()].copy_from_slice(&self.payload_bytes);
+    }
+}
+
 #[cfg(test)]
 pub(super) mod test_support {
     use std::cell::Cell;
     use std::io::Error;
 
     thread_local! {
-        static FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
-        static DROP_FLUSH_NOTIFIED: Cell<bool> = Cell::new(false);
-        static SYNC_DATA_NOTIFIED: Cell<bool> = Cell::new(false);
-        static FORCE_PUNCH_ERROR: Cell<bool> = Cell::new(false);
-        static PUNCH_FAILURE_NOTIFIED: Cell<bool> = Cell::new(false);
-        static NEXT_CRASH: Cell<Option<CrashInjection>> = Cell::new(None);
+        static FLUSH_NOTIFIED: Cell<bool> = const { Cell::new(false) };
+        static DROP_FLUSH_NOTIFIED: Cell<bool> = const { Cell::new(false) };
+        static SYNC_DATA_NOTIFIED: Cell<bool> = const { Cell::new(false) };
+        static FORCE_PUNCH_ERROR: Cell<bool> = const { Cell::new(false) };
+        static PUNCH_FAILURE_NOTIFIED: Cell<bool> = const { Cell::new(false) };
+        static NEXT_CRASH: Cell<Option<CrashInjection>> = const { Cell::new(None) };
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -970,28 +994,5 @@ pub(super) mod test_support {
 
     pub fn clear_crash_injection() {
         NEXT_CRASH.with(|cell| cell.set(None));
-    }
-}
-
-impl EncodedSlot {
-    fn serialized_size(&self) -> usize {
-        SLOT_HEADER_LEN + self.payload_bytes.len()
-    }
-
-    fn write_into(self, buffer: &mut Vec<u8>) {
-        let total = self.serialized_size();
-        let start = buffer.len();
-        buffer.resize(start + total, 0);
-
-        let mut cursor = start;
-        buffer[cursor..cursor + 2].copy_from_slice(&self.slot_id_raw.to_le_bytes());
-        cursor += 2;
-        buffer[cursor..cursor + SCHEMA_FINGERPRINT_LEN].copy_from_slice(&self.schema_fingerprint);
-        cursor += SCHEMA_FINGERPRINT_LEN;
-        buffer[cursor..cursor + 4].copy_from_slice(&self.row_count.to_le_bytes());
-        cursor += 4;
-        buffer[cursor..cursor + 4].copy_from_slice(&self.payload_len.to_le_bytes());
-        cursor += 4;
-        buffer[cursor..cursor + self.payload_bytes.len()].copy_from_slice(&self.payload_bytes);
     }
 }

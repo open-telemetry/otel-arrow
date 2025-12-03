@@ -228,7 +228,7 @@ fn read_exact_or_eof(file: &mut File, buf: &mut [u8]) -> WalResult<ReadStatus> {
 
 fn read_length_chunk(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
     #[cfg(test)]
-    if let Some(err) = test_support::take_failure(ReadFailure::EntryLength) {
+    if let Some(err) = test_support::take_failure(ReadFailure::Length) {
         return Err(err);
     }
     file.read(buf)
@@ -236,7 +236,7 @@ fn read_length_chunk(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> 
 
 fn read_entry_body(file: &mut File, buffer: &mut [u8]) -> std::io::Result<()> {
     #[cfg(test)]
-    if let Some(err) = test_support::take_failure(ReadFailure::EntryBody) {
+    if let Some(err) = test_support::take_failure(ReadFailure::Body) {
         return Err(err);
     }
     file.read_exact(buffer)
@@ -244,7 +244,7 @@ fn read_entry_body(file: &mut File, buffer: &mut [u8]) -> std::io::Result<()> {
 
 fn read_entry_crc(file: &mut File, buffer: &mut [u8; 4]) -> std::io::Result<()> {
     #[cfg(test)]
-    if let Some(err) = test_support::take_failure(ReadFailure::EntryCrc) {
+    if let Some(err) = test_support::take_failure(ReadFailure::Crc) {
         return Err(err);
     }
     file.read_exact(buffer)
@@ -358,17 +358,17 @@ fn read_i64(body: &[u8], cursor: &mut usize, ctx: &'static str) -> WalResult<i64
 #[cfg(test)]
 pub(super) mod test_support {
     use std::cell::Cell;
-    use std::io::{Error, ErrorKind};
+    use std::io::Error;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ReadFailure {
-        EntryLength,
-        EntryBody,
-        EntryCrc,
+        Length,
+        Body,
+        Crc,
     }
 
     thread_local! {
-        static NEXT_FAILURE: Cell<Option<ReadFailure>> = Cell::new(None);
+        static NEXT_FAILURE: Cell<Option<ReadFailure>> = const { Cell::new(None) };
     }
 
     pub fn fail_next_read(stage: ReadFailure) {
@@ -379,10 +379,7 @@ pub(super) mod test_support {
         NEXT_FAILURE.with(|slot| {
             if slot.get() == Some(stage) {
                 slot.set(None);
-                Some(Error::new(
-                    ErrorKind::Other,
-                    "wal reader injected read failure",
-                ))
+                Some(Error::other("wal reader injected read failure"))
             } else {
                 None
             }
