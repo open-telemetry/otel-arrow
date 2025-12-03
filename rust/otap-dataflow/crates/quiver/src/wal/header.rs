@@ -133,6 +133,9 @@ mod tests {
         let version_idx = WAL_MAGIC.len();
         encoded[version_idx..version_idx + 2].copy_from_slice(&2u16.to_le_bytes());
         let err = WalHeader::decode(&encoded).unwrap_err();
-        assert!(matches!(err, WalError::InvalidHeader("unsupported version")));
+        assert!(matches!(
+            err,
+            WalError::InvalidHeader("unsupported version")
+        ));
     }
 }

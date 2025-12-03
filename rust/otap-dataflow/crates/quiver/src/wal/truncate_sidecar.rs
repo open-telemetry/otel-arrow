@@ -39,8 +39,7 @@ impl TruncateSidecar {
     pub fn encode(&self) -> [u8; TRUNCATE_SIDECAR_LEN] {
         let mut buf = [0u8; TRUNCATE_SIDECAR_LEN];
         let mut cursor = 0;
-        buf[cursor..cursor + TRUNCATE_SIDECAR_MAGIC.len()]
-            .copy_from_slice(TRUNCATE_SIDECAR_MAGIC);
+        buf[cursor..cursor + TRUNCATE_SIDECAR_MAGIC.len()].copy_from_slice(TRUNCATE_SIDECAR_MAGIC);
         cursor += TRUNCATE_SIDECAR_MAGIC.len();
 
         buf[cursor..cursor + 2].copy_from_slice(&TRUNCATE_SIDECAR_VERSION.to_le_bytes());
@@ -187,7 +186,10 @@ mod tests {
         let mut encoded = sample_sidecar().encode();
         encoded[0] ^= 0xFF;
         let err = TruncateSidecar::decode(&encoded).unwrap_err();
-        assert!(matches!(err, WalError::InvalidTruncateSidecar("magic mismatch")));
+        assert!(matches!(
+            err,
+            WalError::InvalidTruncateSidecar("magic mismatch")
+        ));
     }
 
     #[test]
@@ -196,7 +198,10 @@ mod tests {
         let last = encoded.len() - 1;
         encoded[last] ^= 0xFF;
         let err = TruncateSidecar::decode(&encoded).unwrap_err();
-        assert!(matches!(err, WalError::InvalidTruncateSidecar("crc mismatch")));
+        assert!(matches!(
+            err,
+            WalError::InvalidTruncateSidecar("crc mismatch")
+        ));
     }
 
     #[test]

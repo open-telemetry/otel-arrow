@@ -11,11 +11,11 @@
 //! integration is still being wired up.
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::collections::VecDeque;
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
@@ -199,7 +199,8 @@ impl WalWriter {
             #[cfg(test)]
             test_crashed: false,
         };
-        writer.last_global_safe_offset = writer.global_safe_offset(writer.truncate_state.truncate_offset);
+        writer.last_global_safe_offset =
+            writer.global_safe_offset(writer.truncate_state.truncate_offset);
         Ok(writer)
     }
 
@@ -462,9 +463,7 @@ fn default_truncate_state(file_len: u64) -> TruncateSidecar {
 fn clamp_offset(offset: u64, file_len: u64) -> u64 {
     let min_offset = WAL_HEADER_LEN as u64;
     let upper = file_len.max(min_offset);
-    offset
-        .max(min_offset)
-        .min(upper)
+    offset.max(min_offset).min(upper)
 }
 
 fn shift_rotated_files(base_path: &Path, existing: usize) -> WalResult<()> {
@@ -503,7 +502,9 @@ impl WalWriter {
         let requested_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
         let file_len = self.file.metadata()?.len();
         if requested_offset > file_len {
-            return Err(WalError::InvalidTruncateCursor("safe offset beyond wal tail"));
+            return Err(WalError::InvalidTruncateCursor(
+                "safe offset beyond wal tail",
+            ));
         }
         if requested_offset < self.truncate_state.truncate_offset {
             return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
@@ -547,9 +548,7 @@ impl WalWriter {
                     "safe offset splits entry boundary",
                 ));
             }
-            let _ = self
-                .file
-                .seek(SeekFrom::Current(entry_len as i64 + 4))?;
+            let _ = self.file.seek(SeekFrom::Current(entry_len as i64 + 4))?;
         }
         let _ = self.file.seek(SeekFrom::Start(original_pos))?;
         Ok(())
@@ -574,9 +573,7 @@ impl WalWriter {
     /// before punching/rewriting the WAL file.
     fn record_truncate_offset(&mut self, requested_offset: u64) -> WalResult<()> {
         let safe_offset = requested_offset.max(WAL_HEADER_LEN as u64);
-        if self.truncate_state.truncate_offset == safe_offset
-            && self.sidecar_path.exists()
-        {
+        if self.truncate_state.truncate_offset == safe_offset && self.sidecar_path.exists() {
             return Ok(());
         }
         self.truncate_state.truncate_offset = safe_offset;
@@ -632,9 +629,7 @@ impl WalWriter {
     /// append and, if so, moves it aside so a fresh WAL can start at the same
     /// path while keeping the header intact.
     fn maybe_rotate_after_append(&mut self) -> WalResult<()> {
-        let active_data_bytes = self
-            .current_len
-            .saturating_sub(WAL_HEADER_LEN as u64);
+        let active_data_bytes = self.current_len.saturating_sub(WAL_HEADER_LEN as u64);
         if active_data_bytes <= self.options.rotation_target_bytes {
             return Ok(());
         }
@@ -682,10 +677,8 @@ impl WalWriter {
         self.validated_safe_offset = WAL_HEADER_LEN as u64;
         self.truncate_state.truncate_offset = WAL_HEADER_LEN as u64;
 
-        self.truncate_state.rotation_generation = self
-            .truncate_state
-            .rotation_generation
-            .saturating_add(1);
+        self.truncate_state.rotation_generation =
+            self.truncate_state.rotation_generation.saturating_add(1);
         TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)?;
         Ok(())
     }
@@ -783,12 +776,9 @@ fn punch_wal_prefix(file: &File, safe_offset: u64) -> io::Result<()> {
     if safe_offset <= WAL_HEADER_LEN as u64 {
         return Ok(());
     }
-#[cfg(test)]
+    #[cfg(test)]
     if test_support::should_inject_punch_error() {
-        return Err(io::Error::new(
-            ErrorKind::Other,
-            "injected punch failure",
-        ));
+        return Err(io::Error::new(ErrorKind::Other, "injected punch failure"));
     }
     let punch_len = safe_offset - WAL_HEADER_LEN as u64;
     punch_file_region(file, WAL_HEADER_LEN as u64, punch_len)
@@ -796,14 +786,15 @@ fn punch_wal_prefix(file: &File, safe_offset: u64) -> io::Result<()> {
 
 #[cfg(unix)]
 fn punch_file_region(file: &File, start: u64, len: u64) -> io::Result<()> {
-    use nix::fcntl::{fallocate, FallocateFlags};
+    use nix::fcntl::{FallocateFlags, fallocate};
 
     if len == 0 {
         return Ok(());
     }
     let fd = file.as_fd();
     let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
-    fallocate(fd, flags, start as i64, len as i64).map_err(|err| io::Error::from_raw_os_error(err as i32))
+    fallocate(fd, flags, start as i64, len as i64)
+        .map_err(|err| io::Error::from_raw_os_error(err as i32))
 }
 
 #[cfg(windows)]

@@ -9,10 +9,10 @@
 //! currently exercised by tests until the runtime wires in replay logic.
 #![allow(dead_code)]
 
-use std::fs::File;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
 #[cfg(test)]
 use self::test_support::ReadFailure;
+use std::fs::File;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;

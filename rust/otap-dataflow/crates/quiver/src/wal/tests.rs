@@ -4,13 +4,13 @@
 //! Cross-cutting WAL tests live here so shared fixtures can touch writer, reader,
 //! and helper plumbing without sprinkling large #[cfg(test)] blocks in each file.
 
- use std::cmp;
- use std::io::{Cursor, Read, Seek, SeekFrom, Write};
- use std::path::{Path, PathBuf};
+use std::cmp;
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arrow_array::{builder::StringBuilder, Int64Array, RecordBatch};
+use arrow_array::{Int64Array, RecordBatch, builder::StringBuilder};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, Field, Schema};
 use crc32fast::Hasher;
@@ -22,12 +22,12 @@ use crate::record_bundle::{
 
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::test_support::{self, ReadFailure};
+use super::truncate_sidecar::{TRUNCATE_SIDECAR_LEN, TruncateSidecar};
 use super::writer::test_support as writer_test_support;
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
     WalTruncateCursor, WalWriter, WalWriterOptions,
 };
-use super::truncate_sidecar::{TruncateSidecar, TRUNCATE_SIDECAR_LEN};
 
 struct FixtureSlot {
     id: SlotId,
@@ -131,7 +131,10 @@ fn build_complex_batch(rows: usize, prefix: &str, payload_repeat: usize) -> Reco
 
     let batch = RecordBatch::try_new(
         schema,
-        vec![Arc::new(Int64Array::from(values)), Arc::new(builder.finish())],
+        vec![
+            Arc::new(Int64Array::from(values)),
+            Arc::new(builder.finish()),
+        ],
     )
     .expect("complex batch");
     batch
@@ -378,7 +381,10 @@ fn wal_writer_rejects_truncated_existing_file() {
 
     let options = WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO);
     let err = WalWriter::open(options).expect_err("should reject truncated file");
-    assert!(matches!(err, WalError::InvalidHeader("file smaller than header")));
+    assert!(matches!(
+        err,
+        WalError::InvalidHeader("file smaller than header")
+    ));
 }
 
 #[test]
@@ -446,12 +452,8 @@ fn wal_writer_flush_syncs_file_data() {
     let wal_path = dir.path().join("flush_sync.wal");
 
     let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
-    let mut writer = WalWriter::open(WalWriterOptions::new(
-        wal_path,
-        [0; 16],
-        Duration::ZERO,
-    ))
-    .expect("writer");
+    let mut writer =
+        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO)).expect("writer");
 
     let bundle = FixtureBundle::new(
         descriptor,
@@ -586,9 +588,7 @@ fn wal_writer_punch_failure_falls_back_to_rewrite() {
     let _ = writer.append_bundle(&bundle).expect("append");
 
     let mut cursor = WalTruncateCursor::default();
-    cursor.safe_offset = std::fs::metadata(&wal_path)
-        .expect("metadata")
-        .len();
+    cursor.safe_offset = std::fs::metadata(&wal_path).expect("metadata").len();
 
     writer.reclaim_prefix(&cursor).expect("reclaim prefix");
     assert!(writer_test_support::take_punch_failure_notification());
@@ -622,10 +622,7 @@ fn wal_writer_persists_truncate_cursor_sidecar() {
         .expect("record cursor");
     drop(writer);
 
-    let sidecar_path = wal_path
-        .parent()
-        .expect("dir")
-        .join("truncate.offset");
+    let sidecar_path = wal_path.parent().expect("dir").join("truncate.offset");
     let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(state.truncate_offset, file_len);
 }
@@ -647,19 +644,23 @@ fn wal_writer_rotates_when_target_exceeded() {
         descriptor,
         vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3, 4])],
     );
-    let _ = writer.append_bundle(&bundle).expect("append triggers rotation");
+    let _ = writer
+        .append_bundle(&bundle)
+        .expect("append triggers rotation");
     drop(writer);
 
     let rotated_path = rotated_path_for(&wal_path, 1);
-    assert!(rotated_path.exists(), "rotated chunk missing at {:?}", rotated_path);
+    assert!(
+        rotated_path.exists(),
+        "rotated chunk missing at {:?}",
+        rotated_path
+    );
     let rotated_len = std::fs::metadata(&rotated_path)
         .expect("rotated metadata")
         .len();
     assert!(rotated_len > WAL_HEADER_LEN as u64);
 
-    let active_len = std::fs::metadata(&wal_path)
-        .expect("active metadata")
-        .len();
+    let active_len = std::fs::metadata(&wal_path).expect("active metadata").len();
     assert_eq!(active_len, WAL_HEADER_LEN as u64);
 
     let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
@@ -711,9 +712,8 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
 
     let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
     let payload: Vec<i64> = (0..64).collect();
-    let entry_bytes = measure_bundle_data_bytes(|| {
-        single_slot_bundle(&descriptor, 0x07, payload.as_slice())
-    });
+    let entry_bytes =
+        measure_bundle_data_bytes(|| single_slot_bundle(&descriptor, 0x07, payload.as_slice()));
     let header_len = WAL_HEADER_LEN as u64;
     let chunk_file_len = header_len + entry_bytes;
     let slack = cmp::max(1, entry_bytes / 2);
@@ -783,10 +783,7 @@ fn wal_writer_ignores_invalid_truncate_sidecar() {
         .expect("writer");
     }
 
-    let sidecar_path = wal_path
-        .parent()
-        .expect("dir")
-        .join("truncate.offset");
+    let sidecar_path = wal_path.parent().expect("dir").join("truncate.offset");
     std::fs::write(&sidecar_path, vec![0u8; TRUNCATE_SIDECAR_LEN - 4]).expect("write corrupt");
 
     let mut writer = WalWriter::open(WalWriterOptions::new(
@@ -834,7 +831,9 @@ fn wal_writer_flushes_after_unflushed_byte_threshold() {
 
     writer.test_set_last_flush(Instant::now());
     let before = writer.test_last_flush();
-    let _offset = writer.append_bundle(&bundle).expect("append triggers flush");
+    let _offset = writer
+        .append_bundle(&bundle)
+        .expect("append triggers flush");
     assert!(writer.test_last_flush() > before);
 }
 
@@ -1247,9 +1246,7 @@ fn wal_reader_iter_from_partial_length_reports_error() {
         let _ = writer.append_bundle(&bundle).expect("append");
     }
 
-    let metadata_len = std::fs::metadata(&wal_path)
-        .expect("metadata")
-        .len();
+    let metadata_len = std::fs::metadata(&wal_path).expect("metadata").len();
     let misaligned_offset = metadata_len.saturating_sub(2);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
@@ -1283,9 +1280,7 @@ fn wal_reader_iter_from_offset_past_file_returns_none() {
         let _ = writer.append_bundle(&bundle).expect("append");
     }
 
-    let metadata_len = std::fs::metadata(&wal_path)
-        .expect("metadata")
-        .len();
+    let metadata_len = std::fs::metadata(&wal_path).expect("metadata").len();
     let offset_beyond_file = metadata_len + 128;
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
@@ -1556,7 +1551,8 @@ fn wal_reader_fails_on_corrupt_header_version() {
             .expect("open");
         // Version is at offset WAL_MAGIC.len() (10 bytes).
         let _ = file.seek(SeekFrom::Start(10)).expect("seek");
-        file.write_all(&99u16.to_le_bytes()).expect("corrupt version");
+        file.write_all(&99u16.to_le_bytes())
+            .expect("corrupt version");
     }
 
     match WalReader::open(&wal_path) {
@@ -1628,7 +1624,11 @@ fn run_crash_case(case: CrashCase) {
     for value in 0..4 {
         let bundle = FixtureBundle::new(
             descriptor.clone(),
-            vec![FixtureSlot::new(SlotId::new(0), 0x40 + value as u8, &[(value + 1) as i64])],
+            vec![FixtureSlot::new(
+                SlotId::new(0),
+                0x40 + value as u8,
+                &[(value + 1) as i64],
+            )],
         );
         let _ = writer.append_bundle(&bundle).expect("append bundle");
     }
