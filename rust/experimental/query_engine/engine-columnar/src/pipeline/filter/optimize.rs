@@ -123,6 +123,36 @@ impl AttrsFilterCombineOptimizerRule {
                         }
                     }
 
+                    // look for opportunity to hoist the attribute filter plan from the child.
+                    //
+                    // e.g. if the expression tree looks like this:
+                    // OR (
+                    //   OR (<L>, attributes["x"] == "Y"),
+                    //   attributes["x2"] == "Y2"
+                    // )
+                    //
+                    // we want to transform it to:
+                    // Or(
+                    //   <L>,
+                    //   Or(attributes["X"] == "Y", attributes["x2"] == "Y2")
+                    // )
+                    //
+                    (Composite::Or(left_left, left_right), Composite::Base(right_plan)) => {
+                        match *left_right {
+                            // if the left's right child is the base, hoist it up to be 'or'ed with the right
+                            // side of the current and, and then optimize that.
+                            Composite::Base(left_right_plan) => Composite::or(
+                                *left_left,
+                                Self::optimize(Composite::or(left_right_plan, right_plan)),
+                            ),
+
+                            // otherwise just return the original
+                            left_right => {
+                                Composite::or(Composite::or(*left_left, left_right), right_plan)
+                            }
+                        }
+                    }
+
                     // otherwise, just return the originals
                     (l, r) => Composite::or(l, r),
                 }
@@ -477,6 +507,35 @@ pub mod test {
                 AttributesFilterPlan::new(lit("f"), AttributesIdentifier::Root),
             ),
         )));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_attr_combine_from_or_child_and_preserve_source_filter() {
+        let input = Composite::or(
+            Composite::or(
+                FilterPlan::from(lit("source1")),
+                FilterPlan::from(AttributesFilterPlan::new(
+                    lit("attr1"),
+                    AttributesIdentifier::Root,
+                )),
+            ),
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("attr2"),
+                AttributesIdentifier::Root,
+            )),
+        );
+
+        let result = AttrsFilterCombineOptimizerRule::optimize(input);
+
+        let expected = Composite::or(
+            FilterPlan::from(lit("source1")),
+            FilterPlan::from(Composite::or(
+                AttributesFilterPlan::new(lit("attr1"), AttributesIdentifier::Root),
+                AttributesFilterPlan::new(lit("attr2"), AttributesIdentifier::Root),
+            )),
+        );
 
         assert_eq!(result, expected);
     }
