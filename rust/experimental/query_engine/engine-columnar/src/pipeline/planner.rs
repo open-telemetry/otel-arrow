@@ -16,6 +16,7 @@ use otap_df_pdata::schema::consts;
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
 use crate::pipeline::filter::{Composite, FilterPipelineStage, FilterPlan};
 
 /// Converts an pipeline expression (AST) into a series of executable pipeline stages.
@@ -94,6 +95,11 @@ impl PipelinePlanner {
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
+
+        // optimize the to the plan
+        let filter_plan = AttrsFilterCombineOptimizerRule::optimize(filter_plan);
+
+        // transform logical plan into executable plan
         let filter_exec = filter_plan.to_exec(session_ctx, otap_batch)?;
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
@@ -226,7 +232,7 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 }
 
 /// Identifier of a batch of attributes
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AttributesIdentifier {
     /// Attributes for the root record type. E.g. LogAttrs for a batch of log records
     Root,

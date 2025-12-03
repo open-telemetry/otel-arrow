@@ -18,7 +18,7 @@ settings:
   {% set plugin_urn = "urn:otel:otlp:receiver" %}
   {% set compression = compression_method | default("gzip") %}
   {% set extra_config = {
-    "compression_method": compression
+    "request_compression": compression
   } %}
 {%- else -%}
   {% set plugin_urn = "urn:unknown:receiver" %}
