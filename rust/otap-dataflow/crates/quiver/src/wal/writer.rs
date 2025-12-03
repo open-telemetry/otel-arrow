@@ -599,6 +599,8 @@ impl WalWriter {
                 self.punch_capable = false;
                 #[cfg(test)]
                 test_support::record_punch_failure(&err);
+                #[cfg(not(test))]
+                let _ = err;
                 Ok(false)
             }
         }
