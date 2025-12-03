@@ -5,7 +5,7 @@ use azure_core::credentials::TokenCredential;
 use azure_core::time::OffsetDateTime;
 use reqwest::{
     Client,
-    header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderMap, HeaderValue},
+    header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderValue},
 };
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
@@ -25,9 +25,6 @@ pub struct LogsIngestionClient {
 
     // Pre-formatted authorization header for zero-allocation reuse
     auth_header: HeaderValue,
-
-    // Headers to send repeatedly that includes auth
-    headers: HeaderMap,
 
     /// Token expiry time using monotonic clock for faster comparisons
     pub token_valid_until: Instant,
@@ -50,18 +47,12 @@ impl LogsIngestionClient {
         credential: Arc<dyn TokenCredential>,
         scope: String,
     ) -> Self {
-        // Pre-build headers with capacity for 3 (including auth)
-        let mut headers = HeaderMap::with_capacity(3);
-        _ = headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        _ = headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-
         Self {
             http_client,
             endpoint,
             auth: Auth::from_credential(credential, scope),
             auth_header: HeaderValue::from_static("Bearer "),
             token_valid_until: Instant::now(),
-            headers,
         }
     }
 
@@ -90,18 +81,12 @@ impl LogsIngestionClient {
         let auth =
             Auth::new(&config.auth).map_err(|e| format!("Failed to create auth handler: {e}"))?;
 
-        // Pre-build headers with capacity for 3 (including auth)
-        let mut headers = HeaderMap::with_capacity(3);
-        _ = headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        _ = headers.insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-
         Ok(Self {
             http_client,
             endpoint,
             auth,
             auth_header: HeaderValue::from_static("Bearer "),
             token_valid_until: Instant::now(),
-            headers,
         })
     }
 
@@ -125,8 +110,6 @@ impl LogsIngestionClient {
         // Pre-format the authorization header to avoid repeated allocation
         self.auth_header = HeaderValue::from_str(&format!("Bearer {}", token.token.secret()))
             .map_err(|_| "Invalid token format".to_string())?;
-
-        _ = self.headers.insert(AUTHORIZATION, self.auth_header.clone());
 
         // Calculate validity using Instant for faster comparisons
         // Refresh 5 minutes before expiry
@@ -155,14 +138,15 @@ impl LogsIngestionClient {
         // Ensure we have a valid token (fast path when cached)
         self.ensure_valid_token().await?;
 
-        // Clone static headers and add the auth header
         let start = Instant::now();
 
-        // Send compressed body
+        // Send compressed body - avoid cloning headers by setting them individually
         let response = self
             .http_client
             .post(&self.endpoint)
-            .headers(self.headers.clone())
+            .header(CONTENT_TYPE, "application/json")
+            .header(CONTENT_ENCODING, "gzip")
+            .header(AUTHORIZATION, &self.auth_header)
             .body(body)
             .send()
             .await
@@ -252,7 +236,9 @@ mod tests {
                     client.endpoint,
                     "https://test.azure.com/dataCollectionRules/test-dcr-id/streams/test-stream?api-version=2021-11-01-preview"
                 );
-                assert_eq!(client.headers.len(), 2);
+                // REMOVED: assert_eq!(client.headers.len(), 2);
+                // We no longer have a headers field - check auth_header instead
+                assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
             }
             Err(e) => {
                 // This is acceptable if running in an environment without proper Azure setup
