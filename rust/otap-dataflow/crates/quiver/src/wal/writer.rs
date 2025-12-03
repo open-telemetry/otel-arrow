@@ -9,6 +9,61 @@
 //! validated against real entry boundaries so we never expose partially written
 //! frames to readers. This module currently powers tests while the runtime
 //! integration is still being wired up.
+//!
+//! # WAL lifecycle at a glance
+//!
+//! ```text
+//!   ingest thread                               wal writer
+//! ───────────────────────────────────────────────────────────────────────────
+//!   RecordBundle -> encode slots -> entry header -> fs writes -> fsync
+//!                                      |                     |
+//!                                      v                     v
+//!                                truncate cursor <── sidecar flush
+//! ```
+//!
+//! * **Append path** – Every [`RecordBundle`] is serialized slot-by-slot into an
+//!   in-memory buffer, hashed (CRC32), and written as one atomic entry. We track
+//!   [`WalOffset`] so readers can correlate persisted bytes back to sequences.
+//! * **Flush loop** – `flush_interval` and `max_unflushed_bytes` control when we
+//!   call `flush()`/`sync_data()`. Tests can inspect thread-local flags to assert
+//!   that durability barriers occurred.
+//! * **Rotation** – When `rotation_target_bytes` is exceeded the active WAL file
+//!   is renamed to `wal.n` (oldest chunks slide toward higher numbers) and a new
+//!   header is seeded in-place. [`RotatedChunk`] metadata keeps track of logical
+//!   data ranges so stale chunks can be deleted after truncation advances.
+//! * **Truncation + sidecar** – Readers compute `WalTruncateCursor` values. The
+//!   writer validates cursor boundaries, updates the truncate sidecar on disk,
+//!   and optionally punches or rewrites the prefix. The sidecar survives crashes
+//!   so restarts resume from the last known safe offset even if hole punching did
+//!   not complete.
+//! * **Global cap enforcement** – `max_wal_size` is measured across the active
+//!   file plus rotated chunks. Exceeding the cap yields `WalAtCapacity` errors
+//!   until downstream consumers free space.
+//!
+//! ## Failure and recovery cues
+//!
+//! ```text
+//!            truncate state
+//!        ┌──────────────────────┐
+//!   WAL  │ cursor + generation │  sidecar (truncate.offset)
+//! header├──────────────────────┤<──────────────────────────────┐
+//!   ...  │   active data tail  │                              │
+//!        └──────────────────────┘                              │
+//!              ▲           ▲                                   │
+//!              │           │                                   │
+//!      hole punch/rewrite  └────── crash-safe checkpoint ──────┘
+//! ```
+//!
+//! * Failpoints in `test_support` let us simulate crashes before/after punching
+//!   or during in-place rewrites. Clearing the crash flag allows resuming normal
+//!   operation.
+//! * Hole punching failures are recorded and we automatically fall back to copy
+//!   rewrites for the remainder of the process lifetime.
+//! * Drop flushing is skipped when `test_force_crash` was invoked so tests can
+//!   model abrupt exits without double-syncing.
+//!
+//! These docs focus on the writer-facing lifecycle. See the reader module for
+//! how safe cursors are derived from WAL entries.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
@@ -199,9 +254,41 @@ impl WalWriter {
             #[cfg(test)]
             test_crashed: false,
         };
+        writer.reload_rotated_chunks()?;
         writer.last_global_safe_offset =
-            writer.global_safe_offset(writer.truncate_state.truncate_offset);
+            if writer.truncate_state.truncate_offset <= WAL_HEADER_LEN as u64 {
+                0
+            } else {
+                writer.global_safe_offset(writer.truncate_state.truncate_offset)
+            };
         Ok(writer)
+    }
+
+    fn reload_rotated_chunks(&mut self) -> WalResult<()> {
+        let discovered = discover_rotated_chunk_files(&self.options.path)?;
+        if discovered.is_empty() {
+            return Ok(());
+        }
+
+        let mut chunks = VecDeque::with_capacity(discovered.len());
+        let mut aggregate = self.current_len;
+        let mut cumulative_data = 0u64;
+
+        for (index, len) in discovered.into_iter().rev() {
+            aggregate = aggregate.saturating_add(len);
+            let data_bytes = len.saturating_sub(WAL_HEADER_LEN as u64);
+            cumulative_data = cumulative_data.saturating_add(data_bytes);
+            chunks.push_back(RotatedChunk {
+                path: rotated_path(&self.options.path, index),
+                file_bytes: len,
+                end_data_offset: cumulative_data,
+            });
+        }
+
+        self.rotated_chunks = chunks;
+        self.aggregate_bytes = aggregate;
+        self.data_offset_base = cumulative_data;
+        Ok(())
     }
 
     /// Serializes a [`RecordBundle`] into the active WAL file and returns the
@@ -481,6 +568,23 @@ fn rotated_path(base_path: &Path, index: usize) -> PathBuf {
     let mut name = base_path.as_os_str().to_os_string();
     name.push(format!(".{index}"));
     PathBuf::from(name)
+}
+
+fn discover_rotated_chunk_files(base_path: &Path) -> WalResult<Vec<(usize, u64)>> {
+    let mut discovered = Vec::new();
+    let mut index = 1usize;
+    loop {
+        let path = rotated_path(base_path, index);
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                discovered.push((index, metadata.len()));
+                index += 1;
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => break,
+            Err(err) => return Err(WalError::Io(err)),
+        }
+    }
+    Ok(discovered)
 }
 
 fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {

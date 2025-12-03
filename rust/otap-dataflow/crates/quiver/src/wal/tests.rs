@@ -675,6 +675,43 @@ fn wal_writer_rotates_when_target_exceeded() {
 }
 
 #[test]
+fn wal_writer_reloads_rotated_chunks_on_restart() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("replay_rotations.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let options = WalWriterOptions::new(wal_path.clone(), [0x54; 16], Duration::ZERO)
+        .with_rotation_target(1)
+        .with_max_chunks(4);
+
+    {
+        let mut writer = WalWriter::open(options.clone()).expect("first writer");
+        let bundle = single_slot_bundle(&descriptor, 0x01, &[1, 2, 3, 4]);
+        let _ = writer
+            .append_bundle(&bundle)
+            .expect("first append triggers rotation");
+    }
+
+    assert!(
+        rotated_path_for(&wal_path, 1).exists(),
+        "expected initial rotation"
+    );
+
+    {
+        let mut writer = WalWriter::open(options).expect("reopen writer");
+        let bundle = single_slot_bundle(&descriptor, 0x02, &[5, 6, 7, 8]);
+        let _ = writer
+            .append_bundle(&bundle)
+            .expect("rotation should succeed after restart");
+    }
+
+    assert!(
+        rotated_path_for(&wal_path, 2).exists(),
+        "existing rotation should be shifted during recovery"
+    );
+}
+
+#[test]
 fn wal_writer_errors_when_chunk_cap_reached() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("chunk_cap.wal");
