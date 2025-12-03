@@ -84,8 +84,9 @@ still fundamentally row-oriented.
 
 We are building an end-to-end OpenTelemetry Protocol with Apache Arrow
 (OTAP) pipeline and we believe this form of pipeline will have substantially
-lower overhead than a row-oriented architecture.  [See our Phase 2 OTAP
-Dataflow engine documentation](./rust/otap-dataflow/README.md).
+lower overhead than a row-oriented architecture.  [See our Phase 2 OTAP Dataflow
+engine documentation](./rust/otap-dataflow/README.md) and [performance
+benchmarks](#benchmark-summary).
 
 These are our future milestones for OpenTelemetry and Apache Arrow
 integration:
@@ -168,8 +169,8 @@ OpenTelemetry Protocol with Apache Arrow.
 
 - [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow
   Schemas.
-- [Benchmark results](docs/benchmarks.md) - Based on synthetic and production
-  data.
+- [Benchmark results](docs/benchmarks.md) - Live/In-progress Phase 2 results and
+  historical Phase 1 benchmarks.
 - [Validation process](docs/validation_process.md) - Encoding/Decoding
   validation process.
 - Articles describing some of the Arrow techniques used behind the scenes to
@@ -179,9 +180,19 @@ OpenTelemetry Protocol with Apache Arrow.
   - [Adaptive Schemas and Sorting to Optimize Arrow
     Usage](https://arrow.apache.org/blog/2023/06/26/our-journey-at-f5-with-apache-arrow-part-2/)
 
-## Benchmark summary
+## Benchmark Summary
 
-The following chart shows the compressed message size (in bytes) as a function
+### Phase 2 Performance Results
+
+For the latest performance benchmarks from our Phase 2 OTAP dataflow engine,
+please visit our [benchmarks](docs/benchmarks.md).
+
+### Phase 1 Historical Results
+
+The following charts show Phase 1 benchmark results demonstrating compression improvements
+between OpenTelemetry Collectors. These results are from the completed Phase 1 implementation.
+
+The first chart shows the compressed message size (in bytes) as a function
 of the batch size for metrics (univariate), logs, and traces. The bottom of the
 chart shows the reduction factor for both the standard OTLP protocol (with ZSTD
 compression) and the OpenTelemetry Protocol with Apache Arrow protocol (ZSTD) in
@@ -214,7 +225,8 @@ be higher for traffic predominantly containing multivariate metrics.
 
 ![Avg % of compressed size improvement of OpenTelemetry Protocol with Apache Arrow over OTLP (zstd compression)](./docs/img/average_improvement_heatmap.png)
 
-For more details, see the following [benchmark results](docs/benchmarks.md) page.
+For historical Phase 1 details, see the [Phase 1 benchmark
+results](docs/benchmarks-phase1.md) page.
 
 ## Contributing
 

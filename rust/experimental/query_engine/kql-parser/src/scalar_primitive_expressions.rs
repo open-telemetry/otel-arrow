@@ -505,7 +505,31 @@ pub(crate) fn parse_accessor_expression(
         }
     }
 
-    if root_accessor_identity.get_value() == "source" {
+    if allow_root_scalar && scope.is_local_variable_defined(root_accessor_identity.get_value()) {
+        Ok(ScalarExpression::Variable(VariableScalarExpression::new(
+            query_location,
+            root_accessor_identity,
+            value_accessor,
+        )))
+    } else if allow_root_scalar
+        && let Some((argument_id, value_type)) =
+            scope.get_argument_id(root_accessor_identity.get_value())
+    {
+        let selectors = value_accessor.get_selectors_mut();
+
+        let value_type = if selectors.is_empty() {
+            value_type
+        } else {
+            None
+        };
+
+        Ok(ScalarExpression::Argument(ArgumentScalarExpression::new(
+            query_location,
+            value_type,
+            argument_id,
+            value_accessor,
+        )))
+    } else if root_accessor_identity.get_value() == "source" && scope.source_available() {
         let selectors = value_accessor.get_selectors_mut();
 
         let value_type = if selectors.is_empty() {
@@ -529,7 +553,9 @@ pub(crate) fn parse_accessor_expression(
             root_accessor_identity,
             value_accessor,
         )))
-    } else if allow_root_scalar && scope.is_variable_defined(root_accessor_identity.get_value()) {
+    } else if allow_root_scalar
+        && scope.is_global_variable_defined(root_accessor_identity.get_value())
+    {
         Ok(ScalarExpression::Variable(VariableScalarExpression::new(
             query_location,
             root_accessor_identity,
@@ -562,7 +588,16 @@ pub(crate) fn parse_accessor_expression(
 
         let mut resolved_value_type = None;
 
-        if let Some(schema) = scope.get_source_schema() {
+        if !scope.source_available() {
+            return Err(ParserError::QueryLanguageDiagnostic {
+                location: root_accessor_identity.get_query_location().clone(),
+                diagnostic_id: "KS142",
+                message: format!(
+                    "The name '{}' does not refer to any known column, table, variable or function",
+                    root_accessor_identity.get_value()
+                ),
+            });
+        } else if let Some(schema) = scope.get_source_schema() {
             match schema.get_schema_for_key(root_accessor_identity.get_value()) {
                 Some(key) => {
                     if value_accessor.has_selectors() {
@@ -2474,6 +2509,125 @@ mod tests {
                     )),
                 )]),
                 None,
+            )),
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_without_source() {
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(input, Default::default());
+
+            // Note: This is creating a scope without source available. This mirrors what happens when a function is invoked.
+            let scope = state.create_scope(Default::default()).without_source();
+
+            let error =
+                parse_accessor_expression(result.next().unwrap(), &scope, true).unwrap_err();
+
+            if let Some(expected_id) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(expected_id, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Expected SyntaxError");
+            }
+        };
+
+        run_test_failure(
+            "source",
+            Some("KS142"),
+            "The name 'source' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_failure(
+            "source.nested",
+            Some("KS142"),
+            "The name 'source' does not refer to any known column, table, variable or function",
+        );
+
+        run_test_failure(
+            "nested",
+            Some("KS142"),
+            "The name 'nested' does not refer to any known column, table, variable or function",
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_argument() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(input, Default::default());
+
+            let scope = state
+                .create_scope(Default::default())
+                .with_arguments(HashMap::from([
+                    ("arg1".into(), (0, None)),
+                    ("arg2".into(), (1, Some(ValueType::Integer))),
+                ]));
+
+            let expression =
+                parse_accessor_expression(result.next().unwrap(), &scope, true).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "arg1",
+            ScalarExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                0,
+                ValueAccessor::new(),
+            )),
+        );
+
+        run_test_success(
+            "arg2",
+            ScalarExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                ValueAccessor::new(),
+            )),
+        );
+    }
+
+    #[test]
+    fn test_parse_accessor_expression_local_variable() {
+        let run_test_success = |input: &str, expected: ScalarExpression| {
+            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+
+            let state = ParserState::new_with_options(input, Default::default());
+
+            let scope = state.create_scope(Default::default());
+
+            scope.push_variable_name("source");
+
+            let expression =
+                parse_accessor_expression(result.next().unwrap(), &scope, true).unwrap();
+
+            assert_eq!(expected, expression);
+        };
+
+        run_test_success(
+            "source",
+            ScalarExpression::Variable(VariableScalarExpression::new(
+                QueryLocation::new_fake(),
+                StringScalarExpression::new(QueryLocation::new_fake(), "source"),
+                ValueAccessor::new(),
             )),
         );
     }
