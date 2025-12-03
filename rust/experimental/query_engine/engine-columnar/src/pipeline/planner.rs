@@ -226,7 +226,7 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 }
 
 /// Identifier of a batch of attributes
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AttributesIdentifier {
     /// Attributes for the root record type. E.g. LogAttrs for a batch of log records
     Root,
