@@ -19,7 +19,7 @@ We run two types of automated benchmark tests for Phase 2:
 
 Both provide performance metrics for the OTAP dataflow engine, for various
 scenarios.
-TODO: Add details on the scenario
+<!-- TODO: Add details on the scenario -->
 
 ### Learn More About Phase 2
 
