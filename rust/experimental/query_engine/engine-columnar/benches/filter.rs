@@ -102,8 +102,24 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         "logs | where 
             (attributes[\"code.namespace\"] == \"main\" and attributes[\"code.line\"] == 2) 
             or 
-            (attributes[\"code.namespace\"] == \"otap_dataflow_engine\" and attributes[\"code.line\"] == 3)",
+            (attributes[\"code.namespace\"] == \"otap_dataflow_engine\" and attributes[\"code.line.number\"] == 3)",
     );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "and_left_short_circuit",
+        "logs | where severity_text == \"invalid value\" and attributes[\"code.line.number\"] == 2",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "or_left_short_circuit",
+        "logs | where attributes[\"code.line.number\"] >= 0 or not(attributes[\"some.attr\"] >= 0 and severity_text == \"WARN\")",
+    )
 }
 
 #[allow(missing_docs)]

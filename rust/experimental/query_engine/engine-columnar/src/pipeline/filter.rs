@@ -23,11 +23,11 @@ use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::scalar::ScalarValue;
-use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::build_uint16_id_filter;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
+use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
@@ -449,6 +449,15 @@ pub struct FilterExec {
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 }
 
+impl From<AdaptivePhysicalExprExec> for FilterExec {
+    fn from(predicate: AdaptivePhysicalExprExec) -> Self {
+        Self {
+            predicate: Some(predicate),
+            attributes_filter: None,
+        }
+    }
+}
+
 impl FilterExec {
     /// execute the filter expression. returns a selection vector for the passed record batch
     fn execute(
@@ -557,11 +566,27 @@ impl Composite<FilterExec> {
             Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx)?)?),
             Self::And(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx)?;
+
+                // short circuit if everything on the left was filtered out. No "true" value
+                // in the right selection vector would change the result
+                // TODO this logic isn't right for metrics ...
+                if left_result.false_count() == otap_batch.num_items() {
+                    return Ok(left_result);
+                }
+
                 let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(and(&left_result, &right_result)?)
             }
             Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx)?;
+
+                // short circuit if nothing on the left was filtered out. No "false" value
+                // in the right selection vector would change the result
+                // TODO this logic isn't right for metrics ...
+                if left_result.true_count() == otap_batch.num_items() {
+                    return Ok(left_result);
+                }
+
                 let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(or(&left_result, &right_result)?)
             }
@@ -1146,6 +1171,9 @@ impl PipelineStage for FilterPipelineStage {
 
 #[cfg(test)]
 mod test {
+    use std::cell::Cell;
+    use std::sync::RwLock;
+
     use crate::pipeline::Pipeline;
 
     use super::*;
@@ -1153,6 +1181,7 @@ mod test {
     use arrow::array::{DictionaryArray, Int32Array, RecordBatch, StringArray, UInt8Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
+    use datafusion::physical_plan::PhysicalExpr;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
@@ -2304,5 +2333,101 @@ mod test {
         .unwrap();
         let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
         assert_eq!(result, BooleanArray::from_iter([true, true, false]));
+    }
+
+    /// A physical Expr that should not get called. This can be used to test that some
+    /// code which was supposed optimize away the invocation of this expression does
+    /// what it is supposed to
+    #[derive(Debug, Eq, Hash, PartialEq)]
+    struct PanickingPhysicalExpr {}
+
+    impl std::fmt::Display for PanickingPhysicalExpr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "PanickingPhysicalExpr(for test)")
+        }
+    }
+
+    impl PhysicalExpr for PanickingPhysicalExpr {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn evaluate(
+            &self,
+            _batch: &RecordBatch,
+        ) -> datafusion::error::Result<datafusion::logical_expr::ColumnarValue> {
+            panic!("this shouldn't get called")
+        }
+
+        fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+            Vec::new()
+        }
+
+        fn with_new_children(
+            self: Arc<Self>,
+            _children: Vec<Arc<dyn PhysicalExpr>>,
+        ) -> datafusion::error::Result<Arc<dyn PhysicalExpr>> {
+            Ok(Arc::new(Self {}))
+        }
+
+        fn fmt_sql(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "PanickingPhysicalExpr(for test)")
+        }
+    }
+
+    #[test]
+    fn test_composite_filter_exec_and_takes_fast_path() {
+        let mut filter_exec = Composite::and(
+            FilterExec::from(AdaptivePhysicalExprExec::try_new(col("x").eq(lit("y"))).unwrap()),
+            FilterExec::from(AdaptivePhysicalExprExec {
+                logical_expr: lit("should panic"),
+                physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
+                projection: FilterProjection {
+                    schema: vec![ProjectedSchemaColumn::Root("x".into())],
+                },
+            }),
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from_iter_values(["a", "b", "c"]))],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, input.clone());
+
+        let session_ctx = Pipeline::create_session_context();
+
+        let result = filter_exec.execute(&otap_batch, &session_ctx).unwrap();
+        assert_eq!(result.false_count(), input.num_rows());
+    }
+
+    #[test]
+    fn test_composite_filter_exec_or_takes_fast_path() {
+        let mut filter_exec = Composite::or(
+            FilterExec::from(AdaptivePhysicalExprExec::try_new(col("x").eq(lit("a"))).unwrap()),
+            FilterExec::from(AdaptivePhysicalExprExec {
+                logical_expr: lit("should panic"),
+                physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
+                projection: FilterProjection {
+                    schema: vec![ProjectedSchemaColumn::Root("x".into())],
+                },
+            }),
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from_iter_values(["a", "a", "a"]))],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, input.clone());
+
+        let session_ctx = Pipeline::create_session_context();
+
+        let result = filter_exec.execute(&otap_batch, &session_ctx).unwrap();
+        assert_eq!(result.true_count(), input.num_rows());
     }
 }
