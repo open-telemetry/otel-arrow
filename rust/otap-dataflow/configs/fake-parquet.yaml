@@ -22,7 +22,7 @@ nodes:
     kind: exporter
     plugin_urn: "urn:otel:otap:parquet:exporter"
     config:
-      base_uri: /tmp
+      base_uri: /home/jakedern/local-fabric-test
       partitioning_strategies:
       - schema_metadata: ["_part_id"]
       writer_options:

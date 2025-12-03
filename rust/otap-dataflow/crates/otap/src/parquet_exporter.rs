@@ -49,6 +49,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 
+mod cloud_auth;
 mod config;
 mod error;
 mod idgen;

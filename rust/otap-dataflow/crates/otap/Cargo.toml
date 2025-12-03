@@ -66,10 +66,13 @@ zip.workspace = true
 geneva-uploader = { version = "0.3.0", optional = true }
 
 # Azure Monitor Exporter dependencies
-azure_identity = { workspace = true, optional = true }
+# azure_identity = { workspace = true, optional = true }
+# TODO: Figure out how to feature flag this 
+azure_identity = { workspace = true }
 flate2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
-azure_core = { workspace = true, optional = true }
+# TODO: Figure out how to feature flag this 
+azure_core = { workspace = true }
 
 # OpenTelemetry proto with tonic feature enabled
 opentelemetry-proto = { workspace = true, optional = true }
@@ -82,11 +85,12 @@ geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentel
 azure-monitor-exporter = [
     "experimental-exporters", 
     "dep:opentelemetry-proto",
-    "dep:azure_identity",
+    # "dep:azure_identity",
     "dep:flate2",
     "dep:reqwest",
-    "dep:azure_core"
+    # "dep:azure_core"
 ]
+# parquet-exporter-azure = ["dep:azure_identity"]
 
 [dev-dependencies]
 flume.workspace = true
