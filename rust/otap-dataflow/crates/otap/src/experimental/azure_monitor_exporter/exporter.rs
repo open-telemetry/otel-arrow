@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::cmp::max;
+use std::pin::Pin;
 
 use async_trait::async_trait;
+use futures::stream::FuturesUnordered;
+use futures::{Future, FutureExt, StreamExt};  // Add FutureExt here
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
@@ -35,6 +38,11 @@ pub struct AzureMonitorExporter {
     total_processing_duration: tokio::time::Duration,
     processing_started: bool,
     processing_start_time: tokio::time::Instant,
+    
+    // Concurrent send management
+    in_flight_sends: FuturesUnordered<Pin<Box<dyn Future<Output = Result<f64, String>>>>>,
+    max_in_flight: usize,
+    pending_rows: f64,  // Rows in flight but not yet confirmed
 }
 
 impl AzureMonitorExporter {
@@ -66,6 +74,9 @@ impl AzureMonitorExporter {
             total_processing_duration: tokio::time::Duration::ZERO,
             processing_started: false,
             processing_start_time: tokio::time::Instant::now(),
+            in_flight_sends: FuturesUnordered::new(),
+            max_in_flight: 10,
+            pending_rows: 0.0,
         })
     }
 
@@ -79,15 +90,35 @@ impl AzureMonitorExporter {
             gzip_batcher::PushResult::Full(batch, row_count) => {
                 self.last_send_started = tokio::time::Instant::now();
 
-                self.send_batch(batch).await?;
+                // Wait if we've hit the concurrency limit
+                while self.in_flight_sends.len() >= self.max_in_flight {
+                    // Wait for at least one send to complete
+                    if let Some(result) = self.in_flight_sends.next().await {
+                        match result {
+                            Ok(rows) => {
+                                self.total_rows_sent += rows;
+                                self.pending_rows -= rows;
+                                self.total_batches_sent += 1.0;
+                            }
+                            Err(e) => {
+                                // Log error but continue
+                                println!("[AzureMonitorExporter] Send failed: {}", e);
+                            }
+                        }
+                    }
+                }
 
-                self.total_rows_sent += row_count;
+                // Queue the send
+                self.queue_send(batch, row_count);
 
                 let now = tokio::time::Instant::now();
                 self.total_processing_duration += now.elapsed();
 
-                println!("[AzureMonitorExporter] Total rows: {:.0}, Total batches: {:.0}, Throughput 1: {:.2} rows/s, Throughput 2: {:.2} rows/s",
-                    self.total_rows_sent, self.total_batches_sent, self.total_rows_sent / self.total_processing_duration.as_secs_f64(), self.total_rows_sent / self.processing_start_time.elapsed().as_secs_f64());
+                println!("[AzureMonitorExporter] Total rows sent: {:.0}, Pending: {:.0}, In-flight: {}, Throughput: {:.2} rows/s",
+                    self.total_rows_sent, 
+                    self.pending_rows,
+                    self.in_flight_sends.len(),
+                    self.total_rows_sent / self.processing_start_time.elapsed().as_secs_f64());
             }
             gzip_batcher::PushResult::TooLarge => {
                 // Log entry too large to send
@@ -110,9 +141,8 @@ impl AzureMonitorExporter {
             gzip_batcher::FlushResult::Flush(batch, row_count) => {
                 self.last_send_started = tokio::time::Instant::now();
 
-                self.send_batch(batch).await?;
-
-                self.total_rows_sent += row_count;
+                // Queue the send without waiting for concurrency
+                self.queue_send(batch, row_count);
             }
         }
 
@@ -121,17 +151,33 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    async fn send_batch(&mut self, batch: Vec<u8>) -> Result<(), String> {
-        self.client
-            .send(batch)
-            .await
-            .map_err(|e| format!("Failed to send batch: {}", e))?;
+    fn queue_send(&mut self, batch: Vec<u8>, row_count: f64) {
+        let mut client = self.client.clone();
+        self.pending_rows += row_count;
+        
+        let send_fut = Box::pin(async move {
+            client
+                .send(batch)
+                .await
+                .map(|_| row_count)
+        });
+        
+        self.in_flight_sends.push(send_fut);
+    }
 
-        self.total_batches_sent += 1.0;
-
-        tokio::task::yield_now().await;
-
-        Ok(())
+    async fn drain_in_flight_sends(&mut self) {
+        while let Some(result) = self.in_flight_sends.next().await {
+            match result {
+                Ok(rows) => {
+                    self.total_rows_sent += rows;
+                    self.pending_rows -= rows;
+                    self.total_batches_sent += 1.0;
+                }
+                Err(e) => {
+                    println!("[AzureMonitorExporter] Send failed during drain: {}", e);
+                }
+            }
+        }
     }
 
     /// Handle a single pdata message.
@@ -242,8 +288,26 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         let mut next_token_refresh = tokio::time::Instant::now();
 
         loop {
-            tokio::select! {
-                _ = tokio::time::sleep_until(next_token_refresh) => {
+            // Use futures::select_biased to prioritize draining in-flight sends
+            futures::select_biased! {
+                // Priority 1: Drain completed sends
+                result = self.in_flight_sends.select_next_some() => {
+                    match result {
+                        Ok(rows) => {
+                            self.total_rows_sent += rows;
+                            self.pending_rows -= rows;
+                            self.total_batches_sent += 1.0;
+                        }
+                        Err(e) => {
+                            effect_handler
+                                .info(&format!("[AzureMonitorExporter] Send failed: {}", e))
+                                .await;
+                        }
+                    }
+                }
+
+                // Priority 2: Token refresh
+                _ = tokio::time::sleep_until(next_token_refresh).fuse() => {
                     // Token is expiring soon or has expired, refresh it
                     effect_handler
                         .info("[AzureMonitorExporter] Refreshing token")
@@ -277,31 +341,45 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         .await;
                 }
 
-                _ = tokio::time::sleep_until(next_send) => {
+                // Priority 3: Periodic flush
+                _ = tokio::time::sleep_until(next_send).fuse() => {
                     if self.last_send_started + SEND_INTERVAL <= tokio::time::Instant::now() {
                         self.flush_batcher()
                             .await
                             .map_err(|e| Error::InternalError { message: format!("Failed to flush batcher: {}", e) })?;
                     }
-                    else {
-                        // if we already flushed and sent, we don't need to do it again yet
-                    }
 
                     next_send = max(self.last_send_started, tokio::time::Instant::now()) + SEND_INTERVAL;
                 }
 
-                // 2. Handle incoming messages
-                msg = msg_chan.recv() => {
+                // Priority 4: Handle incoming messages
+                msg = msg_chan.recv().fuse() => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
                             effect_handler
                                 .info("[AzureMonitorExporter] Shutting down")
                                 .await;
 
+                            // Flush any remaining data
                             self.flush_batcher()
                                 .await
                                 .map_err(|e| Error::InternalError { message: format!("Failed to flush batcher during shutdown: {}", e) })?;
 
+                            // Wait for all in-flight sends to complete
+                            effect_handler
+                                .info(&format!("[AzureMonitorExporter] Waiting for {} in-flight sends to complete", self.in_flight_sends.len()))
+                                .await;
+
+                            self.drain_in_flight_sends().await;
+
+                            effect_handler
+                                .info(&format!(
+                                    "[AzureMonitorExporter] Final stats - Sent: {:.0} rows in {:.0} batches, Throughput: {:.2} rows/s",
+                                    self.total_rows_sent,
+                                    self.total_batches_sent,
+                                    self.total_rows_sent / self.processing_start_time.elapsed().as_secs_f64()
+                                ))
+                                .await;
 
                             return Ok(TerminalState::new(
                                 deadline,
