@@ -52,6 +52,7 @@ pub enum Composite<T> {
 }
 
 impl<T> Composite<T> {
+    /// helper function to create the `Composite::And` variant from passed args
     pub fn and<L, R>(left: L, right: R) -> Self
     where
         L: Into<Self>,
@@ -60,12 +61,21 @@ impl<T> Composite<T> {
         Self::And(Box::new(left.into()), Box::new(right.into()))
     }
 
+    /// helper function to create the `Composite::Or` variant from passed args
     pub fn or<L, R>(left: L, right: R) -> Self
     where
         L: Into<Self>,
         R: Into<Self>,
     {
         Self::Or(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Not` variant from passed args
+    pub fn not<P>(inner: P) -> Self
+    where
+        P: Into<Self>,
+    {
+        Self::Not(Box::new(inner.into()))
     }
 }
 
@@ -99,17 +109,17 @@ where
             }
             Self::Not(inner) => {
                 let exec = inner.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Not(Box::new(exec)))
+                Ok(Composite::not(exec))
             }
             Self::And(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::And(Box::new(left_exec), Box::new(right_exec)))
+                Ok(Composite::and(left_exec, right_exec))
             }
             Self::Or(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Or(Box::new(left_exec), Box::new(right_exec)))
+                Ok(Composite::or(left_exec, right_exec))
             }
         }
     }
@@ -142,18 +152,6 @@ pub struct FilterPlan {
     /// filters that will be applied to the attributes record batch in order fo filter the
     /// rows of the root batch
     pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
-}
-
-impl FilterPlan {
-    fn new<T>(source_filter: Option<Expr>, attribute_filter: Option<T>) -> Self
-    where
-        T: Into<Composite<AttributesFilterPlan>>,
-    {
-        Self {
-            source_filter,
-            attribute_filter: attribute_filter.map(T::into),
-        }
-    }
 }
 
 impl From<Expr> for FilterPlan {
@@ -241,14 +239,14 @@ impl FilterPlan {
                     match right_arg {
                         // left = attribute & right = literal
                         BinaryArg::Literal(right_lit) => {
-                            Ok(FilterPlan::from(AttributesFilterPlan {
-                                attrs_identifier,
-                                filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
+                            Ok(FilterPlan::from(AttributesFilterPlan::new(
+                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
                                     )?),
                                 ),
-                            }))
+                                attrs_identifier,
+                            )))
                         }
                         _ => Err(Error::NotYetSupportedError {
                             message: "comparing left attribute with non-literal right in filter"
@@ -280,14 +278,14 @@ impl FilterPlan {
                     }
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
-                        Ok(FilterPlan::from(AttributesFilterPlan {
-                            attrs_identifier,
-                            filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
-                                Expr::BinaryExpr(try_attrs_value_filter_from_literal(
+                        Ok(FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
-                                )?),
-                            ),
-                        }))
+                                )?)),
+                            attrs_identifier,
+                        )))
                     }
                 },
             },
@@ -321,19 +319,16 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
             LogicalExpression::And(and_expr) => {
                 let left = Self::try_from(and_expr.get_left())?;
                 let right = Self::try_from(and_expr.get_right())?;
-                // TODO there's now a simpler syntax for this
-                Ok(Self::And(Box::new(left), Box::new(right)))
+                Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
                 let left = Self::try_from(or_expr.get_left())?;
                 let right = Self::try_from(or_expr.get_right())?;
-                // TODO add/use the simpler syntax for constructing this
-                Ok(Self::Or(Box::new(left), Box::new(right)))
+                Ok(Self::or(left, right))
             }
             LogicalExpression::Not(not_expr) => {
                 let inner = Self::try_from(not_expr.get_inner_expression())?;
-                // TODO add/use the simpler syntax for constructing this
-                Ok(Self::Not(Box::new(inner)))
+                Ok(Self::not(inner))
             }
 
             // TODO add support for these expressions eventually
@@ -417,6 +412,20 @@ impl ToExec for AttributesFilterPlan {
             filter: AdaptivePhysicalExprExec::try_new(self.filter.clone())?,
             payload_type: attrs_payload_type,
         })
+    }
+}
+
+impl Composite<AttributesFilterPlan> {
+    pub fn attrs_identifier(&self) -> AttributesIdentifier {
+        match self {
+            Self::Base(filter) => filter.attrs_identifier,
+            Self::Not(filter) => filter.attrs_identifier(),
+
+            // All children should be for the same payload type, so we just traverse one side
+            // of the tree.
+            Self::And(left, _) => left.attrs_identifier(),
+            Self::Or(left, _) => left.attrs_identifier(),
+        }
     }
 }
 

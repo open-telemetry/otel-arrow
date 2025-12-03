@@ -3,6 +3,19 @@
 
 use crate::pipeline::filter::{Composite, FilterPlan};
 
+/// This performs an optimization on the composite [`FilterPlan`] to combine the attribute filters
+/// into fewer `Composite<AttributeFilter>`s.
+///
+/// When `FilterExec` filters by attributes, it first invokes
+/// [`AttributeFilterExec`](super::AttributeFilterExec), which first scans the attribute filter
+/// batch to create a selection vector, then maps this to a bitmask of parent_ids that passed the
+/// predicate. It then passes this back to filter exec, scans an ID column on the parent batch to
+/// create a selection vector for the parent. These final selection vectors then get and/or'd
+/// together to produce the final selection vector for the root batch
+///
+/// However, if there are multiple attribute filters being applied, it's faster to just and/or
+/// the intermediate parent_id bitmask, `Composite<AttributeFilterExec>` will do. So the goal with
+/// this optimization is to produce a plan that will produce this type.
 ///
 pub struct AttrsFilterCombineOptimizerRule {}
 
@@ -22,11 +35,21 @@ impl AttrsFilterCombineOptimizerRule {
                         ) {
                             // combine the attr filters if they're both defined
                             (Some(l), Some(r)) => {
-                                right_plan.attribute_filter = Some(Composite::and(l, r));
+                                // only combine the attribute filters if they are for the same
+                                // attribute payload. this is needed because the attribute filters
+                                // produce id masks that get joined to the parent_id, but different
+                                // attribute's parent_ids point to different ID columns on the root
+                                if l.attrs_identifier() == r.attrs_identifier() {
+                                    right_plan.attribute_filter = Some(Composite::and(l, r));
 
-                                if left_plan.source_filter.is_none() {
-                                    // left_plan plan is now empty, so just return the right
-                                    return right_plan.into();
+                                    if left_plan.source_filter.is_none() {
+                                        // left_plan plan is now empty, so just return the right
+                                        return right_plan.into();
+                                    }
+                                } else {
+                                    // otherwise just reset the filter to the original state
+                                    left_plan.attribute_filter = Some(l);
+                                    right_plan.attribute_filter = Some(r);
                                 }
                             }
 
@@ -100,11 +123,22 @@ impl AttrsFilterCombineOptimizerRule {
                         ) {
                             // combine the attribute filters if they're both defined
                             (Some(l), Some(r)) => {
-                                right_plan.attribute_filter = Some(Composite::or(l, r));
+                                // only combine the attribute filters if they are for the same
+                                // attribute payload. this is needed because the attribute filters
+                                // produce id masks that get joined to the parent_id, but different
+                                // attribute's parent_ids point to different ID columns on the root
+                                if l.attrs_identifier() == r.attrs_identifier() {
+                                    right_plan.attribute_filter = Some(Composite::or(l, r));
 
-                                // left filter will now be empty because there is no source_filter
-                                // or attribute filter, so we can just return the right side
-                                right_plan.into()
+                                    // left filter will now be empty because there is no source_filter
+                                    // or attribute filter, so we can just return the right side
+                                    right_plan.into()
+                                } else {
+                                    // otherwise just reset the filter to the original state
+                                    left_plan.attribute_filter = Some(l);
+                                    right_plan.attribute_filter = Some(r);
+                                    Composite::or(left_plan, right_plan)
+                                }
                             }
                             // replace the original and return one side. If we're in either of the
                             // next two branches, it means the other side was basically empty
@@ -167,53 +201,64 @@ impl AttrsFilterCombineOptimizerRule {
 pub mod test {
     use super::*;
 
-    use datafusion::logical_expr::{col, lit};
+    use datafusion::logical_expr::{Expr, col, lit};
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use pretty_assertions::assert_eq;
 
     use crate::pipeline::filter::{AttributesFilterPlan, Composite, FilterPlan};
     use crate::pipeline::planner::AttributesIdentifier;
 
-    // TODO -- need to add checks to ensure we don't combine any attrs filters that aren't
-    // for the same payload type
-
-    // TODO use constructors for AttributesFilterPlan
+    impl FilterPlan {
+        // helper function for creating a FilterPlan for test suite
+        fn new<T>(source_filter: Option<Expr>, attribute_filter: Option<T>) -> Self
+        where
+            T: Into<Composite<AttributesFilterPlan>>,
+        {
+            Self {
+                source_filter,
+                attribute_filter: attribute_filter.map(T::into),
+            }
+        }
+    }
 
     #[test]
     fn test_attr_combine_simple_and_to_base() {
         let input = Composite::and(
-            FilterPlan::from(AttributesFilterPlan {
-                filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
-                attrs_identifier: AttributesIdentifier::Root,
-            }),
-            FilterPlan::from(AttributesFilterPlan {
-                filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
-                attrs_identifier: AttributesIdentifier::Root,
-            }),
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("a"),
+                AttributesIdentifier::Root,
+            )),
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("b"),
+                AttributesIdentifier::Root,
+            )),
         );
 
         let result = AttrsFilterCombineOptimizerRule::optimize(input);
 
-        let expected = Composite::from(FilterPlan {
-            source_filter: None,
-            attribute_filter: Some(Composite::And(
-                Box::new(
-                    AttributesFilterPlan {
-                        filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }
-                    .into(),
-                ),
-                Box::new(
-                    AttributesFilterPlan {
-                        filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }
-                    .into(),
-                ),
-            )),
-        });
+        let expected = Composite::from(FilterPlan::from(Composite::and(
+            AttributesFilterPlan::new(lit("a"), AttributesIdentifier::Root),
+            AttributesFilterPlan::new(lit("b"), AttributesIdentifier::Root),
+        )));
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_attr_combine_does_not_combine_and_for_different_attr_types() {
+        let input = Composite::and(
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("a"),
+                AttributesIdentifier::Root,
+            )),
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("b"),
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+            )),
+        );
+
+        let result = AttrsFilterCombineOptimizerRule::optimize(input.clone());
+        assert_eq!(result, input)
     }
 
     #[test]
@@ -240,14 +285,14 @@ pub mod test {
         let expected = Composite::and(
             FilterPlan::from(col("severity_text").eq(lit("WARN"))),
             FilterPlan::from(Composite::and(
-                AttributesFilterPlan {
-                    filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
-                    attrs_identifier: AttributesIdentifier::Root,
-                },
-                AttributesFilterPlan {
-                    filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
-                    attrs_identifier: AttributesIdentifier::Root,
-                },
+                AttributesFilterPlan::new(
+                    col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
+                    AttributesIdentifier::Root,
+                ),
+                AttributesFilterPlan::new(
+                    col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
+                    AttributesIdentifier::Root,
+                ),
             )),
         );
 
@@ -259,30 +304,30 @@ pub mod test {
         let input = Composite::and(
             Composite::and(
                 Composite::and(
-                    FilterPlan::from(AttributesFilterPlan {
-                        filter: lit("1"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }),
-                    FilterPlan::from(AttributesFilterPlan {
-                        filter: lit("2"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }),
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        lit("1"),
+                        AttributesIdentifier::Root,
+                    )),
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        lit("2"),
+                        AttributesIdentifier::Root,
+                    )),
                 ),
                 Composite::and(
-                    FilterPlan::from(AttributesFilterPlan {
-                        filter: lit("3"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }),
-                    FilterPlan::from(AttributesFilterPlan {
-                        filter: lit("4"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }),
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        lit("3"),
+                        AttributesIdentifier::Root,
+                    )),
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        lit("4"),
+                        AttributesIdentifier::Root,
+                    )),
                 ),
             ),
-            FilterPlan::from(AttributesFilterPlan {
-                filter: lit("5"),
-                attrs_identifier: AttributesIdentifier::Root,
-            }),
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("5"),
+                AttributesIdentifier::Root,
+            )),
         );
 
         let result = AttrsFilterCombineOptimizerRule::optimize(input);
@@ -290,30 +335,15 @@ pub mod test {
         let expected = Composite::Base(FilterPlan::from(Composite::and(
             Composite::and(
                 Composite::and(
-                    AttributesFilterPlan {
-                        filter: lit("1"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    },
-                    AttributesFilterPlan {
-                        filter: lit("2"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    },
+                    AttributesFilterPlan::new(lit("1"), AttributesIdentifier::Root),
+                    AttributesFilterPlan::new(lit("2"), AttributesIdentifier::Root),
                 ),
                 Composite::and(
-                    AttributesFilterPlan {
-                        filter: lit("3"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    },
-                    AttributesFilterPlan {
-                        filter: lit("4"),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    },
+                    AttributesFilterPlan::new(lit("3"), AttributesIdentifier::Root),
+                    AttributesFilterPlan::new(lit("4"), AttributesIdentifier::Root),
                 ),
             ),
-            AttributesFilterPlan {
-                filter: lit("5"),
-                attrs_identifier: AttributesIdentifier::Root,
-            },
+            AttributesFilterPlan::new(lit("5"), AttributesIdentifier::Root),
         )));
 
         assert_eq!(result, expected);
@@ -375,6 +405,23 @@ pub mod test {
         )));
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_attr_combine_does_not_combine_or_for_different_attr_types() {
+        let input = Composite::or(
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("a"),
+                AttributesIdentifier::Root,
+            )),
+            FilterPlan::from(AttributesFilterPlan::new(
+                lit("b"),
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+            )),
+        );
+
+        let result = AttrsFilterCombineOptimizerRule::optimize(input.clone());
+        assert_eq!(result, input)
     }
 
     #[test]

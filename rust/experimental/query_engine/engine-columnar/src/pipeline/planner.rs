@@ -96,7 +96,10 @@ impl PipelinePlanner {
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
 
+        // optimize the to the plan
         let filter_plan = AttrsFilterCombineOptimizerRule::optimize(filter_plan);
+
+        // transform logical plan into executable plan
         let filter_exec = filter_plan.to_exec(session_ctx, otap_batch)?;
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
@@ -229,7 +232,7 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
 }
 
 /// Identifier of a batch of attributes
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AttributesIdentifier {
     /// Attributes for the root record type. E.g. LogAttrs for a batch of log records
     Root,
