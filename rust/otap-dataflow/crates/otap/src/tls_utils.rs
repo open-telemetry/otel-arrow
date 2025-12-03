@@ -518,9 +518,10 @@ mod tests {
             config: TlsConfig {
                 cert_pem: Some("fake cert".to_string()),
                 key_pem: None,
-                ..Default::default()
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
             },
-            ..Default::default()
         };
 
         let result = load_server_tls_config(&config).await;
@@ -536,9 +537,10 @@ mod tests {
             config: TlsConfig {
                 cert_pem: None,
                 key_pem: Some("fake key".to_string()),
-                ..Default::default()
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
             },
-            ..Default::default()
         };
 
         let result = load_server_tls_config(&config).await;
@@ -654,9 +656,10 @@ mod tests {
             config: TlsConfig {
                 cert_pem: Some(cert_pem),
                 key_pem: Some(key_pem),
-                ..Default::default()
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
             },
-            ..Default::default()
         };
 
         let result = load_server_tls_config(&config).await;
@@ -680,9 +683,10 @@ mod tests {
             config: TlsConfig {
                 cert_file: Some(cert_path),
                 key_file: Some(key_path),
-                ..Default::default()
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
             },
-            ..Default::default()
         };
 
         let result = load_server_tls_config(&config).await;
