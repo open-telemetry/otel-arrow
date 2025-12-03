@@ -519,6 +519,8 @@ pub(crate) fn try_resolve_identifier(
 
             Ok(None)
         }
+        ScalarExpression::Argument(_) => todo!(),
+        ScalarExpression::InvokeFunction(_) => Ok(None),
     };
 
     if let Ok(Some(mut identifier)) = r {

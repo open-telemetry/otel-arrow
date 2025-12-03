@@ -34,6 +34,7 @@ flume.workspace = true
 core_affinity.workspace = true
 local-sync.workspace = true
 async-unsync.workspace = true
+roaring.workspace = true
 unsync.workspace = true
 portpicker.workspace = true
 tokio-stream.workspace = true
@@ -51,6 +52,10 @@ harness = false
 
 [[bench]]
 name = "otap_encoder"
+harness = false
+
+[[bench]]
+name = "pdata_filter"
 harness = false
 
 [[bench]]
@@ -77,11 +82,7 @@ harness = false
 name = "item_count"
 harness = false
 
-[profile.bench]
-opt-level = 3
-debug = false
-incremental = false
-lto = "fat"
-codegen-units = 1
-panic = "abort"
+[[bench]]
+name = "otap_logs_view"
+harness = false
 

@@ -32,19 +32,19 @@ use crate::schema::consts;
 
 use super::attributes::AttributeValueType;
 
-struct LogsArrays<'a> {
-    id: Option<&'a UInt16Array>,
-    schema_url: Option<StringArrayAccessor<'a>>,
-    time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    observed_time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    trace_id: Option<ByteArrayAccessor<'a>>,
-    span_id: Option<ByteArrayAccessor<'a>>,
-    severity_number: Option<Int32ArrayAccessor<'a>>,
-    severity_text: Option<StringArrayAccessor<'a>>,
-    body: Option<LogBodyArrays<'a>>,
-    dropped_attributes_count: Option<&'a UInt32Array>,
-    flags: Option<&'a UInt32Array>,
-    event_name: Option<StringArrayAccessor<'a>>,
+pub(crate) struct LogsArrays<'a> {
+    pub(crate) id: Option<&'a UInt16Array>,
+    pub(crate) schema_url: Option<StringArrayAccessor<'a>>,
+    pub(crate) time_unix_nano: Option<&'a TimestampNanosecondArray>,
+    pub(crate) observed_time_unix_nano: Option<&'a TimestampNanosecondArray>,
+    pub(crate) trace_id: Option<ByteArrayAccessor<'a>>,
+    pub(crate) span_id: Option<ByteArrayAccessor<'a>>,
+    pub(crate) severity_number: Option<Int32ArrayAccessor<'a>>,
+    pub(crate) severity_text: Option<StringArrayAccessor<'a>>,
+    pub(crate) body: Option<LogBodyArrays<'a>>,
+    pub(crate) dropped_attributes_count: Option<&'a UInt32Array>,
+    pub(crate) flags: Option<&'a UInt32Array>,
+    pub(crate) event_name: Option<StringArrayAccessor<'a>>,
 }
 
 impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
@@ -116,9 +116,9 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
     }
 }
 
-struct LogBodyArrays<'a> {
+pub(crate) struct LogBodyArrays<'a> {
     body: &'a StructArray,
-    anyval_arrays: AnyValueArrays<'a>,
+    pub(crate) anyval_arrays: AnyValueArrays<'a>,
 }
 
 impl<'a> LogBodyArrays<'a> {

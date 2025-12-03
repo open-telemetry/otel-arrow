@@ -1,15 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Provides a set of structs and enums that interact with the gRPC Server with BiDirectional
+//! streaming.
 //!
-//! Provides a set of structs and enums that interact with the gRPC Server with BiDirectional streaming
-//!
-//! Implements the necessary service traits for OTLP data
+//! Implements the necessary service traits for OTLP data.
 //!
 //! ToDo: Modify OTAPData -> Optimize message transport
 //! ToDo: Handle Ack and Nack, return proper batch status
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
-//!
 
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
 use otap_df_pdata::{
@@ -27,14 +26,26 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use crate::{
-    otap_grpc::otlp::server::{SharedState, SlotGuard},
-    pdata::{Context, OtapPdata},
-};
+use crate::pdata::{Context, OtapPdata};
 
+pub mod client_settings;
+pub mod common;
 pub mod middleware;
 pub mod otlp;
 pub mod server_settings;
+
+use crate::otap_grpc::otlp::server::SharedState;
+pub use client_settings::GrpcClientSettings;
+pub use server_settings::GrpcServerSettings;
+
+/// Common settings for OTLP receivers.
+#[derive(Clone, Debug)]
+pub struct NewSettings {
+    /// Maximum concurrent requests per receiver instance (per core).
+    pub max_concurrent_requests: usize,
+    /// Whether the receiver should wait.
+    pub wait_for_result: bool,
+}
 
 /// Common settings for OTLP receivers.
 #[derive(Clone, Debug)]
@@ -325,7 +336,7 @@ where
             key.into(),
             &mut otap_pdata,
         );
-        Some((SlotGuard { key, state }, rx))
+        Some((otlp::server::SlotGuard { key, state }, rx))
     } else {
         None
     };

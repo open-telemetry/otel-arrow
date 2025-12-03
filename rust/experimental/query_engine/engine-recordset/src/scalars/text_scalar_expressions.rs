@@ -6,7 +6,7 @@ use data_engine_expressions::*;
 use crate::{execution_context::*, scalars::execute_scalar_expression, *};
 
 pub fn execute_text_scalar_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     text_scalar_expression: &'a TextScalarExpression,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where

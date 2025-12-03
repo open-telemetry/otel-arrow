@@ -7,7 +7,7 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapScalarExpression {
-    query_location: QueryLocation,
+    pub(crate) query_location: QueryLocation,
     values: HashMap<Box<str>, StaticScalarExpression>,
 }
 

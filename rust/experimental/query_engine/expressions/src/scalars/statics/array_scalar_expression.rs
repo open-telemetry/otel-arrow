@@ -5,7 +5,7 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrayScalarExpression {
-    query_location: QueryLocation,
+    pub(crate) query_location: QueryLocation,
     values: Vec<StaticScalarExpression>,
 }
 

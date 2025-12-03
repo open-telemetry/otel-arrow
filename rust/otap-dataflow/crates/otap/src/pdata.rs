@@ -29,6 +29,15 @@ pub struct Context {
 }
 
 impl Context {
+    /// Create a context with reserved frame capacity to avoid reallocating
+    /// when the first subscriber is pushed.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            stack: Vec::with_capacity(capacity),
+        }
+    }
+
     /// Subscribe to a set of interests.
     pub(crate) fn subscribe_to(
         &mut self,

@@ -26,7 +26,7 @@ static VALUE_TYPE_NAMES: LazyLock<Vec<StringValueStorage>> = LazyLock::new(|| {
 });
 
 pub fn execute_scalar_expression<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     scalar_expression: &'a ScalarExpression,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -327,123 +327,30 @@ where
             ResolvedValue::Value(Value::String(value_type_name))
         }
         ScalarExpression::Select(s) => {
-            match execute_scalar_expression(execution_context, s.get_selectors())?.to_value() {
+            let selectors_expression = s.get_selectors();
+
+            match execute_scalar_expression(execution_context, selectors_expression)?.to_value() {
                 Value::Array(selectors) => {
                     let mut value = execute_scalar_expression(execution_context, s.get_value())?;
 
-                    if selectors.is_empty() {
-                        value
-                    } else {
+                    if !selectors.is_empty() {
                         for i in 0..selectors.len() {
-                            match selectors
+                            let selector = selectors
                                 .get(i)
                                 .expect("Selector could not be found")
-                                .to_value()
-                            {
-                                Value::Integer(index) => {
-                                    match value.try_resolve_array() {
-                                        Ok(array_value) => {
-                                            let mut index = index.get_value();
-                                            let length = array_value.len() as i64;
-                                            if index < 0 {
-                                                index += length;
-                                            }
-                                            if index < 0 || index >= length {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Warn,
-                                                    s,
-                                                    || format!("Array index '{index}' specified in accessor expression is invalid"),
-                                                );
-                                                return Ok(ResolvedValue::Computed(
-                                                    OwnedValue::Null,
-                                                ));
-                                            }
+                                .to_value();
 
-                                            let mut item = None;
-
-                                            array_value.take(
-                                                (index as usize).into(),
-                                                |_, v| Ok(v),
-                                                &mut |v| item = Some(v),
-                                            )?;
-
-                                            if let Some(v) = item {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Verbose,
-                                                    s.get_selectors(),
-                                                    || format!("Resolved {} value for index '{index}' specified in accessor expression", ResolvedValue::Value(v.to_value())),
-                                                );
-                                                value = v;
-                                            } else {
-                                                unreachable!() // Closure not executed
-                                            }
-                                        }
-                                        Err(orig) => {
-                                            execution_context.add_diagnostic_if_enabled(
-                                                RecordSetEngineDiagnosticLevel::Warn,
-                                                s.get_selectors(),
-                                                || format!("Could not search for array index '{}' specified in select expression because current node is a '{}' value", index.get_value(), orig.get_value_type()),
-                                            );
-                                            return Ok(ResolvedValue::Computed(OwnedValue::Null));
-                                        }
-                                    }
-                                }
-                                Value::String(key) => {
-                                    match value.try_resolve_map() {
-                                        Ok(map_value) => {
-                                            let key = key.get_value();
-
-                                            if !map_value.contains_key(key) {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Warn,
-                                                    s,
-                                                    || format!("Map key '{key}' specified in accessor expression could not be found"),
-                                                );
-                                                return Ok(ResolvedValue::Computed(
-                                                    OwnedValue::Null,
-                                                ));
-                                            }
-
-                                            let mut item = None;
-
-                                            map_value.take(&[key], |_, v| Ok(v), &mut |v| {
-                                                item = Some(v)
-                                            })?;
-
-                                            if let Some(v) = item {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Verbose,
-                                                    s.get_selectors(),
-                                                    || format!("Resolved {} value for key '{key}' specified in accessor expression", ResolvedValue::Value(v.to_value())),
-                                                );
-                                                value = v;
-                                            } else {
-                                                unreachable!() // Closure not executed
-                                            }
-                                        }
-                                        Err(orig) => {
-                                            execution_context.add_diagnostic_if_enabled(
-                                                RecordSetEngineDiagnosticLevel::Warn,
-                                                s.get_selectors(),
-                                                || format!("Could not search for map key '{}' specified in select expression because current node is a '{}' value", key.get_value(), orig.get_value_type()),
-                                            );
-                                            return Ok(ResolvedValue::Computed(OwnedValue::Null));
-                                        }
-                                    }
-                                }
-                                v => {
-                                    execution_context.add_diagnostic_if_enabled(
-                                        RecordSetEngineDiagnosticLevel::Warn,
-                                        s.get_selectors(),
-                                        || format!("Unexpected scalar expression with '{}' value type encountered in select expression", v.get_value_type()),
-                                    );
-                                    return Ok(ResolvedValue::Computed(OwnedValue::Null));
+                            match value.select(execution_context, selectors_expression, selector)? {
+                                Some(v) => value = v,
+                                None => {
+                                    value = ResolvedValue::Computed(OwnedValue::Null);
+                                    break;
                                 }
                             }
                         }
-
-                        value
                     }
+
+                    value
                 }
                 v => {
                     execution_context.add_diagnostic_if_enabled(
@@ -460,6 +367,8 @@ where
                 }
             }
         }
+        ScalarExpression::Argument(_) => todo!(),
+        ScalarExpression::InvokeFunction(_) => todo!(),
     };
 
     execution_context.add_diagnostic_if_enabled(
@@ -472,7 +381,7 @@ where
 }
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     borrow_source: BorrowSource,
     borrow: Ref<'b, dyn AsStaticValue + 'static>,
     expression: &'a ScalarExpression,
@@ -600,7 +509,7 @@ where
 }
 
 fn select_from_value<'a, 'b, TRecord: Record>(
-    execution_context: &'b ExecutionContext<'a, '_, '_, TRecord>,
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     root: Value<'b>,
     expression: &'a ScalarExpression,
     selectors: &mut Iter<'a, ScalarExpression>,
