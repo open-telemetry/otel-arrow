@@ -43,7 +43,7 @@ mod optimize;
 ///
 /// Represents logical combinations of base values using Not, And, and Or operations,
 /// forming a tree that can be evaluated or transformed.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Composite<T> {
     Base(T),
     Not(Box<Self>),
@@ -58,6 +58,14 @@ impl<T> Composite<T> {
         R: Into<Self>,
     {
         Self::And(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    pub fn or<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::Or(Box::new(left.into()), Box::new(right.into()))
     }
 }
 
@@ -126,7 +134,7 @@ impl<T> From<T> for Composite<T> {
 /// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
 /// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
 /// using `Composite`.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
     pub source_filter: Option<Expr>,
@@ -377,6 +385,15 @@ pub struct AttributesFilterPlan {
 
     /// The identifier of which attributes will be considered when filtering
     pub attrs_identifier: AttributesIdentifier,
+}
+
+impl AttributesFilterPlan {
+    fn new(filter: Expr, attrs_identifier: AttributesIdentifier) -> Self {
+        Self {
+            filter,
+            attrs_identifier,
+        }
+    }
 }
 
 impl ToExec for AttributesFilterPlan {
