@@ -136,6 +136,18 @@ pub struct FilterPlan {
     pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
 }
 
+impl FilterPlan {
+    fn new<T>(source_filter: Option<Expr>, attribute_filter: Option<T>) -> Self
+    where
+        T: Into<Composite<AttributesFilterPlan>>,
+    {
+        Self {
+            source_filter,
+            attribute_filter: attribute_filter.map(T::into),
+        }
+    }
+}
+
 impl From<Expr> for FilterPlan {
     fn from(expr: Expr) -> Self {
         Self {

@@ -14,7 +14,7 @@ impl AttrsFilterCombineOptimizerRule {
                 let right = Self::optimize(*right);
 
                 match (left, right) {
-                    // look for opportunity to combine attrs filters
+                    // look for opportunity to combine attrs filters on siblings
                     (Composite::Base(mut left_plan), Composite::Base(mut right_plan)) => {
                         match (
                             left_plan.attribute_filter.take(),
@@ -43,6 +43,36 @@ impl AttrsFilterCombineOptimizerRule {
                         }
 
                         Composite::and(left_plan, right_plan)
+                    }
+
+                    // look for opportunity to hoist the attribute filter plan from the child.
+                    //
+                    // e.g. if the expression tree looks like this:
+                    // And (
+                    //   And (<L>, attributes["x"] == "Y"),
+                    //   attributes["x2"] == "Y2"
+                    // )
+                    //
+                    // we want to transform it to:
+                    // And(
+                    //   <L>,
+                    //   AND(attributes["X"] == "Y", attributes["x2"] == "Y2")
+                    // )
+                    //
+                    (Composite::And(left_left, left_right), Composite::Base(right_plan)) => {
+                        match *left_right {
+                            // if the left's right child is the base, hoist it up to be 'and'ed with the right
+                            // side of the current and, and then optimize that.
+                            Composite::Base(left_right_plan) => Composite::and(
+                                *left_left,
+                                Self::optimize(Composite::and(left_right_plan, right_plan)),
+                            ),
+
+                            // otherwise just return the original
+                            left_right => {
+                                Composite::and(Composite::and(*left_left, left_right), right_plan)
+                            }
+                        }
                     }
 
                     // otherwise just return the originals
@@ -106,55 +136,43 @@ pub mod test {
     #[test]
     fn test_attr_combine_simple_and_preserve_left_root_filter() {
         let input = Composite::and(
-            FilterPlan {
-                source_filter: Some(col("severity_text").eq(lit("WARN"))),
-                attribute_filter: Some(
-                    AttributesFilterPlan {
-                        filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }
-                    .into(),
-                ),
-            },
-            FilterPlan {
-                source_filter: None,
-                attribute_filter: Some(
-                    AttributesFilterPlan {
-                        filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    }
-                    .into(),
-                ),
-            },
+            FilterPlan::new(
+                Some(col("severity_text").eq(lit("WARN"))),
+                Some(AttributesFilterPlan {
+                    filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
+                    attrs_identifier: AttributesIdentifier::Root,
+                }),
+            ),
+            FilterPlan::new(
+                None,
+                Some(AttributesFilterPlan {
+                    filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
+                    attrs_identifier: AttributesIdentifier::Root,
+                }),
+            ),
         );
 
         let result = AttrsFilterCombineOptimizerRule::optimize(input);
 
         let expected = Composite::and(
-            FilterPlan {
-                source_filter: Some(col("severity_text").eq(lit("WARN"))),
-                attribute_filter: None,
-            },
-            FilterPlan {
-                source_filter: None,
-                attribute_filter: Some(Composite::and(
-                    AttributesFilterPlan {
-                        filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    },
-                    AttributesFilterPlan {
-                        filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
-                        attrs_identifier: AttributesIdentifier::Root,
-                    },
-                )),
-            },
+            FilterPlan::from(col("severity_text").eq(lit("WARN"))),
+            FilterPlan::from(Composite::and(
+                AttributesFilterPlan {
+                    filter: col("key").eq(lit("attr")).and(col("str").eq(lit("x"))),
+                    attrs_identifier: AttributesIdentifier::Root,
+                },
+                AttributesFilterPlan {
+                    filter: col("key").eq(lit("attr2")).and(col("str").eq(lit("x"))),
+                    attrs_identifier: AttributesIdentifier::Root,
+                },
+            )),
         );
 
         assert_eq!(result, expected);
     }
 
     #[test]
-    fn test_attr_compile_deeply_nested_ands() {
+    fn test_attr_combine_deeply_nested_ands() {
         let input = Composite::and(
             Composite::and(
                 Composite::and(
@@ -216,5 +234,40 @@ pub mod test {
         )));
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_attr_combine_attr_from_and_child_and_preserve_source_filters() {
+        let input = Composite::and(
+            Composite::and(
+                FilterPlan::from(lit("source1")),
+                FilterPlan::from(AttributesFilterPlan {
+                    filter: lit("attr1"),
+                    attrs_identifier: AttributesIdentifier::Root,
+                }),
+            ),
+            FilterPlan::from(AttributesFilterPlan {
+                filter: lit("attr2"),
+                attrs_identifier: AttributesIdentifier::Root,
+            }),
+        );
+
+        let result = AttrsFilterCombineOptimizerRule::optimize(input);
+
+        let expected = Composite::and(
+            FilterPlan::from(lit("source1")),
+            FilterPlan::from(Composite::and(
+                AttributesFilterPlan {
+                    filter: lit("attr1"),
+                    attrs_identifier: AttributesIdentifier::Root,
+                },
+                AttributesFilterPlan {
+                    filter: lit("attr2"),
+                    attrs_identifier: AttributesIdentifier::Root,
+                },
+            )),
+        );
+
+        assert_eq!(result, expected)
     }
 }
