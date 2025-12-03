@@ -74,7 +74,7 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         c,
         &rt,
         &batch_sizes,
-        "attr_or_filter",
+        "attr_or_attr_filter",
         "logs | where attributes[\"code.namespace\"] == \"main\" or attributes[\"code.line.number\"] == 2",
     );
     bench_log_pipeline(
@@ -83,6 +83,25 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         &batch_sizes,
         "attr_and_prop_filter",
         "logs | where attributes[\"code.namespace\"] == \"main\" and severity_text == \"WARN\"",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "attr_and_attr_filter",
+        "logs | where attributes[\"code.namespace\"] == \"main\" and attributes[\"code.line\"] == 2",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "attr_and_or_together_filter", 
+        "logs | where 
+            (attributes[\"code.namespace\"] == \"main\" and attributes[\"code.line\"] == 2) 
+            or 
+            (attributes[\"code.namespace\"] == \"otap_dataflow_engine\" and attributes[\"code.line\"] == 3)",
     );
 }
 
