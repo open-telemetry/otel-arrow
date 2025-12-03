@@ -82,6 +82,9 @@ pub enum WalError {
     /// Truncate sidecar contains invalid or corrupted bytes.
     #[error("invalid truncate sidecar: {0}")]
     InvalidTruncateSidecar(&'static str),
+    /// Truncate cursor failed validation.
+    #[error("invalid truncate cursor: {0}")]
+    InvalidTruncateCursor(&'static str),
     /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),

@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// Writer is only exercised by tests until WAL replay wires into the engine.
+#![allow(dead_code)]
+
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -96,6 +99,8 @@ pub(crate) struct WalWriter {
     rotated_chunks: VecDeque<RotatedChunk>,
     data_offset_base: u64,
     last_global_safe_offset: u64,
+    validated_safe_offset: u64,
+    last_safe_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,10 +123,11 @@ impl WalWriter {
             .open(&options.path)?;
 
         let metadata = file.metadata()?;
-        if metadata.len() == 0 {
+        let metadata_len = if metadata.len() == 0 {
             let header = WalHeader::new(options.segment_cfg_hash);
             header.write_to(&mut file)?;
             file.flush()?;
+            WAL_HEADER_LEN as u64
         } else if metadata.len() < WAL_HEADER_LEN as u64 {
             return Err(WalError::InvalidHeader("file smaller than header"));
         } else {
@@ -132,11 +138,12 @@ impl WalWriter {
                     found: header.segment_cfg_hash,
                 });
             }
-        }
+            metadata.len()
+        };
 
         let _ = file.seek(SeekFrom::End(0))?;
         let sidecar_path = truncate_sidecar_path(&options.path);
-        let truncate_state = load_truncate_state(&sidecar_path, metadata.len())?;
+        let truncate_state = load_truncate_state(&sidecar_path, metadata_len)?;
 
         let punch_capable = {
             #[cfg(test)]
@@ -151,7 +158,7 @@ impl WalWriter {
             }
         };
 
-        let current_len = metadata.len();
+        let current_len = metadata_len;
 
         let mut writer = Self {
             file,
@@ -168,6 +175,8 @@ impl WalWriter {
             rotated_chunks: VecDeque::new(),
             data_offset_base: 0,
             last_global_safe_offset: 0,
+            validated_safe_offset: truncate_state.truncate_offset,
+            last_safe_sequence: None,
         };
         writer.last_global_safe_offset = writer.global_safe_offset(writer.truncate_state.truncate_offset);
         Ok(writer)
@@ -248,38 +257,30 @@ impl WalWriter {
     }
 
     pub fn truncate_to(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
-        let safe_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
-        let metadata_len = self.file.metadata()?.len();
-        if safe_offset > metadata_len {
-            return Err(WalError::InvalidHeader("truncate beyond end of file"));
-        }
-
+        let safe_offset = self.resolve_truncate_cursor(cursor)?;
         self.file.set_len(safe_offset)?;
         let _ = self.file.seek(SeekFrom::Start(safe_offset))?;
-        self.record_truncate_offset(safe_offset)
+        self.current_len = safe_offset;
+        self.recalculate_aggregate_bytes();
+        self.commit_truncate_state(cursor, safe_offset)
     }
 
     pub(crate) fn record_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
-        self.record_truncate_offset(cursor.safe_offset)?;
-        self.last_global_safe_offset = self.global_safe_offset(cursor.safe_offset);
-        self.purge_rotated_chunks()
+        let safe_offset = self.resolve_truncate_cursor(cursor)?;
+        self.commit_truncate_state(cursor, safe_offset)
     }
 
     pub fn reclaim_prefix(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
-        let safe_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
-        let metadata_len = self.file.metadata()?.len();
-        if safe_offset > metadata_len {
-            return Err(WalError::InvalidHeader("truncate beyond end of file"));
-        }
+        let safe_offset = self.resolve_truncate_cursor(cursor)?;
         if safe_offset <= WAL_HEADER_LEN as u64 {
-            return Ok(());
+            return self.commit_truncate_state(cursor, WAL_HEADER_LEN as u64);
         }
 
-        self.record_truncate_offset(safe_offset)?;
         if self.try_punch_prefix(safe_offset)? {
-            return Ok(());
+            return self.commit_truncate_state(cursor, safe_offset);
         }
-        self.rewrite_prefix_in_place(safe_offset)
+        self.rewrite_prefix_in_place(safe_offset)?;
+        self.commit_truncate_state(cursor, WAL_HEADER_LEN as u64)
     }
 
     fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {
@@ -443,9 +444,77 @@ fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {
 }
 
 impl WalWriter {
+    fn resolve_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<u64> {
+        let requested_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
+        let file_len = self.file.metadata()?.len();
+        if requested_offset > file_len {
+            return Err(WalError::InvalidTruncateCursor("safe offset beyond wal tail"));
+        }
+        if requested_offset < self.truncate_state.truncate_offset {
+            return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
+        }
+        if let Some(last_seq) = self.last_safe_sequence {
+            if cursor.safe_sequence < last_seq {
+                return Err(WalError::InvalidTruncateCursor("safe sequence regressed"));
+            }
+        }
+        self.ensure_entry_boundary(requested_offset)?;
+        Ok(requested_offset)
+    }
+
+    fn ensure_entry_boundary(&mut self, target: u64) -> WalResult<()> {
+        if target == self.validated_safe_offset {
+            return Ok(());
+        }
+        if target < self.validated_safe_offset {
+            return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
+        }
+
+        let original_pos = self.file.seek(SeekFrom::Current(0))?;
+        let mut cursor = self.validated_safe_offset;
+        let _ = self.file.seek(SeekFrom::Start(cursor))?;
+        while cursor < target {
+            let mut len_buf = [0u8; 4];
+            self.file.read_exact(&mut len_buf)?;
+            let entry_len = u32::from_le_bytes(len_buf) as u64;
+            let entry_total = 4u64
+                .checked_add(entry_len)
+                .and_then(|val| val.checked_add(4))
+                .ok_or(WalError::InvalidTruncateCursor("entry length overflow"))?;
+            cursor = cursor
+                .checked_add(entry_total)
+                .ok_or(WalError::InvalidTruncateCursor("safe offset overflow"))?;
+            if cursor > target {
+                let _ = self.file.seek(SeekFrom::Start(original_pos))?;
+                return Err(WalError::InvalidTruncateCursor(
+                    "safe offset splits entry boundary",
+                ));
+            }
+            let _ = self
+                .file
+                .seek(SeekFrom::Current(entry_len as i64 + 4))?;
+        }
+        let _ = self.file.seek(SeekFrom::Start(original_pos))?;
+        Ok(())
+    }
+
+    fn commit_truncate_state(
+        &mut self,
+        cursor: &WalTruncateCursor,
+        recorded_offset: u64,
+    ) -> WalResult<()> {
+        self.record_truncate_offset(recorded_offset)?;
+        self.last_global_safe_offset = self.global_safe_offset(recorded_offset);
+        self.validated_safe_offset = recorded_offset;
+        self.last_safe_sequence = Some(cursor.safe_sequence);
+        self.purge_rotated_chunks()
+    }
+
     fn record_truncate_offset(&mut self, requested_offset: u64) -> WalResult<()> {
         let safe_offset = requested_offset.max(WAL_HEADER_LEN as u64);
-        if self.truncate_state.truncate_offset == safe_offset {
+        if self.truncate_state.truncate_offset == safe_offset
+            && self.sidecar_path.exists()
+        {
             return Ok(());
         }
         self.truncate_state.truncate_offset = safe_offset;
@@ -475,8 +544,7 @@ impl WalWriter {
         self.current_len = new_len;
         self.recalculate_aggregate_bytes();
         self.data_offset_base = self.data_offset_base.saturating_add(reclaimed);
-        self.truncate_state.truncate_offset = WAL_HEADER_LEN as u64;
-        TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
+        Ok(())
     }
 
     fn recalculate_aggregate_bytes(&mut self) {
@@ -533,6 +601,8 @@ impl WalWriter {
         self.file = reopen_wal_file(&self.options.path, self.options.segment_cfg_hash)?;
         self.current_len = WAL_HEADER_LEN as u64;
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(self.current_len);
+        self.validated_safe_offset = WAL_HEADER_LEN as u64;
+        self.truncate_state.truncate_offset = WAL_HEADER_LEN as u64;
 
         self.truncate_state.rotation_generation = self
             .truncate_state

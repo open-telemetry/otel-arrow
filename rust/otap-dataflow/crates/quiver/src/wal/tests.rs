@@ -513,6 +513,58 @@ fn wal_writer_rewrite_compacts_prefix() {
 }
 
 #[test]
+fn wal_writer_enforces_safe_offset_boundaries() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("safe_offset.wal");
+
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x42; 16], Duration::ZERO)
+            .with_punch_capability(false),
+    )
+    .expect("writer");
+
+    let first_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[11, 12, 13])],
+    );
+    let _ = writer.append_bundle(&first_bundle).expect("first append");
+
+    let second_bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[21, 22, 23])],
+    );
+    let _ = writer.append_bundle(&second_bundle).expect("second append");
+
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let first_entry = iter.next().expect("entry").expect("ok");
+
+    let mut cursor = WalTruncateCursor::default();
+    cursor.safe_offset = first_entry.offset.position + 4;
+    cursor.safe_sequence = first_entry.sequence;
+
+    match writer.reclaim_prefix(&cursor) {
+        Err(WalError::InvalidTruncateCursor(message)) => {
+            assert_eq!(message, "safe offset splits entry boundary")
+        }
+        other => panic!("expected invalid cursor error, got {other:?}"),
+    }
+
+    cursor.advance(&first_entry);
+    writer
+        .reclaim_prefix(&cursor)
+        .expect("reclaim succeeds with aligned cursor");
+    drop(writer);
+
+    let mut reader = WalReader::open(&wal_path).expect("reader after reclaim");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let remaining = iter.next().expect("entry").expect("ok");
+    assert_eq!(remaining.sequence, first_entry.sequence + 1);
+    assert!(iter.next().is_none());
+}
+
+#[test]
 fn wal_writer_punch_failure_falls_back_to_rewrite() {
     writer_test_support::reset_flush_notifications();
     writer_test_support::set_force_punch_error(true);
@@ -843,7 +895,7 @@ fn wal_writer_rejects_truncate_beyond_file_end() {
     };
 
     match writer.truncate_to(&cursor) {
-        Err(WalError::InvalidHeader("truncate beyond end of file")) => {}
+        Err(WalError::InvalidTruncateCursor("safe offset beyond wal tail")) => {}
         other => panic!("expected truncate bounds error, got {:?}", other),
     }
 }
