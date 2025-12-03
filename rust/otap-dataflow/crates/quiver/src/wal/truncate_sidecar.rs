@@ -14,6 +14,9 @@ use crc32fast::Hasher;
 
 use super::{WalError, WalResult};
 
+#[cfg(test)]
+use super::writer::test_support::{self as writer_test_support, CrashInjection};
+
 pub(crate) const TRUNCATE_SIDECAR_MAGIC: &[u8; 8] = b"QUIVER\0T";
 pub(crate) const TRUNCATE_SIDECAR_VERSION: u16 = 1;
 pub(crate) const TRUNCATE_SIDECAR_LEN: usize = 8 + 2 + 2 + 8 + 8 + 4;
@@ -138,6 +141,12 @@ impl TruncateSidecar {
             file.write_all(&encoded)?;
             file.flush()?;
             file.sync_data()?;
+        }
+        #[cfg(test)]
+        if writer_test_support::take_crash(CrashInjection::BeforeSidecarRename) {
+            return Err(WalError::InjectedCrash(
+                "crash injected before truncate sidecar rename",
+            ));
         }
         std::fs::rename(&tmp_path, path)?;
         Ok(())

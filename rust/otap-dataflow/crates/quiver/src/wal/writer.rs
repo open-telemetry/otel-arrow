@@ -33,6 +33,9 @@ use super::{
     WalResult, WalTruncateCursor,
 };
 
+#[cfg(test)]
+use self::test_support::CrashInjection;
+
 /// Low-level tunables that bridge the user-facing [`QuiverConfig`] into the WAL.
 #[derive(Debug, Clone)]
 pub(crate) struct WalWriterOptions {
@@ -113,6 +116,8 @@ pub(crate) struct WalWriter {
     last_global_safe_offset: u64,
     validated_safe_offset: u64,
     last_safe_sequence: Option<u64>,
+    #[cfg(test)]
+    test_crashed: bool,
 }
 
 /// Opaque marker returned to callers after an append so they can correlate
@@ -191,6 +196,8 @@ impl WalWriter {
             last_global_safe_offset: 0,
             validated_safe_offset: truncate_state.truncate_offset,
             last_safe_sequence: None,
+            #[cfg(test)]
+            test_crashed: false,
         };
         writer.last_global_safe_offset = writer.global_safe_offset(writer.truncate_state.truncate_offset);
         Ok(writer)
@@ -306,6 +313,12 @@ impl WalWriter {
         }
 
         if self.try_punch_prefix(safe_offset)? {
+            #[cfg(test)]
+            if test_support::take_crash(CrashInjection::AfterPunch) {
+                return Err(WalError::InjectedCrash(
+                    "crash injected immediately after punching wal prefix",
+                ));
+            }
             return self.commit_truncate_state(cursor, safe_offset);
         }
         self.rewrite_prefix_in_place(safe_offset)?;
@@ -361,6 +374,10 @@ impl WalWriter {
 
 impl Drop for WalWriter {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if self.test_crashed {
+            return;
+        }
         if self.unflushed_bytes == 0 {
             return;
         }
@@ -379,6 +396,12 @@ impl WalWriter {
 
     pub(crate) fn test_last_flush(&self) -> Instant {
         self.last_flush
+    }
+
+    /// Simulates a process crash by flagging Drop to skip flush/fsync logic.
+    #[cfg(test)]
+    pub(crate) fn test_force_crash(mut self) {
+        self.test_crashed = true;
     }
 }
 
@@ -818,6 +841,13 @@ fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<(
         file.write_all(&buffer[..read])?;
         read_pos += read as u64;
         write_pos += read as u64;
+
+        #[cfg(test)]
+        if test_support::take_crash(CrashInjection::DuringRewriteCopy) {
+            return Err(WalError::InjectedCrash(
+                "crash injected during rewrite copy",
+            ));
+        }
     }
 
     file.set_len(write_pos)?;
@@ -863,6 +893,14 @@ pub(super) mod test_support {
         static SYNC_DATA_NOTIFIED: Cell<bool> = Cell::new(false);
         static FORCE_PUNCH_ERROR: Cell<bool> = Cell::new(false);
         static PUNCH_FAILURE_NOTIFIED: Cell<bool> = Cell::new(false);
+        static NEXT_CRASH: Cell<Option<CrashInjection>> = Cell::new(None);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum CrashInjection {
+        BeforeSidecarRename,
+        DuringRewriteCopy,
+        AfterPunch,
     }
 
     pub fn record_flush() {
@@ -887,6 +925,7 @@ pub(super) mod test_support {
         SYNC_DATA_NOTIFIED.with(|cell| cell.set(false));
         FORCE_PUNCH_ERROR.with(|cell| cell.set(false));
         PUNCH_FAILURE_NOTIFIED.with(|cell| cell.set(false));
+        NEXT_CRASH.with(|cell| cell.set(None));
     }
 
     pub fn record_sync_data() {
@@ -919,6 +958,25 @@ pub(super) mod test_support {
             cell.set(false);
             notified
         })
+    }
+
+    pub fn inject_crash(point: CrashInjection) {
+        NEXT_CRASH.with(|cell| cell.set(Some(point)));
+    }
+
+    pub fn take_crash(point: CrashInjection) -> bool {
+        NEXT_CRASH.with(|cell| {
+            if cell.get() == Some(point) {
+                cell.set(None);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    pub fn clear_crash_injection() {
+        NEXT_CRASH.with(|cell| cell.set(None));
     }
 }
 

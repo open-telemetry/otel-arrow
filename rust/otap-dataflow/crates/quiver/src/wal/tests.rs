@@ -1564,3 +1564,166 @@ fn wal_reader_fails_on_corrupt_header_version() {
         other => panic!("expected unsupported version error, got {:?}", other),
     }
 }
+
+#[derive(Clone, Copy)]
+struct CrashCase {
+    name: &'static str,
+    injection: writer_test_support::CrashInjection,
+    punch_capable: bool,
+}
+
+#[test]
+fn wal_writer_recovers_from_crash_resilience_scenarios() {
+    let cases = [
+        CrashCase {
+            name: "sidecar_pre_rename",
+            injection: writer_test_support::CrashInjection::BeforeSidecarRename,
+            punch_capable: true,
+        },
+        CrashCase {
+            name: "rewrite_mid_copy",
+            injection: writer_test_support::CrashInjection::DuringRewriteCopy,
+            punch_capable: false,
+        },
+        CrashCase {
+            name: "post_punch",
+            injection: writer_test_support::CrashInjection::AfterPunch,
+            punch_capable: true,
+        },
+    ];
+
+    for case in cases {
+        run_crash_case(case);
+    }
+}
+
+fn run_crash_case(case: CrashCase) {
+    writer_test_support::reset_flush_notifications();
+
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join(format!("crash_{}.wal", case.name));
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Logs")]);
+    let mut options = WalWriterOptions::new(wal_path.clone(), [0xC7; 16], Duration::ZERO)
+        .with_rotation_target(32 * 1024)
+        .with_max_chunks(4);
+    options = if case.punch_capable {
+        options.with_punch_capability(true)
+    } else {
+        options.with_punch_capability(false)
+    };
+
+    let mut writer = WalWriter::open(options.clone()).expect("writer");
+    for value in 0..4 {
+        let bundle = FixtureBundle::new(
+            descriptor.clone(),
+            vec![FixtureSlot::with_batch(
+                SlotId::new(0),
+                0x60 + value as u8,
+                build_complex_batch(256, "crash", 1024),
+            )],
+        );
+        let _ = writer.append_bundle(&bundle).expect("append bundle");
+    }
+
+    for value in 0..4 {
+        let bundle = FixtureBundle::new(
+            descriptor.clone(),
+            vec![FixtureSlot::new(SlotId::new(0), 0x40 + value as u8, &[(value + 1) as i64])],
+        );
+        let _ = writer.append_bundle(&bundle).expect("append bundle");
+    }
+
+    let cursor = wal_cursor_after_entries(&wal_path, 2);
+    assert!(
+        cursor.safe_offset > WAL_HEADER_LEN as u64,
+        "{}: cursor safe offset must exceed header",
+        case.name
+    );
+    if !case.punch_capable {
+        writer_test_support::set_force_punch_error(true);
+    }
+    writer_test_support::inject_crash(case.injection);
+    let err = match writer.reclaim_prefix(&cursor) {
+        Ok(_) => panic!("{}: crash injection did not trigger", case.name),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, WalError::InjectedCrash(_)),
+        "unexpected error: {:?}",
+        err
+    );
+
+    writer.test_force_crash();
+
+    assert_crash_recovery(&options, &descriptor, case.name, &cursor);
+    writer_test_support::reset_flush_notifications();
+}
+
+fn wal_cursor_after_entries(path: &Path, entry_count: usize) -> WalTruncateCursor {
+    let mut reader = WalReader::open(path).expect("reader for cursor");
+    let mut iter = reader.iter_from(0).expect("cursor iterator");
+    let mut cursor = WalTruncateCursor::default();
+    for idx in 0..entry_count {
+        let bundle = iter
+            .next()
+            .unwrap_or_else(|| {
+                panic!(
+                    "not enough entries for cursor (wanted {}, stopped at {})",
+                    entry_count, idx
+                )
+            })
+            .expect("entry ok while building cursor");
+        cursor.advance(&bundle);
+    }
+    cursor
+}
+
+fn assert_crash_recovery(
+    options: &WalWriterOptions,
+    descriptor: &BundleDescriptor,
+    case_name: &str,
+    cursor: &WalTruncateCursor,
+) {
+    assert_reader_clean(&options.path, cursor.safe_offset, case_name);
+
+    let mut writer = WalWriter::open(options.clone()).expect("writer reopen");
+    let repair_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0xF0, &[99])],
+    );
+    let _ = writer
+        .append_bundle(&repair_bundle)
+        .expect("append after crash");
+    drop(writer);
+
+    assert_reader_clean(&options.path, cursor.safe_offset, case_name);
+
+    let sidecar_path = options
+        .path
+        .parent()
+        .expect("wal dir")
+        .join("truncate.offset");
+    if sidecar_path.exists() {
+        let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar readable");
+        let wal_len = std::fs::metadata(&options.path).expect("metadata").len();
+        assert!(
+            sidecar.truncate_offset >= WAL_HEADER_LEN as u64,
+            "{case_name}: truncate offset must include header"
+        );
+        assert!(
+            sidecar.truncate_offset <= wal_len,
+            "{case_name}: truncate offset must not exceed file len"
+        );
+    }
+}
+
+fn assert_reader_clean(path: &Path, offset: u64, case_name: &str) {
+    let mut reader = WalReader::open(path)
+        .unwrap_or_else(|err| panic!("{}: reader open failed: {:?}", case_name, err));
+    let mut iter = reader
+        .iter_from(offset)
+        .unwrap_or_else(|err| panic!("{}: iterator init failed: {:?}", case_name, err));
+    while let Some(entry) = iter.next() {
+        let _ = entry.unwrap_or_else(|err| panic!("{}: wal entry error {:?}", case_name, err));
+    }
+}
