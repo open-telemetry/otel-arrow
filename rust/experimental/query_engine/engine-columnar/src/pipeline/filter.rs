@@ -37,19 +37,47 @@ use crate::pipeline::planner::{
     try_static_scalar_to_literal,
 };
 
+pub mod optimize;
+
 /// A compositional tree structure for combining expressions with boolean operators.
 ///
 /// Represents logical combinations of base values using Not, And, and Or operations,
 /// forming a tree that can be evaluated or transformed.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Composite<T> {
     Base(T),
     Not(Box<Self>),
-    And(LeftRight<Box<Self>>),
-    Or(LeftRight<Box<Self>>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
 }
 
-/// A pair of values representing left and right operands of a binary operation.
-type LeftRight<T> = (T, T);
+impl<T> Composite<T> {
+    /// helper function to create the `Composite::And` variant from passed args
+    pub fn and<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::And(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Or` variant from passed args
+    pub fn or<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::Or(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Not` variant from passed args
+    pub fn not<P>(inner: P) -> Self
+    where
+        P: Into<Self>,
+    {
+        Self::Not(Box::new(inner.into()))
+    }
+}
 
 /// A helper trait that can be used to transform a composite logical plan into a composite
 /// executable plan.
@@ -81,17 +109,17 @@ where
             }
             Self::Not(inner) => {
                 let exec = inner.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Not(Box::new(exec)))
+                Ok(Composite::not(exec))
             }
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::And((Box::new(left_exec), Box::new(right_exec))))
+                Ok(Composite::and(left_exec, right_exec))
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Or((Box::new(left_exec), Box::new(right_exec))))
+                Ok(Composite::or(left_exec, right_exec))
             }
         }
     }
@@ -116,13 +144,14 @@ impl<T> From<T> for Composite<T> {
 /// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
 /// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
 /// using `Composite`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
-    source_filter: Option<Expr>,
+    pub source_filter: Option<Expr>,
 
     /// filters that will be applied to the attributes record batch in order fo filter the
     /// rows of the root batch
-    attribute_filter: Option<Composite<AttributesFilterPlan>>,
+    pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
 }
 
 impl From<Expr> for FilterPlan {
@@ -139,6 +168,15 @@ impl From<AttributesFilterPlan> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
+        }
+    }
+}
+
+impl From<Composite<AttributesFilterPlan>> for FilterPlan {
+    fn from(attrs_filter: Composite<AttributesFilterPlan>) -> Self {
+        Self {
+            source_filter: None,
+            attribute_filter: Some(attrs_filter),
         }
     }
 }
@@ -201,14 +239,14 @@ impl FilterPlan {
                     match right_arg {
                         // left = attribute & right = literal
                         BinaryArg::Literal(right_lit) => {
-                            Ok(FilterPlan::from(AttributesFilterPlan {
-                                attrs_identifier,
-                                filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
+                            Ok(FilterPlan::from(AttributesFilterPlan::new(
+                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
                                     )?),
                                 ),
-                            }))
+                                attrs_identifier,
+                            )))
                         }
                         _ => Err(Error::NotYetSupportedError {
                             message: "comparing left attribute with non-literal right in filter"
@@ -240,14 +278,14 @@ impl FilterPlan {
                     }
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
-                        Ok(FilterPlan::from(AttributesFilterPlan {
-                            attrs_identifier,
-                            filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
-                                Expr::BinaryExpr(try_attrs_value_filter_from_literal(
+                        Ok(FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
-                                )?),
-                            ),
-                        }))
+                                )?)),
+                            attrs_identifier,
+                        )))
                     }
                 },
             },
@@ -281,16 +319,16 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
             LogicalExpression::And(and_expr) => {
                 let left = Self::try_from(and_expr.get_left())?;
                 let right = Self::try_from(and_expr.get_right())?;
-                Ok(Self::And((Box::new(left), Box::new(right))))
+                Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
                 let left = Self::try_from(or_expr.get_left())?;
                 let right = Self::try_from(or_expr.get_right())?;
-                Ok(Self::Or((Box::new(left), Box::new(right))))
+                Ok(Self::or(left, right))
             }
             LogicalExpression::Not(not_expr) => {
                 let inner = Self::try_from(not_expr.get_inner_expression())?;
-                Ok(Self::Not(Box::new(inner)))
+                Ok(Self::not(inner))
             }
 
             // TODO add support for these expressions eventually
@@ -330,18 +368,27 @@ impl ToExec for FilterPlan {
 }
 
 /// A logical plan for filtering attributes.
-#[derive(Clone)]
-struct AttributesFilterPlan {
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttributesFilterPlan {
     /// The filtering expression that  will be applied to the attributes
     ///
     /// Note that the expression should be constructed based on the otap data-model, not using some
     /// abstract notion of an attribute column. This means, say we're filtering for
     /// `attributes["x"] == "y"` that we'd expect a filter expr like
     /// `col("key").eq(lit("x")).and(col("str").eq(lit("y")))`
-    filter: Expr,
+    pub filter: Expr,
 
     /// The identifier of which attributes will be considered when filtering
-    attrs_identifier: AttributesIdentifier,
+    pub attrs_identifier: AttributesIdentifier,
+}
+
+impl AttributesFilterPlan {
+    fn new(filter: Expr, attrs_identifier: AttributesIdentifier) -> Self {
+        Self {
+            filter,
+            attrs_identifier,
+        }
+    }
 }
 
 impl ToExec for AttributesFilterPlan {
@@ -365,6 +412,20 @@ impl ToExec for AttributesFilterPlan {
             filter: AdaptivePhysicalExprExec::try_new(self.filter.clone())?,
             payload_type: attrs_payload_type,
         })
+    }
+}
+
+impl Composite<AttributesFilterPlan> {
+    pub fn attrs_identifier(&self) -> AttributesIdentifier {
+        match self {
+            Self::Base(filter) => filter.attrs_identifier,
+            Self::Not(filter) => filter.attrs_identifier(),
+
+            // All children should be for the same payload type, so we just traverse one side
+            // of the tree.
+            Self::And(left, _) => left.attrs_identifier(),
+            Self::Or(left, _) => left.attrs_identifier(),
+        }
     }
 }
 
@@ -494,12 +555,12 @@ impl Composite<FilterExec> {
         match self {
             Self::Base(filter) => filter.execute(otap_batch, session_ctx),
             Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx)?)?),
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx)?;
                 let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(and(&left_result, &right_result)?)
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx)?;
                 let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(or(&left_result, &right_result)?)
@@ -508,9 +569,9 @@ impl Composite<FilterExec> {
     }
 }
 
-struct AttributeFilterExec {
-    filter: AdaptivePhysicalExprExec,
-    payload_type: ArrowPayloadType,
+pub struct AttributeFilterExec {
+    pub filter: AdaptivePhysicalExprExec,
+    pub payload_type: ArrowPayloadType,
 }
 
 impl AttributeFilterExec {
@@ -582,7 +643,7 @@ impl Composite<AttributeFilterExec> {
         match self {
             Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted),
             Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
@@ -592,7 +653,7 @@ impl Composite<AttributeFilterExec> {
                     left_result & right_result
                 })
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
@@ -612,8 +673,8 @@ impl Composite<AttributeFilterExec> {
 
             // All children should be for the same payload type, so we just traverse one side
             // of the tree.
-            Self::And((left, _)) => left.payload_type(),
-            Self::Or((left, _)) => left.payload_type(),
+            Self::And(left, _) => left.payload_type(),
+            Self::Or(left, _) => left.payload_type(),
         }
     }
 }
@@ -625,7 +686,7 @@ impl Composite<AttributeFilterExec> {
 /// - The type of a column may change between Dict<u8, V>, Dict<16, V>, and the native array type
 /// - The order of columns may change
 ///
-struct AdaptivePhysicalExprExec {
+pub struct AdaptivePhysicalExprExec {
     /// The physical expression that should be evaluated for each batch. This is initialized lazily
     /// when the first non-`None` batch is passed to `evaluate`. This should evaluate to a boolean
     physical_expr: Option<PhysicalExprRef>,
@@ -2001,10 +2062,10 @@ mod test {
         );
 
         // test "and" filter
-        filter_exec = Composite::And((
+        filter_exec = Composite::And(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_y_eq_d.clone().into()),
-        ))
+        )
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
@@ -2015,10 +2076,10 @@ mod test {
         );
 
         // test inverted "and" filter
-        filter_exec = Composite::Not(Box::new(Composite::And((
+        filter_exec = Composite::Not(Box::new(Composite::And(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_y_eq_d.clone().into()),
-        ))))
+        )))
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
@@ -2029,10 +2090,10 @@ mod test {
         );
 
         // test "or" filter
-        filter_exec = Composite::Or((
+        filter_exec = Composite::Or(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_x_eq_b.clone().into()),
-        ))
+        )
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
@@ -2043,10 +2104,10 @@ mod test {
         );
 
         // test inverted "or" filter
-        filter_exec = Composite::Not(Box::new(Composite::Or((
+        filter_exec = Composite::Not(Box::new(Composite::Or(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_x_eq_b.clone().into()),
-        ))))
+        )))
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
