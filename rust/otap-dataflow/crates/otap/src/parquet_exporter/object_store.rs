@@ -8,8 +8,9 @@ use object_store::ObjectStore;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::local::LocalFileSystem;
 
-use crate::parquet_exporter::cloud_auth::azure;
-use crate::parquet_exporter::config;
+use crate::parquet_exporter::{cloud_auth, config};
+
+mod azure;
 
 // TODO: Move the azure object store adapter into here
 
@@ -33,10 +34,12 @@ pub(crate) fn from_storage_config(
             storage_scope,
             auth,
         } => {
-            let token_credential: Arc<dyn TokenCredential> = azure::from_auth_method(auth.clone())
-                .map_err(|e| object_store::Error::Generic {
-                    store: "Azure",
-                    source: Box::new(e),
+            let token_credential: Arc<dyn TokenCredential> =
+                cloud_auth::azure::from_auth_method(auth.clone()).map_err(|e| {
+                    object_store::Error::Generic {
+                        store: "Azure",
+                        source: Box::new(e),
+                    }
                 })?;
 
             let credential_provider =

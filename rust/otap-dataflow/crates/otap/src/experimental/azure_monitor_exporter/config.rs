@@ -1,12 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#[derive(Serialize, Deserialize)]
-pub enum Credential {
-    ManagedIdentity(ManagedIdentityOptions),
-    AzureCli(AzureCliOptions),
-}
-
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
