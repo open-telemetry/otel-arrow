@@ -1,7 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Writer is only exercised by tests until WAL replay wires into the engine.
+//! Write-ahead-log (WAL) writer for Quiver.
+//!
+//! The writer is responsible for appending Arrow payloads, rotating chunk
+//! files when size thresholds are exceeded, and reclaiming durable space once
+//! downstream consumers advance the truncation cursor. Safe offsets are always
+//! validated against real entry boundaries so we never expose partially written
+//! frames to readers. This module currently powers tests while the runtime
+//! integration is still being wired up.
 #![allow(dead_code)]
 
 use std::fs::{File, OpenOptions};
@@ -26,6 +33,7 @@ use super::{
     WalResult, WalTruncateCursor,
 };
 
+/// Low-level tunables that bridge the user-facing [`QuiverConfig`] into the WAL.
 #[derive(Debug, Clone)]
 pub(crate) struct WalWriterOptions {
     pub path: PathBuf,
@@ -83,6 +91,10 @@ impl WalWriterOptions {
     }
 }
 
+/// Stateful writer that maintains append position, rotation metadata, and
+/// persisted truncate checkpoints. It tracks both the *current* WAL file and
+/// any rotated chunks so the total on-disk footprint (`aggregate_bytes`) can be
+/// compared against caps before admitting new entries.
 #[derive(Debug)]
 pub(crate) struct WalWriter {
     file: File,
@@ -103,6 +115,8 @@ pub(crate) struct WalWriter {
     last_safe_sequence: Option<u64>,
 }
 
+/// Opaque marker returned to callers after an append so they can correlate
+/// persisted entries with reader positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WalOffset {
     pub position: u64,
@@ -182,6 +196,10 @@ impl WalWriter {
         Ok(writer)
     }
 
+    /// Serializes a [`RecordBundle`] into the active WAL file and returns the
+    /// byte offset + sequence number associated with the entry. The writer keeps
+    /// internal counters so the next call knows when to flush, rotate, or apply
+    /// global caps.
     pub fn append_bundle<B: RecordBundle>(&mut self, bundle: &B) -> WalResult<WalOffset> {
         let descriptor = bundle.descriptor();
         let ingestion_time = bundle.ingestion_time();
@@ -256,6 +274,10 @@ impl WalWriter {
         })
     }
 
+    /// Physically truncates the active WAL file to the provided cursor. This is
+    /// only possible when the cursor aligns to validated entry boundaries; the
+    /// call also refreshes the truncate sidecar so future restarts keep the same
+    /// safe point.
     pub fn truncate_to(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         let safe_offset = self.resolve_truncate_cursor(cursor)?;
         self.file.set_len(safe_offset)?;
@@ -265,11 +287,18 @@ impl WalWriter {
         self.commit_truncate_state(cursor, safe_offset)
     }
 
+    /// Updates the truncate sidecar without touching the underlying WAL bytes.
+    /// This is used when we merely want to record a new safe cursor that will
+    /// later be applied via punching or rewrite.
     pub(crate) fn record_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         let safe_offset = self.resolve_truncate_cursor(cursor)?;
         self.commit_truncate_state(cursor, safe_offset)
     }
 
+    /// Reclaims bytes before the provided cursor using hole punching when the
+    /// platform supports it, otherwise by rewriting the file in-place. Either
+    /// path guarantees that the WAL header is preserved so readers can still
+    /// validate future appends.
     pub fn reclaim_prefix(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         let safe_offset = self.resolve_truncate_cursor(cursor)?;
         if safe_offset <= WAL_HEADER_LEN as u64 {
@@ -444,6 +473,9 @@ fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {
 }
 
 impl WalWriter {
+    /// Validates that the caller-provided cursor never regresses and lands on a
+    /// concrete entry boundary. The returned offset can be safely truncated or
+    /// reclaimed without risking mid-entry corruption.
     fn resolve_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<u64> {
         let requested_offset = cursor.safe_offset.max(WAL_HEADER_LEN as u64);
         let file_len = self.file.metadata()?.len();
@@ -462,6 +494,8 @@ impl WalWriter {
         Ok(requested_offset)
     }
 
+    /// Walks forward from the last validated safe offset until the requested
+    /// position is reached, ensuring the cursor never bisects an entry.
     fn ensure_entry_boundary(&mut self, target: u64) -> WalResult<()> {
         if target == self.validated_safe_offset {
             return Ok(());
@@ -498,6 +532,8 @@ impl WalWriter {
         Ok(())
     }
 
+    /// Persists the truncate metadata to the sidecar and updates book-keeping
+    /// such as the global safe offset used to retire rotated chunks.
     fn commit_truncate_state(
         &mut self,
         cursor: &WalTruncateCursor,
@@ -510,6 +546,9 @@ impl WalWriter {
         self.purge_rotated_chunks()
     }
 
+    /// Writes the truncate sidecar if the offset changed. This lets restarts
+    /// resume from the most recent safe cursor even if the process crashes
+    /// before punching/rewriting the WAL file.
     fn record_truncate_offset(&mut self, requested_offset: u64) -> WalResult<()> {
         let safe_offset = requested_offset.max(WAL_HEADER_LEN as u64);
         if self.truncate_state.truncate_offset == safe_offset
@@ -521,6 +560,9 @@ impl WalWriter {
         TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
     }
 
+    /// Attempts to hole-punch the WAL prefix up to `safe_offset`. Returns
+    /// `false` if the filesystem declines support so the caller can fall back
+    /// to a copy-based rewrite.
     fn try_punch_prefix(&mut self, safe_offset: u64) -> WalResult<bool> {
         if !self.punch_capable {
             return Ok(false);
@@ -539,6 +581,9 @@ impl WalWriter {
         }
     }
 
+    /// Compactly rewrites the WAL in-place by copying bytes after
+    /// `safe_offset` down to the header. This guarantees compatibility on
+    /// filesystems that cannot punch holes.
     fn rewrite_prefix_in_place(&mut self, safe_offset: u64) -> WalResult<()> {
         let (new_len, reclaimed) = rewrite_wal_prefix_in_place(&mut self.file, safe_offset)?;
         self.current_len = new_len;
@@ -547,6 +592,8 @@ impl WalWriter {
         Ok(())
     }
 
+    /// Recomputes the total on-disk footprint (active file + rotated chunks)
+    /// based on current bookkeeping structures.
     fn recalculate_aggregate_bytes(&mut self) {
         let rotated_total: u64 = self
             .rotated_chunks
@@ -556,6 +603,9 @@ impl WalWriter {
         self.aggregate_bytes = rotated_total.saturating_add(self.current_len);
     }
 
+    /// Checks whether the active file crossed the rotation target after an
+    /// append and, if so, moves it aside so a fresh WAL can start at the same
+    /// path while keeping the header intact.
     fn maybe_rotate_after_append(&mut self) -> WalResult<()> {
         let active_data_bytes = self
             .current_len
@@ -566,6 +616,9 @@ impl WalWriter {
         self.rotate_active_file()
     }
 
+    /// Performs the actual rotation: flushes the current file, renames it to a
+    /// numbered chunk, re-seeds the active WAL, and records the new generation
+    /// in the truncate sidecar.
     fn rotate_active_file(&mut self) -> WalResult<()> {
         self.purge_rotated_chunks()?;
         if self.rotated_chunks.len() >= self.options.max_chunks {
@@ -623,6 +676,10 @@ impl WalWriter {
         }
     }
 
+    /// Ensures the total bytes consumed by active + rotated chunks never
+    /// exceed `max_wal_size`. Hitting the cap indicates that downstream
+    /// consumers must advance the truncation cursor before more data can be
+    /// ingested.
     fn enforce_size_cap(&mut self) -> WalResult<()> {
         if self.aggregate_bytes <= self.options.max_wal_size {
             return Ok(());
@@ -636,6 +693,9 @@ impl WalWriter {
         ))
     }
 
+    /// Deletes rotated chunks whose logical data range now falls entirely
+    /// before the global safe offset. This is triggered after every truncate
+    /// commit and before rotations to avoid unbounded disk usage.
     fn purge_rotated_chunks(&mut self) -> WalResult<()> {
         while let Some(front) = self.rotated_chunks.front() {
             if front.end_data_offset <= self.last_global_safe_offset_data() {
@@ -653,6 +713,8 @@ impl WalWriter {
         self.last_global_safe_offset
     }
 
+    /// Converts a cursor expressed in absolute WAL bytes into the logical data
+    /// offset that spans both active and rotated chunks.
     fn global_safe_offset(&self, cursor_offset: u64) -> u64 {
         let data_offset = cursor_offset.saturating_sub(WAL_HEADER_LEN as u64);
         self.data_offset_base.saturating_add(data_offset)
@@ -774,6 +836,9 @@ struct EncodedSlot {
     payload_bytes: Vec<u8>,
 }
 
+/// Metadata describing an on-disk rotated chunk. We retain enough information
+/// to decide when the chunk can be deleted once readers have safely advanced
+/// past its logical range.
 #[derive(Clone, Debug)]
 struct RotatedChunk {
     path: PathBuf,

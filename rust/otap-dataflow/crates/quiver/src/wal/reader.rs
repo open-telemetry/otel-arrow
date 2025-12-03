@@ -1,7 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Reader is only exercised by tests until WAL replay wires into the engine.
+//! Read-side companion to the WAL writer.
+//!
+//! The reader validates headers, streams entries starting at arbitrary offsets,
+//! and exposes helper types such as [`WalTruncateCursor`] so higher layers can
+//! describe how much of the log is safe to reclaim. Like the writer, it is
+//! currently exercised by tests until the runtime wires in replay logic.
 #![allow(dead_code)]
 
 use std::fs::File;
@@ -20,6 +25,8 @@ use super::{
     WalOffset, WalResult,
 };
 
+/// Sequential reader that validates the WAL header before exposing iterators
+/// over decoded entries.
 #[derive(Debug)]
 pub(crate) struct WalReader {
     file: File,
@@ -49,18 +56,24 @@ impl WalReader {
         self.segment_cfg_hash
     }
 
+    /// Returns an iterator that starts at `offset`, clamped to the minimum
+    /// position right after the WAL header.
     pub fn iter_from(&mut self, offset: u64) -> WalResult<WalEntryIter<'_>> {
         let start = offset.max(WAL_HEADER_LEN as u64);
         let _ = self.file.seek(SeekFrom::Start(start))?;
         Ok(WalEntryIter::new(&mut self.file, start))
     }
 
+    /// Seeks back to the entry immediately after the header so a fresh scan can
+    /// start from the beginning.
     pub fn rewind(&mut self) -> WalResult<()> {
         let _ = self.file.seek(SeekFrom::Start(WAL_HEADER_LEN as u64))?;
         Ok(())
     }
 }
 
+/// Iterator that yields decoded [`WalRecordBundle`] instances while keeping
+/// track of the next byte offset so callers can build truncate cursors.
 pub(crate) struct WalEntryIter<'a> {
     file: &'a mut File,
     buffer: Vec<u8>,
@@ -153,6 +166,8 @@ impl<'a> Iterator for WalEntryIter<'a> {
     }
 }
 
+/// Fully decoded WAL entry that the engine can replay without touching the raw
+/// on-disk representation.
 #[derive(Debug, Clone)]
 pub(crate) struct WalRecordBundle {
     pub offset: WalOffset,
@@ -163,6 +178,7 @@ pub(crate) struct WalRecordBundle {
     pub slots: Vec<DecodedWalSlot>,
 }
 
+/// Arrow payload captured for a single slot inside a WAL entry.
 #[derive(Debug, Clone)]
 pub(crate) struct DecodedWalSlot {
     pub slot_id: SlotId,
@@ -172,6 +188,9 @@ pub(crate) struct DecodedWalSlot {
     pub payload: Vec<u8>,
 }
 
+/// Shared cursor used by writers and readers to describe how much of the WAL is
+/// durably processed. `safe_offset` is expressed in absolute bytes (including
+/// the header) while `safe_sequence` guards against replay regressions.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct WalTruncateCursor {
     pub safe_offset: u64,
@@ -179,6 +198,9 @@ pub(crate) struct WalTruncateCursor {
 }
 
 impl WalTruncateCursor {
+    /// Advances the cursor to cover the provided bundle. Callers typically run
+    /// this inside a replay loop and later hand the cursor back to the writer so
+    /// it can truncate or reclaim the prefix.
     pub fn advance(&mut self, bundle: &WalRecordBundle) {
         self.safe_offset = bundle.next_offset;
         self.safe_sequence = bundle.sequence;
