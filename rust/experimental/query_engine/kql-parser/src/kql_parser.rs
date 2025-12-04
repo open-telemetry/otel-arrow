@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest_derive::Parser;
 
@@ -17,8 +16,9 @@ impl Parser for KqlParser {
     fn parse_with_options(
         query: &str,
         options: ParserOptions,
-    ) -> Result<PipelineExpression, Vec<ParserError>> {
-        parse_query(query, options)
+    ) -> Result<ParserResult, Vec<ParserError>> {
+        let pipeline = parse_query(query, options)?;
+        Ok(ParserResult::new(pipeline))
     }
 }
 
