@@ -26,7 +26,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 2-2
       prometheus:
         endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
   df-engine:
@@ -46,7 +47,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 3-3
       prometheus:
         endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
   backend-service:
@@ -66,7 +68,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 1-1
       prometheus:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 
@@ -79,6 +82,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        observation_interval: 60
   - name: OTLP-ATTR-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
@@ -87,6 +91,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
+        observation_interval: 60
   # TODO: Enable when wait_for_result support is added to otap receiver
   # - name: OTAP-ATTR-OTAP
   #   from_template:
@@ -96,6 +101,7 @@ tests:
   #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otap
+  #       observation_interval: 60
   # - name: OTAP-ATTR-OTLP
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
@@ -104,3 +110,4 @@ tests:
   #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otlp.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otlp
+  #       observation_interval: 60
