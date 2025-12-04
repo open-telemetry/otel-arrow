@@ -82,6 +82,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
+        observation_interval: 60
   - name: OTLP-FILTER-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
@@ -90,6 +91,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otlp-filter-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
+        observation_interval: 60
   - name: OTAP-FILTER-OTAP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
@@ -98,6 +100,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
+        observation_interval: 60
   - name: OTAP-FILTER-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
@@ -106,3 +109,4 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
+        observation_interval: 60
