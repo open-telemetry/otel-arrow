@@ -19,7 +19,8 @@ pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<PipelineExpression, Vec<ParserError>> {
-    let result = KqlParser::parse_with_options(query, build_parser_options(options).map_err(|e| vec![e])?)?;
+    let result =
+        KqlParser::parse_with_options(query, build_parser_options(options).map_err(|e| vec![e])?)?;
     Ok(result.pipeline)
 }
 
