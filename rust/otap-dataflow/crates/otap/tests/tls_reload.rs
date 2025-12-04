@@ -148,7 +148,7 @@ mod tests {
             config: TlsConfig {
                 cert_file: Some(cert_path.clone()),
                 key_file: Some(key_path.clone()),
-                reload_interval: Some("1s".to_string()),
+                reload_interval: Some(Duration::from_secs(1)),
                 cert_pem: None,
                 key_pem: None,
             },

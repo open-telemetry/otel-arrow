@@ -297,30 +297,27 @@ fn get_mtime(path: &PathBuf) -> Result<u64, io::Error> {
         .map_err(io::Error::other)
 }
 
-/// Async version for background reloads - doesn't block handshakes
-async fn load_certified_key_async(
-    cert_path: &Path,
-    key_path: &Path,
+/// Parses a certified key from PEM-encoded certificate and key bytes.
+fn parse_certified_key(
+    cert_pem: &[u8],
+    key_pem: &[u8],
+    cert_path_debug: &Path,
 ) -> Result<CertifiedKey, io::Error> {
     use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
 
-    // Use async file I/O - doesn't block
-    let cert_pem = read_file_with_limit_async(cert_path).await?;
-    let key_pem = read_file_with_limit_async(key_path).await?;
-
-    let certs: Vec<_> = certs(&mut BufReader::new(&cert_pem[..]))
+    let certs: Vec<_> = certs(&mut BufReader::new(cert_pem))
         .collect::<Result<_, _>>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     if certs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("No certificates found in file: {:?}", cert_path),
+            format!("No certificates found in file: {:?}", cert_path_debug),
         ));
     }
 
-    let key = private_key(&mut BufReader::new(&key_pem[..]))
+    let key = private_key(&mut BufReader::new(key_pem))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
         .ok_or_else(|| {
             io::Error::new(
@@ -335,38 +332,24 @@ async fn load_certified_key_async(
     Ok(CertifiedKey::new(certs, signing_key))
 }
 
+/// Async version for background reloads - doesn't block handshakes
+async fn load_certified_key_async(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<CertifiedKey, io::Error> {
+    // Use async file I/O - doesn't block
+    let cert_pem = read_file_with_limit_async(cert_path).await?;
+    let key_pem = read_file_with_limit_async(key_path).await?;
+
+    parse_certified_key(&cert_pem, &key_pem, cert_path)
+}
+
 /// Sync version for initial load in constructor
 fn load_certified_key_sync(cert_path: &Path, key_path: &Path) -> Result<CertifiedKey, io::Error> {
-    use rustls_pemfile::{certs, private_key};
-    use std::io::BufReader;
-
     let cert_pem = read_file_with_limit_sync(cert_path)?;
     let key_pem = read_file_with_limit_sync(key_path)?;
 
-    let certs: Vec<_> = certs(&mut BufReader::new(&cert_pem[..]))
-        .collect::<Result<_, _>>()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    if certs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("No certificates found in file: {:?}", cert_path),
-        ));
-    }
-
-    let key = private_key(&mut BufReader::new(&key_pem[..]))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "No private key found in key file",
-            )
-        })?;
-
-    let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    Ok(CertifiedKey::new(certs, signing_key))
+    parse_certified_key(&cert_pem, &key_pem, cert_path)
 }
 
 /// Builds a reloadable server config from the given configuration.
