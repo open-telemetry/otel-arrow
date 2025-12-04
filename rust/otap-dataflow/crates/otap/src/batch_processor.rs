@@ -1332,13 +1332,16 @@ mod tests {
 
                 let output_item_count: usize = outputs.iter().map(|m| m.batch_length()).sum();
 
+                // First item counts, then data values.
                 assert_eq!(output_item_count, input_item_count);
                 assert_equivalent(&inputs_otlp, &outputs);
 
-                // Verify outputs
+                // Test-specific validation.
                 (verify_outputs)(&event_outputs);
             })
             .validate(move |_| async move {
+                // TODO: Not clear why, but this sleep is necessary (probably flaky)
+                // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 verify_item_metrics(&metrics_registry, signal, input_item_count);
             });
@@ -1690,6 +1693,10 @@ mod tests {
                     event_outputs.iter().flat_map(|e| &e.outputs).collect();
 
                 let inputs_otlp = &inputs_clone;
+
+                // TODO! This test is a little unfinished. I want to use the
+                // input markers to test that. WORK IN PROGRESS DO NOT REVIEW THIS.
+
                 // Extract all input markers for verification
                 let _input_markers: Vec<Vec<u64>> = inputs_otlp
                     .iter()
