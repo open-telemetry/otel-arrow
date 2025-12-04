@@ -8,14 +8,14 @@ use data_engine_expressions::*;
 use crate::*;
 
 pub trait Parser {
-    fn parse(query: &str) -> Result<PipelineExpression, Vec<ParserError>> {
+    fn parse(query: &str) -> Result<ParserResult, Vec<ParserError>> {
         Self::parse_with_options(query, ParserOptions::new())
     }
 
     fn parse_with_options(
         query: &str,
         options: ParserOptions,
-    ) -> Result<PipelineExpression, Vec<ParserError>>;
+    ) -> Result<ParserResult, Vec<ParserError>>;
 }
 
 type ParserFunctionDefinition = (
@@ -316,5 +316,20 @@ impl TryFrom<&str> for ParserMapKeySchema {
             "TimeSpan" => Ok(ParserMapKeySchema::TimeSpan),
             _ => Err(()),
         }
+    }
+}
+
+/// Result returned by parsers, containing the parsed pipeline expression
+/// and any additional metadata that may be useful for consumers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParserResult {
+    /// The parsed pipeline expression
+    pub pipeline: PipelineExpression,
+}
+
+impl ParserResult {
+    /// Create a new ParserResult with the given pipeline expression
+    pub fn new(pipeline: PipelineExpression) -> Self {
+        Self { pipeline }
     }
 }
