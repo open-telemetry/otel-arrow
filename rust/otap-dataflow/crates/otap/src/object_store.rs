@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use azure_core::credentials::TokenCredential;
 use object_store::ObjectStore;
-use object_store::azure::MicrosoftAzureBuilder;
 use object_store::local::LocalFileSystem;
 use serde::Deserialize;
 
@@ -25,6 +24,7 @@ pub enum Config {
     },
 
     /// TODO(jakedern): Docs
+    #[cfg(feature = "azure")]
     Azure {
         /// TODO(jakedern): Docs
         base_uri: String,
@@ -51,11 +51,15 @@ pub fn from_storage_config(storage: &Config) -> Result<Arc<dyn ObjectStore>, obj
             let object_store = LocalFileSystem::new_with_prefix(base_uri)?;
             Ok(Arc::new(object_store))
         }
+
+        #[cfg(feature = "azure")]
         Config::Azure {
             base_uri,
             storage_scope,
             auth,
         } => {
+            use object_store::azure::MicrosoftAzureBuilder;
+
             let token_credential: Arc<dyn TokenCredential> =
                 cloud_auth::azure::from_auth_method(auth.clone()).map_err(|e| {
                     object_store::Error::Generic {

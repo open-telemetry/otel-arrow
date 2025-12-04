@@ -78,6 +78,7 @@ azure_core = { workspace = true }
 opentelemetry-proto = { workspace = true, optional = true }
 
 [features]
+default = ["azure"]
 # Base experimental feature - enabled by all experimental exporters
 experimental-exporters = []
 # Experimental exporters
@@ -90,6 +91,7 @@ azure-monitor-exporter = [
     "dep:reqwest",
     # "dep:azure_core"
 ]
+azure = []
 # parquet-exporter-azure = ["dep:azure_identity"]
 
 [dev-dependencies]
