@@ -79,6 +79,12 @@ mod metrics;
 /// gRPC service implementation
 pub mod otlp_grpc;
 
+/// Cloud authentication utilities
+pub mod cloud_auth;
+
+/// Object storage utilities and auth adapters for different cloud providers
+pub mod object_store;
+
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();

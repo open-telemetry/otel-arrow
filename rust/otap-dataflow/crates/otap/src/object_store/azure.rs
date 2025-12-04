@@ -1,9 +1,16 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::sync::Arc;
 
 use azure_core::credentials::{AccessToken, TokenCredential};
 use object_store::{CredentialProvider, azure::AzureCredential};
 use std::sync::Mutex;
 
+/// TODO(jakedern): Docs
+pub const DEFAULT_STORAGE_SCOPE: &str = "https://storage.azure.com/.default";
+
+/// TODO(jakedern): Docs
 #[derive(Debug)]
 pub struct AzureTokenCredentialProvider {
     token_cred: Arc<dyn TokenCredential>,
@@ -21,6 +28,7 @@ struct TokenProviderState {
 }
 
 impl AzureTokenCredentialProvider {
+    /// TODO(jakedern): Docs
     pub fn new(cred: Arc<dyn TokenCredential>, scope: Option<String>) -> Self {
         Self {
             token_cred: cred,
@@ -77,5 +85,3 @@ impl CredentialProvider for AzureTokenCredentialProvider {
         Ok(cred)
     }
 }
-
-pub const DEFAULT_STORAGE_SCOPE: &str = "https://storage.azure.com/.default";

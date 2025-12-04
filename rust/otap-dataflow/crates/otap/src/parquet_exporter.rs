@@ -49,12 +49,10 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 
-mod cloud_auth;
 mod config;
 mod error;
 mod idgen;
 mod metrics;
-mod object_store;
 mod partition;
 mod schema;
 mod writer;
@@ -156,7 +154,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
         let object_store =
-            object_store::from_storage_config(&self.config.storage).map_err(|e| {
+            crate::object_store::from_storage_config(&self.config.storage).map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id.clone(),

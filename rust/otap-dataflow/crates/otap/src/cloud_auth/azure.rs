@@ -1,16 +1,17 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
-use azure_core::credentials::{AccessToken, TokenCredential};
+use std::{path::PathBuf, sync::Arc};
+
+use azure_core::credentials::TokenCredential;
 use azure_identity::AzureCliCredential;
-use object_store::{CredentialProvider, azure::AzureCredential};
 use serde::{Deserialize, Serialize};
 
+/// TODO(jakedern): Docs
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum AuthMethod {
+    /// TODO(jakedern): Docs
     AzureCli {
         /// Additional tenants that the credential should be allowed to
         /// authenticate in
@@ -25,11 +26,13 @@ pub enum AuthMethod {
         /// cli's default tenant.
         tenant_id: Option<String>,
     },
+    /// TODO(jakedern): Docs
     ManagedIdentity {
         /// User assigned identity to use when authenticating, otherwise the
         /// system assigned identity will be used if available.
         user_assigned_id: Option<UserAssignedId>,
     },
+    /// TODO(jakedern): Docs
     WorkloadIdentity {
         /// Client ID of the Entra identity. Defaults to the value of the
         /// `AZURE_CLIENT_ID` environment variable.
@@ -45,8 +48,9 @@ pub enum AuthMethod {
     },
 }
 
+/// TODO(jakedern): Docs
+/// TODO(jakedern): Test how this deserializes
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-// TODO: Test how this deserializes
 pub enum UserAssignedId {
     /// The client ID of a user-assigned identity
     ClientId(String),
@@ -66,6 +70,7 @@ impl From<UserAssignedId> for azure_identity::UserAssignedId {
     }
 }
 
+/// TODO(jakedern): Docs
 pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, azure_core::Error> {
     match value {
         AuthMethod::AzureCli {

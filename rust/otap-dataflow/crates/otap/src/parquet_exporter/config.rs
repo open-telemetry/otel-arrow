@@ -5,33 +5,18 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-use crate::parquet_exporter::cloud_auth::azure::{self};
-
 /// Configuration of parquet exporter
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The base URI for where the parquet files should be written
-    pub storage: Storage,
+    pub storage: crate::object_store::Config,
 
     /// Configuration for how to compute partitions from the dataset
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
 
     /// Options for the writer
     pub writer_options: Option<WriterOptions>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum Storage {
-    File {
-        base_uri: String,
-    },
-    Azure {
-        base_uri: String,
-        storage_scope: Option<String>,
-        auth: azure::AuthMethod,
-    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

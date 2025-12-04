@@ -7,18 +7,40 @@ use azure_core::credentials::TokenCredential;
 use object_store::ObjectStore;
 use object_store::azure::MicrosoftAzureBuilder;
 use object_store::local::LocalFileSystem;
+use serde::Deserialize;
 
-use crate::parquet_exporter::{cloud_auth, config};
+use crate::cloud_auth;
 
-mod azure;
+/// TODO(jakedern): Docs
+pub mod azure;
 
-// TODO: Move the azure object store adapter into here
+/// TODO(jakedern): Docs
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Config {
+    /// TODO(jakedern): Docs
+    File {
+        /// TODO(jakedern): Docs
+        base_uri: String,
+    },
 
-pub(crate) fn from_storage_config(
-    storage: &config::Storage,
-) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    /// TODO(jakedern): Docs
+    Azure {
+        /// TODO(jakedern): Docs
+        base_uri: String,
+
+        /// TODO(jakedern): Docs
+        storage_scope: Option<String>,
+
+        /// TODO(jakedern): Docs
+        auth: cloud_auth::azure::AuthMethod,
+    },
+}
+
+/// TODO(jakedern): Docs
+pub fn from_storage_config(storage: &Config) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
     match storage {
-        config::Storage::File { base_uri } => {
+        Config::File { base_uri } => {
             #[cfg(test)]
             {
                 if base_uri.starts_with("testdelayed://") {
@@ -29,7 +51,7 @@ pub(crate) fn from_storage_config(
             let object_store = LocalFileSystem::new_with_prefix(base_uri)?;
             Ok(Arc::new(object_store))
         }
-        config::Storage::Azure {
+        Config::Azure {
             base_uri,
             storage_scope,
             auth,
