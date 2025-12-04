@@ -115,7 +115,7 @@ impl MetricsDispatcher {
         &self,
         field: &MetricsField,
         value: u64,
-        attributes: &Vec<opentelemetry::KeyValue>,
+        attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         let counter = meter
@@ -130,7 +130,7 @@ impl MetricsDispatcher {
         &self,
         field: &MetricsField,
         value: u64,
-        attributes: &Vec<opentelemetry::KeyValue>,
+        attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         let gauge = meter
@@ -145,7 +145,7 @@ impl MetricsDispatcher {
         &self,
         field: &MetricsField,
         value: u64,
-        attributes: &Vec<opentelemetry::KeyValue>,
+        attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         let histogram = meter
@@ -160,7 +160,7 @@ impl MetricsDispatcher {
         &self,
         field: &MetricsField,
         value: u64,
-        attributes: &Vec<opentelemetry::KeyValue>,
+        attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         let up_down_counter = meter
