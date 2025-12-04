@@ -22,6 +22,10 @@ use crate::otap_grpc::otlp::server_new::{
     LogsServiceServer, MetricsServiceServer, OtlpServerSettings, TraceServiceServer,
 };
 use crate::pdata::OtapPdata;
+#[cfg(feature = "experimental-tls")]
+use crate::tls_utils::{build_tls_acceptor, create_tls_stream};
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsServerConfig;
 
 use crate::otap_grpc::common;
 use crate::otap_grpc::common::AckRegistry;
@@ -44,7 +48,9 @@ use otap_df_telemetry_macros::metric_set;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
+use std::future::Future;
 use std::ops::Add;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::transport::Server;
@@ -63,6 +69,10 @@ pub struct Config {
     /// Shared gRPC server settings reused across gRPC-based receivers.
     #[serde(flatten)]
     pub grpc: GrpcServerSettings,
+
+    /// TLS configuration
+    #[cfg(feature = "experimental-tls")]
+    pub tls: Option<TlsServerConfig>,
 }
 
 /// gRPC receiver that ingests OTLP signals and forwards them into the OTAP pipeline.
@@ -297,18 +307,53 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
             let mut builder =
                 common::apply_server_tuning(Server::builder(), config).layer(global_limit);
+
+            // Apply timeout if configured
+            if let Some(timeout) = config.timeout {
+                builder = builder.timeout(timeout);
+            }
+
             builder
                 .add_service(logs_server)
                 .add_service(metrics_server)
                 .add_service(traces_server)
         };
 
+        #[cfg(feature = "experimental-tls")]
+        let maybe_tls_acceptor =
+            build_tls_acceptor(self.config.tls.as_ref())
+                .await
+                .map_err(|e| Error::ReceiverError {
+                    receiver: effect_handler.receiver_id(),
+                    kind: ReceiverErrorKind::Configuration,
+                    error: format!("Failed to configure TLS: {}", e),
+                    source_detail: format_error_sources(&e),
+                })?;
+
         let mut telemetry_cancel_handle = Some(
             effect_handler
                 .start_periodic_telemetry(TELEMETRY_INTERVAL)
                 .await?,
         );
-        let mut server_task = Box::pin(server.serve_with_incoming(incoming));
+
+        let mut server_task: Pin<
+            Box<dyn Future<Output = Result<(), tonic::transport::Error>> + Send>,
+        > = {
+            #[cfg(feature = "experimental-tls")]
+            {
+                match maybe_tls_acceptor {
+                    Some(tls_acceptor) => {
+                        let tls_stream = create_tls_stream(incoming, tls_acceptor);
+                        Box::pin(server.serve_with_incoming(tls_stream))
+                    }
+                    None => Box::pin(server.serve_with_incoming(incoming)),
+                }
+            }
+            #[cfg(not(feature = "experimental-tls"))]
+            {
+                Box::pin(server.serve_with_incoming(incoming))
+            }
+        };
 
         loop {
             tokio::select! {
@@ -400,7 +445,11 @@ mod tests {
             wait_for_result: true,
             ..Default::default()
         };
-        Config { grpc }
+        Config {
+            grpc,
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
+        }
     }
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {

@@ -79,6 +79,10 @@ mod metrics;
 /// gRPC service implementation
 pub mod otlp_grpc;
 
+/// TLS utilities
+#[cfg(feature = "experimental-tls")]
+pub mod tls_utils;
+
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]
 pub static OTAP_PIPELINE_FACTORY: PipelineFactory<OtapPdata> = build_factory();
