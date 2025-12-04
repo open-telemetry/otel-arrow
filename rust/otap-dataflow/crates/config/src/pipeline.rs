@@ -786,12 +786,7 @@ impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
                             let _: () = map.next_value()?;
                             Ok(MetricsPeriodicExporterConfig::Otlp)
                         }
-                        _ => {
-                            Err(serde::de::Error::unknown_field(
-                                &key,
-                                &["console", "otlp"],
-                            ))
-                        }
+                        _ => Err(serde::de::Error::unknown_field(&key, &["console", "otlp"])),
                     }
                 } else {
                     Err(serde::de::Error::custom(
