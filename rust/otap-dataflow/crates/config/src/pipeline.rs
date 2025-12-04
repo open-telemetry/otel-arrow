@@ -780,17 +780,17 @@ impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
                     match key.as_str() {
                         "console" => {
                             let console_config: ConsoleExporterConfig = map.next_value()?;
-                            return Ok(MetricsPeriodicExporterConfig::Console(console_config));
+                            Ok(MetricsPeriodicExporterConfig::Console(console_config))
                         }
                         "otlp" => {
                             let _: () = map.next_value()?;
-                            return Ok(MetricsPeriodicExporterConfig::Otlp);
+                            Ok(MetricsPeriodicExporterConfig::Otlp)
                         }
                         _ => {
-                            return Err(serde::de::Error::unknown_field(
+                            Err(serde::de::Error::unknown_field(
                                 &key,
                                 &["console", "otlp"],
-                            ));
+                            ))
                         }
                     }
                 } else {
@@ -1183,7 +1183,7 @@ mod tests {
         assert!(config.nodes.contains_key("processor1"));
         assert!(config.nodes.contains_key("exporter1"));
 
-        let telemetry_config = config.service.telemetry;
+        let telemetry_config = &config.service().telemetry;
         let reporting_interval = telemetry_config.reporting_interval;
         assert_eq!(reporting_interval.as_secs(), 5);
         let resource_attrs = &telemetry_config.resource;
