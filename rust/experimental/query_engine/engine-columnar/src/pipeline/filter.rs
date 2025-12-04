@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::ops::{BitAnd, BitOr};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -477,14 +478,14 @@ impl FilterExec {
             }
         };
 
-        let mut selection_vec = match self.predicate.as_mut() {
-            Some(predicate) => predicate.evaluate_filter(root_rb, session_ctx)?,
+        // evaluate predicate on the root batch
+        let mut selection_vec = self
+            .predicate
+            .as_mut()
+            .map(|predicate| predicate.evaluate_filter(root_rb, session_ctx))
+            .transpose()?;
 
-            // TODO -- we might be able to optimize this method by not allocating this here
-            // and instead returning None
-            None => BooleanArray::new(BooleanBuffer::new_set(root_rb.num_rows()), None),
-        };
-
+        // also apply any attribute filters
         if let Some(attrs_filter) = &mut self.attributes_filter {
             let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
                 Some(id_col) => id_col,
@@ -543,15 +544,25 @@ impl FilterExec {
                 attrs_selection_vec_builder.append_n(segment_len, segment_validity);
             }
 
-            // update the result selection_vec to be the intersection of what's already filtered
-            // and the attributes filters
-            selection_vec = and(
-                &selection_vec,
-                &BooleanArray::new(attrs_selection_vec_builder.finish(), None),
-            )?;
+            let attr_selection_vec = BooleanArray::new(attrs_selection_vec_builder.finish(), None);
+            selection_vec = Some(match selection_vec {
+                // update the result selection_vec to be the intersection of what's already filtered
+                // and the attributes filters
+                Some(selection_vec) => and(&selection_vec, &attr_selection_vec)?,
+
+                // no predicate was applied to root batch, so we are just filtering by attributes
+                None => attr_selection_vec,
+            });
         }
 
-        Ok(selection_vec)
+        // if for some reason this filter was empty (would be unusual b/c we shouldn't be planning
+        // filters like this), we just return a vec indicating that all rows passed the predicate
+        let result = selection_vec.unwrap_or(BooleanArray::new(
+            BooleanBuffer::new_set(root_rb.num_rows()),
+            None,
+        ));
+
+        Ok(result)
     }
 }
 
@@ -600,6 +611,94 @@ impl Composite<FilterExec> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum IdMask {
+    // All IDs are selected
+    All,
+
+    /// None of the IDs are selected
+    None,
+
+    /// Some of the IDs are selected
+    Some(RoaringBitmap),
+
+    /// Some of the IDs are not selected
+    NotSome(RoaringBitmap),
+}
+
+impl IdMask {
+    fn contains(&self, id: u32) -> bool {
+        match self {
+            Self::All => true,
+            Self::None => false,
+            Self::Some(bitmap) => bitmap.contains(id),
+            Self::NotSome(bitmap) => !bitmap.contains(id),
+        }
+    }
+}
+
+impl BitOr for IdMask {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::All, _) | (_, Self::All) => Self::All,
+            (Self::None, other) | (other, Self::None) => other,
+
+            (Self::Some(lhs), Self::Some(rhs)) => Self::Some(lhs | rhs),
+
+            (Self::Some(lhs), Self::NotSome(rhs)) | (Self::NotSome(rhs), Self::Some(lhs)) => {
+                // Some(lhs) | NotSome(rhs) = Some(lhs) | !Some(rhs)
+                // = everything except what's in rhs but not in lhs
+                // = NotSome(rhs - lhs)
+                let difference = &rhs - &lhs;
+                if difference.is_empty() {
+                    Self::All
+                } else {
+                    Self::NotSome(difference)
+                }
+            }
+
+            (Self::NotSome(lhs), Self::NotSome(rhs)) => {
+                // NotSome(lhs) | NotSome(rhs) = !lhs | !rhs = !(lhs & rhs)
+                Self::NotSome(lhs & rhs)
+            }
+        }
+    }
+}
+
+impl BitAnd for IdMask {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (Self::None, _) | (_, Self::None) => Self::None,
+            (Self::All, other) | (other, Self::All) => other,
+
+            (Self::Some(lhs), Self::Some(rhs)) => {
+                // Some(lhs) & Some(rhs) = intersection
+                Self::Some(lhs & rhs)
+            }
+
+            (Self::Some(lhs), Self::NotSome(rhs)) | (Self::NotSome(rhs), Self::Some(lhs)) => {
+                // Some(lhs) & NotSome(rhs) = Some(lhs) & !Some(rhs)
+                // = lhs minus rhs
+                let difference = &lhs - &rhs;
+                if difference.is_empty() {
+                    Self::None
+                } else {
+                    Self::Some(difference)
+                }
+            }
+
+            (Self::NotSome(lhs), Self::NotSome(rhs)) => {
+                // NotSome(lhs) & NotSome(rhs) = !lhs & !rhs = !(lhs | rhs)
+                Self::NotSome(lhs | rhs)
+            }
+        }
+    }
+}
+
 pub struct AttributeFilterExec {
     pub filter: AdaptivePhysicalExprExec,
     pub payload_type: ArrowPayloadType,
@@ -614,27 +713,22 @@ impl AttributeFilterExec {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
         inverted: bool,
-    ) -> Result<RoaringBitmap> {
+    ) -> Result<IdMask> {
         let record_batch = match otap_batch.get(self.payload_type) {
             Some(rb) => rb,
             None => {
                 // if there are no attributes, then nothing can match the filter so just return
                 // empty ID mask
-                return Ok(RoaringBitmap::new());
+                return Ok(IdMask::None);
             }
         };
 
         let selection_vec = self.filter.evaluate_filter(record_batch, session_ctx)?;
-        println!("selection_Vec = {:?}", selection_vec);
 
         // if no rows passed the filter, return early without mapping the results over the
         // parent_id column
         if selection_vec.false_count() == record_batch.num_rows() {
-            return Ok(if inverted {
-                RoaringBitmap::full()
-            } else {
-                RoaringBitmap::new() // empty
-            });
+            return Ok(if inverted { IdMask::All } else { IdMask::None });
         }
 
         let parent_id_col = get_parent_id_column(record_batch)?;
@@ -656,19 +750,11 @@ impl AttributeFilterExec {
             })
             .collect();
 
-        if !inverted {
-            return Ok(id_mask);
-        }
-
-        // create an id_mask that is an inversion of the parent_ids selected by the filter
-        let id_mask = parent_id_col
-            .iter()
-            .flatten()
-            .map(|parent_id| parent_id as u32)
-            .filter(|parent_id| !id_mask.contains(*parent_id))
-            .collect();
-
-        Ok(id_mask)
+        Ok(if inverted {
+            IdMask::NotSome(id_mask)
+        } else {
+            IdMask::Some(id_mask)
+        })
     }
 }
 
@@ -682,7 +768,7 @@ impl Composite<AttributeFilterExec> {
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
         inverted: bool,
-    ) -> Result<RoaringBitmap> {
+    ) -> Result<IdMask> {
         match self {
             Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted),
             Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
@@ -691,7 +777,9 @@ impl Composite<AttributeFilterExec> {
 
                 // short circuit evaluating the other side if possible. if nothing passed the
                 // filter, we don't need to evaluate it because it won't change the result
-                if (!inverted && left_result.is_empty()) || (inverted && left_result.is_full()) {
+                if (!inverted && left_result == IdMask::None)
+                    || (inverted && left_result == IdMask::All)
+                {
                     return Ok(left_result);
                 }
 
@@ -705,18 +793,6 @@ impl Composite<AttributeFilterExec> {
             }
             Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
-
-                println!("left result = {:?}", left_result);
-
-                // short circuit evaluating the other side if possible. if everything was passed
-                // the filter, we don't need to evaluate it because it won't change the result
-                if (!inverted && left_result.is_full()) || (inverted && left_result.is_empty()) {
-                    println!("here");
-                    return Ok(left_result);
-                }
-
-                println!("here 2");
-
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A or B) = (not A) and (not B)
@@ -2057,6 +2133,171 @@ mod test {
         assert_eq!(result, otap_input)
     }
 
+    #[test]
+    fn test_id_mask_contains() {
+        let all = IdMask::All;
+        let none = IdMask::None;
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3]));
+        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([1, 2, 3]));
+
+        assert!(all.contains(5));
+        assert!(!none.contains(5));
+        assert!(some.contains(2));
+        assert!(!some.contains(5));
+        assert!(!not_some.contains(2));
+        assert!(not_some.contains(5));
+    }
+
+    #[test]
+    fn test_id_mask_bitor_basic() {
+        let some1 = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
+        let some2 = IdMask::Some(RoaringBitmap::from_iter([2, 3]));
+
+        match some1 | some2 {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(1));
+                assert!(bitmap.contains(2));
+                assert!(bitmap.contains(3));
+            }
+            _ => panic!("Expected Some variant"),
+        }
+    }
+
+    #[test]
+    fn test_id_mask_bitor_with_all_none() {
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
+
+        assert!(matches!(IdMask::All | some.clone(), IdMask::All));
+        assert!(matches!(some.clone() | IdMask::All, IdMask::All));
+        assert!(matches!(IdMask::None | some.clone(), IdMask::Some(_)));
+        assert!(matches!(some | IdMask::None, IdMask::Some(_)));
+    }
+
+    #[test]
+    fn test_id_mask_bitor_some_notsome() {
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3]));
+        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([2, 3, 4]));
+
+        // Some([1,2,3]) | NotSome([2,3,4]) = NotSome([4])
+        // Because we select 1,2,3 plus everything except 2,3,4
+        // Result: everything except 4
+        match some | not_some {
+            IdMask::NotSome(bitmap) => {
+                assert!(bitmap.contains(4));
+                assert!(!bitmap.contains(1));
+                assert!(!bitmap.contains(2));
+            }
+            _ => panic!("Expected NotSome variant"),
+        }
+    }
+
+    #[test]
+    fn test_bitor_some_notsome_becomes_all() {
+        // For this to become All, we need the NotSome set to be a subset of Some
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3, 4, 5]));
+        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([2, 3]));
+
+        // Some([1,2,3,4,5]) | NotSome([2,3])
+        // = [1,2,3,4,5] plus everything except [2,3]
+        // = everything (because [2,3] - [1,2,3,4,5] = empty)
+        assert!(matches!(some | not_some, IdMask::All));
+    }
+
+    #[test]
+    fn test_id_mask_bitor_notsome_notsome() {
+        let not_some1 = IdMask::NotSome(RoaringBitmap::from_iter([1, 2]));
+        let not_some2 = IdMask::NotSome(RoaringBitmap::from_iter([2, 3]));
+
+        // NotSome([1,2]) | NotSome([2,3]) = NotSome([2])
+        match not_some1 | not_some2 {
+            IdMask::NotSome(bitmap) => {
+                assert!(bitmap.contains(2));
+                assert!(!bitmap.contains(1));
+                assert!(!bitmap.contains(3));
+            }
+            _ => panic!("Expected NotSome variant"),
+        }
+    }
+
+    #[test]
+    fn test_id_mask_bitand_basic() {
+        let some1 = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3]));
+        let some2 = IdMask::Some(RoaringBitmap::from_iter([2, 3, 4]));
+
+        match some1 & some2 {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(2));
+                assert!(bitmap.contains(3));
+                assert!(!bitmap.contains(1));
+                assert!(!bitmap.contains(4));
+            }
+            _ => panic!("Expected Some variant"),
+        }
+    }
+
+    #[test]
+    fn test_id_mask_bitand_with_all_none() {
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
+
+        assert!(matches!(IdMask::None & some.clone(), IdMask::None));
+        assert!(matches!(some.clone() & IdMask::None, IdMask::None));
+        assert!(matches!(IdMask::All & some.clone(), IdMask::Some(_)));
+        assert!(matches!(some & IdMask::All, IdMask::Some(_)));
+    }
+
+    #[test]
+    fn test_id_mask_bitand_some_notsome() {
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2, 3, 4]));
+        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([3, 4, 5]));
+
+        // Some([1,2,3,4]) & NotSome([3,4,5]) = Some([1,2])
+        match some & not_some {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(1));
+                assert!(bitmap.contains(2));
+                assert!(!bitmap.contains(3));
+                assert!(!bitmap.contains(4));
+            }
+            _ => panic!("Expected Some variant"),
+        }
+    }
+
+    #[test]
+    fn test_id_mask_bitand_some_notsome_becomes_none() {
+        let some = IdMask::Some(RoaringBitmap::from_iter([1, 2]));
+        let not_some = IdMask::NotSome(RoaringBitmap::from_iter([3, 4]));
+
+        // Some([1,2]) & NotSome([3,4]) = Some([1,2])
+        // (since [1,2] are not in [3,4])
+        match some.clone() & not_some {
+            IdMask::Some(bitmap) => {
+                assert!(bitmap.contains(1));
+                assert!(bitmap.contains(2));
+            }
+            _ => panic!("Expected Some variant"),
+        }
+
+        // But Some([1,2]) & NotSome([1,2,3]) = None
+        let not_some2 = IdMask::NotSome(RoaringBitmap::from_iter([1, 2, 3]));
+        assert!(matches!(some & not_some2, IdMask::None));
+    }
+
+    #[test]
+    fn test_id_mask_bitand_notsome_notsome() {
+        let not_some1 = IdMask::NotSome(RoaringBitmap::from_iter([1, 2]));
+        let not_some2 = IdMask::NotSome(RoaringBitmap::from_iter([2, 3]));
+
+        // NotSome([1,2]) & NotSome([2,3]) = NotSome([1,2,3])
+        match not_some1 & not_some2 {
+            IdMask::NotSome(bitmap) => {
+                assert!(bitmap.contains(1));
+                assert!(bitmap.contains(2));
+                assert!(bitmap.contains(3));
+            }
+            _ => panic!("Expected NotSome variant"),
+        }
+    }
+
     #[tokio::test]
     async fn test_composite_attributes_filter() {
         // Currently our plans don't construct the Composite<AttributeFilterExec> and until we have
@@ -2110,7 +2351,7 @@ mod test {
             filter_exec
                 .execute(&otap_batch, &session_ctx, false)
                 .unwrap(),
-            RoaringBitmap::from_iter([0])
+            IdMask::Some(RoaringBitmap::from_iter([0]))
         );
 
         // test simple not filter
@@ -2121,7 +2362,7 @@ mod test {
             filter_exec
                 .execute(&otap_batch, &session_ctx, false)
                 .unwrap(),
-            RoaringBitmap::from_iter([1, 2])
+            IdMask::NotSome(RoaringBitmap::from_iter([0]))
         );
 
         // test "and" filter
@@ -2135,7 +2376,7 @@ mod test {
             filter_exec
                 .execute(&otap_batch, &session_ctx, false)
                 .unwrap(),
-            RoaringBitmap::from_iter([0])
+            IdMask::Some(RoaringBitmap::from_iter([0]))
         );
 
         // test inverted "and" filter
@@ -2149,7 +2390,7 @@ mod test {
             filter_exec
                 .execute(&otap_batch, &session_ctx, false)
                 .unwrap(),
-            RoaringBitmap::from_iter([1, 2])
+            IdMask::NotSome(RoaringBitmap::from_iter([0]))
         );
 
         // test "or" filter
@@ -2163,7 +2404,7 @@ mod test {
             filter_exec
                 .execute(&otap_batch, &session_ctx, false)
                 .unwrap(),
-            RoaringBitmap::from_iter([0, 1])
+            IdMask::Some(RoaringBitmap::from_iter([0, 1]))
         );
 
         // test inverted "or" filter
@@ -2177,7 +2418,7 @@ mod test {
             filter_exec
                 .execute(&otap_batch, &session_ctx, false)
                 .unwrap(),
-            RoaringBitmap::from_iter([2])
+            IdMask::NotSome(RoaringBitmap::from_iter([0, 1]))
         );
     }
 
@@ -2495,53 +2736,10 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
 
         let result = attr_exec.execute(&otap_batch, &session_ctx, false).unwrap();
-        assert_eq!(result.is_empty(), true);
+        assert_eq!(result, IdMask::None);
 
         // check we handle the inverted case as well
         let result = attr_exec.execute(&otap_batch, &session_ctx, true).unwrap();
-        assert_eq!(result.is_full(), true);
-    }
-
-    #[test]
-    fn test_composite_attr_exec_or_takes_short_circuit() {
-        let mut attr_exec = Composite::or(
-            AttributeFilterExec {
-                payload_type: ArrowPayloadType::LogAttrs,
-                filter: AdaptivePhysicalExprExec::try_new(col("x").eq(lit("a"))).unwrap(),
-            },
-            AttributeFilterExec {
-                payload_type: ArrowPayloadType::LogAttrs,
-                filter: AdaptivePhysicalExprExec {
-                    logical_expr: lit("should panic"), // placeholder b/c physical is already planned
-                    physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                    projection: FilterProjection {
-                        schema: vec![ProjectedSchemaColumn::Root("x".into())],
-                    },
-                },
-            },
-        );
-
-        let input = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new("parent_id", DataType::UInt16, false),
-                Field::new("x", DataType::Utf8, false),
-            ])),
-            vec![
-                Arc::new(UInt16Array::from_iter_values([0, 0, 1])),
-                Arc::new(StringArray::from_iter_values(["a", "b", "a"])),
-            ],
-        )
-        .unwrap();
-
-        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
-        otap_batch.set(ArrowPayloadType::LogAttrs, input.clone());
-        let session_ctx = Pipeline::create_session_context();
-
-        let result = attr_exec.execute(&otap_batch, &session_ctx, false).unwrap();
-        assert_eq!(result.is_full(), true);
-
-        // check we handle the inverted case as well
-        let result = attr_exec.execute(&otap_batch, &session_ctx, true).unwrap();
-        assert_eq!(result.is_empty(), true);
+        assert_eq!(result, IdMask::All);
     }
 }

@@ -131,15 +131,6 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         c,
         &rt,
         &batch_sizes,
-        "or_attrs_short_circuit",
-        // left expr of "or" should be true for all rows
-        "logs | where attributes[\"code.line.number\"] >= 0 or attributes[\"some.attr\"] >= 0",
-    );
-
-    bench_log_pipeline(
-        c,
-        &rt,
-        &batch_sizes,
         "or_short_circuit",
         // left expr of "or" should be true for all rows
         //
