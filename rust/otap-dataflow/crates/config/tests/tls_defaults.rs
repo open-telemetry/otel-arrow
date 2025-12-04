@@ -4,6 +4,7 @@
 #![allow(missing_docs)]
 
 use otap_df_config::tls::TlsConfig;
+use std::time::Duration;
 
 #[test]
 fn test_tls_config_defaults() {
@@ -14,7 +15,7 @@ fn test_tls_config_defaults() {
 
     let config: TlsConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(config.reload_interval, Some("5m".to_string()));
+    assert_eq!(config.reload_interval, Some(Duration::from_secs(300)));
 }
 
 #[test]
@@ -27,7 +28,7 @@ fn test_tls_config_explicit_value() {
 
     let config: TlsConfig = serde_yaml::from_str(yaml).expect("Failed to parse YAML");
 
-    assert_eq!(config.reload_interval, Some("10s".to_string()));
+    assert_eq!(config.reload_interval, Some(Duration::from_secs(10)));
 }
 
 #[test]

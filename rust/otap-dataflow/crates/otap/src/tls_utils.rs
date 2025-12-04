@@ -375,13 +375,7 @@ fn load_certified_key_sync(cert_path: &Path, key_path: &Path) -> Result<Certifie
 pub async fn build_reloadable_server_config(
     config: &TlsServerConfig,
 ) -> Result<Arc<rustls::ServerConfig>, io::Error> {
-    let check_interval = config
-        .config
-        .reload_interval
-        .as_ref()
-        .map(|s| humantime::parse_duration(s))
-        .transpose()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let check_interval = config.config.reload_interval;
 
     let builder = rustls::ServerConfig::builder();
 

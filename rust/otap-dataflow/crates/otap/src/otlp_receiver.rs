@@ -336,7 +336,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 .await?,
         );
 
-        let mut server_task: Pin<Box<dyn Future<Output = Result<(), tonic::transport::Error>> + Send>> = {
+        let mut server_task: Pin<
+            Box<dyn Future<Output = Result<(), tonic::transport::Error>> + Send>,
+        > = {
             #[cfg(feature = "experimental-tls")]
             {
                 match maybe_tls_acceptor {
@@ -397,8 +399,6 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,7 +445,7 @@ mod tests {
             wait_for_result: true,
             ..Default::default()
         };
-        Config { 
+        Config {
             grpc,
             #[cfg(feature = "experimental-tls")]
             tls: None,

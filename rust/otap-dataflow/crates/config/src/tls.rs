@@ -4,6 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Common TLS configuration for both client and server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
@@ -36,12 +37,13 @@ pub struct TlsConfig {
     /// Certificates are only reloaded if file modification time has changed.
     /// Defaults to 5 minutes ("5m").
     /// Format: Standard duration string (e.g., "30s", "5m", "1h").
-    #[serde(default = "default_reload_interval")]
-    pub reload_interval: Option<String>,
+    #[serde(default = "default_reload_interval", with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub reload_interval: Option<Duration>,
 }
 
-fn default_reload_interval() -> Option<String> {
-    Some("5m".to_string())
+fn default_reload_interval() -> Option<Duration> {
+    Some(Duration::from_secs(300))
 }
 
 /// TLS configuration specific to client connections.
