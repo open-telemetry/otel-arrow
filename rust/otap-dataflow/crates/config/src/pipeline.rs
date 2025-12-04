@@ -224,6 +224,7 @@ impl PipelineConfig {
     }
 
     /// Returns the service-level telemetry configuration.
+    #[must_use]
     pub fn service(&self) -> &ServiceConfig {
         &self.service
     }
@@ -624,19 +625,11 @@ impl Default for PipelineConfigBuilder {
 }
 
 /// Service-level telemetry configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct ServiceConfig {
     /// The telemetry backend to which to report metrics.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
-}
-
-impl Default for ServiceConfig {
-    fn default() -> Self {
-        Self {
-            telemetry: TelemetryConfig::default(),
-        }
-    }
 }
 
 /// Telemetry backend configuration.
@@ -678,19 +671,11 @@ fn default_reporting_interval() -> Duration {
 }
 
 /// Opentelemetry Metrics configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct MetricsConfig {
     /// The list of metrics readers to configure.
     #[serde(default)]
     pub readers: Vec<MetricsReaderConfig>,
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self {
-            readers: Vec::<MetricsReaderConfig>::new(),
-        }
-    }
 }
 
 /// Opentelemetry Metrics Reader configuration.
@@ -737,18 +722,18 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
         let reader_options_result = ReaderOptions::deserialize(deserializer);
         if let Ok(options) = reader_options_result {
             if let Some(config) = options.periodic {
-                return Ok(MetricsReaderConfig::Periodic(config));
+                Ok(MetricsReaderConfig::Periodic(config))
             } else if options.pull.is_some() {
-                return Ok(MetricsReaderConfig::Pull {});
+                Ok(MetricsReaderConfig::Pull {})
             } else {
-                return Err(serde::de::Error::custom(
+                Err(serde::de::Error::custom(
                     "Expected either 'periodic' or 'pull' reader",
-                ));
+                ))
             }
         } else {
-            return Err(serde::de::Error::custom(
+            Err(serde::de::Error::custom(
                 "Invalid configuration of a metrics reader",
-            ));
+            ))
         }
     }
 }
@@ -791,7 +776,7 @@ impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
             where
                 M: MapAccess<'de>,
             {
-                while let Some(key) = map.next_key::<String>()? {
+                if let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "console" => {
                             let console_config: ConsoleExporterConfig = map.next_value()?;
@@ -808,10 +793,11 @@ impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
                             ));
                         }
                     }
+                } else {
+                    Err(serde::de::Error::custom(
+                        "Expected either 'console' or 'otlp' exporter",
+                    ))
                 }
-                Err(serde::de::Error::custom(
-                    "Expected either 'console' or 'otlp' exporter",
-                ))
             }
         }
 
@@ -824,7 +810,8 @@ mod tests {
     use crate::error::Error;
     use crate::node::DispatchStrategy;
     use crate::pipeline::{
-        MetricsPeriodicExporterConfig, MetricsReaderConfig, PipelineConfigBuilder, PipelineType,
+        MetricsPeriodicExporterConfig, MetricsReaderConfig, MetricsReaderPeriodicConfig,
+        PipelineConfigBuilder, PipelineType,
     };
     use serde_json::json;
 
@@ -1352,6 +1339,102 @@ mod tests {
                 assert!(details.contains(".json, .yaml, .yml"));
             }
             other => panic!("Expected FileReadError with no extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_telemetry_config_deserialization() {
+        let yaml_data: &str = r#"
+            reporting_channel_size: 200
+            reporting_interval: "5s"
+            resource:
+              service.name: "my_service"
+              service.version: "1.2.3"
+            metrics:
+              readers:
+                - periodic:
+                    interval: "15s"
+                    exporter:
+                      console: {}
+            "#;
+        let config: super::TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
+        assert_eq!(config.reporting_channel_size, 200);
+        assert_eq!(config.reporting_interval.as_secs(), 5);
+        assert_eq!(config.resource.get("service.name").unwrap(), "my_service");
+        assert_eq!(config.resource.get("service.version").unwrap(), "1.2.3");
+        let readers = &config.metrics.readers;
+        assert_eq!(readers.len(), 1);
+        if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
+            assert_eq!(periodic_config.interval.as_secs(), 15);
+            if let MetricsPeriodicExporterConfig::Console(_) = &periodic_config.exporter {
+                // OK
+            } else {
+                panic!("Expected Console exporter config");
+            }
+        } else {
+            panic!("Expected Periodic reader config");
+        }
+    }
+
+    #[test]
+    fn test_metrics_reader_deserialization() {
+        let yaml_data = r#"
+            readers:
+              - periodic:
+                  interval: "10s"
+                  exporter:
+                    console: {}
+            "#;
+        let config: super::MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
+        assert_eq!(config.readers.len(), 1);
+        if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
+            assert_eq!(periodic_config.interval.as_secs(), 10);
+            if let MetricsPeriodicExporterConfig::Console(console_config) =
+                &periodic_config.exporter
+            {
+                assert!(console_config.temporality.is_none());
+            } else {
+                panic!("Expected Console exporter config");
+            }
+        } else {
+            panic!("Expected Periodic reader config");
+        }
+    }
+
+    #[test]
+    fn test_metrics_reader_periodic_config_deserialization() {
+        let yaml_data = r#"
+            interval: "20s"
+            exporter:
+              console: {}
+            "#;
+        let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
+            serde_yaml::from_str(yaml_data).unwrap();
+        assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
+        if let MetricsPeriodicExporterConfig::Console(_) = &metrics_reader_periodic_config.exporter
+        {
+            // OK
+        } else {
+            panic!("Expected Console exporter config");
+        }
+    }
+
+    #[test]
+    fn test_metrics_reader_periodic_config_deserialization_unknown_exporter() {
+        let yaml_data = r#"
+            interval: "20s"
+            exporter:
+              unknown: {}
+            "#;
+        let metrics_reader_periodic_config_result: Result<
+            MetricsReaderPeriodicConfig,
+            serde_yaml::Error,
+        > = serde_yaml::from_str(yaml_data);
+        if let Err(e) = metrics_reader_periodic_config_result {
+            let err_msg = e.to_string();
+            assert!(err_msg.contains("unknown field `unknown`"));
+        } else {
+            panic!("Expected deserialization to fail due to unknown exporter");
         }
     }
 }
