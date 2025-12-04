@@ -22,7 +22,8 @@ components:
         batch_size: 100
         load_type: syslog
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1 # Matches threads: 1 as this is not df_engine and does not have ability to restrict cores.
       prometheus:
         endpoint: http://localhost:5001/metrics
   df-engine:
@@ -42,7 +43,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 3-3
       prometheus:
         endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
   backend-service:
@@ -62,7 +64,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 1-1
       prometheus:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 
