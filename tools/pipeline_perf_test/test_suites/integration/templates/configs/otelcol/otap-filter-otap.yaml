@@ -56,5 +56,5 @@ service:
   pipelines:
     logs/arrow:
       receivers: [otelarrow]
-      processors: [transform]
+      processors: [filter]
       exporters: [otelarrow]

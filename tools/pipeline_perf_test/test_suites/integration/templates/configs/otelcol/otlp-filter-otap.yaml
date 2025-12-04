@@ -52,5 +52,5 @@ service:
   pipelines:
     logs:
       receivers: [otlp]
-      processors: [transform]
+      processors: [filter]
       exporters: [otelarrow]
