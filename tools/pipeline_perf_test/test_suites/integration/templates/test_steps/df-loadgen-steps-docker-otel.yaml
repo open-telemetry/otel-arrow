@@ -1,0 +1,143 @@
+steps:
+  - name: Deploy Backend Engine
+    action:
+      component_action:
+        phase: deploy
+        target: backend-service
+    hooks:
+      run:
+        pre:
+          # Render the engine config into the suite config directory
+          - render_template:
+              template_path: './test_suites/tech_summit/templates/configs/backend/config.yaml.j2'
+              output_path: ./test_suites/tech_summit/configs/backend/config.rendered.yaml
+              variables:
+                backend_receiver_type: '{{backend_receiver_type}}'
+        post:
+          # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
+          - ready_check_http:
+              url: http://localhost:8087/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Deploy Go Collector
+    action:
+      component_action:
+        phase: deploy
+        target: go-collector
+    hooks:
+      run:
+        pre:
+          # Render the collector config into the suite config directory
+          - render_template:
+              template_path: '{{collector_config_template}}'
+              output_path: ./test_suites/tech_summit/configs/otelcol/config.rendered.yaml
+              variables:
+                backend_hostname: backend-service
+        post:
+          # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
+          - ready_check_http:
+              url: http://localhost:8086/metrics
+              method: GET
+              expected_status_code: 200
+  - name: Deploy DF Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        pre:
+          # Render the engine config into the suite config directory
+          - render_template:
+              template_path: './test_suites/tech_summit/templates/configs/loadgen/config.yaml.j2'
+              output_path: ./test_suites/tech_summit/configs/loadgen/config.rendered.yaml
+              variables:
+                engine_hostname: go-collector
+                loadgen_exporter_type: '{{loadgen_exporter_type}}'
+        post:
+          # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
+          - ready_check_http:
+              url: http://localhost:8085/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - go-collector
+  - name: Wait for data
+    action:
+      wait:
+        delay_seconds: 5
+  # This is the main observation window, marked by custome events at start/stop
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: 15
+    hooks:
+      run:
+        pre:
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+  # Stop the load generator from sending traffic.
+  - name: Stop Load Generator
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/pipeline-groups/shutdown
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+    action:
+      no_op: {}
+  # Wait for all items in-flight to transit and ensure metrics are updated.
+  - name: Wait For Drain and Reset
+    action:
+      wait:
+        delay_seconds: 3
+  # Stop monitoring all components.
+  - name: Stop Monitoring All
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets:
+          - backend-service
+          - load-generator
+          - go-collector
+  # Stop all running components.
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets:
+          - load-generator
+          - go-collector
+          - backend-service
+  # Run the report
+  - name: Run Report
+    action:
+      wait:
+        delay_seconds: 0
+    hooks:
+      run:
+        post:
+          - sql_report:
+              name: Tech Summit SQL Report
+              report_config_file: ./test_suites/tech_summit/configs/sql_report.yaml
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template: {}
+                  destination:
+                    file:
+                      directory: results/tech_summit/markdown

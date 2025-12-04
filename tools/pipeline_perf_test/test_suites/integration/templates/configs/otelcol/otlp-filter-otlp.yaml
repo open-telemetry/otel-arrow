@@ -1,0 +1,53 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  otlp:
+    endpoint: '{{backend_hostname}}:1235'
+    tls:
+      insecure: true
+
+processors:
+  filter:
+    error_mode: ignore
+    logs:
+      exclude:
+        match_type: strict
+        resource_attributes:
+          - key: fake_data_generator
+            value: v0
+        record_attributes:
+          - key: fake_data_generator
+            value: v0
+        severity_texts:
+          - WARN
+        bodies:
+          - body_text
+      include:
+        match_type: strict
+        resource_attributes:
+          - key: fake_data_generator
+            value: v1
+        record_attributes:
+          - key: gen_ai.system
+            value: openai
+          - key: ios.app.state
+            value: active
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [otlp]

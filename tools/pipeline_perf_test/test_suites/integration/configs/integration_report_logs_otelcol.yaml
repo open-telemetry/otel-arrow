@@ -1,0 +1,321 @@
+queries:
+  - name: Filter superflous metadata
+    sql: |
+      CREATE VIEW metadata_filtered AS
+      SELECT *
+      FROM metadata
+      WHERE Attribute NOT LIKE 'test.ctx.%';
+
+  - name: Calculate observation window for this test
+    sql: |
+      CREATE TABLE observation_window AS WITH event_times AS (
+        SELECT
+          "attributes.test.name" AS test_name,
+          name AS event_name,
+          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp,
+        FROM events
+        WHERE name IN ('observation_start', 'observation_stop')
+      ),
+      observation_windows AS (
+        SELECT
+          start.test_name,
+          start.timestamp AS start_ts,
+          stop.timestamp AS stop_ts
+        FROM
+          event_times start
+          JOIN event_times stop ON start.test_name = stop.test_name
+        WHERE
+          start.event_name = 'observation_start'
+          AND stop.event_name = 'observation_stop'
+          AND start.timestamp < stop.timestamp
+      )
+
+      SELECT
+        w.*
+      FROM
+        metadata_row
+        JOIN observation_windows w ON metadata_row."test.name" = w.test_name
+
+  - name: Container Network Rates
+    sql: |
+      CREATE TABLE container_network_rates AS WITH
+        metrics_filtered AS (
+            SELECT *,
+            "metric_attributes.component_name" AS component_name,
+            FROM metrics
+            WHERE metric_name IN (
+              'container.network.rx',
+              'container.network.tx'
+            ) AND timestamp > (
+                SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
+                FROM metadata_row
+                LIMIT 1
+              )
+        ),
+        with_lag AS (
+            SELECT *,
+                  LAG(value) OVER (PARTITION BY metric_name, component_name  ORDER BY timestamp) AS prev_value,
+                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name ORDER BY timestamp) AS prev_timestamp
+            FROM metrics_filtered
+        ),
+        -- Calculate deltas and rate
+        with_rate AS (
+            SELECT *,
+                  value - prev_value AS delta,
+                  EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
+                  CASE 
+                      WHEN prev_value IS NULL OR time_delta_seconds = 0 THEN NULL
+                      ELSE (value - prev_value) / time_delta_seconds
+                  END AS rate
+            FROM with_lag
+        ),
+        observation_only AS (
+          SELECT *
+          FROM observation_window
+        )
+        -- Final Aggregation
+        SELECT
+          component_name,
+          metric_name,
+          MAX(value) AS total_increase,
+          AVG(rate) AS average_rate
+        FROM
+          observation_only AS ow
+        JOIN
+          with_rate AS wr
+          ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY component_name, metric_name
+  - name: Component Metric Rates By Core ID
+    sql: |
+      CREATE TABLE send_receive_rates_by_core AS WITH
+        metrics_filtered AS (
+            SELECT *,
+            "metric_attributes.component_name" AS component_name,
+            "metric_attributes.core_id" AS core_id,
+            FROM metrics
+            WHERE metric_name IN (
+              'logs_produced',
+              'failed',
+              'bytes_sent',
+              'late_batches',
+              'logs'
+            ) AND timestamp > (
+                SELECT CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
+                FROM metadata_row
+                LIMIT 1
+              )
+        ),
+
+        -- Add lag for previous value and time
+        with_lag AS (
+            SELECT *,
+                  LAG(value) OVER (PARTITION BY metric_name, component_name, core_id  ORDER BY timestamp) AS prev_value,
+                  LAG(timestamp) OVER (PARTITION BY metric_name, component_name, core_id ORDER BY timestamp) AS prev_timestamp
+            FROM metrics_filtered
+        ),
+
+        -- Calculate deltas and rate
+        with_rate AS (
+            SELECT *,
+                  value - prev_value AS delta,
+                  EXTRACT(EPOCH FROM timestamp - prev_timestamp) AS time_delta_seconds,
+                  CASE 
+                      WHEN prev_value IS NULL OR time_delta_seconds = 0 THEN NULL
+                      ELSE (value - prev_value) / time_delta_seconds
+                  END AS rate
+            FROM with_lag
+        ),
+
+        -- Join to observation window to trim the time range
+        observation_only AS (
+          SELECT * FROM observation_window
+        ),
+
+        trimmed_rates AS (
+          SELECT wr.*
+          FROM with_rate wr
+          JOIN observation_only ow
+            ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        ),
+
+        full_range_aggregates AS (
+          SELECT
+            component_name,
+            metric_name,
+            core_id,
+            MAX(value) AS max_value,
+            MIN(value) AS min_value
+          FROM with_rate
+          GROUP BY component_name, metric_name, core_id
+        )
+
+        -- Final Aggregation
+        SELECT
+          t.component_name,
+          t.metric_name,
+          t.core_id,
+          f.max_value - f.min_value AS total_increase,
+          AVG(t.rate) AS average_rate
+        FROM trimmed_rates t
+        JOIN full_range_aggregates f
+          ON t.component_name = f.component_name
+          AND t.metric_name = f.metric_name
+          AND t.core_id = f.core_id
+        GROUP BY t.component_name, t.metric_name, t.core_id, f.max_value, f.min_value
+        ORDER BY t.component_name, t.metric_name, t.core_id;
+
+  - name: Component Metric Rates
+    sql: |
+      CREATE TABLE aggregate_send_receive_rates AS
+      SELECT
+        component_name,
+        metric_name,
+        SUM(total_increase) AS total_increase,
+        SUM(average_rate) AS average_rate
+      FROM send_receive_rates_by_core
+      GROUP BY component_name, metric_name;
+  - name: Create component metric aggregates
+    sql: |
+      CREATE TABLE component_resource_metrics AS
+        WITH metrics_filtered AS (
+          SELECT *, 
+          "metric_attributes.component_name" AS component_name,
+          FROM metrics
+          WHERE metric_name IN ('process.cpu.usage', 'process.memory.usage', 'container.cpu.usage', 'container.memory.usage')
+        ),
+        observation_only AS (
+          SELECT *
+          FROM observation_window
+        )
+        SELECT
+          m.component_name,
+          metric_name,
+          MIN(m.value) AS min_value,
+          AVG(m.value) AS avg_value,
+          MAX(m.value) AS max_value
+        FROM
+          observation_only AS ow
+        JOIN
+          metrics_filtered AS m
+          ON m.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY
+          m.component_name, m.metric_name
+        ORDER BY
+          m.component_name DESC;
+
+  - name: Calculate loss
+    sql: |
+      CREATE TABLE log_loss AS
+      SELECT
+          (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) AS logs_lost,
+          CASE
+              WHEN (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0)) > 0 THEN
+                  (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0) - COALESCE(logs.total, 0)) * 1.0 /
+                  (COALESCE(logs_produced.total, 0) + COALESCE(failed.total, 0))
+              ELSE NULL
+          END AS logs_lost_pct
+      FROM
+          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'logs_produced') AS logs_produced,
+          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'failed') AS failed,
+          (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'logs') AS logs;
+
+  - name: Create Final Github Actions Format table
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+          SELECT 'dropped_logs_total' AS name, 'count' AS unit, CAST(logs_lost AS FLOAT) AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Dropped Log Count' AS extra
+          FROM log_loss
+          CROSS JOIN metadata_row
+
+          UNION ALL
+
+          SELECT 'dropped_logs_percentage' AS name, '%' AS unit, CAST(logs_lost_pct AS FLOAT) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Dropped Log %' AS extra
+          FROM log_loss
+          CROSS JOIN metadata_row
+
+          UNION ALL
+
+          SELECT 'cpu_percentage_avg' AS name, '%' AS unit, avg_value * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' CPU Percentage' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('go-collector', 'rust-engine') AND metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+
+          UNION ALL
+
+          SELECT 'cpu_percentage_max' AS name, '%' AS unit, max_value * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' CPU Percentage' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('go-collector', 'rust-engine') AND metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+
+          UNION ALL
+
+          SELECT 'ram_mib_avg' AS name, 'MiB' AS unit, avg_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' RAM (MiB)' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('go-collector', 'rust-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+
+          UNION ALL
+
+          SELECT 'ram_mib_max' AS name, 'MiB' AS unit, max_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' RAM (MiB)' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('go-collector', 'rust-engine') AND metric_name IN ('container.memory.usage', 'process.memory.usage')
+
+          UNION ALL
+
+          SELECT 'logs_produced_total' AS name, 'count' AS unit, total_increase AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Sent Log Count' AS extra
+          FROM aggregate_send_receive_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'logs_produced'
+
+          UNION ALL
+
+          SELECT 'otlp_logs_received_total' AS name, 'count' AS unit, total_increase AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Received Log Count' AS extra
+          FROM aggregate_send_receive_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'logs'
+
+          UNION ALL
+
+          SELECT 'received_log_rate_avg' AS name, 'logs/sec' AS unit, average_rate AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Log Throughput' AS extra
+          FROM aggregate_send_receive_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'received_log_rate_avg'
+          
+          UNION ALL
+
+          SELECT 'network_tx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Network Utilization' AS extra
+          FROM container_network_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'container.network.tx' AND component_name IN ('go-collector', 'rust-engine')
+          
+          UNION ALL
+
+          SELECT 'network_rx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' Network Utilization' AS extra
+          FROM container_network_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'rust-engine');
+
+result_tables:
+  - name: metadata_filtered
+    description: Information about the test suite and report.
+  - name: send_receive_rates_by_core
+    description: Core Specific increase and average rate of various send / receive metrics
+  - name: aggregate_send_receive_rates
+    description: Cumulative increase and average rate of various send / receive metrics
+  - name: component_resource_metrics
+    description: CPU and Memory metrics for the components in the Test Suite during the test.
+  - name: log_loss
+    description: Lost logs (failed or sent but not received) total and as a percentage
+  - name: gh_actions_benchmark
+    #display: False
