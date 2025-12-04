@@ -96,7 +96,7 @@ impl MetricsDispatcher {
         &self,
         field: &MetricsField,
         value: u64,
-        attributes: &Vec<opentelemetry::KeyValue>,
+        attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         match field.instrument {
