@@ -30,8 +30,8 @@ fn bench_log_pipeline(
         let _ = group.bench_with_input(benchmark_id, &batch_size, |b, batch_size| {
             b.iter_custom(|iters| {
                 let batch = generate_logs_batch(**batch_size);
-                let result = KqlParser::parse(bench_pipeline_kql).expect("can parse pipeline");
-                let mut pipeline = Pipeline::new(result.pipeline);
+                let parse_result = KqlParser::parse(bench_pipeline_kql).expect("can parse pipeline");
+                let mut pipeline = Pipeline::new(parse_result.pipeline);
                 rt.block_on(async move {
                     // execute the query once to initiate planning
                     pipeline.execute(batch.clone()).await.unwrap();
