@@ -1177,8 +1177,8 @@ mod test {
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let pipeline_expr = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse(kql_expr).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         otap_to_logs_data(result)
     }
@@ -1200,8 +1200,8 @@ mod test {
                 .finish(),
         ]);
 
-        let pipeline_expr = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let expected = to_otap(vec![
             LogRecord::build()
@@ -1212,8 +1212,8 @@ mod test {
         assert_eq!(result, expected);
 
         // test same filter where the literal is on the left and column name on the right
-        let pipeline_expr = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         assert_eq!(result, expected);
     }
@@ -1242,8 +1242,8 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1252,8 +1252,8 @@ mod test {
         );
 
         // test same filter where the literal is on the left and the attribute is on the right
-        let pipeline_expr = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1449,10 +1449,10 @@ mod test {
         let otap_batch = to_otap(log_records.clone());
 
         // check simple filter "and" properties
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where severity_text == \"ERROR\" and event_name == \"2\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1461,11 +1461,11 @@ mod test {
         );
 
         // check simple filter "and" with attributes
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"ERROR\" and attributes[\"x\"] == \"c\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1474,11 +1474,11 @@ mod test {
         );
 
         // check simple filter "and" two attributes
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where attributes[\"y\"] == \"d\" and attributes[\"x\"] == \"a\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1518,11 +1518,11 @@ mod test {
         let otap_batch = to_otap(log_records.clone());
 
         // check simple filter "or" with properties predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"INFO\" or severity_text == \"ERROR\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1531,11 +1531,11 @@ mod test {
         );
 
         // check simple filter "or" with mixed attributes/properties predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"ERROR\" or attributes[\"x\"] == \"c\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1544,11 +1544,11 @@ mod test {
         );
 
         // check simple filter "or" two attributes predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where attributes[\"x\"] == \"a\" or attributes[\"y\"] == \"e\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1835,8 +1835,8 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1845,8 +1845,8 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // assert we have the correct behaviour when filtering by attributes as well
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1857,8 +1857,8 @@ mod test {
     #[tokio::test]
     async fn test_empty_batch() {
         let input = OtapArrowRecords::Logs(Logs::default());
-        let pipeline_expr = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
     }
@@ -1881,8 +1881,8 @@ mod test {
         ];
 
         // check that if there are no attributes to filter by then, we get the empty batch
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1890,9 +1890,9 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // check that the same result happens when filtering by resource and scope attrs
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1900,10 +1900,10 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // check that the same result happens when filtering by resource and scope attrs
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where instrumentation_scope.attributes[\"a\"] == \"1234\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1916,8 +1916,8 @@ mod test {
             "logs | where not(resource.attributes[\"a\"] == \"1234\")",
             "logs | where not(instrumentation_scope.attributes[\"a\"] == \"1234\")",
         ] {
-            let pipeline_expr = KqlParser::parse(inverted_attrs_filter).unwrap();
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let parser_result = KqlParser::parse(inverted_attrs_filter).unwrap();
+            let mut pipeline = Pipeline::new(parser_result.pipeline);
             let input = to_otap(log_records.clone());
             let result = pipeline.execute(input.clone()).await.unwrap();
             assert_eq!(result, input);
@@ -1930,8 +1930,8 @@ mod test {
         // next, then present in the next, etc.
 
         let query = "logs | where attributes[\"a\"] == \"1234\"";
-        let pipeline_expr = KqlParser::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr.clone());
+        let parser_result = KqlParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
 
         // no attrs to start
         let batch1 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
@@ -1987,8 +1987,8 @@ mod test {
 
         // assert the behaviour is correct when nothing is filtered out
         let otap_input = to_otap(log_records);
-        let pipeline_expr = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_input.clone()).await.unwrap();
 
         assert_eq!(result, otap_input)
