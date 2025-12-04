@@ -277,7 +277,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'cpu_percentage_normalized_avg' AS name, '%' AS unit, 
+          SELECT 'cpu_percentage_normalized_avg' AS name, '%' AS unit,
                 (crm.avg_value / COALESCE(ccc.core_count, 1)) * 100 AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU % (Normalized)' AS extra
           FROM component_resource_metrics crm
@@ -287,7 +287,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'cpu_percentage_normalized_max' AS name, '%' AS unit, 
+          SELECT 'cpu_percentage_normalized_max' AS name, '%' AS unit,
                 (crm.max_value / COALESCE(ccc.core_count, 1)) * 100 AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU % (Normalized)' AS extra
           FROM component_resource_metrics crm

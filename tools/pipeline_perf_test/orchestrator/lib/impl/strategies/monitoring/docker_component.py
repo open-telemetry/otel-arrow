@@ -351,7 +351,7 @@ def monitor(
                 mem_usage = stat_data["memory_stats"]["usage"]
                 cpu_usage_gauge.set(cpu_usage, labels)
                 memory_usage_gauge.set(mem_usage, labels)
-                
+
                 # Record allocated cores if specified
                 if allocated_cores is not None:
                     cpu_allocated_gauge.set(allocated_cores, labels)
