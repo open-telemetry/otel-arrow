@@ -28,3 +28,4 @@ pub use data_engine_parser_abstractions::ParserError;
 pub use data_engine_parser_abstractions::ParserMapKeySchema;
 pub use data_engine_parser_abstractions::ParserMapSchema;
 pub use data_engine_parser_abstractions::ParserOptions;
+pub use data_engine_parser_abstractions::ParserResult;

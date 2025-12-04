@@ -19,7 +19,9 @@ pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<PipelineExpression, Vec<ParserError>> {
-    KqlParser::parse_with_options(query, build_parser_options(options).map_err(|e| vec![e])?)
+    let result =
+        KqlParser::parse_with_options(query, build_parser_options(options).map_err(|e| vec![e])?)?;
+    Ok(result.pipeline)
 }
 
 pub fn register_pipeline_for_kql_query(
@@ -28,7 +30,8 @@ pub fn register_pipeline_for_kql_query(
 ) -> Result<usize, Vec<ParserError>> {
     let options = build_parser_options(options).map_err(|e| vec![e])?;
 
-    let pipeline = KqlParser::parse_with_options(query, options.clone())?;
+    let result = KqlParser::parse_with_options(query, options.clone())?;
+    let pipeline = result.pipeline;
 
     let mut expressions = EXPRESSIONS.write().unwrap();
     expressions.push((options, pipeline));
@@ -730,7 +733,8 @@ mod tests {
             "source | where gettype(TimeGenerated) == 'datetime'",
             options.clone(),
         )
-        .unwrap();
+        .unwrap()
+        .pipeline;
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
