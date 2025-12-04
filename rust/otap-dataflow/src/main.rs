@@ -84,6 +84,13 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize rustls crypto provider (required for rustls 0.23+)
+    // We use ring as the default provider
+    #[cfg(feature = "experimental-tls")]
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
+
     let args = Args::parse();
 
     // For now, we predefine pipeline group and pipeline IDs.

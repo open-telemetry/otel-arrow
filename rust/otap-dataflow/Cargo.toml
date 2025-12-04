@@ -38,6 +38,7 @@ quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
 mimalloc-rust.workspace = true
+rustls = { workspace = true, optional = true }
 
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
@@ -48,6 +49,7 @@ otap-df-otap = { path = "crates/otap" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 
 ahash = "0.8.11"
+arc-swap = "1.7"
 arrayvec = "0.7.6"
 arrow = { version = "57.0", features=["prettyprint"] }
 arrow-ipc = { version = "57.0", features=["zstd"] }
@@ -57,6 +59,7 @@ async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
 axum = "0.8.4"
+base64 = "0.22.1"
 bitflags = "2.10"
 bytes = "1.11"
 bytemuck = "1.24"
@@ -95,6 +98,10 @@ prost = "0.14"
 quote = "1.0"
 rand = "0.9.2"
 roaring = "0.11.2"
+rustls = { version = "0.23.22", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.0"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8.2"
 schemars = { version = "1.0.0" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
@@ -154,6 +161,8 @@ unchecked-index = []
 unchecked-arithmetic = []
 # Experimental persistence prototype (opt-in)
 quiver-persistence = ["quiver"]
+# Experimental features
+experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 # Experimental exporters (opt-in)
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
