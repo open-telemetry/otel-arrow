@@ -1099,11 +1099,11 @@ mod tests {
     }
 
     /// Unified test harness for all batch processor scenarios
-    
+
     /// Test event: either process input or deliver pending timers
     enum TestEvent {
         Input(OtlpProtoMessage),
-        Elapsed,  // Signal to deliver all pending DelayedData messages
+        Elapsed, // Signal to deliver all pending DelayedData messages
     }
 
     /// Policy for acking or nacking an output
@@ -1140,7 +1140,7 @@ mod tests {
                 TestEvent::Elapsed => None,
             })
             .collect();
-        
+
         let signal = inputs_otlp[0].signal_type();
         let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
         let num_inputs = inputs_otlp.len();
@@ -1152,10 +1152,15 @@ mod tests {
                 ctx.set_pipeline_ctrl_sender(pipeline_tx);
 
                 // Track outputs by event position
-                let mut event_outputs: Vec<EventOutputs> = vec![EventOutputs { outputs: Vec::new() }; total_events];
+                let mut event_outputs: Vec<EventOutputs> = vec![
+                    EventOutputs {
+                        outputs: Vec::new()
+                    };
+                    total_events
+                ];
                 let mut received_acks: Vec<TestCallData> = Vec::new();
                 let mut received_nacks: Vec<TestCallData> = Vec::new();
-                
+
                 // Track pending DelayedData message (only one at a time)
                 let mut pending_delay: Option<(Instant, Box<OtapPdata>)> = None;
                 let mut input_idx = 0;
@@ -1165,19 +1170,17 @@ mod tests {
                 for (event_idx, event) in events.into_iter().enumerate() {
                     // Determine if this is an elapsed event
                     let is_elapsed = matches!(event, TestEvent::Elapsed);
-                    
+
                     // Process the event
                     match event {
                         TestEvent::Input(input_otlp) => {
                             // Convert and send input
                             let rec = match &input_otlp {
                                 OtlpProtoMessage::Traces(t) => {
-                                    encode_spans_otap_batch(t)
-                                        .expect("encode traces")
+                                    encode_spans_otap_batch(t).expect("encode traces")
                                 }
                                 OtlpProtoMessage::Logs(l) => {
-                                    encode_logs_otap_batch(l)
-                                        .expect("encode logs")
+                                    encode_logs_otap_batch(l).expect("encode logs")
                                 }
                                 OtlpProtoMessage::Metrics(_) => unimplemented!("metrics"),
                             };
@@ -1207,23 +1210,28 @@ mod tests {
                     // If this is an Elapsed event, deliver the pending DelayedData if present
                     if is_elapsed {
                         if let Some((when, data)) = pending_delay.take() {
-                            let delayed_msg = Message::Control(NodeControlMsg::DelayedData {
-                                when,
-                                data,
-                            });
+                            let delayed_msg =
+                                Message::Control(NodeControlMsg::DelayedData { when, data });
                             ctx.process(delayed_msg).await.expect("process delayed");
                         }
                     }
 
                     // Drain outputs, ack/nack them, and drain control channel until empty
                     loop {
+                        println!("start loop {}", input_idx);
+                        let mut looped = 0;
+
                         // Drain outputs produced by this event
                         for new_output in ctx.drain_pdata().await {
                             event_outputs[event_idx].outputs.push(new_output.clone());
                             total_outputs += 1;
+                            looped += 1;
+                            println!("drain1");
 
-                            // Apply ack/nack policy if subscribed
-                            if subscribe {
+                            // Apply ack/nack policy
+                            if new_output.has_subscribers() {
+                                println!("having subscribers");
+
                                 let policy = ack_policy
                                     .as_ref()
                                     .map(|p| p(total_outputs - 1, &new_output))
@@ -1231,16 +1239,22 @@ mod tests {
 
                                 match policy {
                                     AckPolicy::Ack => {
-                                        ctx.process(Message::Control(NodeControlMsg::Ack(AckMsg::new(
-                                            new_output,
-                                        ))))
+                                        println!("acking");
+                                        ctx.process(Message::Control(NodeControlMsg::Ack(
+                                            Context::next_ack(AckMsg::new(new_output))
+                                                .expect("has subs")
+                                                .1,
+                                        )))
                                         .await
                                         .expect("process ack");
                                     }
                                     AckPolicy::Nack(reason) => {
-                                        ctx.process(Message::Control(NodeControlMsg::Nack(NackMsg::new(
-                                            reason, new_output,
-                                        ))))
+                                        println!("nacking");
+                                        ctx.process(Message::Control(NodeControlMsg::Nack(
+                                            Context::next_nack(NackMsg::new(reason, new_output))
+                                                .expect("has subs")
+                                                .1,
+                                        )))
                                         .await
                                         .expect("process nack");
                                     }
@@ -1249,32 +1263,42 @@ mod tests {
                         }
 
                         // Drain control channel for DelayData requests and acks/nacks
-                        let mut has_control = false;
                         loop {
                             match pipeline_rx.try_recv() {
                                 Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
+                                    looped += 1;
+                                    println!("delaydata");
                                     pending_delay = Some((when, data));
-                                    has_control = true;
                                 }
                                 Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
-                                    let calldata: TestCallData = ack.calldata.try_into().expect("calldata");
+                                    looped += 1;
+                                    println!("ack");
+                                    let calldata: TestCallData =
+                                        ack.calldata.try_into().expect("calldata");
                                     received_acks.push(calldata);
-                                    has_control = true;
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
-                                    let calldata: TestCallData = nack.calldata.try_into().expect("calldata");
+                                    looped += 1;
+                                    println!("nack");
+                                    let calldata: TestCallData =
+                                        nack.calldata.try_into().expect("calldata");
                                     received_nacks.push(calldata);
-                                    has_control = true;
                                 }
                                 Ok(_) => {
-                                    has_control = true;
+                                    panic!("unexpected case");
                                 }
-                                Err(_) => break,
+                                Err(_) => {
+                                    println!("break control loop");
+                                    break;
+                                }
                             }
                         }
 
+                        println!("looped is {}", looped);
+
                         // If no outputs and no control messages, we're done with this event
-                        if !has_control {
+                        if looped == 0 {
+                            println!("main loop exit");
                             break;
                         }
                     }
@@ -1300,6 +1324,8 @@ mod tests {
                 }))
                 .await
                 .expect("collect telemetry");
+
+                // @@@ wow we lost equivalence checking!
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1311,7 +1337,7 @@ mod tests {
     fn test_size_flush(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
-        
+
         run_batch_processor_test(
             events.into_iter(),
             subscribe,
@@ -1328,8 +1354,11 @@ mod tests {
                     .expect("should have at least one output event");
 
                 // Verify first batch had at least threshold items (size-triggered)
-                let first_batch_rec: OtapArrowRecords =
-                    first_output_event.outputs[0].clone().payload().try_into().unwrap();
+                let first_batch_rec: OtapArrowRecords = first_output_event.outputs[0]
+                    .clone()
+                    .payload()
+                    .try_into()
+                    .unwrap();
                 assert!(
                     first_batch_rec.batch_length() >= 4,
                     "first batch has at least threshold items (size-triggered)"
@@ -1364,7 +1393,7 @@ mod tests {
     }
 
     /// Generic test helper for timer flush
-    /// 
+    ///
     /// This test verifies that the timer mechanism works correctly by:
     /// 1. Sending input with batch_size > item count (so size threshold won't trigger)
     /// 2. Advancing logical time past the timeout threshold
@@ -1372,9 +1401,9 @@ mod tests {
     fn test_timer_flush(input_otlp: OtlpProtoMessage, subscribe: bool) {
         let events = vec![
             TestEvent::Input(input_otlp),
-            TestEvent::Elapsed,  // Deliver pending timer
+            TestEvent::Elapsed, // Deliver pending timer
         ];
-        
+
         run_batch_processor_test(
             events.into_iter(),
             subscribe,
@@ -1397,8 +1426,11 @@ mod tests {
                     "elapsed event should trigger timer flush"
                 );
 
-                let output_rec: OtapArrowRecords =
-                    event_outputs[1].outputs[0].clone().payload().try_into().unwrap();
+                let output_rec: OtapArrowRecords = event_outputs[1].outputs[0]
+                    .clone()
+                    .payload()
+                    .try_into()
+                    .unwrap();
                 assert_eq!(output_rec.batch_length(), 3, "should flush all 3 items");
             },
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
@@ -1433,7 +1465,7 @@ mod tests {
     fn test_split_oversize(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
-        
+
         run_batch_processor_test(
             events.into_iter(),
             subscribe,
@@ -1444,10 +1476,8 @@ mod tests {
             }),
             |event_outputs| {
                 // Collect all outputs across events
-                let all_outputs: Vec<&OtapPdata> = event_outputs
-                    .iter()
-                    .flat_map(|e| &e.outputs)
-                    .collect();
+                let all_outputs: Vec<&OtapPdata> =
+                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
 
                 // Should emit 3 batches of 3 items each (splits at max size)
                 assert_eq!(all_outputs.len(), 3, "should emit 3 full batches");
@@ -1488,8 +1518,10 @@ mod tests {
     /// Generic test helper for concatenation and rebuffering
     fn test_concatenate(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
-        let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
-        
+        let mut events: Vec<TestEvent> =
+            inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
+        events.push(TestEvent::Elapsed);
+
         let cfg = json!({
             "send_batch_size": 5,
             "send_batch_max_size": 10,
@@ -1502,10 +1534,8 @@ mod tests {
             cfg,
             |event_outputs| {
                 // Collect all outputs across events
-                let all_outputs: Vec<&OtapPdata> = event_outputs
-                    .iter()
-                    .flat_map(|e| &e.outputs)
-                    .collect();
+                let all_outputs: Vec<&OtapPdata> =
+                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
 
                 // With send_batch_size=5, send_batch_max_size=10, 4 inputs of 3 items each = 12 items
                 // Should emit 2 batches of 6 items each (concatenation/rebuffering)
@@ -1548,7 +1578,7 @@ mod tests {
     fn test_split_only(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
-        
+
         let cfg = json!({
             "send_batch_size": null,
             "send_batch_max_size": 2,
@@ -1561,10 +1591,8 @@ mod tests {
             cfg,
             |event_outputs| {
                 // Collect all outputs across events
-                let all_outputs: Vec<&OtapPdata> = event_outputs
-                    .iter()
-                    .flat_map(|e| &e.outputs)
-                    .collect();
+                let all_outputs: Vec<&OtapPdata> =
+                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
 
                 // With no send_batch_size and no timeout, flushes immediately on every input
                 // With send_batch_max_size=2, each 3-item input splits to [2, 1]
@@ -1636,7 +1664,10 @@ mod tests {
         let extract_markers_clone = extract_markers.clone();
         let nack_position_for_policy = nack_position;
         let inputs_clone = inputs_otlp.clone();
-        let events: Vec<TestEvent> = inputs_otlp.iter().map(|i| TestEvent::Input(i.clone())).collect();
+        let events: Vec<TestEvent> = inputs_otlp
+            .iter()
+            .map(|i| TestEvent::Input(i.clone()))
+            .collect();
 
         run_batch_processor_test(
             events.into_iter(),
@@ -1644,11 +1675,9 @@ mod tests {
             cfg,
             move |event_outputs| {
                 // Collect all outputs across events
-                let all_emitted: Vec<&OtapPdata> = event_outputs
-                    .iter()
-                    .flat_map(|e| &e.outputs)
-                    .collect();
-                
+                let all_emitted: Vec<&OtapPdata> =
+                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
+
                 let inputs_otlp = &inputs_clone;
                 // Extract all input markers for verification
                 let _input_markers: Vec<Vec<u64>> = inputs_otlp

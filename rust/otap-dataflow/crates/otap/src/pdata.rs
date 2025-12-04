@@ -222,6 +222,13 @@ impl OtapPdata {
         self
     }
 
+    /// Returns Context::has_subscribers()
+    #[cfg(test)]
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        self.context.has_subscribers()
+    }
+
     /// Return the current calldata.
     #[must_use]
     pub fn current_calldata(&self) -> Option<CallData> {
