@@ -30,8 +30,9 @@ fn bench_log_pipeline(
         let _ = group.bench_with_input(benchmark_id, &batch_size, |b, batch_size| {
             b.iter_custom(|iters| {
                 let batch = generate_logs_batch(**batch_size);
-                let query = KqlParser::parse(bench_pipeline_kql).expect("can parse pipeline");
-                let mut pipeline = Pipeline::new(query);
+                let parser_result =
+                    KqlParser::parse(bench_pipeline_kql).expect("can parse pipeline");
+                let mut pipeline = Pipeline::new(parser_result.pipeline);
                 rt.block_on(async move {
                     // execute the query once to initiate planning
                     pipeline.execute(batch.clone()).await.unwrap();
@@ -74,7 +75,7 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         c,
         &rt,
         &batch_sizes,
-        "attr_or_filter",
+        "attr_or_attr_filter",
         "logs | where attributes[\"code.namespace\"] == \"main\" or attributes[\"code.line.number\"] == 2",
     );
     bench_log_pipeline(
@@ -83,6 +84,25 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         &batch_sizes,
         "attr_and_prop_filter",
         "logs | where attributes[\"code.namespace\"] == \"main\" and severity_text == \"WARN\"",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "attr_and_attr_filter",
+        "logs | where attributes[\"code.namespace\"] == \"main\" and attributes[\"code.line\"] == 2",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "attr_and_or_together_filter", 
+        "logs | where 
+            (attributes[\"code.namespace\"] == \"main\" and attributes[\"code.line\"] == 2) 
+            or 
+            (attributes[\"code.namespace\"] == \"otap_dataflow_engine\" and attributes[\"code.line\"] == 3)",
     );
 }
 

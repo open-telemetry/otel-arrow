@@ -37,19 +37,47 @@ use crate::pipeline::planner::{
     try_static_scalar_to_literal,
 };
 
+pub mod optimize;
+
 /// A compositional tree structure for combining expressions with boolean operators.
 ///
 /// Represents logical combinations of base values using Not, And, and Or operations,
 /// forming a tree that can be evaluated or transformed.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Composite<T> {
     Base(T),
     Not(Box<Self>),
-    And(LeftRight<Box<Self>>),
-    Or(LeftRight<Box<Self>>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
 }
 
-/// A pair of values representing left and right operands of a binary operation.
-type LeftRight<T> = (T, T);
+impl<T> Composite<T> {
+    /// helper function to create the `Composite::And` variant from passed args
+    pub fn and<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::And(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Or` variant from passed args
+    pub fn or<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::Or(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Not` variant from passed args
+    pub fn not<P>(inner: P) -> Self
+    where
+        P: Into<Self>,
+    {
+        Self::Not(Box::new(inner.into()))
+    }
+}
 
 /// A helper trait that can be used to transform a composite logical plan into a composite
 /// executable plan.
@@ -81,17 +109,17 @@ where
             }
             Self::Not(inner) => {
                 let exec = inner.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Not(Box::new(exec)))
+                Ok(Composite::not(exec))
             }
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::And((Box::new(left_exec), Box::new(right_exec))))
+                Ok(Composite::and(left_exec, right_exec))
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Or((Box::new(left_exec), Box::new(right_exec))))
+                Ok(Composite::or(left_exec, right_exec))
             }
         }
     }
@@ -116,13 +144,14 @@ impl<T> From<T> for Composite<T> {
 /// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
 /// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
 /// using `Composite`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
-    source_filter: Option<Expr>,
+    pub source_filter: Option<Expr>,
 
     /// filters that will be applied to the attributes record batch in order fo filter the
     /// rows of the root batch
-    attribute_filter: Option<Composite<AttributesFilterPlan>>,
+    pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
 }
 
 impl From<Expr> for FilterPlan {
@@ -139,6 +168,15 @@ impl From<AttributesFilterPlan> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
+        }
+    }
+}
+
+impl From<Composite<AttributesFilterPlan>> for FilterPlan {
+    fn from(attrs_filter: Composite<AttributesFilterPlan>) -> Self {
+        Self {
+            source_filter: None,
+            attribute_filter: Some(attrs_filter),
         }
     }
 }
@@ -201,14 +239,14 @@ impl FilterPlan {
                     match right_arg {
                         // left = attribute & right = literal
                         BinaryArg::Literal(right_lit) => {
-                            Ok(FilterPlan::from(AttributesFilterPlan {
-                                attrs_identifier,
-                                filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
+                            Ok(FilterPlan::from(AttributesFilterPlan::new(
+                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
                                     )?),
                                 ),
-                            }))
+                                attrs_identifier,
+                            )))
                         }
                         _ => Err(Error::NotYetSupportedError {
                             message: "comparing left attribute with non-literal right in filter"
@@ -240,14 +278,14 @@ impl FilterPlan {
                     }
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
-                        Ok(FilterPlan::from(AttributesFilterPlan {
-                            attrs_identifier,
-                            filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
-                                Expr::BinaryExpr(try_attrs_value_filter_from_literal(
+                        Ok(FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
-                                )?),
-                            ),
-                        }))
+                                )?)),
+                            attrs_identifier,
+                        )))
                     }
                 },
             },
@@ -281,16 +319,16 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
             LogicalExpression::And(and_expr) => {
                 let left = Self::try_from(and_expr.get_left())?;
                 let right = Self::try_from(and_expr.get_right())?;
-                Ok(Self::And((Box::new(left), Box::new(right))))
+                Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
                 let left = Self::try_from(or_expr.get_left())?;
                 let right = Self::try_from(or_expr.get_right())?;
-                Ok(Self::Or((Box::new(left), Box::new(right))))
+                Ok(Self::or(left, right))
             }
             LogicalExpression::Not(not_expr) => {
                 let inner = Self::try_from(not_expr.get_inner_expression())?;
-                Ok(Self::Not(Box::new(inner)))
+                Ok(Self::not(inner))
             }
 
             // TODO add support for these expressions eventually
@@ -330,18 +368,27 @@ impl ToExec for FilterPlan {
 }
 
 /// A logical plan for filtering attributes.
-#[derive(Clone)]
-struct AttributesFilterPlan {
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttributesFilterPlan {
     /// The filtering expression that  will be applied to the attributes
     ///
     /// Note that the expression should be constructed based on the otap data-model, not using some
     /// abstract notion of an attribute column. This means, say we're filtering for
     /// `attributes["x"] == "y"` that we'd expect a filter expr like
     /// `col("key").eq(lit("x")).and(col("str").eq(lit("y")))`
-    filter: Expr,
+    pub filter: Expr,
 
     /// The identifier of which attributes will be considered when filtering
-    attrs_identifier: AttributesIdentifier,
+    pub attrs_identifier: AttributesIdentifier,
+}
+
+impl AttributesFilterPlan {
+    fn new(filter: Expr, attrs_identifier: AttributesIdentifier) -> Self {
+        Self {
+            filter,
+            attrs_identifier,
+        }
+    }
 }
 
 impl ToExec for AttributesFilterPlan {
@@ -365,6 +412,20 @@ impl ToExec for AttributesFilterPlan {
             filter: AdaptivePhysicalExprExec::try_new(self.filter.clone())?,
             payload_type: attrs_payload_type,
         })
+    }
+}
+
+impl Composite<AttributesFilterPlan> {
+    pub fn attrs_identifier(&self) -> AttributesIdentifier {
+        match self {
+            Self::Base(filter) => filter.attrs_identifier,
+            Self::Not(filter) => filter.attrs_identifier(),
+
+            // All children should be for the same payload type, so we just traverse one side
+            // of the tree.
+            Self::And(left, _) => left.attrs_identifier(),
+            Self::Or(left, _) => left.attrs_identifier(),
+        }
     }
 }
 
@@ -494,12 +555,12 @@ impl Composite<FilterExec> {
         match self {
             Self::Base(filter) => filter.execute(otap_batch, session_ctx),
             Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx)?)?),
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx)?;
                 let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(and(&left_result, &right_result)?)
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx)?;
                 let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(or(&left_result, &right_result)?)
@@ -508,9 +569,9 @@ impl Composite<FilterExec> {
     }
 }
 
-struct AttributeFilterExec {
-    filter: AdaptivePhysicalExprExec,
-    payload_type: ArrowPayloadType,
+pub struct AttributeFilterExec {
+    pub filter: AdaptivePhysicalExprExec,
+    pub payload_type: ArrowPayloadType,
 }
 
 impl AttributeFilterExec {
@@ -582,7 +643,7 @@ impl Composite<AttributeFilterExec> {
         match self {
             Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted),
             Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
@@ -592,7 +653,7 @@ impl Composite<AttributeFilterExec> {
                     left_result & right_result
                 })
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
@@ -612,8 +673,8 @@ impl Composite<AttributeFilterExec> {
 
             // All children should be for the same payload type, so we just traverse one side
             // of the tree.
-            Self::And((left, _)) => left.payload_type(),
-            Self::Or((left, _)) => left.payload_type(),
+            Self::And(left, _) => left.payload_type(),
+            Self::Or(left, _) => left.payload_type(),
         }
     }
 }
@@ -625,7 +686,7 @@ impl Composite<AttributeFilterExec> {
 /// - The type of a column may change between Dict<u8, V>, Dict<16, V>, and the native array type
 /// - The order of columns may change
 ///
-struct AdaptivePhysicalExprExec {
+pub struct AdaptivePhysicalExprExec {
     /// The physical expression that should be evaluated for each batch. This is initialized lazily
     /// when the first non-`None` batch is passed to `evaluate`. This should evaluate to a boolean
     physical_expr: Option<PhysicalExprRef>,
@@ -1116,8 +1177,8 @@ mod test {
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let pipeline_expr = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse(kql_expr).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         otap_to_logs_data(result)
     }
@@ -1139,8 +1200,8 @@ mod test {
                 .finish(),
         ]);
 
-        let pipeline_expr = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let expected = to_otap(vec![
             LogRecord::build()
@@ -1151,8 +1212,8 @@ mod test {
         assert_eq!(result, expected);
 
         // test same filter where the literal is on the left and column name on the right
-        let pipeline_expr = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         assert_eq!(result, expected);
     }
@@ -1181,8 +1242,8 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1191,8 +1252,8 @@ mod test {
         );
 
         // test same filter where the literal is on the left and the attribute is on the right
-        let pipeline_expr = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1388,10 +1449,10 @@ mod test {
         let otap_batch = to_otap(log_records.clone());
 
         // check simple filter "and" properties
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where severity_text == \"ERROR\" and event_name == \"2\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1400,11 +1461,11 @@ mod test {
         );
 
         // check simple filter "and" with attributes
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"ERROR\" and attributes[\"x\"] == \"c\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1413,11 +1474,11 @@ mod test {
         );
 
         // check simple filter "and" two attributes
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where attributes[\"y\"] == \"d\" and attributes[\"x\"] == \"a\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1457,11 +1518,11 @@ mod test {
         let otap_batch = to_otap(log_records.clone());
 
         // check simple filter "or" with properties predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"INFO\" or severity_text == \"ERROR\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1470,11 +1531,11 @@ mod test {
         );
 
         // check simple filter "or" with mixed attributes/properties predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"ERROR\" or attributes[\"x\"] == \"c\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1483,11 +1544,11 @@ mod test {
         );
 
         // check simple filter "or" two attributes predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where attributes[\"x\"] == \"a\" or attributes[\"y\"] == \"e\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1774,8 +1835,8 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1784,8 +1845,8 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // assert we have the correct behaviour when filtering by attributes as well
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1796,8 +1857,8 @@ mod test {
     #[tokio::test]
     async fn test_empty_batch() {
         let input = OtapArrowRecords::Logs(Logs::default());
-        let pipeline_expr = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
     }
@@ -1820,8 +1881,8 @@ mod test {
         ];
 
         // check that if there are no attributes to filter by then, we get the empty batch
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1829,9 +1890,9 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // check that the same result happens when filtering by resource and scope attrs
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1839,10 +1900,10 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // check that the same result happens when filtering by resource and scope attrs
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where instrumentation_scope.attributes[\"a\"] == \"1234\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1855,8 +1916,8 @@ mod test {
             "logs | where not(resource.attributes[\"a\"] == \"1234\")",
             "logs | where not(instrumentation_scope.attributes[\"a\"] == \"1234\")",
         ] {
-            let pipeline_expr = KqlParser::parse(inverted_attrs_filter).unwrap();
-            let mut pipeline = Pipeline::new(pipeline_expr);
+            let parser_result = KqlParser::parse(inverted_attrs_filter).unwrap();
+            let mut pipeline = Pipeline::new(parser_result.pipeline);
             let input = to_otap(log_records.clone());
             let result = pipeline.execute(input.clone()).await.unwrap();
             assert_eq!(result, input);
@@ -1869,8 +1930,8 @@ mod test {
         // next, then present in the next, etc.
 
         let query = "logs | where attributes[\"a\"] == \"1234\"";
-        let pipeline_expr = KqlParser::parse(query).unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr.clone());
+        let parser_result = KqlParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
 
         // no attrs to start
         let batch1 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
@@ -1926,8 +1987,8 @@ mod test {
 
         // assert the behaviour is correct when nothing is filtered out
         let otap_input = to_otap(log_records);
-        let pipeline_expr = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_input.clone()).await.unwrap();
 
         assert_eq!(result, otap_input)
@@ -2001,10 +2062,10 @@ mod test {
         );
 
         // test "and" filter
-        filter_exec = Composite::And((
+        filter_exec = Composite::And(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_y_eq_d.clone().into()),
-        ))
+        )
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
@@ -2015,10 +2076,10 @@ mod test {
         );
 
         // test inverted "and" filter
-        filter_exec = Composite::Not(Box::new(Composite::And((
+        filter_exec = Composite::Not(Box::new(Composite::And(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_y_eq_d.clone().into()),
-        ))))
+        )))
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
@@ -2029,10 +2090,10 @@ mod test {
         );
 
         // test "or" filter
-        filter_exec = Composite::Or((
+        filter_exec = Composite::Or(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_x_eq_b.clone().into()),
-        ))
+        )
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
@@ -2043,10 +2104,10 @@ mod test {
         );
 
         // test inverted "or" filter
-        filter_exec = Composite::Not(Box::new(Composite::Or((
+        filter_exec = Composite::Not(Box::new(Composite::Or(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_x_eq_b.clone().into()),
-        ))))
+        )))
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
