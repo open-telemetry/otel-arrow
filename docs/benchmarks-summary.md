@@ -105,25 +105,26 @@ Behavior at maximum capacity when physical resource limits are reached.
 
 ##### OTAP → OTAP (Native Protocol)
 
-| CPU Cores | Maximum Sustained RPS | CPU Usage | Memory Usage |
-|-----------|---------------------|-----------|---------------|
-| 1 Core | TBD | TBD | TBD |
-| 4 Cores | TBD | TBD | TBD |
-| 8 Cores | TBD | TBD | TBD |
+| CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
+|-----------|------------------------------|-------------------|--------------|
+| 1 Core    | TBD                          | TBD               | TBD          |
+| 4 Cores   | TBD                          | TBD               | TBD          |
+| 8 Cores   | TBD                          | TBD               | TBD          |
 
 ##### OTLP → OTAP (Protocol Conversion)
 
-| CPU Cores | Maximum Sustained RPS | CPU Usage | Memory Usage |
-|-----------|---------------------|-----------|---------------|
-| 1 Core | TBD | TBD | TBD |
-| 4 Cores | TBD | TBD | TBD |
-| 8 Cores | TBD | TBD | TBD |
+| CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
+|-----------|------------------------------|-------------------|--------------|
+| 1 Core    | TBD                          | TBD               | TBD          |
+| 4 Cores   | TBD                          | TBD               | TBD          |
+| 8 Cores   | TBD                          | TBD               | TBD          |
 
 Saturation testing validates the engine's stability under extreme load. The
 df-engine exhibits well-defined behavior when operating at capacity, maintaining
 predictable performance without degradation or instability. These results
 demonstrate the maximum throughput achievable with different CPU core
-allocations.
+allocations. The **Throughput / Core** metric provides a key efficiency
+indicator for capacity planning.
 
 <!--TODO: Document what is the behavior - is it applying backpressure 
 (`wait_for_result` feature)? or dropping items and keeping internal metric
@@ -171,15 +172,15 @@ Syslog was specifically chosen as the input protocol because:
 1. Neutral Ground: Syslog is neither OTLP (OpenTelemetry Protocol) nor OTAP
    (OpenTelemetry Arrow Protocol), ensuring neither system has a native protocol
    advantage
-2. Real-World Relevance: Syslog is widely deployed in production
-   environments, particularly for log aggregation from network devices, legacy
-   systems, and infrastructure components
+2. Real-World Relevance: Syslog is widely deployed in production environments,
+   particularly for log aggregation from network devices, legacy systems, and
+   infrastructure components
 3. Conversion Overhead: Both systems must perform meaningful work to convert
    incoming Syslog messages into their internal representations:
    - **OTel Collector**: Converts to Go-based `pdata` (protocol data) structures
    - **OTel Arrow**: Converts to Arrow-based columnar memory format
-4. Complete Pipeline Test: This approach validates the full pipeline
-   efficiency, including parsing, transformation, and serialization stages
+4. Complete Pipeline Test: This approach validates the full pipeline efficiency,
+   including parsing, transformation, and serialization stages
 
 The output protocols are set to each system's native format: OTLP for the
 OpenTelemetry Collector and OTAP for the OTel Arrow engine, ensuring optimal
@@ -194,7 +195,7 @@ egress performance for each.
 | CPU Usage | TBD | TBD | TBD |
 | Memory Usage | TBD | TBD | TBD |
 
-#### Standard Load (100K RPS Syslog Messages)
+#### Standard Load (100K Syslog Messages/sec)
 
 | Metric | OTel Collector | OTel Arrow | Improvement |
 |--------|---------------|------------|-------------|
@@ -209,7 +210,8 @@ egress performance for each.
 
 | Metric | OTel Collector | OTel Arrow | Improvement |
 |--------|---------------|------------|-------------|
-| Maximum Sustained RPS | TBD | TBD | TBD |
+| Maximum Sustained Throughput | TBD | TBD | TBD |
+| Throughput / Core | TBD | TBD | TBD |
 | CPU at Saturation | TBD | TBD | TBD |
 | Memory at Saturation | TBD | TBD | TBD |
 | Behavior Under Overload | TBD | TBD | TBD |
