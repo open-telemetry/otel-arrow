@@ -66,7 +66,7 @@ impl MetricsSystem {
     pub fn new(config: &TelemetryConfig) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
         let (collector, reporter) =
-            collector::MetricsCollector::new(&config, metrics_registry.clone());
+            collector::MetricsCollector::new(config, metrics_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
             metrics_registry.clone(),
             config.reporting_interval,

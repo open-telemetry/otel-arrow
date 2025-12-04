@@ -24,6 +24,7 @@ pub struct MetricsDispatcher {
 
 impl MetricsDispatcher {
     /// Create a new metrics dispatcher
+    #[must_use]
     pub fn new(
         metrics_handler: MetricsRegistryHandle,
         reporting_interval: std::time::Duration,
@@ -47,9 +48,7 @@ impl MetricsDispatcher {
                     return Ok(())
                 }
                 _ = ticker.tick() => {
-                    if let Err(e) = self.dispatch_metrics() {
-                        return Err(e);
-                    }
+                    self.dispatch_metrics()?
                 }
             }
         }
@@ -124,7 +123,7 @@ impl MetricsDispatcher {
             .with_description(field.brief)
             .with_unit(field.unit)
             .build();
-        counter.add(value, &attributes);
+        counter.add(value, attributes);
     }
 
     fn add_opentelemetry_gauge(
@@ -139,7 +138,7 @@ impl MetricsDispatcher {
             .with_description(field.brief)
             .with_unit(field.unit)
             .build();
-        gauge.record(value, &attributes);
+        gauge.record(value, attributes);
     }
 
     fn add_opentelemetry_histogram(
@@ -154,7 +153,7 @@ impl MetricsDispatcher {
             .with_description(field.brief)
             .with_unit(field.unit)
             .build();
-        histogram.record(value, &attributes);
+        histogram.record(value, attributes);
     }
 
     fn add_opentelemetry_up_down_counter(
@@ -169,7 +168,7 @@ impl MetricsDispatcher {
             .with_description(field.brief)
             .with_unit(field.unit)
             .build();
-        up_down_counter.add(value as i64, &attributes);
+        up_down_counter.add(value as i64, attributes);
     }
 }
 

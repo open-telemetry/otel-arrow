@@ -22,6 +22,7 @@ pub struct OpentelemetryClient {
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
+    #[must_use]
     pub fn new(config: &TelemetryConfig) -> Self {
         let mut sdk_meter_builder = SdkMeterProvider::builder();
 
@@ -73,6 +74,7 @@ impl OpentelemetryClient {
     }
 
     /// Get a reference to the meter provider.
+    #[must_use]
     pub fn meter_provider(&self) -> &SdkMeterProvider {
         &self.meter_provider
     }
