@@ -18,7 +18,7 @@ components:
         ###   This doesn't work.
         #     build-context: 'otel-arrow=../../'
         volumes:
-          - 'test_suites/tech_summit/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
           - "--pipeline"
           - "./config.yaml"
@@ -38,7 +38,7 @@ components:
         ports:
           - "8086:8086"
         volumes:
-          - './test_suites/tech_summit/configs/otelcol/config.rendered.yaml:/tmp/config.yaml:ro'
+          - './test_suites/integration/configs/otelcol/config.rendered.yaml:/tmp/config.yaml:ro'
         environment:
           - GOMAXPROCS=1
         command:
@@ -56,7 +56,7 @@ components:
         ports:
           - "8087:8080"
         volumes:
-          - 'test_suites/tech_summit/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
           - "--pipeline"
           - "./config.yaml"
@@ -71,21 +71,21 @@ components:
 tests:
   - name: OTLP-FILTER-OTLP (Go Collector)
     from_template:
-      path: test_suites/integration/templates/test_steps/test-steps-docker-otel.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-otel.yaml
       variables:
         collector_config_template: test_suites/integration/templates/configs/otelcol/otlp-filter-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
   - name: OTLP-FILTER-OTAP (Go Collector)
     from_template:
-      path: test_suites/integration/templates/test_steps/test-steps-docker-otel.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-otel.yaml
       variables:
         collector_config_template: test_suites/integration/templates/configs/otelcol/otlp-filter-otap.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otap
   - name: OTAP-FILTER-OTAP (Go Collector)
     from_template:
-      path: test_suites/integration/templates/test_steps/test-steps-docker-otel.yaml
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-otel.yaml
       variables:
         collector_config_template: test_suites/integration/templates/configs/otelcol/otap-filter-otap.yaml
         loadgen_exporter_type: otap
