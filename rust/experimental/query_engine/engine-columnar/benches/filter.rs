@@ -109,7 +109,21 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         c,
         &rt,
         &batch_sizes,
-        "and_left_short_circuit",
+        "and_attrs_short_circuit",
+        // left expr of "and" should always return false for all rows
+        "logs | where attributes[\"code.line.number\"] > 1000 and attributes[\"code.line.number\"] == 2",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "and_short_circuit",
+        // left expr of "and" should be false for all rows
+        //
+        // this is different from the case above in that the "and" here is currently something that
+        // won't get optimized into a Composite<AttributeFilterExec> so we can test the fast path
+        // in Composite<FilterExec>
         "logs | where severity_text == \"invalid value\" and attributes[\"code.line.number\"] == 2",
     );
 
@@ -117,9 +131,23 @@ fn bench_filter_pipelines(c: &mut Criterion) {
         c,
         &rt,
         &batch_sizes,
-        "or_left_short_circuit",
+        "or_attrs_short_circuit",
+        // left expr of "or" should be true for all rows
+        "logs | where attributes[\"code.line.number\"] >= 0 or attributes[\"some.attr\"] >= 0",
+    );
+
+    bench_log_pipeline(
+        c,
+        &rt,
+        &batch_sizes,
+        "or_short_circuit",
+        // left expr of "or" should be true for all rows
+        //
+        // this is different from the case above in that the "and" here is currently something that
+        // won't get optimized into a Composite<AttributeFilterExec> so we can test the fast path
+        // in Composite<FilterExec>
         "logs | where attributes[\"code.line.number\"] >= 0 or not(attributes[\"some.attr\"] >= 0 and severity_text == \"WARN\")",
-    )
+    );
 }
 
 #[allow(missing_docs)]

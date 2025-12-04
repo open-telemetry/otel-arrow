@@ -23,11 +23,11 @@ use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::scalar::ScalarValue;
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::build_uint16_id_filter;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
-use otap_df_pdata::{OtapArrowRecords, OtapPayloadHelpers};
 use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
@@ -569,8 +569,11 @@ impl Composite<FilterExec> {
 
                 // short circuit if everything on the left was filtered out. No "true" value
                 // in the right selection vector would change the result
-                // TODO this logic isn't right for metrics ...
-                if left_result.false_count() == otap_batch.num_items() {
+                let num_rows = otap_batch
+                    .root_record_batch()
+                    .map(|batch| batch.num_rows())
+                    .unwrap_or_default();
+                if left_result.false_count() == num_rows {
                     return Ok(left_result);
                 }
 
@@ -582,8 +585,11 @@ impl Composite<FilterExec> {
 
                 // short circuit if nothing on the left was filtered out. No "false" value
                 // in the right selection vector would change the result
-                // TODO this logic isn't right for metrics ...
-                if left_result.true_count() == otap_batch.num_items() {
+                let num_rows = otap_batch
+                    .root_record_batch()
+                    .map(|batch| batch.num_rows())
+                    .unwrap_or_default();
+                if left_result.true_count() == num_rows {
                     return Ok(left_result);
                 }
 
@@ -619,6 +625,18 @@ impl AttributeFilterExec {
         };
 
         let selection_vec = self.filter.evaluate_filter(record_batch, session_ctx)?;
+        println!("selection_Vec = {:?}", selection_vec);
+
+        // if no rows passed the filter, return early without mapping the results over the
+        // parent_id column
+        if selection_vec.false_count() == record_batch.num_rows() {
+            return Ok(if inverted {
+                RoaringBitmap::full()
+            } else {
+                RoaringBitmap::new() // empty
+            });
+        }
+
         let parent_id_col = get_parent_id_column(record_batch)?;
 
         // create a bitmap containing the parent_ids that passed the filter predicate
@@ -670,6 +688,13 @@ impl Composite<AttributeFilterExec> {
             Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
             Self::And(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+
+                // short circuit evaluating the other side if possible. if nothing passed the
+                // filter, we don't need to evaluate it because it won't change the result
+                if (!inverted && left_result.is_empty()) || (inverted && left_result.is_full()) {
+                    return Ok(left_result);
+                }
+
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A and B) = (not A) or (not B)
@@ -680,6 +705,18 @@ impl Composite<AttributeFilterExec> {
             }
             Self::Or(left, right) => {
                 let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+
+                println!("left result = {:?}", left_result);
+
+                // short circuit evaluating the other side if possible. if everything was passed
+                // the filter, we don't need to evaluate it because it won't change the result
+                if (!inverted && left_result.is_full()) || (inverted && left_result.is_empty()) {
+                    println!("here");
+                    return Ok(left_result);
+                }
+
+                println!("here 2");
+
                 let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A or B) = (not A) and (not B)
@@ -1171,9 +1208,6 @@ impl PipelineStage for FilterPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use std::cell::Cell;
-    use std::sync::RwLock;
-
     use crate::pipeline::Pipeline;
 
     use super::*;
@@ -2376,11 +2410,11 @@ mod test {
     }
 
     #[test]
-    fn test_composite_filter_exec_and_takes_fast_path() {
+    fn test_composite_filter_exec_and_takes_short_circuit() {
         let mut filter_exec = Composite::and(
             FilterExec::from(AdaptivePhysicalExprExec::try_new(col("x").eq(lit("y"))).unwrap()),
             FilterExec::from(AdaptivePhysicalExprExec {
-                logical_expr: lit("should panic"),
+                logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
                 projection: FilterProjection {
                     schema: vec![ProjectedSchemaColumn::Root("x".into())],
@@ -2404,11 +2438,11 @@ mod test {
     }
 
     #[test]
-    fn test_composite_filter_exec_or_takes_fast_path() {
+    fn test_composite_filter_exec_or_takes_short_circuit() {
         let mut filter_exec = Composite::or(
             FilterExec::from(AdaptivePhysicalExprExec::try_new(col("x").eq(lit("a"))).unwrap()),
             FilterExec::from(AdaptivePhysicalExprExec {
-                logical_expr: lit("should panic"),
+                logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
                 projection: FilterProjection {
                     schema: vec![ProjectedSchemaColumn::Root("x".into())],
@@ -2429,5 +2463,85 @@ mod test {
 
         let result = filter_exec.execute(&otap_batch, &session_ctx).unwrap();
         assert_eq!(result.true_count(), input.num_rows());
+    }
+
+    #[test]
+    fn test_composite_attr_exec_and_takes_short_circuit() {
+        let mut attr_exec = Composite::and(
+            AttributeFilterExec {
+                payload_type: ArrowPayloadType::LogAttrs,
+                filter: AdaptivePhysicalExprExec::try_new(col("x").eq(lit("y"))).unwrap(),
+            },
+            AttributeFilterExec {
+                payload_type: ArrowPayloadType::LogAttrs,
+                filter: AdaptivePhysicalExprExec {
+                    logical_expr: lit("should panic"), // placeholder b/c physical is already planned
+                    physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
+                    projection: FilterProjection {
+                        schema: vec![ProjectedSchemaColumn::Root("x".into())],
+                    },
+                },
+            },
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from_iter_values(["a", "b", "c"]))],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::LogAttrs, input.clone());
+        let session_ctx = Pipeline::create_session_context();
+
+        let result = attr_exec.execute(&otap_batch, &session_ctx, false).unwrap();
+        assert_eq!(result.is_empty(), true);
+
+        // check we handle the inverted case as well
+        let result = attr_exec.execute(&otap_batch, &session_ctx, true).unwrap();
+        assert_eq!(result.is_full(), true);
+    }
+
+    #[test]
+    fn test_composite_attr_exec_or_takes_short_circuit() {
+        let mut attr_exec = Composite::or(
+            AttributeFilterExec {
+                payload_type: ArrowPayloadType::LogAttrs,
+                filter: AdaptivePhysicalExprExec::try_new(col("x").eq(lit("a"))).unwrap(),
+            },
+            AttributeFilterExec {
+                payload_type: ArrowPayloadType::LogAttrs,
+                filter: AdaptivePhysicalExprExec {
+                    logical_expr: lit("should panic"), // placeholder b/c physical is already planned
+                    physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
+                    projection: FilterProjection {
+                        schema: vec![ProjectedSchemaColumn::Root("x".into())],
+                    },
+                },
+            },
+        );
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("parent_id", DataType::UInt16, false),
+                Field::new("x", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 0, 1])),
+                Arc::new(StringArray::from_iter_values(["a", "b", "a"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::LogAttrs, input.clone());
+        let session_ctx = Pipeline::create_session_context();
+
+        let result = attr_exec.execute(&otap_batch, &session_ctx, false).unwrap();
+        assert_eq!(result.is_full(), true);
+
+        // check we handle the inverted case as well
+        let result = attr_exec.execute(&otap_batch, &session_ctx, true).unwrap();
+        assert_eq!(result.is_empty(), true);
     }
 }
