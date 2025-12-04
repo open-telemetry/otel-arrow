@@ -28,6 +28,6 @@ thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
-opentelemetry_sdk = "0.31.0"
-opentelemetry-stdout = "0.31.0"
-opentelemetry = "0.31.0"
+opentelemetry_sdk = { workspace = true }
+opentelemetry-stdout = { workspace = true }
+opentelemetry = { workspace = true }

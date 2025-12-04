@@ -20,6 +20,7 @@ nodes:
     out_ports: {}
 service:
   telemetry:
+    reporting_interval: "5s"
     metrics:
       readers:
         - periodic:

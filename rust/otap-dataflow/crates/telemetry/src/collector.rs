@@ -169,11 +169,11 @@ mod tests {
         }
     }
 
-    fn create_test_config(flush_interval_ms: u64) -> TelemetryConfig {
+    fn create_test_config(reporting_interval_ms: u64) -> TelemetryConfig {
         // Flush interval is irrelevant when no pipeline is configured; keep field for completeness.
         TelemetryConfig {
             reporting_channel_size: 10,
-            flush_interval: Duration::from_millis(flush_interval_ms),
+            reporting_interval: Duration::from_millis(reporting_interval_ms),
             metrics: MetricsConfig::default(),
             resource: HashMap::new(),
         }

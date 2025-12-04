@@ -14,6 +14,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -641,12 +642,13 @@ impl Default for ServiceConfig {
 /// Telemetry backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TelemetryConfig {
-    /// The size of the reporting channel.
+    /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
     #[serde(default = "default_reporting_channel_size")]
     pub reporting_channel_size: usize,
     /// The interval at which metrics are flushed and aggregated by the collector.
-    #[serde(default = "default_flush_interval")]
-    pub flush_interval: std::time::Duration,
+    #[serde(with = "humantime_serde", default = "default_reporting_interval")]
+    #[schemars(with = "String")]
+    pub reporting_interval: Duration,
     /// Metrics system configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
@@ -662,7 +664,7 @@ impl Default for TelemetryConfig {
             metrics: MetricsConfig::default(),
             resource: HashMap::default(),
             reporting_channel_size: default_reporting_channel_size(),
-            flush_interval: default_flush_interval(),
+            reporting_interval: default_reporting_interval(),
         }
     }
 }
@@ -671,8 +673,8 @@ fn default_reporting_channel_size() -> usize {
     100
 }
 
-fn default_flush_interval() -> std::time::Duration {
-    std::time::Duration::from_secs(1)
+fn default_reporting_interval() -> Duration {
+    Duration::from_secs(1)
 }
 
 /// Opentelemetry Metrics configuration.
@@ -708,13 +710,14 @@ pub enum MetricsReaderConfig {
 pub struct MetricsReaderPeriodicConfig {
     /// The metrics exporter to use.
     pub exporter: MetricsPeriodicExporterConfig,
-    /// The interval (in milliseconds) at which metrics are exported.
-    #[serde(default = "default_interval")]
-    pub interval: u64,
+    /// The interval at which metrics are periodically exported.
+    #[serde(with = "humantime_serde", default = "default_periodic_interval")]
+    #[schemars(with = "String")]
+    pub interval: Duration,
 }
 
-fn default_interval() -> u64 {
-    6000
+fn default_periodic_interval() -> Duration {
+    Duration::from_secs(6)
 }
 
 impl<'de> Deserialize<'de> for MetricsReaderConfig {
@@ -1146,6 +1149,9 @@ mod tests {
         assert!(config.nodes.contains_key("exporter1"));
 
         let telemetry_config = config.service.telemetry;
+        let reporting_interval = telemetry_config.reporting_interval;
+        assert_eq!(reporting_interval.as_secs(), 5);
+
         let resource_attrs = &telemetry_config.resource;
         assert_eq!(
             resource_attrs.get("service.name"),
@@ -1191,6 +1197,8 @@ mod tests {
         assert!(config.nodes.contains_key("exporter1"));
 
         let telemetry_config = config.service.telemetry;
+        let reporting_interval = telemetry_config.reporting_interval;
+        assert_eq!(reporting_interval.as_secs(), 5);
         let resource_attrs = &telemetry_config.resource;
         assert_eq!(
             resource_attrs.get("service.name"),

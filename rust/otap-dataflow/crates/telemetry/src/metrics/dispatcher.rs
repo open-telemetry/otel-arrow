@@ -19,18 +19,18 @@ use crate::{
 /// Dispatcher for metrics that periodically flushes metrics to OpenTelemetry SDK.
 pub struct MetricsDispatcher {
     metrics_handler: MetricsRegistryHandle,
-    flush_interval: std::time::Duration,
+    reporting_interval: std::time::Duration,
 }
 
 impl MetricsDispatcher {
     /// Create a new metrics dispatcher
     pub fn new(
         metrics_handler: MetricsRegistryHandle,
-        flush_interval: std::time::Duration,
+        reporting_interval: std::time::Duration,
     ) -> Self {
         Self {
             metrics_handler,
-            flush_interval,
+            reporting_interval,
         }
     }
 
@@ -39,7 +39,7 @@ impl MetricsDispatcher {
         self: Arc<Self>,
         cancellation_token: CancellationToken,
     ) -> Result<(), Error> {
-        let mut ticker = interval(self.flush_interval);
+        let mut ticker = interval(self.reporting_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tokio::select! {

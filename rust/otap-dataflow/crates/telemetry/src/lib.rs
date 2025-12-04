@@ -64,14 +64,12 @@ impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     #[must_use]
     pub fn new(config: &TelemetryConfig) -> Self {
-        opentelemetry_client::configure_otel_sdk(config);
-
         let metrics_registry = MetricsRegistryHandle::new();
         let (collector, reporter) =
             collector::MetricsCollector::new(&config, metrics_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
             metrics_registry.clone(),
-            config.flush_interval,
+            config.reporting_interval,
         ));
         Self {
             registry: metrics_registry,
