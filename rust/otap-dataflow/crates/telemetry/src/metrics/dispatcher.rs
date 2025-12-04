@@ -174,6 +174,8 @@ impl MetricsDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::PI;
+
     use crate::{
         attributes::AttributeIterator,
         descriptor::{AttributeField, AttributeValueType, AttributesDescriptor},
@@ -186,7 +188,7 @@ mod tests {
         let key = "test_key";
         let string_value = AttributeValue::String("test_value".to_string());
         let int_value = AttributeValue::Int(42);
-        let double_value = AttributeValue::Double(3.14);
+        let double_value = AttributeValue::Double(PI);
         let uint_value = AttributeValue::UInt(100);
         let bool_value = AttributeValue::Boolean(true);
         let otel_string_kv = MetricsDispatcher::to_opentelemetry_key_value(key, &string_value);
@@ -204,7 +206,7 @@ mod tests {
         }
         assert_eq!(otel_double_kv.key.as_str(), key);
         if let opentelemetry::Value::F64(v) = otel_double_kv.value {
-            assert!((v - 3.14).abs() < f64::EPSILON);
+            assert!((v - PI).abs() < f64::EPSILON);
         } else {
             panic!("Expected F64 value");
         }
@@ -216,7 +218,7 @@ mod tests {
         }
         assert_eq!(otel_bool_kv.key.as_str(), key);
         if let opentelemetry::Value::Bool(v) = otel_bool_kv.value {
-            assert_eq!(v, true);
+            assert!(v);
         } else {
             panic!("Expected Bool value");
         }
