@@ -5,7 +5,8 @@
 
 use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Status, TracesData};
 use crate::testing::equiv::canonical::{
-    assert_equivalent, canonicalize_any_value, canonicalize_vec,
+    assert_equivalent, canonicalize_any_value, canonicalize_idvec, canonicalize_resource,
+    canonicalize_scope, canonicalize_vec,
 };
 
 /// Split a TracesData into individual singleton TracesData messages (one per span).
@@ -37,34 +38,18 @@ fn traces_split_into_singletons(traces_data: &TracesData) -> Vec<TracesData> {
 fn traces_canonicalize_singleton_in_place(traces_data: &mut TracesData) {
     // Canonicalize resource attributes
     for resource_spans in &mut traces_data.resource_spans {
-        if let Some(resource) = &mut resource_spans.resource {
-            canonicalize_vec(&mut resource.attributes, |attr| {
-                if let Some(value) = &mut attr.value {
-                    canonicalize_any_value(value);
-                }
-            });
-        }
+        canonicalize_resource(&mut resource_spans.resource);
 
         // Canonicalize scope attributes
         for scope_spans in &mut resource_spans.scope_spans {
-            if let Some(scope) = &mut scope_spans.scope {
-                canonicalize_vec(&mut scope.attributes, |attr| {
-                    if let Some(value) = &mut attr.value {
-                        canonicalize_any_value(value);
-                    }
-                });
-            }
+            canonicalize_scope(&mut scope_spans.scope);
 
             // Canonicalize span fields
             for span in &mut scope_spans.spans {
-                // When encoding OTLP -> OTAP -> OTLP, spans without
-                // Status=None are round-trip encoded with a Status struct
-                // containing all-default values (code=0, message="").
-                //
-                // See: encode/mod.rs encode_spans_otap_batch.
-                //
-                // TODO: For now, we normalize by removing message
-                // values equal to the default.
+                canonicalize_idvec(&mut span.trace_id);
+                canonicalize_idvec(&mut span.span_id);
+
+                // Status default check
                 if let Some(status) = &span.status {
                     if *status == Status::default() {
                         span.status = None;

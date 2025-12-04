@@ -648,9 +648,9 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                         message: e.to_string(),
                     }
                 }),
-                NodeControlMsg::DelayedData { data, .. } => {
+                NodeControlMsg::DelayedData { data, when } => {
                     let signal = data.signal_type();
-                    self.flush_signal_impl(signal, effect, Instant::now(), FlushReason::Timer)
+                    self.flush_signal_impl(signal, effect, when, FlushReason::Timer)
                         .await?;
                     Ok(())
                 }
@@ -904,7 +904,14 @@ mod tests {
     use otap_df_pdata::encode::{encode_logs_otap_batch, encode_spans_otap_batch};
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::OtlpProtoMessage;
-
+    use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{
+        LogRecord, LogsData, ResourceLogs, ScopeLogs,
+    };
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, TracesData,
+    };
+    use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::fixtures::DataGenerator;
     use otap_df_pdata::testing::round_trip::otap_to_otlp;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
@@ -1123,8 +1130,8 @@ mod tests {
         events: impl Iterator<Item = TestEvent>,
         subscribe: bool,
         config: Value,
+        nack_policy: Option<P>,
         verify_outputs: F,
-        ack_policy: Option<P>,
     ) where
         F: FnOnce(&[EventOutputs]) + Send + 'static,
         P: Fn(usize, &OtapPdata) -> AckPolicy + Send + 'static,
@@ -1161,7 +1168,7 @@ mod tests {
                 let mut received_acks: Vec<TestCallData> = Vec::new();
                 let mut received_nacks: Vec<TestCallData> = Vec::new();
 
-                // Track pending DelayedData message (only one at a time)
+                // Track latest DelayedData message
                 let mut pending_delay: Option<(Instant, Box<OtapPdata>)> = None;
                 let mut input_idx = 0;
                 let mut total_outputs = 0;
@@ -1210,6 +1217,10 @@ mod tests {
                     // If this is an Elapsed event, deliver the pending DelayedData if present
                     if is_elapsed {
                         if let Some((when, data)) = pending_delay.take() {
+                            // Note we deliver "when" exactly as the DelayData requested,
+                            // which is a future timestamp; however it's the deadline requested,
+                            // and since "when" passes through, the comparison is succesful using
+                            // the expected instant.
                             let delayed_msg =
                                 Message::Control(NodeControlMsg::DelayedData { when, data });
                             ctx.process(delayed_msg).await.expect("process delayed");
@@ -1218,7 +1229,6 @@ mod tests {
 
                     // Drain outputs, ack/nack them, and drain control channel until empty
                     loop {
-                        println!("start loop {}", input_idx);
                         let mut looped = 0;
 
                         // Drain outputs produced by this event
@@ -1226,20 +1236,16 @@ mod tests {
                             event_outputs[event_idx].outputs.push(new_output.clone());
                             total_outputs += 1;
                             looped += 1;
-                            println!("drain1");
 
                             // Apply ack/nack policy
                             if new_output.has_subscribers() {
-                                println!("having subscribers");
-
-                                let policy = ack_policy
+                                let policy = nack_policy
                                     .as_ref()
                                     .map(|p| p(total_outputs - 1, &new_output))
                                     .unwrap_or(AckPolicy::Ack);
 
                                 match policy {
                                     AckPolicy::Ack => {
-                                        println!("acking");
                                         ctx.process(Message::Control(NodeControlMsg::Ack(
                                             Context::next_ack(AckMsg::new(new_output))
                                                 .expect("has subs")
@@ -1249,7 +1255,6 @@ mod tests {
                                         .expect("process ack");
                                     }
                                     AckPolicy::Nack(reason) => {
-                                        println!("nacking");
                                         ctx.process(Message::Control(NodeControlMsg::Nack(
                                             Context::next_nack(NackMsg::new(reason, new_output))
                                                 .expect("has subs")
@@ -1267,19 +1272,16 @@ mod tests {
                             match pipeline_rx.try_recv() {
                                 Ok(PipelineControlMsg::DelayData { when, data, .. }) => {
                                     looped += 1;
-                                    println!("delaydata");
                                     pending_delay = Some((when, data));
                                 }
                                 Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
                                     looped += 1;
-                                    println!("ack");
                                     let calldata: TestCallData =
                                         ack.calldata.try_into().expect("calldata");
                                     received_acks.push(calldata);
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
                                     looped += 1;
-                                    println!("nack");
                                     let calldata: TestCallData =
                                         nack.calldata.try_into().expect("calldata");
                                     received_nacks.push(calldata);
@@ -1288,35 +1290,27 @@ mod tests {
                                     panic!("unexpected case");
                                 }
                                 Err(_) => {
-                                    println!("break control loop");
                                     break;
                                 }
                             }
                         }
 
-                        println!("looped is {}", looped);
-
                         // If no outputs and no control messages, we're done with this event
                         if looped == 0 {
-                            println!("main loop exit");
                             break;
                         }
                     }
                 }
+                // TODO: tests shutdown in this framework (add TestEvent::Shutdown).
 
                 // Verify subscribe mode
-                if subscribe && ack_policy.is_none() {
-                    assert_eq!(
-                        received_acks.len(),
-                        num_inputs,
-                        "expected {} acks, got {}",
-                        num_inputs,
-                        received_acks.len()
-                    );
+                if subscribe {
+                    if nack_policy.is_none() {
+                        assert_eq!(received_acks.len(), num_inputs);
+                    } else {
+                        assert_eq!(received_acks.len() + received_nacks.len(), num_inputs);
+                    }
                 }
-
-                // Verify outputs
-                (verify_outputs)(&event_outputs);
 
                 // Collect telemetry
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
@@ -1325,7 +1319,24 @@ mod tests {
                 .await
                 .expect("collect telemetry");
 
-                // @@@ wow we lost equivalence checking!
+                // Verify all outputs are equivalent to inputs
+                let outputs: Vec<OtlpProtoMessage> = event_outputs
+                    .iter()
+                    .flat_map(|out| {
+                        out.outputs.iter().map(|p| {
+                            let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
+                            otap_to_otlp(&rec)
+                        })
+                    })
+                    .collect();
+
+                let output_item_count: usize = outputs.iter().map(|m| m.batch_length()).sum();
+
+                assert_eq!(output_item_count, input_item_count);
+                assert_equivalent(&inputs_otlp, &outputs);
+
+                // Verify outputs
+                (verify_outputs)(&event_outputs);
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1336,7 +1347,9 @@ mod tests {
     /// Generic test helper for size-based flush
     fn test_size_flush(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
-        let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
+        let mut events: Vec<TestEvent> =
+            inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
+        events.push(TestEvent::Elapsed);
 
         run_batch_processor_test(
             events.into_iter(),
@@ -1346,6 +1359,7 @@ mod tests {
                 "send_batch_max_size": 5,
                 "timeout": "1s"
             }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Find first non-empty event (should have size-triggered output)
                 let first_output_event = event_outputs
@@ -1364,7 +1378,6 @@ mod tests {
                     "first batch has at least threshold items (size-triggered)"
                 );
             },
-            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1392,17 +1405,9 @@ mod tests {
         test_size_flush((0..2).map(|_| datagen.generate_logs().into()), true);
     }
 
-    /// Generic test helper for timer flush
-    ///
-    /// This test verifies that the timer mechanism works correctly by:
-    /// 1. Sending input with batch_size > item count (so size threshold won't trigger)
-    /// 2. Advancing logical time past the timeout threshold
-    /// 3. Verifying data is flushed at the elapsed event (proving timer worked)
+    /// Generic test for timer flush
     fn test_timer_flush(input_otlp: OtlpProtoMessage, subscribe: bool) {
-        let events = vec![
-            TestEvent::Input(input_otlp),
-            TestEvent::Elapsed, // Deliver pending timer
-        ];
+        let events = vec![TestEvent::Input(input_otlp), TestEvent::Elapsed];
 
         run_batch_processor_test(
             events.into_iter(),
@@ -1412,6 +1417,7 @@ mod tests {
                 "send_batch_max_size": 10,
                 "timeout": "50ms"
             }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Event 0 (Input): Should have NO outputs (size threshold not reached)
                 assert!(
@@ -1433,7 +1439,6 @@ mod tests {
                     .unwrap();
                 assert_eq!(output_rec.batch_length(), 3, "should flush all 3 items");
             },
-            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1461,7 +1466,7 @@ mod tests {
         test_timer_flush(datagen.generate_logs().into(), true);
     }
 
-    /// Generic test helper for splitting oversize batches
+    /// Generic test for splitting oversize batches
     fn test_split_oversize(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
@@ -1474,6 +1479,7 @@ mod tests {
                 "send_batch_max_size": 3,
                 "timeout": "1s"
             }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
                 let all_outputs: Vec<&OtapPdata> =
@@ -1487,7 +1493,6 @@ mod tests {
                     assert_eq!(rec.batch_length(), 3, "each batch should have 3 items");
                 }
             },
-            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1515,7 +1520,7 @@ mod tests {
         test_split_oversize((0..3).map(|_| datagen.generate_logs().into()), true);
     }
 
-    /// Generic test helper for concatenation and rebuffering
+    /// Generic test for concatenation and rebuffering
     fn test_concatenate(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let mut events: Vec<TestEvent> =
@@ -1532,6 +1537,7 @@ mod tests {
             events.into_iter(),
             subscribe,
             cfg,
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
                 let all_outputs: Vec<&OtapPdata> =
@@ -1546,7 +1552,6 @@ mod tests {
                     assert_eq!(rec.batch_length(), 6, "each batch should have 6 items");
                 }
             },
-            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1574,7 +1579,7 @@ mod tests {
         test_concatenate((0..4).map(|_| datagen.generate_logs().into()), true);
     }
 
-    /// Generic test helper for split-only mode (no timeout, no send_batch_size)
+    /// Generic test for split-only mode (no timeout, no send_batch_size)
     fn test_split_only(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
@@ -1589,6 +1594,7 @@ mod tests {
             events.into_iter(),
             subscribe,
             cfg,
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
                 let all_outputs: Vec<&OtapPdata> =
@@ -1611,7 +1617,6 @@ mod tests {
                     "split pattern without rebuffering"
                 );
             },
-            None::<fn(usize, &OtapPdata) -> AckPolicy>,
         );
     }
 
@@ -1639,16 +1644,15 @@ mod tests {
         test_split_only((0..2).map(|_| datagen.generate_logs().into()), true);
     }
 
-    /// Test ordering guarantees when splitting and combining with nack failures.
-    /// This validates that the low-level groups.rs logic respects arrival order:
-    /// - When max size causes splits, remainder items in outputs[N-1] must be
-    ///   unconditionally emitted before items from subsequent requests
-    /// - When we nack an output, all inputs that contributed to it should be nacked
+    /// Test nack delivery
     fn test_split_with_nack_ordering(
         create_marked_input: impl Fn(usize) -> OtlpProtoMessage + Send + 'static,
         extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
         nack_position: usize,
     ) {
+        // This test use batch_size == max_size == request_size, therefore tests
+        // the case where no TestEvent::Elapsed is appended, we don't need shutdown
+        // and no data will remain buffered in this test.
         let cfg = json!({
             "send_batch_size": 3,
             "send_batch_max_size": 3,
@@ -1673,6 +1677,13 @@ mod tests {
             events.into_iter(),
             true,
             cfg,
+            Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
+                if idx == nack_position_for_policy {
+                    AckPolicy::Nack("test nack")
+                } else {
+                    AckPolicy::Ack
+                }
+            }),
             move |event_outputs| {
                 // Collect all outputs across events
                 let all_emitted: Vec<&OtapPdata> =
@@ -1722,23 +1733,11 @@ mod tests {
                     prev_marker = *marker;
                 }
             },
-            Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
-                if idx == nack_position_for_policy {
-                    AckPolicy::Nack("test nack")
-                } else {
-                    AckPolicy::Ack
-                }
-            }),
         );
     }
 
     /// Create traces with unique timestamps as markers
     fn create_marked_traces(base_id: usize) -> OtlpProtoMessage {
-        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-        use otap_df_pdata::proto::opentelemetry::trace::v1::{
-            ResourceSpans, ScopeSpans, Span, TracesData,
-        };
-
         let base_time = 1_000_000_000 + (base_id * 1000) as u64;
         let spans: Vec<Span> = (0..3)
             .map(|i| Span {
@@ -1750,8 +1749,10 @@ mod tests {
             .collect();
 
         OtlpProtoMessage::Traces(TracesData {
+            // Note we have resource=None
             resource_spans: vec![ResourceSpans {
                 scope_spans: vec![ScopeSpans {
+                    // Note we have scope=Default
                     scope: Some(InstrumentationScope::default()),
                     spans,
                     ..Default::default()
@@ -1778,11 +1779,6 @@ mod tests {
 
     /// Create logs with unique timestamps as markers
     fn create_marked_logs(base_id: usize) -> OtlpProtoMessage {
-        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
-        use otap_df_pdata::proto::opentelemetry::logs::v1::{
-            LogRecord, LogsData, ResourceLogs, ScopeLogs,
-        };
-
         let base_time = 1_000_000_000 + (base_id * 1000) as u64;
         let log_records: Vec<LogRecord> = (0..3)
             .map(|i| LogRecord {
@@ -1792,9 +1788,10 @@ mod tests {
             .collect();
 
         OtlpProtoMessage::Logs(LogsData {
+            // Note we have resource=None
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
-                    scope: Some(InstrumentationScope::default()),
+                    // Note we have scope=None
                     log_records,
                     ..Default::default()
                 }],
