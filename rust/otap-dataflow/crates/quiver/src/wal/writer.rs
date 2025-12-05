@@ -39,9 +39,12 @@
 //!   file plus rotated files. Exceeding the cap yields `WalAtCapacity` errors
 //!   until downstream consumers free space.
 //!
-//! ## Offset coordinate systems
+//! ## Offset coordinate systems (internal)
 //!
-//! Checkpoint metadata uses two coordinate spaces:
+//! > **Note for operators:** You don't need to understand this section.
+//! > Just use `WalConsumerCheckpoint::advance()` to track progress.
+//!
+//! Internally, checkpoint metadata uses two coordinate spaces:
 //!
 //! | Coordinate            | Measures                          | Stored in                          |
 //! |-----------------------|-----------------------------------|------------------------------------|

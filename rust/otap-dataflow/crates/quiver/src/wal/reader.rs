@@ -188,19 +188,47 @@ pub(crate) struct DecodedWalSlot {
     pub payload: Vec<u8>,
 }
 
-/// Consumer checkpoint used by writers and readers to describe how much of the WAL is
-/// durably processed. `safe_offset` is expressed in absolute bytes (including
-/// the header) while `safe_sequence` guards against replay regressions.
+/// Opaque cursor describing how much of the WAL has been durably processed.
+///
+/// Operators should not interpret the internal fields directly. Instead:
+/// 1. Start with `WalConsumerCheckpoint::default()` (beginning of WAL)
+/// 2. Call `cursor.advance(&bundle)` after processing each entry
+/// 3. Pass the cursor to `advance_consumer_checkpoint()` to persist progress
+///
+/// The writer validates that checkpoints land on entry boundaries and rejects
+/// stale or regressed values.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct WalConsumerCheckpoint {
-    pub safe_offset: u64,
-    pub safe_sequence: u64,
+    /// Internal: byte position within the current WAL file.
+    pub(super) safe_offset: u64,
+    /// Internal: monotonic sequence number for ordering.
+    pub(super) safe_sequence: u64,
 }
 
 impl WalConsumerCheckpoint {
-    /// Advances the cursor to cover the provided bundle. Callers typically run
-    /// this inside a replay loop and later hand the cursor back to the writer so
-    /// it can truncate or reclaim the prefix.
+    /// Creates a checkpoint positioned immediately after the given bundle.
+    ///
+    /// This is equivalent to `WalConsumerCheckpoint::default()` followed by
+    /// `advance(bundle)`, but clearer when you only need to checkpoint a
+    /// single entry.
+    pub fn after(bundle: &WalRecordBundle) -> Self {
+        Self {
+            safe_offset: bundle.next_offset,
+            safe_sequence: bundle.sequence,
+        }
+    }
+
+    /// Advances the cursor to cover the provided bundle.
+    ///
+    /// Typical usage in a replay loop:
+    /// ```ignore
+    /// let mut cursor = WalConsumerCheckpoint::default();
+    /// for bundle in reader.iter_from(0)? {
+    ///     process(&bundle?);
+    ///     cursor.advance(&bundle);
+    /// }
+    /// writer.advance_consumer_checkpoint(&cursor)?;
+    /// ```
     pub fn advance(&mut self, bundle: &WalRecordBundle) {
         self.safe_offset = bundle.next_offset;
         self.safe_sequence = bundle.sequence;
