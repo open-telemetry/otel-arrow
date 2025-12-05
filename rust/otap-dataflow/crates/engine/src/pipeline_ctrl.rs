@@ -400,8 +400,7 @@ mod tests {
         }
 
         // Create a dummy MetricsReporter for testing using MetricsSystem
-        let config = otap_df_telemetry::config::Config::default();
-        let metrics_system = otap_df_telemetry::MetricsSystem::new(config);
+        let metrics_system = otap_df_telemetry::MetricsSystem::default();
         let metrics_reporter = metrics_system.reporter();
         let pipeline_settings = PipelineSettings::default();
         let observed_state_store = ObservedStateStore::new(&pipeline_settings);

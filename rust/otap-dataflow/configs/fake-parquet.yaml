@@ -22,9 +22,10 @@ nodes:
     kind: exporter
     plugin_urn: "urn:otel:otap:parquet:exporter"
     config:
-      base_uri: /tmp
+      storage:
+        file:
+          base_uri: /tmp
       partitioning_strategies:
       - schema_metadata: ["_part_id"]
       writer_options:
         flush_when_older_than: 10s
-
