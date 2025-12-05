@@ -7,6 +7,7 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use serde::Deserialize;
 
+#[cfg(feature = "azure")]
 use crate::cloud_auth;
 
 /// Azure object storage

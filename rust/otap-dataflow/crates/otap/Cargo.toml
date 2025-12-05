@@ -22,7 +22,7 @@ futures-timer.workspace = true
 http.workspace = true
 humantime-serde.workspace = true
 log.workspace = true
-object_store = { workspace = true }
+object_store.workspace = true
 parquet.workspace = true
 thiserror = { workspace = true }
 serde_with = { workspace = true }
@@ -75,7 +75,6 @@ azure_core = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 
 [features]
-default = []
 # Base experimental feature - enabled by all experimental exporters
 experimental-exporters = []
 # Experimental exporters

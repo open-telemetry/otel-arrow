@@ -149,6 +149,7 @@ wiremock = "0.6.5"
 
 [features]
 default = []
+azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []

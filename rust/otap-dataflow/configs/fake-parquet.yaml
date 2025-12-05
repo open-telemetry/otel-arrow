@@ -41,7 +41,7 @@ nodes:
         azure:
           base_uri: https://barquettest.blob.core.windows.net/barquet1
           auth:
-            type: AzureCli
+            type: azure_cli
       partitioning_strategies:
       - schema_metadata: ["_part_id"]
       writer_options:
