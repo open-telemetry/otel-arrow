@@ -1,8 +1,32 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTAP batch processor.
-//! Batches OtapPdata by count or timer; uses upstream OTAP batching for merge/split.
+//! OTAP batch processor.  Batches OtapPdata by item count or timer,
+//! uses the lower-level otap_df_pdata::otap::groups module for
+//! merging and splitting batches.
+//!
+//! Configuration is modelled on the (original) OpenTelemetry batch
+//! processor, not the relatively-new exporterhelper batcher, which
+//! supports batching by a sizer "bytes", "requests", or "items".
+//!
+//! There are two limits, a lower bound and an upper bound. Both are
+//! optional, the user can set one or the other or both. This
+//! component uses only the lower of the two numbers, along with the
+//! timeout.  Whether it reaches the lower bound or the timeout first,
+//! it will flush pending data. If the upper bound is set, merging and
+//! splitting will take place, otherwise only merging is performed.
+//!
+//! When this component flushes because it has reached a limit, and
+//! splitting is configured, it means there can be residual data left
+//! after flushing. Retained data is always "first in line" for
+//! considering in the next flush event. Note that the lower-level
+//! function in otap_df_pdata::otap::groups is required to support
+//! "in-line" batching (see that component for the definition).
+//!
+//! This component should be installed before any retry processor
+//! (i.e., only retry after batching). This component does not support
+//! Interests::RETURN_DATA because (a) more memory required, (b) forces
+//! whole-request retry (instead of partial).
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::accessory::slots::{Key as SlotKey, State as SlotState};
@@ -51,10 +75,7 @@ const LOG_MSG_DROP_CONVERSION_FAILED: &str =
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
-/// Configuration for the OTAP batch processor (parity with Go batchprocessor)
-///
-/// TODO these are currently modeled on the legacy batch processor. we want
-/// to emulate the new exporterhelper batch sender.
+/// Batch processor configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Flush current batch when this count is reached, as a
@@ -147,14 +168,12 @@ struct SignalBatches {
     traces: SignalBuffer,
 }
 
-/// Per-input wait context
+/// Per-input wait context, including the arriving request's context.
 struct BatchContext {
     /// Original request context.
     ctx: Context,
     /// Number of outbounds
     outbound: usize,
-    /// Error reason, first encountered.
-    error: Option<String>,
 }
 
 /// Portion of input wait context
@@ -187,13 +206,16 @@ struct SignalBuffer {
     /// Pending input state.
     inputs: Inputs,
 
-    /// Map of inbound requests.
+    /// Map of inbound requests.  This contains a limited number of pending request
+    /// contexts with details for the impl to notify after an outcome is available.
     inbound: SlotState<BatchContext>,
 
-    /// Map of outbound requests.
+    /// Map of outbound requests.  This contains the assignments from each input
+    /// batch, each a corresponding (maybe partial) inbound context.
     outbound: SlotState<Vec<BatchPortion>>,
 
-    /// Arrival time of the oldest data.
+    /// Arrival time of the oldest data. This is reset whenever the number in the
+    /// pending Inputs becomes non-empty.
     arrival: Option<Instant>,
 }
 
@@ -350,7 +372,9 @@ impl BatchProcessor {
         Ok(())
     }
 
-    /// Helper to process incoming signal data with generic batching logic
+    /// Process one incoming batch. Immediately acks empty requests.
+    /// If this input causes pending data to exceed the lower bound, it will
+    /// flush at least one output.
     async fn process_signal_impl(
         &mut self,
         signal: SignalType,
@@ -398,11 +422,7 @@ impl BatchProcessor {
                     .inbound
                     .allocate(|| {
                         (
-                            BatchContext {
-                                ctx,
-                                outbound: 0,
-                                error: None,
-                            },
+                            BatchContext { ctx, outbound: 0 },
                             (), // not used
                         )
                     })
@@ -441,7 +461,13 @@ impl BatchProcessor {
         }
     }
 
-    /// Generic flush implementation for any signal type
+    /// Flushes all of the input, merging and splitting as necessary to
+    /// respect the optional limit. Reason-specific behavior:
+    ///
+    /// - If Timer and it is arriving early, ignore. This happens because
+    ///   timers are not canceled.
+    /// - If Size and the final output is smaller than the lower bound, it
+    ///   will be retained as first-in-line.
     async fn flush_signal_impl(
         &mut self,
         signal: SignalType,
@@ -486,14 +512,13 @@ impl BatchProcessor {
                 Err(e) => {
                     self.metrics.batching_errors.add(count as u64);
                     log_batching_failed(effect, signal, &e).await;
-                    let res = Err(e.to_string());
+                    let str = e.to_string();
+                    let res = Err(str.clone());
                     // In this case, we are sending failure to all the pending inputs.
                     buffer
                         .handle_partial_responses(signal, effect, &res, inputs.context)
                         .await?;
-                    return Err(EngineError::InternalError {
-                        message: res.err().expect("reason"),
-                    });
+                    return Err(EngineError::InternalError { message: str });
                 }
             };
 
@@ -590,7 +615,7 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
     ) -> Result<(), EngineError> {
-        if calldata.len() == 0 {
+        if calldata.is_empty() {
             return Ok(());
         }
         let buffer = match signal {
@@ -748,6 +773,9 @@ impl SignalBuffer {
         }
     }
 
+    /// Takes the residual batch, used in case the final output is less than
+    /// the lower bound. This removes the last output btach, the corresponding
+    /// context, and places it back in the pending buffer as the first in line.
     fn take_remaining(
         &mut self,
         from_inputs: &mut Inputs,
@@ -763,6 +791,13 @@ impl SignalBuffer {
         self.inputs.accept(remaining, new_part);
     }
 
+    /// Using a multi-context corresponding with the input pending
+    /// data, and considering an output item count for a single output
+    /// batch, this determines the set of (maybe partial) pending
+    /// batches that correspond. When merging only (not splitting),
+    /// this will return the entire set of pending contexts; when
+    /// splitting, this will return all except the portion that was
+    /// retained as first-in-line.
     fn drain_context(
         &mut self,
         mut items: usize,
@@ -793,6 +828,10 @@ impl SignalBuffer {
         (!out.is_empty()).then_some(out)
     }
 
+    /// Handles a response, returning an Ack or Nack conditionally when
+    /// the outcome is known. This implementation will return as soon as the
+    /// first error is received, or it will return when every outbound context
+    /// succeeds.
     async fn handle_partial_responses(
         &mut self,
         signal: SignalType,
@@ -803,23 +842,19 @@ impl SignalBuffer {
         for part in parts {
             if let Some(inkey) = part.inkey {
                 let removed = self.inbound.mutate(inkey, |batch| {
-                    if let Err(err) = res
-                        && batch.error.is_none()
-                    {
-                        batch.error = Some(err.clone());
-                    }
-
-                    if batch.outbound != 0 {
+                    if res.is_err() {
+                        false
+                    } else if batch.outbound > 1 {
                         batch.outbound -= 1;
+                        true
+                    } else {
+                        false
                     }
-                    // If this return true, the Some(_) following this
-                    // block evaluates.
-                    batch.outbound != 0
                 });
                 if let Some(mut batch) = removed {
                     let rdata =
                         OtapPdata::new(std::mem::take(&mut batch.ctx), OtapPayload::empty(signal));
-                    if let Some(err) = &batch.error {
+                    if let Err(err) = res {
                         effect.notify_nack(NackMsg::new(err, rdata)).await?;
                     } else {
                         effect.notify_ack(AckMsg::new(rdata)).await?;
