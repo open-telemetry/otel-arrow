@@ -210,6 +210,28 @@ fn rotated_path_for(base: &Path, index: usize) -> PathBuf {
     PathBuf::from(name)
 }
 
+fn total_logical_bytes(path: &Path) -> u64 {
+    let header = WAL_HEADER_LEN as u64;
+    let mut total = std::fs::metadata(path)
+        .expect("active metadata")
+        .len()
+        .saturating_sub(header);
+    let mut index = 1;
+    loop {
+        let rotated = rotated_path_for(path, index);
+        if !rotated.exists() {
+            break;
+        }
+        let len = std::fs::metadata(&rotated)
+            .expect("rotated metadata")
+            .len()
+            .saturating_sub(header);
+        total = total.saturating_add(len);
+        index += 1;
+    }
+    total
+}
+
 fn temp_wal(file_name: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempdir().expect("tempdir");
     let path = dir.path().join(file_name);
@@ -467,14 +489,15 @@ fn wal_writer_flush_syncs_file_data() {
 }
 
 #[test]
-fn wal_writer_rewrite_compacts_prefix() {
-    let (_dir, wal_path) = temp_wal("rewrite_compact.wal");
+fn wal_writer_reclaim_prefix_records_cursor() {
+    let (_dir, wal_path) = temp_wal("reclaim_cursor.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x20; 16], Duration::ZERO)
-            .with_punch_capability(false),
-    )
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x20; 16],
+        Duration::ZERO,
+    ))
     .expect("writer");
 
     let first_bundle = FixtureBundle::new(
@@ -499,20 +522,26 @@ fn wal_writer_rewrite_compacts_prefix() {
         safe_offset: first_entry.next_offset,
         ..WalTruncateCursor::default()
     };
-    writer.reclaim_prefix(&cursor).expect("reclaim prefix");
+    writer.reclaim_prefix(&cursor).expect("record cursor");
     drop(writer);
 
     let len_after = std::fs::metadata(&wal_path).expect("metadata").len();
-    assert!(len_after < len_before);
+    assert_eq!(len_after, len_before,
+        "reclaiming prefix no longer mutates the active wal immediately");
 
     let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
     let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
-    assert_eq!(sidecar.truncate_offset, WAL_HEADER_LEN as u64);
+    assert_eq!(
+        sidecar.logical_offset,
+        first_entry.next_offset - WAL_HEADER_LEN as u64
+    );
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iter");
-    let remaining = iter.next().expect("entry").expect("ok");
-    assert_eq!(remaining.sequence, first_entry.sequence + 1);
+    let entry_one = iter.next().expect("entry").expect("ok");
+    let entry_two = iter.next().expect("entry").expect("ok");
+    assert_eq!(entry_one.sequence, first_entry.sequence);
+    assert_eq!(entry_two.sequence, first_entry.sequence + 1);
     assert!(iter.next().is_none());
 }
 
@@ -521,10 +550,11 @@ fn wal_writer_enforces_safe_offset_boundaries() {
     let (_dir, wal_path) = temp_wal("safe_offset.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x42; 16], Duration::ZERO)
-            .with_punch_capability(false),
-    )
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x42; 16],
+        Duration::ZERO,
+    ))
     .expect("writer");
 
     let first_bundle = FixtureBundle::new(
@@ -561,41 +591,12 @@ fn wal_writer_enforces_safe_offset_boundaries() {
         .expect("reclaim succeeds with aligned cursor");
     drop(writer);
 
-    let mut reader = WalReader::open(&wal_path).expect("reader after reclaim");
-    let mut iter = reader.iter_from(0).expect("iter");
-    let remaining = iter.next().expect("entry").expect("ok");
-    assert_eq!(remaining.sequence, first_entry.sequence + 1);
-    assert!(iter.next().is_none());
-}
-
-#[test]
-fn wal_writer_punch_failure_falls_back_to_rewrite() {
-    writer_test_support::reset_flush_notifications();
-    writer_test_support::set_force_punch_error(true);
-
-    let (_dir, wal_path) = temp_wal("punch_fallback.wal");
-
-    let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x30; 16], Duration::ZERO)
-            .with_punch_capability(true),
-    )
-    .expect("writer");
-
-    let bundle = FixtureBundle::new(
-        descriptor,
-        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[10, 11])],
+    let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
+    let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    assert_eq!(
+        sidecar.logical_offset,
+        first_entry.next_offset - WAL_HEADER_LEN as u64
     );
-    let _ = writer.append_bundle(&bundle).expect("append");
-
-    let cursor = WalTruncateCursor {
-        safe_offset: std::fs::metadata(&wal_path).expect("metadata").len(),
-        ..WalTruncateCursor::default()
-    };
-
-    writer.reclaim_prefix(&cursor).expect("reclaim prefix");
-    assert!(writer_test_support::take_punch_failure_notification());
-    writer_test_support::set_force_punch_error(false);
 }
 
 #[test]
@@ -628,7 +629,10 @@ fn wal_writer_persists_truncate_cursor_sidecar() {
 
     let sidecar_path = wal_path.parent().expect("dir").join("truncate.offset");
     let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
-    assert_eq!(state.truncate_offset, file_len);
+    assert_eq!(
+        state.logical_offset,
+        file_len.saturating_sub(WAL_HEADER_LEN as u64)
+    );
 }
 
 #[test]
@@ -849,7 +853,10 @@ fn wal_writer_ignores_invalid_truncate_sidecar() {
     drop(writer);
 
     let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
-    assert_eq!(state.truncate_offset, file_len);
+    assert_eq!(
+        state.logical_offset,
+        file_len.saturating_sub(WAL_HEADER_LEN as u64)
+    );
 }
 
 #[test]
@@ -1729,28 +1736,14 @@ fn wal_reader_fails_on_corrupt_header_version() {
 struct CrashCase {
     name: &'static str,
     injection: writer_test_support::CrashInjection,
-    punch_capable: bool,
 }
 
 #[test]
 fn wal_writer_recovers_from_crash_resilience_scenarios() {
-    let cases = [
-        CrashCase {
-            name: "sidecar_pre_rename",
-            injection: writer_test_support::CrashInjection::BeforeSidecarRename,
-            punch_capable: true,
-        },
-        CrashCase {
-            name: "rewrite_mid_copy",
-            injection: writer_test_support::CrashInjection::DuringRewriteCopy,
-            punch_capable: false,
-        },
-        CrashCase {
-            name: "post_punch",
-            injection: writer_test_support::CrashInjection::AfterPunch,
-            punch_capable: true,
-        },
-    ];
+    let cases = [CrashCase {
+        name: "sidecar_pre_rename",
+        injection: writer_test_support::CrashInjection::BeforeSidecarRename,
+    }];
 
     for case in cases {
         run_crash_case(case);
@@ -1763,14 +1756,9 @@ fn run_crash_case(case: CrashCase) {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join(format!("crash_{}.wal", case.name));
     let descriptor = logs_descriptor();
-    let mut options = WalWriterOptions::new(wal_path.clone(), [0xC7; 16], Duration::ZERO)
+    let options = WalWriterOptions::new(wal_path.clone(), [0xC7; 16], Duration::ZERO)
         .with_rotation_target(32 * 1024)
         .with_max_chunks(4);
-    options = if case.punch_capable {
-        options.with_punch_capability(true)
-    } else {
-        options.with_punch_capability(false)
-    };
 
     let mut writer = WalWriter::open(options.clone()).expect("writer");
     for value in 0..4 {
@@ -1803,9 +1791,6 @@ fn run_crash_case(case: CrashCase) {
         "{}: cursor safe offset must exceed header",
         case.name
     );
-    if !case.punch_capable {
-        writer_test_support::set_force_punch_error(true);
-    }
     writer_test_support::inject_crash(case.injection);
     let err = match writer.reclaim_prefix(&cursor) {
         Ok(_) => panic!("{}: crash injection did not trigger", case.name),
@@ -1869,14 +1854,10 @@ fn assert_crash_recovery(
         .join("truncate.offset");
     if sidecar_path.exists() {
         let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar readable");
-        let wal_len = std::fs::metadata(&options.path).expect("metadata").len();
+        let total_logical = total_logical_bytes(&options.path);
         assert!(
-            sidecar.truncate_offset >= WAL_HEADER_LEN as u64,
-            "{case_name}: truncate offset must include header"
-        );
-        assert!(
-            sidecar.truncate_offset <= wal_len,
-            "{case_name}: truncate offset must not exceed file len"
+            sidecar.logical_offset <= total_logical,
+            "{case_name}: logical cursor must stay within logical stream"
         );
     }
 }

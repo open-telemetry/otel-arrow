@@ -32,16 +32,65 @@
 //!   data ranges so stale chunks can be deleted after truncation advances.
 //! * **Truncation + sidecar** – Readers compute `WalTruncateCursor` values. The
 //!   writer validates cursor boundaries, updates the truncate sidecar on disk,
-//!   and optionally punches or rewrites the prefix. Hole punching issues
-//!   `fallocate(FALLOC_FL_PUNCH_HOLE)`/`FSCTL_SET_ZERO_DATA` style calls so the
-//!   filesystem can reclaim physical blocks immediately while keeping the logical
-//!   WAL length intact. If the platform lacks support or the call fails we fall
-//!   back to an in-place rewrite that truly shrinks the file and updates
-//!   `aggregate_bytes`. The sidecar survives crashes so restarts resume from the
-//!   last known safe offset even if hole punching did not complete.
+//!   and relies on chunk rotation to eventually drop fully safe bytes. The
+//!   sidecar survives crashes so restarts resume from the last known safe offset
+//!   even if a rotation has not run yet.
 //! * **Global cap enforcement** – `max_wal_size` is measured across the active
 //!   file plus rotated chunks. Exceeding the cap yields `WalAtCapacity` errors
 //!   until downstream consumers free space.
+//!
+//! ## Offset coordinate systems
+//!
+//! Truncate metadata uses two overlapping coordinate spaces:
+//!
+//! 1. **Logical/global cursor** – `truncate_state.logical_offset` is the number
+//!    of data bytes (headers excluded) that have been validated across the
+//!    entire WAL stream. This is the only value persisted in the
+//!    `truncate.offset` sidecar so it remains stable across rotations.
+//! 2. **Per-file offsets** – Derived from the logical cursor by subtracting
+//!    `rotated_prefix_bytes` (the payload currently living in rotated chunks)
+//!    and adding `WAL_HEADER_LEN`. This gives the byte location inside the
+//!    active file so we can touch OS file descriptors without ambiguity.
+//!
+//! `purge_rotated_chunks` compares the logical cursor against each chunk's
+//! `end_data_offset` so we only delete files once the cursor has moved past
+//! their logical range.
+//!
+//! ```text
+//! wal.3 (oldest)    wal.2             wal.1    wal (active)
+//! ┌──────────────┬──────────┬────────────────┬───────┬────────────┬──────────┐
+//! │ rotated data │ rotated  │ rotated data   │header │ per-file   │ data tail│
+//! │   (oldest)   │  data    │   (newest)     │       │ data bytes │          │
+//! └──────────────┴──────────┴────────────────┴───────┴────────────┴──────────┘
+//! ^                        ^                 ^       ^
+//! │                        │                 │       │
+//! oldest bytes   logical cursor (sidecar)    │       per-file cursor derived
+//!                                            │       from logical offset
+//!                                            │ 
+//!                                            └── prefix contributed by rotated chunks (rotated_prefix_bytes)
+//! ```
+
+//! Single-file case (no rotated chunks yet):
+//!
+//! ```text
+//! wal (active)
+//! ┌───────┬──────────────────────────┬──────────────┐
+//! │header │ per-file data bytes      │   data tail  │
+//! └───────┴──────────────────────────┴──────────────┘
+//! ^       ^                          ^
+//! │       │                          │
+//! header per-file cursor             logical cursor (no header bias)
+//! ```
+//!
+//! When no rotated chunks exist `rotated_prefix_bytes` is `0`, so both arrows land on
+//! the same byte boundary within the active file even though one value includes
+//! the header prefix and the other does not. As soon as rotation occurs the
+//! logical cursor continues to advance across the concatenated stream while the
+//! per-file cursor snaps back to `WAL_HEADER_LEN` in the brand-new active file.
+//!
+//! This separation lets restarts resume from the sidecar-safe position inside
+//! the freshly created active file while still honoring previously persisted
+//! cursors that might point into older chunks.
 //!
 //! ## Internal structure
 //!
@@ -50,9 +99,9 @@
 //! * [`WalSegment`] – owns the on-disk file handle plus the transient payload
 //!   buffer. All direct I/O (seek, write, flush/fsync) flows through this type
 //!   so we only mutate the OS file descriptor in one place.
-//! * [`WalCoordinator`] – tracks policy decisions (rotation, global caps,
-//!   truncate sidecar state, punch/rewrite fallbacks). It never touches raw I/O
-//!   directly; instead it inspects `WalSegment` lengths and requests actions.
+//! * [`WalCoordinator`] – tracks policy decisions (rotation, global caps, and
+//!   truncate sidecar state). It never touches raw I/O directly; instead it
+//!   inspects `WalSegment` lengths and requests actions.
 //!
 //! Splitting responsibilities this way keeps the append path easier to reason
 //! about: `WalWriter` asks the coordinator for admission, streams bytes via the
@@ -69,14 +118,11 @@
 //!        └──────────────────────┘                               │
 //!              ▲           ▲                                    │
 //!              │           │                                    │
-//!      hole punch/rewrite  └────── crash-safe checkpoint  ──────┘
+//!          reclaim request └────── crash-safe checkpoint  ──────┘
 //! ```
 //!
-//! * Failpoints in `test_support` let us simulate crashes before/after punching
-//!   or during in-place rewrites. Clearing the crash flag allows resuming normal
-//!   operation.
-//! * Hole punching failures are recorded and we automatically fall back to copy
-//!   rewrites for the remainder of the process lifetime.
+//! * Failpoints in `test_support` let us simulate crashes before the truncate
+//!   sidecar rename. Clearing the crash flag allows resuming normal operation.
 //! * Drop flushing is skipped when `test_force_crash` was invoked so tests can
 //!   model abrupt exits without double-syncing.
 //!
@@ -86,16 +132,13 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
-
-#[cfg(unix)]
-use std::os::fd::AsFd;
 
 use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
 
@@ -107,8 +150,6 @@ use super::{
     WalResult, WalTruncateCursor,
 };
 
-#[cfg(test)]
-use self::test_support::CrashInjection;
 
 /// Low-level tunables that bridge the user-facing [`QuiverConfig`] into the WAL.
 #[derive(Debug, Clone)]
@@ -120,8 +161,6 @@ pub(crate) struct WalWriterOptions {
     pub max_wal_size: u64,
     pub max_chunks: usize,
     pub rotation_target_bytes: u64,
-    #[cfg(test)]
-    force_punch_capability: Option<bool>,
 }
 
 impl WalWriterOptions {
@@ -134,8 +173,6 @@ impl WalWriterOptions {
             max_wal_size: u64::MAX,
             max_chunks: 8,
             rotation_target_bytes: 64 * 1024 * 1024,
-            #[cfg(test)]
-            force_punch_capability: None,
         }
     }
 
@@ -161,11 +198,6 @@ impl WalWriterOptions {
         self
     }
 
-    #[cfg(test)]
-    pub fn with_punch_capability(mut self, punch_capable: bool) -> Self {
-        self.force_punch_capability = Some(punch_capable);
-        self
-    }
 }
 
 /// Stateful writer that maintains append position, rotation metadata, and
@@ -174,33 +206,49 @@ impl WalWriterOptions {
 /// compared against caps before admitting new entries.
 #[derive(Debug)]
 pub(crate) struct WalWriter {
+    /// Encapsulates the active WAL file handle plus its in-memory staging
+    /// buffer. All raw I/O flows through this helper.
     segment: WalSegment,
+    /// Manages policy, truncate bookkeeping, and rotation metadata.
     coordinator: WalCoordinator,
+    /// Next sequence number to assign to an appended entry.
     next_sequence: u64,
     #[cfg(test)]
+    /// When true we skip drop-time flushes to simulate a crash.
     test_crashed: bool,
 }
 
 #[derive(Debug)]
 struct WalSegment {
+    /// Active WAL file descriptor.
     file: File,
+    /// Scratch buffer used to serialize slot payloads before writing.
     payload_buffer: Vec<u8>,
+    /// Timestamp of the most recent flush.
     last_flush: Instant,
+    /// Bytes written since the last flush.
     unflushed_bytes: u64,
+    /// Current logical file length (includes header and data bytes).
     current_len: u64,
 }
 
 #[derive(Debug)]
 struct WalCoordinator {
+    /// User-provided tuning knobs for the writer.
     options: WalWriterOptions,
+    /// Path to the truncate sidecar file on disk.
     sidecar_path: PathBuf,
+    /// Cached copy of the persisted truncate offset + rotation generation.
     truncate_state: TruncateSidecar,
-    punch_capable: bool,
+    /// Total bytes across the active WAL plus all rotated chunks.
     aggregate_bytes: u64,
+    /// Metadata describing each rotated `wal.N` chunk on disk.
     rotated_chunks: VecDeque<RotatedChunk>,
-    data_offset_base: u64,
-    last_global_safe_offset: u64,
-    validated_safe_offset: u64,
+    /// Logical prefix length contributed by all rotated chunks combined.
+    rotated_prefix_bytes: u64,
+    /// Most recent offset validated to be on an entry boundary.
+    active_safe_offset: u64,
+    /// Sequence number associated with the last committed truncate cursor.
     last_safe_sequence: Option<u64>,
 }
 
@@ -246,31 +294,17 @@ impl WalWriter {
 
         let _ = file.seek(SeekFrom::End(0))?;
         let sidecar_path = truncate_sidecar_path(&options.path);
-        let truncate_state = load_truncate_state(&sidecar_path, metadata_len)?;
-
-        let punch_capable = {
-            #[cfg(test)]
-            if let Some(force) = options.force_punch_capability {
-                force
-            } else {
-                detect_hole_punch(&options.path)
-            }
-            #[cfg(not(test))]
-            {
-                detect_hole_punch(&options.path)
-            }
-        };
+        let truncate_state = load_truncate_state(&sidecar_path)?;
 
         let segment = WalSegment::new(file, metadata_len);
         let mut coordinator = WalCoordinator::new(
             options,
             sidecar_path,
             truncate_state,
-            punch_capable,
             metadata_len,
         );
         coordinator.reload_rotated_chunks(segment.len())?;
-        coordinator.refresh_global_safe_offset();
+        coordinator.restore_safe_offsets(segment.len());
 
         let mut writer = Self {
             segment,
@@ -383,17 +417,16 @@ impl WalWriter {
     }
 
     /// Updates the truncate sidecar without touching the underlying WAL bytes.
-    /// This is used when we merely want to record a new safe cursor that will
-    /// later be applied via punching or rewrite.
+    /// This is used when we merely want to record a new safe cursor so future
+    /// rotations know how far readers have progressed.
     pub(crate) fn record_truncate_cursor(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         self.coordinator
             .record_truncate_cursor(&mut self.segment, cursor)
     }
 
-    /// Reclaims bytes before the provided cursor using hole punching when the
-    /// platform supports it, otherwise by rewriting the file in-place. Either
-    /// path guarantees that the WAL header is preserved so readers can still
-    /// validate future appends.
+    /// Records a new truncate cursor and lets future rotations delete fully
+    /// safe chunks. This validates the cursor just like [`truncate_to`] but
+    /// leaves the active file untouched until rotation thresholds are met.
     pub fn reclaim_prefix(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
         self.coordinator.reclaim_prefix(&mut self.segment, cursor)
     }
@@ -503,19 +536,16 @@ impl WalCoordinator {
         options: WalWriterOptions,
         sidecar_path: PathBuf,
         truncate_state: TruncateSidecar,
-        punch_capable: bool,
         current_len: u64,
     ) -> Self {
         Self {
             options,
             sidecar_path,
             truncate_state,
-            punch_capable,
             aggregate_bytes: current_len,
             rotated_chunks: VecDeque::new(),
-            data_offset_base: 0,
-            last_global_safe_offset: 0,
-            validated_safe_offset: truncate_state.truncate_offset,
+            rotated_prefix_bytes: 0,
+            active_safe_offset: WAL_HEADER_LEN as u64,
             last_safe_sequence: None,
         }
     }
@@ -529,7 +559,7 @@ impl WalCoordinator {
         if discovered.is_empty() {
             self.aggregate_bytes = active_len;
             self.rotated_chunks.clear();
-            self.data_offset_base = 0;
+            self.rotated_prefix_bytes = 0;
             return Ok(());
         }
 
@@ -550,17 +580,23 @@ impl WalCoordinator {
 
         self.rotated_chunks = chunks;
         self.aggregate_bytes = aggregate;
-        self.data_offset_base = cumulative_data;
+        self.rotated_prefix_bytes = cumulative_data;
         Ok(())
     }
 
-    fn refresh_global_safe_offset(&mut self) {
-        self.last_global_safe_offset =
-            if self.truncate_state.truncate_offset <= WAL_HEADER_LEN as u64 {
-                0
-            } else {
-                self.global_safe_offset(self.truncate_state.truncate_offset)
-            };
+    fn restore_safe_offsets(&mut self, active_len: u64) {
+        let header = WAL_HEADER_LEN as u64;
+        let active_data = active_len.saturating_sub(header);
+        let total_logical = self
+            .rotated_prefix_bytes
+            .saturating_add(active_data);
+
+        if self.truncate_state.logical_offset > total_logical {
+            self.truncate_state.logical_offset = total_logical;
+        }
+
+        self.active_safe_offset =
+            self.per_file_offset_from_global(self.truncate_state.logical_offset, active_len);
     }
 
     fn record_append(&mut self, entry_total_bytes: u64) {
@@ -568,8 +604,6 @@ impl WalCoordinator {
     }
 
     fn preflight_append(&mut self, segment: &WalSegment, entry_total_bytes: u64) -> WalResult<()> {
-        self.purge_rotated_chunks()?;
-
         let will_rotate = segment
             .len()
             .saturating_add(entry_total_bytes)
@@ -624,21 +658,7 @@ impl WalCoordinator {
         cursor: &WalTruncateCursor,
     ) -> WalResult<()> {
         let safe_offset = self.resolve_truncate_cursor(segment, cursor)?;
-        if safe_offset <= WAL_HEADER_LEN as u64 {
-            return self.commit_truncate_state(cursor, WAL_HEADER_LEN as u64);
-        }
-
-        if self.try_punch_prefix(segment, safe_offset)? {
-            #[cfg(test)]
-            if test_support::take_crash(CrashInjection::AfterPunch) {
-                return Err(WalError::InjectedCrash(
-                    "crash injected immediately after punching wal prefix",
-                ));
-            }
-            return self.commit_truncate_state(cursor, safe_offset);
-        }
-        self.rewrite_prefix_in_place(segment, safe_offset)?;
-        self.commit_truncate_state(cursor, WAL_HEADER_LEN as u64)
+        self.commit_truncate_state(cursor, safe_offset)
     }
 
     fn resolve_truncate_cursor(
@@ -653,9 +673,6 @@ impl WalCoordinator {
                 "safe offset beyond wal tail",
             ));
         }
-        if requested_offset < self.truncate_state.truncate_offset {
-            return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
-        }
         if let Some(last_seq) = self.last_safe_sequence {
             if cursor.safe_sequence < last_seq {
                 return Err(WalError::InvalidTruncateCursor("safe sequence regressed"));
@@ -666,15 +683,15 @@ impl WalCoordinator {
     }
 
     fn ensure_entry_boundary(&mut self, segment: &mut WalSegment, target: u64) -> WalResult<()> {
-        if target == self.validated_safe_offset {
+        if target == self.active_safe_offset {
             return Ok(());
         }
-        if target < self.validated_safe_offset {
+        if target < self.active_safe_offset {
             return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
         }
 
         let original_pos = segment.file_mut().stream_position()?;
-        let mut cursor = self.validated_safe_offset;
+        let mut cursor = self.active_safe_offset;
         let _ = segment.file_mut().seek(SeekFrom::Start(cursor))?;
         while cursor < target {
             let mut len_buf = [0u8; 4];
@@ -706,52 +723,22 @@ impl WalCoordinator {
         cursor: &WalTruncateCursor,
         recorded_offset: u64,
     ) -> WalResult<()> {
-        self.record_truncate_offset(recorded_offset)?;
-        self.last_global_safe_offset = self.global_safe_offset(recorded_offset);
-        self.validated_safe_offset = recorded_offset;
+        let global_offset = self.global_safe_offset(recorded_offset);
+        if global_offset < self.truncate_state.logical_offset {
+            return Err(WalError::InvalidTruncateCursor("safe offset regressed"));
+        }
+        self.record_logical_offset(global_offset)?;
+        self.active_safe_offset = recorded_offset;
         self.last_safe_sequence = Some(cursor.safe_sequence);
         self.purge_rotated_chunks()
     }
 
-    fn record_truncate_offset(&mut self, requested_offset: u64) -> WalResult<()> {
-        let safe_offset = requested_offset.max(WAL_HEADER_LEN as u64);
-        if self.truncate_state.truncate_offset == safe_offset && self.sidecar_path.exists() {
+    fn record_logical_offset(&mut self, logical_offset: u64) -> WalResult<()> {
+        if self.truncate_state.logical_offset == logical_offset && self.sidecar_path.exists() {
             return Ok(());
         }
-        self.truncate_state.truncate_offset = safe_offset;
+        self.truncate_state.logical_offset = logical_offset;
         TruncateSidecar::write_to(&self.sidecar_path, &self.truncate_state)
-    }
-
-    fn try_punch_prefix(&mut self, segment: &WalSegment, safe_offset: u64) -> WalResult<bool> {
-        if !self.punch_capable {
-            return Ok(false);
-        }
-        if safe_offset <= WAL_HEADER_LEN as u64 {
-            return Ok(true);
-        }
-        match punch_wal_prefix(segment.file(), safe_offset) {
-            Ok(()) => Ok(true),
-            Err(err) => {
-                self.punch_capable = false;
-                #[cfg(test)]
-                test_support::record_punch_failure(&err);
-                #[cfg(not(test))]
-                let _ = err;
-                Ok(false)
-            }
-        }
-    }
-
-    fn rewrite_prefix_in_place(
-        &mut self,
-        segment: &mut WalSegment,
-        safe_offset: u64,
-    ) -> WalResult<()> {
-        let (new_len, reclaimed) = rewrite_wal_prefix_in_place(segment.file_mut(), safe_offset)?;
-        segment.set_len(new_len);
-        self.recalculate_aggregate_bytes(segment.len());
-        self.data_offset_base = self.data_offset_base.saturating_add(reclaimed);
-        Ok(())
     }
 
     fn maybe_rotate_after_append(&mut self, segment: &mut WalSegment) -> WalResult<()> {
@@ -763,7 +750,6 @@ impl WalCoordinator {
     }
 
     fn rotate_active_file(&mut self, segment: &mut WalSegment) -> WalResult<()> {
-        self.purge_rotated_chunks()?;
         if self.rotated_chunks.len() >= self.options.max_chunks {
             return Err(WalError::WalAtCapacity(
                 "wal chunk cap reached; truncate more data before rotating",
@@ -784,21 +770,20 @@ impl WalCoordinator {
         std::fs::rename(&self.options.path, &new_chunk_path)?;
 
         let data_bytes = old_len.saturating_sub(WAL_HEADER_LEN as u64);
-        let end_data_offset = self.data_offset_base.saturating_add(data_bytes);
+        let end_data_offset = self.rotated_prefix_bytes.saturating_add(data_bytes);
         self.rotated_chunks.push_back(RotatedChunk {
             path: new_chunk_path,
             file_bytes: old_len,
             end_data_offset,
         });
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(old_len);
-        self.data_offset_base = end_data_offset;
+        self.rotated_prefix_bytes = end_data_offset;
 
         let mut file = reopen_wal_file(&self.options.path, self.options.segment_cfg_hash)?;
         let _ = file.seek(SeekFrom::End(0))?; // ensure positioned at end
         segment.replace_file(file, WAL_HEADER_LEN as u64);
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(segment.len());
-        self.validated_safe_offset = WAL_HEADER_LEN as u64;
-        self.truncate_state.truncate_offset = WAL_HEADER_LEN as u64;
+        self.active_safe_offset = WAL_HEADER_LEN as u64;
 
         self.truncate_state.rotation_generation =
             self.truncate_state.rotation_generation.saturating_add(1);
@@ -821,10 +806,6 @@ impl WalCoordinator {
         if self.aggregate_bytes <= self.options.max_wal_size {
             return Ok(());
         }
-        self.purge_rotated_chunks()?;
-        if self.aggregate_bytes <= self.options.max_wal_size {
-            return Ok(());
-        }
         Err(WalError::WalAtCapacity(
             "wal size cap exceeded; truncate finalized segments",
         ))
@@ -832,7 +813,7 @@ impl WalCoordinator {
 
     fn purge_rotated_chunks(&mut self) -> WalResult<()> {
         while let Some(front) = self.rotated_chunks.front() {
-            if front.end_data_offset <= self.last_global_safe_offset_data() {
+            if front.end_data_offset <= self.truncate_state.logical_offset {
                 std::fs::remove_file(&front.path)?;
                 self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
                 let _ = self.rotated_chunks.pop_front();
@@ -852,13 +833,23 @@ impl WalCoordinator {
         self.aggregate_bytes = rotated_total.saturating_add(active_len);
     }
 
-    fn last_global_safe_offset_data(&self) -> u64 {
-        self.last_global_safe_offset
-    }
-
     fn global_safe_offset(&self, cursor_offset: u64) -> u64 {
         let data_offset = cursor_offset.saturating_sub(WAL_HEADER_LEN as u64);
-        self.data_offset_base.saturating_add(data_offset)
+        self.rotated_prefix_bytes.saturating_add(data_offset)
+    }
+
+    fn per_file_offset_from_global(&self, global_offset: u64, active_len: u64) -> u64 {
+        let header = WAL_HEADER_LEN as u64;
+        let active_data_len = active_len.saturating_sub(header);
+
+        if global_offset <= self.rotated_prefix_bytes {
+            return header;
+        }
+
+        let data_within_active = global_offset
+            .saturating_sub(self.rotated_prefix_bytes)
+            .min(active_data_len);
+        header.saturating_add(data_within_active)
     }
 
     fn detect_next_sequence(&self) -> WalResult<u64> {
@@ -959,32 +950,21 @@ fn truncate_sidecar_path(wal_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("truncate.offset"))
 }
 
-fn load_truncate_state(path: &Path, file_len: u64) -> WalResult<TruncateSidecar> {
+fn load_truncate_state(path: &Path) -> WalResult<TruncateSidecar> {
     match TruncateSidecar::read_from(path) {
-        Ok(mut state) => {
-            state.truncate_offset = clamp_offset(state.truncate_offset, file_len);
-            Ok(state)
-        }
-        Err(WalError::InvalidTruncateSidecar(_)) => Ok(default_truncate_state(file_len)),
+        Ok(state) => Ok(state),
+        Err(WalError::InvalidTruncateSidecar(_)) => Ok(default_truncate_state()),
         Err(WalError::Io(err))
             if matches!(err.kind(), ErrorKind::NotFound | ErrorKind::UnexpectedEof) =>
         {
-            Ok(default_truncate_state(file_len))
+            Ok(default_truncate_state())
         }
         Err(err) => Err(err),
     }
 }
 
-fn default_truncate_state(file_len: u64) -> TruncateSidecar {
-    let min_offset = WAL_HEADER_LEN as u64;
-    let clamped = min_offset.min(file_len);
-    TruncateSidecar::new(clamped, 0)
-}
-
-fn clamp_offset(offset: u64, file_len: u64) -> u64 {
-    let min_offset = WAL_HEADER_LEN as u64;
-    let upper = file_len.max(min_offset);
-    offset.max(min_offset).min(upper)
+fn default_truncate_state() -> TruncateSidecar {
+    TruncateSidecar::new(0, 0)
 }
 
 fn shift_rotated_files(base_path: &Path, existing: usize) -> WalResult<()> {
@@ -1030,119 +1010,6 @@ fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {
         .open(path)?;
     WalHeader::new(segment_hash).write_to(&mut file)?;
     Ok(file)
-}
-
-fn detect_hole_punch(path: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        let _ = path;
-        false
-    }
-    #[cfg(not(windows))]
-    {
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        const PROBE_LEN: i64 = 4096;
-        let dir = path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let probe_path = dir.join("wal_punch_probe.tmp");
-        let result = (|| {
-            let file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .open(&probe_path)?;
-            file.set_len(PROBE_LEN as u64)?;
-            punch_file_region(&file, WAL_HEADER_LEN as u64, PROBE_LEN as u64)
-        })();
-        let _ = std::fs::remove_file(&probe_path);
-        result.is_ok()
-    }
-}
-
-#[cfg(unix)]
-fn punch_wal_prefix(file: &File, safe_offset: u64) -> io::Result<()> {
-    if safe_offset <= WAL_HEADER_LEN as u64 {
-        return Ok(());
-    }
-    #[cfg(test)]
-    if test_support::should_inject_punch_error() {
-        return Err(io::Error::other("injected punch failure"));
-    }
-    let punch_len = safe_offset - WAL_HEADER_LEN as u64;
-    punch_file_region(file, WAL_HEADER_LEN as u64, punch_len)
-}
-
-#[cfg(unix)]
-fn punch_file_region(file: &File, start: u64, len: u64) -> io::Result<()> {
-    use nix::fcntl::{FallocateFlags, fallocate};
-
-    if len == 0 {
-        return Ok(());
-    }
-    let fd = file.as_fd();
-    let flags = FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE;
-    fallocate(fd, flags, start as i64, len as i64)
-        .map_err(|err| io::Error::from_raw_os_error(err as i32))
-}
-
-#[cfg(windows)]
-fn punch_wal_prefix(_file: &File, _safe_offset: u64) -> io::Result<()> {
-    Err(io::Error::new(
-        ErrorKind::Unsupported,
-        "hole punch unsupported on windows",
-    ))
-}
-
-fn rewrite_wal_prefix_in_place(file: &mut File, safe_offset: u64) -> WalResult<(u64, u64)> {
-    let header_len = WAL_HEADER_LEN as u64;
-    if safe_offset <= header_len {
-        return Ok((file.metadata()?.len(), 0));
-    }
-
-    let file_len = file.metadata()?.len();
-    if safe_offset >= file_len {
-        file.set_len(header_len)?;
-        let _ = file.seek(SeekFrom::End(0))?;
-        file.flush()?;
-        sync_file_data(file)?;
-        return Ok((header_len, file_len.saturating_sub(header_len)));
-    }
-
-    let mut read_pos = safe_offset;
-    let mut write_pos = header_len;
-    let mut buffer = vec![0u8; 64 * 1024];
-
-    loop {
-        let _ = file.seek(SeekFrom::Start(read_pos))?;
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        let _ = file.seek(SeekFrom::Start(write_pos))?;
-        file.write_all(&buffer[..read])?;
-        read_pos += read as u64;
-        write_pos += read as u64;
-
-        #[cfg(test)]
-        if test_support::take_crash(CrashInjection::DuringRewriteCopy) {
-            return Err(WalError::InjectedCrash(
-                "crash injected during rewrite copy",
-            ));
-        }
-    }
-
-    file.set_len(write_pos)?;
-    let _ = file.seek(SeekFrom::End(0))?;
-    file.flush()?;
-    sync_file_data(file)?;
-    let reclaimed = safe_offset.saturating_sub(header_len);
-    Ok((write_pos, reclaimed))
 }
 
 struct EncodedSlot {
@@ -1195,22 +1062,17 @@ impl EncodedSlot {
 #[cfg(test)]
 pub(super) mod test_support {
     use std::cell::Cell;
-    use std::io::Error;
 
     thread_local! {
         static FLUSH_NOTIFIED: Cell<bool> = const { Cell::new(false) };
         static DROP_FLUSH_NOTIFIED: Cell<bool> = const { Cell::new(false) };
         static SYNC_DATA_NOTIFIED: Cell<bool> = const { Cell::new(false) };
-        static FORCE_PUNCH_ERROR: Cell<bool> = const { Cell::new(false) };
-        static PUNCH_FAILURE_NOTIFIED: Cell<bool> = const { Cell::new(false) };
         static NEXT_CRASH: Cell<Option<CrashInjection>> = const { Cell::new(None) };
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) enum CrashInjection {
         BeforeSidecarRename,
-        DuringRewriteCopy,
-        AfterPunch,
     }
 
     pub fn record_flush() {
@@ -1233,8 +1095,6 @@ pub(super) mod test_support {
         FLUSH_NOTIFIED.with(|cell| cell.set(false));
         DROP_FLUSH_NOTIFIED.with(|cell| cell.set(false));
         SYNC_DATA_NOTIFIED.with(|cell| cell.set(false));
-        FORCE_PUNCH_ERROR.with(|cell| cell.set(false));
-        PUNCH_FAILURE_NOTIFIED.with(|cell| cell.set(false));
         NEXT_CRASH.with(|cell| cell.set(None));
     }
 
@@ -1244,26 +1104,6 @@ pub(super) mod test_support {
 
     pub fn take_sync_data_notification() -> bool {
         SYNC_DATA_NOTIFIED.with(|cell| {
-            let notified = cell.get();
-            cell.set(false);
-            notified
-        })
-    }
-
-    pub fn set_force_punch_error(flag: bool) {
-        FORCE_PUNCH_ERROR.with(|cell| cell.set(flag));
-    }
-
-    pub fn should_inject_punch_error() -> bool {
-        FORCE_PUNCH_ERROR.with(|cell| cell.get())
-    }
-
-    pub fn record_punch_failure(_err: &Error) {
-        PUNCH_FAILURE_NOTIFIED.with(|cell| cell.set(true));
-    }
-
-    pub fn take_punch_failure_notification() -> bool {
-        PUNCH_FAILURE_NOTIFIED.with(|cell| {
             let notified = cell.get();
             cell.set(false);
             notified
@@ -1283,9 +1123,5 @@ pub(super) mod test_support {
                 false
             }
         })
-    }
-
-    pub fn clear_crash_injection() {
-        NEXT_CRASH.with(|cell| cell.set(None));
     }
 }

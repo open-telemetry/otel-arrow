@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Provides read/write helpers for the `truncate.offset` sidecar that tracks the
-// earliest WAL byte still required for crash recovery. The sidecar lets new
-// processes resume from a known safe offset without rescanning the entire WAL
-// and carries a CRC so we can discard corrupted metadata safely.
+// logical WAL cursor (data bytes excluding headers) still required for crash
+// recovery. The sidecar lets new processes resume from a known safe offset
+// without rescanning the entire WAL and carries a CRC so we can discard
+// corrupted metadata safely.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -21,17 +22,20 @@ pub(crate) const TRUNCATE_SIDECAR_MAGIC: &[u8; 8] = b"QUIVER\0T";
 pub(crate) const TRUNCATE_SIDECAR_VERSION: u16 = 1;
 pub(crate) const TRUNCATE_SIDECAR_LEN: usize = 8 + 2 + 2 + 8 + 8 + 4;
 
-/// On-disk metadata describing the safe truncate point and rotation generation.
+/// On-disk metadata describing the safe truncate point in the logical stream and
+/// the rotation generation observed when it was recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TruncateSidecar {
-    pub truncate_offset: u64,
+    /// Logical byte index (excluding WAL headers) that has been durably
+    /// consumed.
+    pub logical_offset: u64,
     pub rotation_generation: u64,
 }
 
 impl TruncateSidecar {
-    pub fn new(truncate_offset: u64, rotation_generation: u64) -> Self {
+    pub fn new(logical_offset: u64, rotation_generation: u64) -> Self {
         Self {
-            truncate_offset,
+            logical_offset,
             rotation_generation,
         }
     }
@@ -48,7 +52,7 @@ impl TruncateSidecar {
         buf[cursor..cursor + 2].copy_from_slice(&0u16.to_le_bytes());
         cursor += 2;
 
-        buf[cursor..cursor + 8].copy_from_slice(&self.truncate_offset.to_le_bytes());
+        buf[cursor..cursor + 8].copy_from_slice(&self.logical_offset.to_le_bytes());
         cursor += 8;
 
         buf[cursor..cursor + 8].copy_from_slice(&self.rotation_generation.to_le_bytes());
@@ -80,7 +84,7 @@ impl TruncateSidecar {
         }
         cursor += 2;
 
-        let truncate_offset = u64::from_le_bytes([
+        let logical_offset = u64::from_le_bytes([
             buf[cursor],
             buf[cursor + 1],
             buf[cursor + 2],
@@ -116,7 +120,7 @@ impl TruncateSidecar {
         }
 
         Ok(Self {
-            truncate_offset,
+            logical_offset,
             rotation_generation,
         })
     }
