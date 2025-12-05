@@ -218,14 +218,12 @@ impl FilterPlan {
                         ))))
                     }
                     BinaryArg::Null => {
-                        // left = column & right == null   
+                        // left = column & right == null
                         Ok(FilterPlan::from(col(left_col_name).is_null()))
                     }
-                    _ => {
-                        Err(Error::NotYetSupportedError {
-                            message: "comparing left column with non-literal right in filter.".into(),
-                        })
-                    },
+                    _ => Err(Error::NotYetSupportedError {
+                        message: "comparing left column with non-literal right in filter.".into(),
+                    }),
                 },
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
@@ -302,16 +300,17 @@ impl FilterPlan {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
                         // left = null & right = column
+                        // TODO need check here the opeation is Eq!!
                         Ok(FilterPlan::from(col(right_col_name).is_null()))
                     }
                     _ => {
                         todo!()
                     }
-                }
+                },
                 _ => {
                     todo!()
                 }
-            }
+            },
         }
     }
 }
@@ -720,16 +719,30 @@ pub struct AdaptivePhysicalExprExec {
     /// Definition for how the input record batch should be projected so that it's schema is
     /// compatible with what is expected by the physical_expr
     projection: FilterProjection,
+
+    /// Determines the behaviour of the predicate when some columns are missing from the batch.
+    ///
+    /// When a column is missing, it is implied that all the values are null or default value.
+    /// Normally this means that all the rows would fail the predicate, except for a few cases
+    /// like `<some_col> == null`
+    missing_data_passes: bool,
 }
 
 impl AdaptivePhysicalExprExec {
     fn try_new(logical_expr: Expr) -> Result<Self> {
         let projection = FilterProjection::try_new(&logical_expr)?;
 
+        // TODO eventually we may want more sophisticated logic here to handle when the column
+        // is a default value. Cases like `dropped_attribute_count == 0`, in this case should
+        // also pass the filter if the `dropped_attribute_count` column is missing b/c the column
+        // could contain all 0s.
+        let missing_data_passes = matches!(logical_expr, Expr::IsNull(_));
+
         Ok(Self {
             physical_expr: None,
             logical_expr,
             projection,
+            missing_data_passes,
         })
     }
 
@@ -745,13 +758,14 @@ impl AdaptivePhysicalExprExec {
             None => {
                 // we weren't able to project the record batch into the schema expected by the
                 // physical expr. This means that there were some columns referenced in the logical
-                // expr that are missing from the input batch. for now, we assume that this just
-                // means no rows pass the predicate
-                //
-                // TODO the assumption we're making here isn't sound for some predicates, things
-                // like `some_col == null`, so eventually we'll need to handle this
+                // expr that are missing from the input batch.
+
                 return Ok(BooleanArray::new(
-                    BooleanBuffer::new_unset(record_batch.num_rows()),
+                    if self.missing_data_passes {
+                        BooleanBuffer::new_set(record_batch.num_rows())
+                    } else {
+                        BooleanBuffer::new_unset(record_batch.num_rows())
+                    },
                     None,
                 ));
             }
@@ -1980,7 +1994,7 @@ mod test {
             to_logs_data(log_records.clone()),
         )
         .await;
-        
+
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
@@ -1992,10 +2006,73 @@ mod test {
             to_logs_data(log_records.clone()),
         )
         .await;
-        
+
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_null_missing_column() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        // just double check this gets encoded as something w/out the column we're using
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
+
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
+        );
+
+        // check it's supported if null literal on the left and column on the right
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
         );
     }
 

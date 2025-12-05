@@ -124,7 +124,7 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
             }
             ScalarExpression::Static(static_expr) => match static_expr {
                 StaticScalarExpression::Null(_) => BinaryArg::Null,
-                static_expr => BinaryArg::Literal(static_expr.clone())
+                static_expr => BinaryArg::Literal(static_expr.clone()),
             },
             expr => {
                 return Err(Error::NotYetSupportedError {
