@@ -4,7 +4,7 @@ settings:
   default_pdata_channel_size: 100
 
 nodes:
-  
+ 
   receiver:
     kind: receiver
     plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
