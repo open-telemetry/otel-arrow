@@ -247,8 +247,8 @@ impl FilterPlan {
                 },
                 ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                     match right_arg {
-                        // left = attribute & right = literal
                         BinaryArg::Literal(right_lit) => {
+                            // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
                                 col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
@@ -257,6 +257,13 @@ impl FilterPlan {
                                 ),
                                 attrs_identifier,
                             )))
+                        }
+                        BinaryArg::Null => {
+                            // left = attribute & right = null (e.g. doesn't have attribute)
+                            Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
+                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                                attrs_identifier,
+                            ))))
                         }
                         _ => Err(Error::NotYetSupportedError {
                             message: "comparing left attribute with non-literal right in filter"
@@ -2200,6 +2207,32 @@ mod test {
                     ..Default::default()
                 }],
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("b"))])
+                .finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"x\"] == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
         );
     }
 
