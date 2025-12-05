@@ -22,18 +22,20 @@
 //! * Export of a registry compatible with the semantic registry format
 //! * Client SDK generation with Weaver
 
-use crate::config::Config;
+use std::sync::Arc;
+
 use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
+use otap_df_config::pipeline::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
 pub mod attributes;
 pub mod collector;
-pub mod config;
 pub mod descriptor;
 pub mod error;
 pub mod instrument;
 pub mod metrics;
+pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
 pub mod semconv;
@@ -53,19 +55,27 @@ pub struct MetricsSystem {
 
     /// The process reporting metrics to an external system.
     reporter: reporter::MetricsReporter,
+
+    /// The dispatcher that flushes internal telemetry metrics.
+    dispatcher: Arc<metrics::dispatcher::MetricsDispatcher>,
 }
 
 impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     #[must_use]
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: &TelemetryConfig) -> Self {
         let metrics_registry = MetricsRegistryHandle::new();
         let (collector, reporter) =
-            collector::MetricsCollector::new(config.clone(), metrics_registry.clone());
+            collector::MetricsCollector::new(config, metrics_registry.clone());
+        let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
+            metrics_registry.clone(),
+            config.reporting_interval,
+        ));
         Self {
             registry: metrics_registry,
             collector,
             reporter,
+            dispatcher,
         }
     }
 
@@ -79,6 +89,12 @@ impl MetricsSystem {
     #[must_use]
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.reporter.clone()
+    }
+
+    /// Returns a shareable handle to the metrics dispatcher.
+    #[must_use]
+    pub fn dispatcher(&self) -> Arc<metrics::dispatcher::MetricsDispatcher> {
+        self.dispatcher.clone()
     }
 
     /// Starts the metrics collection loop and listens for a shutdown signal.
@@ -110,6 +126,6 @@ impl MetricsSystem {
 
 impl Default for MetricsSystem {
     fn default() -> Self {
-        Self::new(Config::default())
+        Self::new(&TelemetryConfig::default())
     }
 }

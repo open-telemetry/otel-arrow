@@ -21,3 +21,4 @@ miette = { workspace = true }
 urn = { workspace = true }
 schemars = { workspace = true }
 byte-unit = { workspace = true }
+humantime-serde = { workspace = true }

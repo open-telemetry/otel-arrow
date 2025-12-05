@@ -7,6 +7,8 @@
 //! live in their respective nodes/crates and implement the `MetricSetHandler` trait defined
 //! here.
 
+pub mod dispatcher;
+
 use crate::descriptor::MetricsDescriptor;
 use crate::registry::MetricsKey;
 use std::ops::{Deref, DerefMut};

@@ -19,4 +19,8 @@ pub enum Error {
     /// The metrics channel was closed unexpectedly.
     #[error("Metrics channel was closed")]
     MetricsChannelClosed,
+
+    /// Error during shutdown of a component.
+    #[error("Shutdown error: {0}")]
+    ShutdownError(String),
 }
