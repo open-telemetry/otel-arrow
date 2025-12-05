@@ -107,9 +107,11 @@ impl PipelinePlanner {
     }
 }
 
+#[derive(Debug)]
 pub enum BinaryArg {
     Column(ColumnAccessor),
     Literal(StaticScalarExpression),
+    Null,
 }
 
 impl TryFrom<&ScalarExpression> for BinaryArg {
@@ -120,7 +122,10 @@ impl TryFrom<&ScalarExpression> for BinaryArg {
             ScalarExpression::Source(source) => {
                 BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
             }
-            ScalarExpression::Static(static_expr) => BinaryArg::Literal(static_expr.clone()),
+            ScalarExpression::Static(static_expr) => match static_expr {
+                StaticScalarExpression::Null(_) => BinaryArg::Null,
+                static_expr => BinaryArg::Literal(static_expr.clone())
+            },
             expr => {
                 return Err(Error::NotYetSupportedError {
                     message: format!(
