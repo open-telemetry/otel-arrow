@@ -4,8 +4,8 @@
 // Provides read/write helpers for the `checkpoint.offset` sidecar that tracks the
 // global WAL consumer checkpoint (data bytes excluding headers) still required for crash
 // recovery. The sidecar lets new processes resume from a known safe offset
-// without rescanning the entire WAL and carries a CRC so we can discard
-// corrupted metadata safely.
+// without rescanning the entire WAL. It carries a CRC so we can discard corrupted
+// metadata safely.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
@@ -20,23 +20,20 @@ use super::writer::test_support::{self as writer_test_support, CrashInjection};
 
 pub(crate) const CHECKPOINT_SIDECAR_MAGIC: &[u8; 8] = b"QUIVER\0T";
 pub(crate) const CHECKPOINT_SIDECAR_VERSION: u16 = 1;
-pub(crate) const CHECKPOINT_SIDECAR_LEN: usize = 8 + 2 + 2 + 8 + 8 + 4;
+pub(crate) const CHECKPOINT_SIDECAR_LEN: usize = 8 + 2 + 2 + 8 + 4;
 
-/// On-disk metadata describing the consumer checkpoint in the logical stream and
-/// the rotation generation observed when it was recorded.
+/// On-disk metadata describing the consumer checkpoint in the logical stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CheckpointSidecar {
     /// Global data offset (excluding WAL headers) that has been durably
     /// consumed by readers.
     pub global_data_offset: u64,
-    pub rotation_generation: u64,
 }
 
 impl CheckpointSidecar {
-    pub fn new(global_data_offset: u64, rotation_generation: u64) -> Self {
+    pub fn new(global_data_offset: u64) -> Self {
         Self {
             global_data_offset,
-            rotation_generation,
         }
     }
 
@@ -53,9 +50,6 @@ impl CheckpointSidecar {
         cursor += 2;
 
         buf[cursor..cursor + 8].copy_from_slice(&self.global_data_offset.to_le_bytes());
-        cursor += 8;
-
-        buf[cursor..cursor + 8].copy_from_slice(&self.rotation_generation.to_le_bytes());
         cursor += 8;
 
         let crc = compute_crc(&buf[..cursor]);
@@ -96,18 +90,6 @@ impl CheckpointSidecar {
         ]);
         cursor += 8;
 
-        let rotation_generation = u64::from_le_bytes([
-            buf[cursor],
-            buf[cursor + 1],
-            buf[cursor + 2],
-            buf[cursor + 3],
-            buf[cursor + 4],
-            buf[cursor + 5],
-            buf[cursor + 6],
-            buf[cursor + 7],
-        ]);
-        cursor += 8;
-
         let stored_crc = u32::from_le_bytes([
             buf[cursor],
             buf[cursor + 1],
@@ -121,7 +103,6 @@ impl CheckpointSidecar {
 
         Ok(Self {
             global_data_offset,
-            rotation_generation,
         })
     }
 
@@ -174,7 +155,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn sample_sidecar() -> CheckpointSidecar {
-        CheckpointSidecar::new(128, 7)
+        CheckpointSidecar::new(128)
     }
 
     #[test]

@@ -68,11 +68,18 @@ impl QuiverEngine {
 }
 
 fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
+    use crate::wal::FlushPolicy;
+    
     let wal_path = wal_path(config);
+    let flush_policy = if config.wal.flush_interval.is_zero() {
+        FlushPolicy::Immediate
+    } else {
+        FlushPolicy::EveryDuration(config.wal.flush_interval)
+    };
     let options = WalWriterOptions::new(
         wal_path,
         segment_cfg_hash(config),
-        config.wal.flush_interval,
+        flush_policy,
     )
     .with_max_wal_size(config.wal.max_size_bytes.get())
     .with_max_rotated_files(config.wal.max_rotated_files as usize)

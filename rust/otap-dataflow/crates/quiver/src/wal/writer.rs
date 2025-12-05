@@ -85,10 +85,9 @@
 //!
 //! On [`WalWriter::open`]:
 //!
-//! 1. Read `checkpoint.offset` sidecar → recover `global_data_offset` and
-//!    `rotation_generation`.
-//! 2. Scan for rotated files (`wal.1`, `wal.2`, …) and rebuild the
-//!    `rotated_files` queue with cumulative offsets.
+//! 1. Read `checkpoint.offset` sidecar → recover `global_data_offset`.
+//! 2. Scan for rotated files (`wal.N`) and rebuild the `rotated_files` queue
+//!    with cumulative offsets, sorted by rotation id (oldest first).
 //! 3. Convert `global_data_offset` → per-file offset inside the active WAL.
 //! 4. Detect the highest sequence number across all files; resume from
 //!    `highest + 1`.
@@ -127,36 +126,50 @@ use super::{
     WalResult, WalConsumerCheckpoint,
 };
 
+/// Controls when the WAL flushes data to disk.
+#[derive(Debug, Clone)]
+pub(crate) enum FlushPolicy {
+    /// Flush after every write (safest, slowest).
+    Immediate,
+    /// Flush when unflushed bytes exceed the threshold.
+    EveryNBytes(u64),
+    /// Flush when elapsed time since last flush exceeds the duration.
+    EveryDuration(Duration),
+    /// Flush when either bytes or duration threshold is exceeded (whichever comes first).
+    BytesOrDuration { bytes: u64, duration: Duration },
+}
+
+impl Default for FlushPolicy {
+    fn default() -> Self {
+        FlushPolicy::Immediate
+    }
+}
 
 /// Low-level tunables that bridge the user-facing [`QuiverConfig`] into the WAL.
 #[derive(Debug, Clone)]
 pub(crate) struct WalWriterOptions {
     pub path: PathBuf,
     pub segment_cfg_hash: [u8; 16],
-    pub flush_interval: Duration,
-    pub max_unflushed_bytes: u64,
+    pub flush_policy: FlushPolicy,
     pub max_wal_size: u64,
     pub max_rotated_files: usize,
     pub rotation_target_bytes: u64,
 }
 
 impl WalWriterOptions {
-    pub fn new(path: PathBuf, segment_cfg_hash: [u8; 16], flush_interval: Duration) -> Self {
+    pub fn new(path: PathBuf, segment_cfg_hash: [u8; 16], flush_policy: FlushPolicy) -> Self {
         Self {
             path,
             segment_cfg_hash,
-            flush_interval,
-            max_unflushed_bytes: 0,
+            flush_policy,
             max_wal_size: u64::MAX,
             max_rotated_files: 8,
             rotation_target_bytes: 64 * 1024 * 1024,
         }
     }
 
-    // Remove when integrated with real replay/compaction path.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_max_unflushed_bytes(mut self, max_bytes: u64) -> Self {
-        self.max_unflushed_bytes = max_bytes;
+    pub fn with_flush_policy(mut self, policy: FlushPolicy) -> Self {
+        self.flush_policy = policy;
         self
     }
 
@@ -219,8 +232,10 @@ struct WalCoordinator {
     checkpoint_state: CheckpointSidecar,
     /// Total bytes across the active WAL plus all rotated files.
     aggregate_bytes: u64,
-    /// Metadata describing each rotated `wal.N` file on disk.
+    /// Metadata describing each rotated `wal.N` file on disk, ordered oldest-to-newest.
     rotated_files: VecDeque<RotatedWalFile>,
+    /// Next rotation id to use when rotating (initialized to max existing + 1).
+    next_rotation_id: u64,
     /// Most recent offset validated to be on an entry boundary in the active file.
     active_file_checkpoint_offset: u64,
     /// Sequence number associated with the last committed consumer checkpoint.
@@ -366,11 +381,10 @@ impl WalWriter {
         self.active_file.current_len = self.active_file.current_len.saturating_add(entry_total_bytes);
         self.coordinator.record_append(entry_total_bytes);
         self.active_file
-            .maybe_flush(self.coordinator.options(), entry_total_bytes)?;
+            .maybe_flush(&self.coordinator.options().flush_policy, entry_total_bytes)?;
 
         self.coordinator
             .maybe_rotate_after_append(&mut self.active_file)?;
-        self.coordinator.enforce_size_cap()?;
 
         Ok(WalOffset {
             position: entry_start,
@@ -378,13 +392,14 @@ impl WalWriter {
         })
     }
 
-    /// Physically truncates the active WAL file to the provided checkpoint. This is
-    /// only possible when the checkpoint aligns to validated entry boundaries; the
-    /// call also refreshes the checkpoint sidecar so future restarts keep the same
-    /// safe point.
-    pub fn compact_to(&mut self, checkpoint: &WalConsumerCheckpoint) -> WalResult<()> {
+    /// Physically truncates the active WAL file to the provided checkpoint, removing
+    /// any partial or corrupted entries that may exist after a crash. This is used
+    /// during recovery to trim incomplete writes; the checkpoint must align to valid
+    /// entry boundaries. The call also refreshes the checkpoint sidecar so future
+    /// restarts keep the same safe point.
+    pub fn trim_partial_entries(&mut self, checkpoint: &WalConsumerCheckpoint) -> WalResult<()> {
         self.coordinator
-            .compact_active_file(&mut self.active_file, checkpoint)
+            .trim_active_file(&mut self.active_file, checkpoint)
     }
 
     /// Updates the checkpoint sidecar without touching the underlying WAL bytes.
@@ -470,22 +485,33 @@ impl ActiveWalFile {
         Ok(entry_start)
     }
 
-    fn maybe_flush(&mut self, options: &WalWriterOptions, bytes_written: u64) -> WalResult<()> {
+    fn maybe_flush(&mut self, policy: &FlushPolicy, bytes_written: u64) -> WalResult<()> {
         self.unflushed_bytes = self.unflushed_bytes.saturating_add(bytes_written);
 
-        if options.flush_interval.is_zero() {
-            return self.flush_now();
+        match policy {
+            FlushPolicy::Immediate => self.flush_now(),
+            FlushPolicy::EveryNBytes(threshold) => {
+                if self.unflushed_bytes >= *threshold {
+                    self.flush_now()
+                } else {
+                    Ok(())
+                }
+            }
+            FlushPolicy::EveryDuration(interval) => {
+                if self.last_flush.elapsed() >= *interval {
+                    self.flush_now()
+                } else {
+                    Ok(())
+                }
+            }
+            FlushPolicy::BytesOrDuration { bytes, duration } => {
+                if self.unflushed_bytes >= *bytes || self.last_flush.elapsed() >= *duration {
+                    self.flush_now()
+                } else {
+                    Ok(())
+                }
+            }
         }
-
-        if options.max_unflushed_bytes > 0 && self.unflushed_bytes >= options.max_unflushed_bytes {
-            return self.flush_now();
-        }
-
-        if self.last_flush.elapsed() >= options.flush_interval {
-            self.flush_now()?;
-        }
-
-        Ok(())
     }
 
     fn flush_now(&mut self) -> WalResult<()> {
@@ -510,6 +536,7 @@ impl WalCoordinator {
             checkpoint_state,
             aggregate_bytes: current_len,
             rotated_files: VecDeque::new(),
+            next_rotation_id: 1,
             active_file_checkpoint_offset: WAL_HEADER_LEN as u64,
             last_checkpoint_sequence: None,
         }
@@ -532,26 +559,32 @@ impl WalCoordinator {
         if discovered.is_empty() {
             self.aggregate_bytes = active_len;
             self.rotated_files.clear();
+            self.next_rotation_id = 1;
             return Ok(());
         }
 
+        // Files are returned sorted oldest-to-newest by rotation_id
         let mut files = VecDeque::with_capacity(discovered.len());
         let mut aggregate = active_len;
         let mut cumulative_data = 0u64;
+        let mut max_rotation_id = 0u64;
 
-        for (index, len) in discovered.into_iter().rev() {
-            aggregate = aggregate.saturating_add(len);
+        for (rotation_id, len) in &discovered {
+            aggregate = aggregate.saturating_add(*len);
             let data_bytes = len.saturating_sub(WAL_HEADER_LEN as u64);
             cumulative_data = cumulative_data.saturating_add(data_bytes);
             files.push_back(RotatedWalFile {
-                path: rotated_wal_path(&self.options.path, index),
-                file_bytes: len,
+                path: rotated_wal_path(&self.options.path, *rotation_id),
+                rotation_id: *rotation_id,
+                file_bytes: *len,
                 cumulative_data_offset: cumulative_data,
             });
+            max_rotation_id = max_rotation_id.max(*rotation_id);
         }
 
         self.rotated_files = files;
         self.aggregate_bytes = aggregate;
+        self.next_rotation_id = max_rotation_id.saturating_add(1);
         Ok(())
     }
 
@@ -601,7 +634,7 @@ impl WalCoordinator {
         Ok(())
     }
 
-    fn compact_active_file(
+    fn trim_active_file(
         &mut self,
         active_file: &mut ActiveWalFile,
         checkpoint: &WalConsumerCheckpoint,
@@ -725,16 +758,18 @@ impl WalCoordinator {
         }
         self.aggregate_bytes = self.aggregate_bytes.saturating_sub(old_len);
 
-        shift_rotated_wal_files(&self.options.path, self.rotated_files.len())?;
-        self.update_rotated_file_paths();
+        // Use monotonic naming: rename to wal.{next_rotation_id}
+        let rotation_id = self.next_rotation_id;
+        self.next_rotation_id = self.next_rotation_id.saturating_add(1);
 
-        let new_rotated_path = rotated_wal_path(&self.options.path, 1);
+        let new_rotated_path = rotated_wal_path(&self.options.path, rotation_id);
         std::fs::rename(&self.options.path, &new_rotated_path)?;
 
         let data_bytes = old_len.saturating_sub(WAL_HEADER_LEN as u64);
         let cumulative_data_offset = self.rotated_data_bytes().saturating_add(data_bytes);
         self.rotated_files.push_back(RotatedWalFile {
             path: new_rotated_path,
+            rotation_id,
             file_bytes: old_len,
             cumulative_data_offset,
         });
@@ -746,30 +781,8 @@ impl WalCoordinator {
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(active_file.len());
         self.active_file_checkpoint_offset = WAL_HEADER_LEN as u64;
 
-        self.checkpoint_state.rotation_generation =
-            self.checkpoint_state.rotation_generation.saturating_add(1);
         CheckpointSidecar::write_to(&self.sidecar_path, &self.checkpoint_state)?;
         Ok(())
-    }
-
-    fn update_rotated_file_paths(&mut self) {
-        let existing = self.rotated_files.len();
-        if existing == 0 {
-            return;
-        }
-        for (idx, rotated_file) in self.rotated_files.iter_mut().enumerate() {
-            let disk_index = existing - idx + 1;
-            rotated_file.path = rotated_wal_path(&self.options.path, disk_index);
-        }
-    }
-
-    fn enforce_size_cap(&mut self) -> WalResult<()> {
-        if self.aggregate_bytes <= self.options.max_wal_size {
-            return Ok(());
-        }
-        Err(WalError::WalAtCapacity(
-            "wal size cap exceeded; advance checkpoint to reclaim space",
-        ))
     }
 
     fn purge_rotated_files(&mut self) -> WalResult<()> {
@@ -926,40 +939,62 @@ fn load_checkpoint_state(path: &Path) -> WalResult<CheckpointSidecar> {
 }
 
 fn default_checkpoint_state() -> CheckpointSidecar {
-    CheckpointSidecar::new(0, 0)
+    CheckpointSidecar::new(0)
 }
 
-fn shift_rotated_wal_files(base_path: &Path, existing: usize) -> WalResult<()> {
-    for idx in (1..=existing).rev() {
-        let src = rotated_wal_path(base_path, idx);
-        let dst = rotated_wal_path(base_path, idx + 1);
-        if src.exists() {
-            std::fs::rename(src, &dst)?;
-        }
-    }
-    Ok(())
-}
-
-fn rotated_wal_path(base_path: &Path, index: usize) -> PathBuf {
+fn rotated_wal_path(base_path: &Path, rotation_id: u64) -> PathBuf {
     let mut name = base_path.as_os_str().to_os_string();
-    name.push(format!(".{index}"));
+    name.push(format!(".{rotation_id}"));
     PathBuf::from(name)
 }
 
-fn discover_rotated_wal_files(base_path: &Path) -> WalResult<Vec<(usize, u64)>> {
+/// Discovers rotated WAL files by scanning the directory for files matching
+/// `<base>.N` pattern. Returns a list of (rotation_id, file_size) tuples
+/// sorted by rotation_id (oldest first).
+fn discover_rotated_wal_files(base_path: &Path) -> WalResult<Vec<(u64, u64)>> {
+    let parent = base_path.parent().ok_or_else(|| {
+        WalError::Io(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "WAL path has no parent directory",
+        ))
+    })?;
+    let base_name = base_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            WalError::Io(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "WAL path has invalid filename",
+            ))
+        })?;
+
+    let prefix = format!("{base_name}.");
     let mut discovered = Vec::new();
-    let mut index = 1usize;
-    loop {
-        let path = rotated_wal_path(base_path, index);
-        match std::fs::metadata(&path) {
-            Ok(metadata) => {
-                discovered.push((index, metadata.len()));
-                index += 1;
-            }
-            Err(err) if err.kind() == ErrorKind::NotFound => break,
-            Err(err) => return Err(WalError::Io(err)),
-        }
+
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(discovered),
+        Err(err) => return Err(WalError::Io(err)),
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else {
+            continue;
+        };
+        let Some(suffix) = name_str.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Ok(rotation_id) = suffix.parse::<u64>() else {
+            continue;
+        };
+        let metadata = entry.metadata()?;
+        discovered.push((rotation_id, metadata.len()));
     }
+
+    // Sort by rotation_id (oldest first)
+    discovered.sort_by_key(|(id, _)| *id);
     Ok(discovered)
 }
 
@@ -988,6 +1023,8 @@ struct EncodedSlot {
 #[derive(Clone, Debug)]
 struct RotatedWalFile {
     path: PathBuf,
+    /// Monotonic rotation id for this file (extracted from the suffix, e.g., wal.5 has id=5).
+    rotation_id: u64,
     file_bytes: u64,
     /// Global data offset at the *end* of this file (cumulative across older
     /// rotated files). When `global_data_offset >= cumulative_data_offset` the

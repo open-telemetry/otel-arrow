@@ -186,7 +186,7 @@ WAL entries belonging to:
   (e.g., `wal/checkpoint.offset`) immediately after advancing it and fsync the
   sidecar so crash recovery can resume from that logical offset without
   rescanning finalized entries.
-- **Checkpoint sidecar format**: The sidecar is a fixed 32-byte struct written in
+- **Checkpoint sidecar format**: The sidecar is a fixed 24-byte struct written in
   little-endian order:
 
   ```text
@@ -195,8 +195,7 @@ WAL entries belonging to:
       u16 version = 1;                // bump if layout changes
       u16 reserved = 0;
       u64 global_data_offset;         // logical data bytes still required
-      u64 rotation_generation;        // increments each WAL rotation
-      u32 crc32;                      // covers magic..rotation_generation
+      u32 crc32;                      // covers magic..global_data_offset
   }
   ```
 
@@ -210,33 +209,33 @@ WAL entries belonging to:
   while leaving the active WAL file unchanged. The pointer simply marks how far
   readers have progressed through the concatenated stream.
 - **Drop reclaimed prefixes**: Once the active file grows beyond
-  `rotation_target_bytes` we rotate it to `quiver.wal.1`, start a fresh WAL, and
-  remember the byte span covered by the retired file. When the persisted
-  consumer checkpoint fully covers a rotated file we delete the file outright.
-  Until a rotation occurs the reclaimed bytes remain in the active file even
-  though they are logically safe to discard.
+  `rotation_target_bytes` we rotate it to `quiver.wal.N` (where N is a
+  monotonically increasing rotation id), start a fresh WAL, and remember the
+  byte span covered by the retired file. When the persisted consumer checkpoint
+  fully covers a rotated file we delete the file outright. Until a rotation
+  occurs the reclaimed bytes remain in the active file even though they are
+  logically safe to discard.
   *Note:* We may revisit direct hole punching in the future as a disk-space
   optimization if production workloads show that waiting for rotation leaves too
   much reclaimed data stranded in the active file.
 - **Rotate on size**: `wal.max_size` caps the *aggregate* footprint of the active
   WAL plus every still-referenced rotated sibling. We keep a running total of the
   active file and the byte spans tracked for `quiver.wal.N`; when the next append
-  would push the aggregate over the configured cap we rotate immediately: shift
-  older suffixes up, close and rename `wal/quiver.wal` to `quiver.wal.1`, and
-  reopen a fresh `quiver.wal`. Each rotation records the byte span covered by the
-  retired file so cleanup can later delete `quiver.wal.N` only after the
-  persisted logical cursor exceeds that span's upper bound. We never
-  rewrite rotated files; they are deleted wholesale once fully covered by the
-  durability pointer, avoiding rewrites of large historical blobs while keeping
-  the total WAL footprint bounded by `wal.max_size`. To keep rename churn and
-  per-core directory fan-out predictable we retain at most `wal.max_rotated_files`
-  files (default `10`, counting the active WAL plus rotated siblings). Operators
-  can override the default. Hitting the rotated file cap is treated like hitting the
-  byte cap: the next append that *would* require a rotation instead trips
-  backpressure (or `drop_oldest`, if selected) until either compaction reclaims
-  an older rotated file or the limit is raised. We never create an eleventh file in the
-  background because doing so would undermine the predictive bound the knob is
-  meant to provide.
+  would push the aggregate over the configured cap we rotate immediately: rename
+  `wal/quiver.wal` to `quiver.wal.{next_rotation_id}` and reopen a fresh
+  `quiver.wal`. Each rotation records the byte span covered by the retired file
+  so cleanup can later delete `quiver.wal.N` only after the persisted logical
+  cursor exceeds that span's upper bound. We never rewrite rotated files; they
+  are deleted wholesale once fully covered by the durability pointer, avoiding
+  rewrites of large historical blobs while keeping the total WAL footprint
+  bounded by `wal.max_size`. To keep per-core directory fan-out predictable we
+  retain at most `wal.max_rotated_files` files (default `10`, counting the
+  active WAL plus rotated siblings). Operators can override the default. Hitting
+  the rotated file cap is treated like hitting the byte cap: the next append
+  that *would* require a rotation instead trips backpressure (or `drop_oldest`,
+  if selected) until either compaction reclaims an older rotated file or the
+  limit is raised. We never create more files in the background because doing so
+  would undermine the predictive bound the knob is meant to provide.
 - **Durability-only dependency**: Because WAL truncation depends solely on segment
   durability, exporter ACK lag never blocks WAL cleanup; segments themselves
   remain on disk until subscribers advance, but the WAL only needs to cover the

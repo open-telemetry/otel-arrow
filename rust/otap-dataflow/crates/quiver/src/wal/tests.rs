@@ -24,6 +24,7 @@ use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::test_support::{self, ReadFailure};
 use super::checkpoint_sidecar::{CHECKPOINT_SIDECAR_LEN, CheckpointSidecar};
 use super::writer::test_support as writer_test_support;
+use super::writer::FlushPolicy;
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
     WalConsumerCheckpoint, WalWriter, WalWriterOptions,
@@ -258,7 +259,7 @@ fn measure_bundle_data_bytes(mut build_bundle: impl FnMut() -> FixtureBundle) ->
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0xFE; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
     let bundle = build_bundle();
@@ -304,7 +305,7 @@ fn wal_writer_reader_roundtrip_recovers_payloads() {
         ],
     );
 
-    let options = WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO);
+    let options = WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate);
     let mut writer = WalWriter::open(options).expect("writer");
     let offset = writer.append_bundle(&bundle).expect("append succeeds");
     assert_eq!(offset.position, WAL_HEADER_LEN as u64);
@@ -368,7 +369,7 @@ fn wal_writer_reader_roundtrip_recovers_payloads() {
 fn wal_writer_rejects_slot_ids_outside_bitmap() {
     let (_dir, wal_path) = temp_wal("slot_range.wal");
     let mut writer =
-        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO)).expect("writer");
+        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate)).expect("writer");
 
     let descriptor = BundleDescriptor::new(vec![slot_descriptor(65, "Overflow")]);
     let bundle = FixtureBundle::new(
@@ -384,7 +385,7 @@ fn wal_writer_rejects_slot_ids_outside_bitmap() {
 fn wal_writer_rejects_pre_epoch_timestamp() {
     let (_dir, wal_path) = temp_wal("pre_epoch.wal");
     let mut writer =
-        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO)).expect("writer");
+        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate)).expect("writer");
 
     let descriptor = logs_descriptor();
     let bundle = FixtureBundle::new(descriptor, vec![])
@@ -405,7 +406,7 @@ fn wal_writer_rejects_truncated_existing_file() {
             .expect("truncate header");
     }
 
-    let options = WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO);
+    let options = WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate);
     let err = WalWriter::open(options).expect_err("should reject truncated file");
     assert!(matches!(
         err,
@@ -431,7 +432,7 @@ fn wal_writer_reopens_with_matching_header() {
     }
 
     // Reopen with the same hash—should succeed and preserve the header.
-    let options = WalWriterOptions::new(wal_path.clone(), original_hash, Duration::ZERO);
+    let options = WalWriterOptions::new(wal_path.clone(), original_hash, FlushPolicy::Immediate);
     let _writer = WalWriter::open(options).expect("open succeeds");
     drop(_writer);
 
@@ -451,7 +452,7 @@ fn wal_writer_flushes_after_interval_elapsed() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path,
         [0; 16],
-        Duration::from_millis(10),
+        FlushPolicy::EveryDuration(Duration::from_millis(10)),
     ))
     .expect("writer");
 
@@ -476,7 +477,7 @@ fn wal_writer_flush_syncs_file_data() {
 
     let descriptor = logs_descriptor();
     let mut writer =
-        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], Duration::ZERO)).expect("writer");
+        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate)).expect("writer");
 
     let bundle = FixtureBundle::new(
         descriptor,
@@ -496,7 +497,7 @@ fn wal_writer_records_cursor_without_truncating() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0x20; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -555,7 +556,7 @@ fn wal_writer_enforces_safe_offset_boundaries() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0x42; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -609,7 +610,7 @@ fn wal_writer_persists_consumer_checkpoint_sidecar() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0x99; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -643,7 +644,7 @@ fn wal_writer_rotates_when_target_exceeded() {
 
     let descriptor = logs_descriptor();
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x51; 16], Duration::ZERO)
+        WalWriterOptions::new(wal_path.clone(), [0x51; 16], FlushPolicy::Immediate)
             .with_rotation_target(1)
             .with_max_rotated_files(4),
     )
@@ -673,8 +674,11 @@ fn wal_writer_rotates_when_target_exceeded() {
     assert_eq!(active_len, WAL_HEADER_LEN as u64);
 
     let sidecar_path = wal_path.parent().unwrap().join("checkpoint.offset");
-    let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
-    assert_eq!(sidecar.rotation_generation, 1);
+    // Sidecar should exist after rotation (even if no checkpoint has been recorded yet)
+    assert!(sidecar_path.exists(), "sidecar should exist after rotation");
+    let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar should be readable");
+    // global_data_offset is 0 because no consumer checkpoint has been recorded yet
+    assert_eq!(sidecar.global_data_offset, 0);
 }
 
 #[test]
@@ -682,7 +686,7 @@ fn wal_writer_reloads_rotated_files_on_restart() {
     let (_dir, wal_path) = temp_wal("replay_rotations.wal");
 
     let descriptor = logs_descriptor();
-    let options = WalWriterOptions::new(wal_path.clone(), [0x54; 16], Duration::ZERO)
+    let options = WalWriterOptions::new(wal_path.clone(), [0x54; 16], FlushPolicy::Immediate)
         .with_rotation_target(1)
         .with_max_rotated_files(4);
 
@@ -719,7 +723,7 @@ fn wal_writer_errors_when_rotated_file_cap_reached() {
 
     let descriptor = logs_descriptor();
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x52; 16], Duration::ZERO)
+        WalWriterOptions::new(wal_path.clone(), [0x52; 16], FlushPolicy::Immediate)
             .with_rotation_target(1)
             .with_max_rotated_files(1),
     )
@@ -763,7 +767,7 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
     let max_wal_size = chunk_file_len + header_len + slack;
 
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x53; 16], Duration::ZERO)
+        WalWriterOptions::new(wal_path.clone(), [0x53; 16], FlushPolicy::Immediate)
             .with_rotation_target(1)
             .with_max_rotated_files(4)
             .with_max_wal_size(max_wal_size),
@@ -822,7 +826,7 @@ fn wal_writer_ignores_invalid_checkpoint_sidecar() {
         let _writer = WalWriter::open(WalWriterOptions::new(
             wal_path.clone(),
             [0x11; 16],
-            Duration::ZERO,
+            FlushPolicy::Immediate,
         ))
         .expect("writer");
     }
@@ -833,7 +837,7 @@ fn wal_writer_ignores_invalid_checkpoint_sidecar() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0x11; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("reopen");
 
@@ -867,8 +871,7 @@ fn wal_writer_flushes_after_unflushed_byte_threshold() {
 
     let descriptor = logs_descriptor();
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path, [0; 16], Duration::from_secs(60))
-            .with_max_unflushed_bytes(1),
+        WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::EveryNBytes(1)),
     )
     .expect("writer");
 
@@ -892,9 +895,9 @@ fn wal_writer_flushes_pending_bytes_on_drop() {
     let (_dir, wal_path) = temp_wal("flush_drop.wal");
 
     let descriptor = logs_descriptor();
+    // Use a duration-based flush with a very long interval so we don't flush during the test
     let writer = WalWriter::open(
-        WalWriterOptions::new(wal_path, [0; 16], Duration::from_secs(60))
-            .with_max_unflushed_bytes(0),
+        WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::EveryDuration(Duration::from_secs(3600))),
     )
     .expect("writer");
 
@@ -919,7 +922,7 @@ fn wal_writer_rejects_truncate_beyond_file_end() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         hash,
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -939,7 +942,7 @@ fn wal_writer_rejects_truncate_beyond_file_end() {
         safe_sequence: 0,
     };
 
-    match writer.compact_to(&cursor) {
+    match writer.trim_partial_entries(&cursor) {
         Err(WalError::InvalidConsumerCheckpoint("safe offset beyond wal tail")) => {}
         other => panic!("expected truncate bounds error, got {:?}", other),
     }
@@ -953,7 +956,7 @@ fn wal_reader_rewind_allows_replay_from_start() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0x10; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -1019,7 +1022,7 @@ fn wal_writer_restores_sequence_after_restart() {
         let mut writer = WalWriter::open(WalWriterOptions::new(
             wal_path.clone(),
             [0xAA; 16],
-            Duration::ZERO,
+            FlushPolicy::Immediate,
         ))
         .expect("writer");
 
@@ -1030,7 +1033,7 @@ fn wal_writer_restores_sequence_after_restart() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0xAA; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer reopen");
 
@@ -1052,7 +1055,7 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
         let mut writer = WalWriter::open(WalWriterOptions::new(
             wal_path.clone(),
             hash,
-            Duration::ZERO,
+            FlushPolicy::Immediate,
         ))
         .expect("writer");
         let _ = writer.append_bundle(&bundle).expect("first append");
@@ -1061,7 +1064,7 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     let wal_cap = std::fs::metadata(&wal_path).expect("metadata").len();
 
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO).with_max_wal_size(wal_cap),
+        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate).with_max_wal_size(wal_cap),
     )
     .expect("writer with cap");
     let err = writer.append_bundle(&bundle).expect_err("cap hit");
@@ -1079,8 +1082,8 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     drop(reader);
 
     writer
-        .compact_to(&cursor)
-        .expect("compact_to removes persisted entry");
+        .trim_partial_entries(&cursor)
+        .expect("trim_partial_entries removes persisted entry");
 
     let retried = writer
         .append_bundle(&bundle)
@@ -1089,7 +1092,7 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     drop(writer);
 
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO).with_max_wal_size(u64::MAX),
+        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate).with_max_wal_size(u64::MAX),
     )
     .expect("writer after cap removed");
     let retry = writer.append_bundle(&bundle).expect("retry append");
@@ -1106,7 +1109,7 @@ fn wal_writer_preflight_rejects_when_rotated_file_cap_hit() {
     );
 
     let hash = [0x77; 16];
-    let constrained_opts = WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO)
+    let constrained_opts = WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate)
         .with_rotation_target(1)
         .with_max_rotated_files(1);
 
@@ -1135,7 +1138,7 @@ fn wal_writer_preflight_rejects_when_rotated_file_cap_hit() {
     );
 
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO)
+        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate)
             .with_rotation_target(1)
             .with_max_rotated_files(2),
     )
@@ -1180,7 +1183,7 @@ fn wal_reader_reports_crc_mismatch() {
         vec![FixtureSlot::new(SlotId::new(0), 0x55, &[7, 8])],
     );
 
-    let options = WalWriterOptions::new(wal_path.clone(), [1; 16], Duration::ZERO);
+    let options = WalWriterOptions::new(wal_path.clone(), [1; 16], FlushPolicy::Immediate);
     let mut writer = WalWriter::open(options).expect("writer");
     let _offset = writer.append_bundle(&bundle).expect("append");
     drop(writer);
@@ -1365,7 +1368,7 @@ fn wal_reader_iter_from_respects_offsets() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0xCC; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -1415,7 +1418,7 @@ fn wal_reader_iter_from_partial_length_reports_error() {
         let mut writer = WalWriter::open(WalWriterOptions::new(
             wal_path.clone(),
             [0x44; 16],
-            Duration::ZERO,
+            FlushPolicy::Immediate,
         ))
         .expect("writer");
 
@@ -1448,7 +1451,7 @@ fn wal_reader_iter_from_offset_past_file_returns_none() {
         let mut writer = WalWriter::open(WalWriterOptions::new(
             wal_path.clone(),
             [0x55; 16],
-            Duration::ZERO,
+            FlushPolicy::Immediate,
         ))
         .expect("writer");
 
@@ -1485,7 +1488,7 @@ fn wal_writer_reader_handles_all_bitmap_slots() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0xAA; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
     let _ = writer.append_bundle(&bundle).expect("append");
@@ -1532,7 +1535,7 @@ fn wal_writer_handles_large_payload_batches() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         [0xBB; 16],
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -1568,7 +1571,7 @@ fn wal_consumer_checkpoint_recovers_after_partial_entry() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         hash,
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer");
 
@@ -1622,12 +1625,12 @@ fn wal_consumer_checkpoint_recovers_after_partial_entry() {
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         hash,
-        Duration::ZERO,
+        FlushPolicy::Immediate,
     ))
     .expect("writer reopens");
     writer
-        .compact_to(&cursor)
-        .expect("truncate back to safe offset");
+        .trim_partial_entries(&cursor)
+        .expect("trim_partial_entries to safe offset");
 
     let recovery_bundle = FixtureBundle::new(
         descriptor,
@@ -1665,13 +1668,13 @@ fn wal_writer_rejects_segment_config_mismatch() {
 
     // Create a WAL with one config hash.
     {
-        let options = WalWriterOptions::new(wal_path.clone(), original_hash, Duration::ZERO);
+        let options = WalWriterOptions::new(wal_path.clone(), original_hash, FlushPolicy::Immediate);
         let _writer = WalWriter::open(options).expect("initial open");
     }
 
     // Attempt to reopen with a different hash.
     let different_hash = [0xBB; 16];
-    let options = WalWriterOptions::new(wal_path, different_hash, Duration::ZERO);
+    let options = WalWriterOptions::new(wal_path, different_hash, FlushPolicy::Immediate);
     match WalWriter::open(options) {
         Err(WalError::SegmentConfigMismatch { expected, found }) => {
             assert_eq!(expected, different_hash);
@@ -1688,7 +1691,7 @@ fn wal_reader_detects_unexpected_segment_config() {
 
     // Write a WAL with a known config hash.
     {
-        let options = WalWriterOptions::new(wal_path.clone(), stored_hash, Duration::ZERO);
+        let options = WalWriterOptions::new(wal_path.clone(), stored_hash, FlushPolicy::Immediate);
         let _writer = WalWriter::open(options).expect("writer");
     }
 
@@ -1711,7 +1714,7 @@ fn wal_reader_fails_on_corrupt_header_version() {
 
     // Create a valid WAL first.
     {
-        let options = WalWriterOptions::new(wal_path.clone(), [0x11; 16], Duration::ZERO);
+        let options = WalWriterOptions::new(wal_path.clone(), [0x11; 16], FlushPolicy::Immediate);
         let _writer = WalWriter::open(options).expect("writer");
     }
 
@@ -1758,7 +1761,7 @@ fn run_crash_case(case: CrashCase) {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join(format!("crash_{}.wal", case.name));
     let descriptor = logs_descriptor();
-    let options = WalWriterOptions::new(wal_path.clone(), [0xC7; 16], Duration::ZERO)
+    let options = WalWriterOptions::new(wal_path.clone(), [0xC7; 16], FlushPolicy::Immediate)
         .with_rotation_target(32 * 1024)
         .with_max_rotated_files(4);
 

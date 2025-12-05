@@ -20,7 +20,7 @@ mod writer;
 pub(crate) use reader::{DecodedWalSlot, WalReader, WalRecordBundle, WalConsumerCheckpoint};
 // Writer is used broadly soon; suppress warnings while integration lands.
 #[allow(unused_imports)]
-pub(crate) use writer::{WalOffset, WalWriter, WalWriterOptions};
+pub(crate) use writer::{FlushPolicy, WalOffset, WalWriter, WalWriterOptions};
 
 pub(crate) const WAL_MAGIC: &[u8; 10] = b"QUIVER\0WAL";
 pub(crate) const ENTRY_TYPE_RECORD_BUNDLE: u8 = 0;
