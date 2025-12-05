@@ -1076,9 +1076,10 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     assert!(iter.next().is_none(), "failed append must not persist");
     drop(iter);
 
-    let mut cursor = WalConsumerCheckpoint::default();
-    cursor.safe_offset = WAL_HEADER_LEN as u64;
-    cursor.safe_sequence = only.sequence;
+    let cursor = WalConsumerCheckpoint {
+        safe_offset: WAL_HEADER_LEN as u64,
+        safe_sequence: only.sequence,
+    };
     drop(reader);
 
     writer

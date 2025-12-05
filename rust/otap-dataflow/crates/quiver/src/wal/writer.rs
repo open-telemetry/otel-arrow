@@ -127,9 +127,10 @@ use super::{
 };
 
 /// Controls when the WAL flushes data to disk.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) enum FlushPolicy {
     /// Flush after every write (safest, slowest).
+    #[default]
     Immediate,
     /// Flush when unflushed bytes exceed the threshold.
     EveryNBytes(u64),
@@ -137,12 +138,6 @@ pub(crate) enum FlushPolicy {
     EveryDuration(Duration),
     /// Flush when either bytes or duration threshold is exceeded (whichever comes first).
     BytesOrDuration { bytes: u64, duration: Duration },
-}
-
-impl Default for FlushPolicy {
-    fn default() -> Self {
-        FlushPolicy::Immediate
-    }
 }
 
 /// Low-level tunables that bridge the user-facing [`QuiverConfig`] into the WAL.
@@ -845,9 +840,9 @@ impl WalCoordinator {
             return Ok(None);
         }
         let mut reader = WalReader::open(path)?;
-        let mut iter = reader.iter_from(0)?;
+        let iter = reader.iter_from(0)?;
         let mut last = None;
-        while let Some(entry) = iter.next() {
+        for entry in iter {
             match entry {
                 Ok(bundle) => last = Some(bundle.sequence),
                 Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {
