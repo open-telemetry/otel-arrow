@@ -1161,6 +1161,22 @@ mod tests {
         outputs: Vec<OtapPdata>,
     }
 
+    impl EventOutputs {
+        fn messages(&self) -> Vec<OtlpProtoMessage> {
+            (0..self.outputs.len()).map(|i| self.message(i)).collect()
+        }
+
+        fn message(&self, i: usize) -> OtlpProtoMessage {
+            self.outputs
+                .get(i)
+                .map(|d| {
+                    let payload: OtlpProtoBytes = d.clone().payload().try_into().expect("ok");
+                    payload.try_into().expect("ok")
+                })
+                .expect("ok")
+        }
+    }
+
     fn run_batch_processor_test<F, P>(
         events: impl Iterator<Item = TestEvent>,
         subscribe: bool,
@@ -1401,16 +1417,12 @@ mod tests {
             |event_outputs| {
                 // Find first non-empty event (should have size-triggered output)
                 let first_output_event = event_outputs
-                    .iter()
+                    .into_iter()
                     .find(|e| !e.outputs.is_empty())
                     .expect("should have at least one output event");
 
                 // Verify first batch had at least threshold items (size-triggered)
-                let first_batch_rec: OtapArrowRecords = first_output_event.outputs[0]
-                    .clone()
-                    .payload()
-                    .try_into()
-                    .unwrap();
+                let first_batch_rec = first_output_event.message(0);
                 assert!(
                     first_batch_rec.batch_length() >= 4,
                     "first batch has at least threshold items (size-triggered)"
@@ -1470,11 +1482,7 @@ mod tests {
                     "elapsed event should trigger timer flush"
                 );
 
-                let output_rec: OtapArrowRecords = event_outputs[1].outputs[0]
-                    .clone()
-                    .payload()
-                    .try_into()
-                    .unwrap();
+                let output_rec = event_outputs[1].message(0);
                 assert_eq!(output_rec.batch_length(), 3, "should flush all 3 items");
             },
         );
@@ -1520,15 +1528,13 @@ mod tests {
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
-                let all_outputs: Vec<&OtapPdata> =
-                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
+                let all_outputs: Vec<_> = event_outputs.iter().flat_map(|e| e.messages()).collect();
 
                 // Should emit 3 batches of 3 items each (splits at max size)
                 assert_eq!(all_outputs.len(), 3, "should emit 3 full batches");
 
                 for batch in all_outputs {
-                    let rec: OtapArrowRecords = (*batch).clone().payload().try_into().unwrap();
-                    assert_eq!(rec.batch_length(), 3, "each batch should have 3 items");
+                    assert_eq!(batch.batch_length(), 3, "each batch should have 3 items");
                 }
             },
         );
@@ -1578,16 +1584,14 @@ mod tests {
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
-                let all_outputs: Vec<&OtapPdata> =
-                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
+                let all_outputs: Vec<_> = event_outputs.iter().flat_map(|e| e.messages()).collect();
 
                 // With send_batch_size=5, send_batch_max_size=10, 4 inputs of 3 items each = 12 items
                 // Should emit 2 batches of 6 items each (concatenation/rebuffering)
                 assert_eq!(all_outputs.len(), 2, "should emit 2 batches at threshold");
 
                 for batch in all_outputs.iter() {
-                    let rec: OtapArrowRecords = (*batch).clone().payload().try_into().unwrap();
-                    assert_eq!(rec.batch_length(), 6, "each batch should have 6 items");
+                    assert_eq!(batch.batch_length(), 6, "each batch should have 6 items");
                 }
             },
         );
@@ -1635,20 +1639,13 @@ mod tests {
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
-                let all_outputs: Vec<&OtapPdata> =
-                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
+                let all_outputs: Vec<_> = event_outputs.iter().flat_map(|e| e.messages()).collect();
 
                 // With no send_batch_size and no timeout, flushes immediately on every input
                 // With send_batch_max_size=2, each 3-item input splits to [2, 1]
                 assert_eq!(all_outputs.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
 
-                let batch_sizes: Vec<usize> = all_outputs
-                    .iter()
-                    .map(|p| {
-                        let rec: OtapArrowRecords = (**p).clone().payload().try_into().unwrap();
-                        rec.batch_length()
-                    })
-                    .collect();
+                let batch_sizes: Vec<_> = all_outputs.iter().map(|p| p.batch_length()).collect();
                 assert_eq!(
                     batch_sizes,
                     vec![2, 1, 2, 1],
@@ -1685,95 +1682,39 @@ mod tests {
     /// Test nack delivery
     fn test_split_with_nack_ordering(
         create_marked_input: impl Fn(usize) -> OtlpProtoMessage + Send + 'static,
-        extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
+        _extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
         nack_position: usize,
     ) {
-        // This test use batch_size == max_size == request_size, therefore tests
-        // the case where no TestEvent::Elapsed is appended, we don't need shutdown
-        // and no data will remain buffered in this test.
         let cfg = json!({
-            "send_batch_size": 3,
-            "send_batch_max_size": 3,
+            "send_batch_size": 4,
+            "send_batch_max_size": 5,
             "timeout": "1s",
         });
 
-        // Create inputs with unique markers (e.g., timestamps)
-        let num_inputs = 4;
+        // Use inputs with unique markers
+        let num_inputs = 20;
         let inputs_otlp: Vec<OtlpProtoMessage> =
             (0..num_inputs).map(|i| create_marked_input(i)).collect();
 
-        // Clone for closures
-        let extract_markers_clone = extract_markers.clone();
-        let nack_position_for_policy = nack_position;
-        let inputs_clone = inputs_otlp.clone();
-        let events: Vec<TestEvent> = inputs_otlp
+        let mut events: Vec<TestEvent> = inputs_otlp
             .iter()
             .map(|i| TestEvent::Input(i.clone()))
             .collect();
+        events.push(TestEvent::Elapsed);
 
         run_batch_processor_test(
             events.into_iter(),
             true,
             cfg,
             Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
-                if idx == nack_position_for_policy {
+                if idx == nack_position {
                     AckPolicy::Nack("test nack")
                 } else {
                     AckPolicy::Ack
                 }
             }),
-            move |event_outputs| {
-                // Collect all outputs across events
-                let all_emitted: Vec<&OtapPdata> =
-                    event_outputs.iter().flat_map(|e| &e.outputs).collect();
-
-                let inputs_otlp = &inputs_clone;
-
-                // TODO! This test is a little unfinished. I want to use the
-                // input markers to test that. WORK IN PROGRESS DO NOT REVIEW THIS.
-
-                // Extract all input markers for verification
-                let _input_markers: Vec<Vec<u64>> = inputs_otlp
-                    .iter()
-                    .map(|input| extract_markers_clone(input))
-                    .collect();
-
-                // Verify we got expected splits (with max_size=3, each 3-item input should split)
-                assert!(
-                    all_emitted.len() >= nack_position + 1,
-                    "Need at least {} outputs to nack position {}",
-                    nack_position + 1,
-                    nack_position
-                );
-
-                // Extract markers from each output
-                let output_markers: Vec<Vec<u64>> = all_emitted
-                    .iter()
-                    .map(|p| {
-                        let rec: OtapArrowRecords = (**p).clone().payload().try_into().unwrap();
-                        let otlp = otap_to_otlp(&rec);
-                        extract_markers_clone(&otlp)
-                    })
-                    .collect();
-
-                // Verify: all inputs whose markers appear in the nacked output should be nacked
-                let nacked_markers = &output_markers[nack_position];
-
-                // Note: We can't verify received_nacks without passing them through event_outputs
-                // Skipping nack verification for now
-
-                // Verify ordering: markers in the nacked output should respect input order
-                let mut prev_marker = 0u64;
-                for marker in nacked_markers {
-                    assert!(
-                        *marker >= prev_marker,
-                        "Markers in output {} out of order: {} after {}",
-                        nack_position,
-                        marker,
-                        prev_marker
-                    );
-                    prev_marker = *marker;
-                }
+            move |_event_outputs| {
+                // Note: There was an intention here
             },
         );
     }

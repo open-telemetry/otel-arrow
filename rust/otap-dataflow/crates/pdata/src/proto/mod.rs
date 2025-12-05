@@ -259,6 +259,31 @@ impl From<opentelemetry::trace::v1::TracesData> for OtlpProtoMessage {
     }
 }
 
+//#[cfg(test)]
+impl TryFrom<crate::otlp::OtlpProtoBytes> for OtlpProtoMessage {
+    type Error = prost::DecodeError;
+
+    fn try_from(bytes: crate::otlp::OtlpProtoBytes) -> Result<Self, Self::Error> {
+        use crate::otlp::OtlpProtoBytes;
+        use crate::proto::opentelemetry::logs::v1::LogsData;
+        use crate::proto::opentelemetry::metrics::v1::MetricsData;
+        use crate::proto::opentelemetry::trace::v1::TracesData;
+        use prost::Message;
+
+        Ok(match bytes {
+            OtlpProtoBytes::ExportLogsRequest(b) => {
+                OtlpProtoMessage::Logs(LogsData::decode(b.as_ref())?)
+            }
+            OtlpProtoBytes::ExportTracesRequest(b) => {
+                OtlpProtoMessage::Traces(TracesData::decode(b.as_ref())?)
+            }
+            OtlpProtoBytes::ExportMetricsRequest(b) => {
+                OtlpProtoMessage::Metrics(MetricsData::decode(b.as_ref())?)
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
