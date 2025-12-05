@@ -85,6 +85,9 @@ pub mod cloud_auth;
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
+/// TLS utilities
+#[cfg(feature = "experimental-tls")]
+pub mod tls_utils;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

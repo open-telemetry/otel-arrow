@@ -8,16 +8,21 @@ use arrow::array::{
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
+use arrow::datatypes::Schema;
 use async_trait::async_trait;
 use data_engine_expressions::{LogicalExpression, ScalarExpression};
-use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
+use datafusion::common::{DFSchema, HashMap, HashSet};
 use datafusion::config::ConfigOptions;
+use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
+use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
+use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::build_uint16_id_filter;
 use otap_df_pdata::otap::{Logs, Metrics, Traces};
@@ -32,19 +37,47 @@ use crate::pipeline::planner::{
     try_static_scalar_to_literal,
 };
 
+pub mod optimize;
+
 /// A compositional tree structure for combining expressions with boolean operators.
 ///
 /// Represents logical combinations of base values using Not, And, and Or operations,
 /// forming a tree that can be evaluated or transformed.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Composite<T> {
     Base(T),
     Not(Box<Self>),
-    And(LeftRight<Box<Self>>),
-    Or(LeftRight<Box<Self>>),
+    And(Box<Self>, Box<Self>),
+    Or(Box<Self>, Box<Self>),
 }
 
-/// A pair of values representing left and right operands of a binary operation.
-type LeftRight<T> = (T, T);
+impl<T> Composite<T> {
+    /// helper function to create the `Composite::And` variant from passed args
+    pub fn and<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::And(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Or` variant from passed args
+    pub fn or<L, R>(left: L, right: R) -> Self
+    where
+        L: Into<Self>,
+        R: Into<Self>,
+    {
+        Self::Or(Box::new(left.into()), Box::new(right.into()))
+    }
+
+    /// helper function to create the `Composite::Not` variant from passed args
+    pub fn not<P>(inner: P) -> Self
+    where
+        P: Into<Self>,
+    {
+        Self::Not(Box::new(inner.into()))
+    }
+}
 
 /// A helper trait that can be used to transform a composite logical plan into a composite
 /// executable plan.
@@ -76,17 +109,17 @@ where
             }
             Self::Not(inner) => {
                 let exec = inner.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Not(Box::new(exec)))
+                Ok(Composite::not(exec))
             }
-            Self::And((left, right)) => {
+            Self::And(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::And((Box::new(left_exec), Box::new(right_exec))))
+                Ok(Composite::and(left_exec, right_exec))
             }
-            Self::Or((left, right)) => {
+            Self::Or(left, right) => {
                 let left_exec = left.to_exec(session_ctx, otap_batch)?;
                 let right_exec = right.to_exec(session_ctx, otap_batch)?;
-                Ok(Composite::Or((Box::new(left_exec), Box::new(right_exec))))
+                Ok(Composite::or(left_exec, right_exec))
             }
         }
     }
@@ -111,13 +144,14 @@ impl<T> From<T> for Composite<T> {
 /// Can be constructed from either a DataFusion `Expr` (for root batch's filters) or an
 /// `AttributesFilterPlan` (for attribute filters), and can be composed into boolean expressions
 /// using `Composite`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FilterPlan {
     /// filters that will be applied to the root record batch
-    source_filter: Option<Expr>,
+    pub source_filter: Option<Expr>,
 
     /// filters that will be applied to the attributes record batch in order fo filter the
     /// rows of the root batch
-    attribute_filter: Option<Composite<AttributesFilterPlan>>,
+    pub attribute_filter: Option<Composite<AttributesFilterPlan>>,
 }
 
 impl From<Expr> for FilterPlan {
@@ -134,6 +168,15 @@ impl From<AttributesFilterPlan> for FilterPlan {
         Self {
             source_filter: None,
             attribute_filter: Some(attrs_filter.into()),
+        }
+    }
+}
+
+impl From<Composite<AttributesFilterPlan>> for FilterPlan {
+    fn from(attrs_filter: Composite<AttributesFilterPlan>) -> Self {
+        Self {
+            source_filter: None,
+            attribute_filter: Some(attrs_filter),
         }
     }
 }
@@ -196,14 +239,14 @@ impl FilterPlan {
                     match right_arg {
                         // left = attribute & right = literal
                         BinaryArg::Literal(right_lit) => {
-                            Ok(FilterPlan::from(AttributesFilterPlan {
-                                attrs_identifier,
-                                filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
+                            Ok(FilterPlan::from(AttributesFilterPlan::new(
+                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                         &right_lit, binary_op,
                                     )?),
                                 ),
-                            }))
+                                attrs_identifier,
+                            )))
                         }
                         _ => Err(Error::NotYetSupportedError {
                             message: "comparing left attribute with non-literal right in filter"
@@ -235,14 +278,14 @@ impl FilterPlan {
                     }
                     ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                         // left = literal & right = attribute
-                        Ok(FilterPlan::from(AttributesFilterPlan {
-                            attrs_identifier,
-                            filter: col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
-                                Expr::BinaryExpr(try_attrs_value_filter_from_literal(
+                        Ok(FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(Expr::BinaryExpr(try_attrs_value_filter_from_literal(
                                     &left_lit, binary_op,
-                                )?),
-                            ),
-                        }))
+                                )?)),
+                            attrs_identifier,
+                        )))
                     }
                 },
             },
@@ -276,16 +319,16 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
             LogicalExpression::And(and_expr) => {
                 let left = Self::try_from(and_expr.get_left())?;
                 let right = Self::try_from(and_expr.get_right())?;
-                Ok(Self::And((Box::new(left), Box::new(right))))
+                Ok(Self::and(left, right))
             }
             LogicalExpression::Or(or_expr) => {
                 let left = Self::try_from(or_expr.get_left())?;
                 let right = Self::try_from(or_expr.get_right())?;
-                Ok(Self::Or((Box::new(left), Box::new(right))))
+                Ok(Self::or(left, right))
             }
             LogicalExpression::Not(not_expr) => {
                 let inner = Self::try_from(not_expr.get_inner_expression())?;
-                Ok(Self::Not(Box::new(inner)))
+                Ok(Self::not(inner))
             }
 
             // TODO add support for these expressions eventually
@@ -305,23 +348,10 @@ impl ToExec for FilterPlan {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Self::ExecutablePlan> {
-        let root_rb = match otap_batch.root_record_batch() {
-            Some(rb) => rb,
-            None => {
-                // TODO eventually we need to handle this case. We should possibly handle this
-                // somewhere up the call-stack. For example in Pipeline, which lazily plans the
-                // execution when it receives the first batch, it should not do it's planning until
-                // it receives a non-empty batch.
-                return Err(Error::NotYetSupportedError {
-                    message: "planning when root batch is empty not yet supported".into(),
-                });
-            }
-        };
-
         let physical_expr = self
             .source_filter
             .as_ref()
-            .map(|expr| to_physical_exprs(expr, root_rb, session_ctx))
+            .map(|expr| AdaptivePhysicalExprExec::try_new(expr.clone()))
             .transpose()?;
 
         let attrs_filter = self
@@ -338,18 +368,27 @@ impl ToExec for FilterPlan {
 }
 
 /// A logical plan for filtering attributes.
-#[derive(Clone)]
-struct AttributesFilterPlan {
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttributesFilterPlan {
     /// The filtering expression that  will be applied to the attributes
     ///
     /// Note that the expression should be constructed based on the otap data-model, not using some
     /// abstract notion of an attribute column. This means, say we're filtering for
     /// `attributes["x"] == "y"` that we'd expect a filter expr like
     /// `col("key").eq(lit("x")).and(col("str").eq(lit("y")))`
-    filter: Expr,
+    pub filter: Expr,
 
     /// The identifier of which attributes will be considered when filtering
-    attrs_identifier: AttributesIdentifier,
+    pub attrs_identifier: AttributesIdentifier,
+}
+
+impl AttributesFilterPlan {
+    fn new(filter: Expr, attrs_identifier: AttributesIdentifier) -> Self {
+        Self {
+            filter,
+            attrs_identifier,
+        }
+    }
 }
 
 impl ToExec for AttributesFilterPlan {
@@ -357,7 +396,7 @@ impl ToExec for AttributesFilterPlan {
 
     fn to_exec(
         &self,
-        session_ctx: &SessionContext,
+        _session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Self::ExecutablePlan> {
         let attrs_payload_type = match self.attrs_identifier {
@@ -369,22 +408,24 @@ impl ToExec for AttributesFilterPlan {
             AttributesIdentifier::NonRoot(payload_type) => payload_type,
         };
 
-        let attrs_rb = match otap_batch.get(attrs_payload_type) {
-            Some(rb) => rb,
-            None => {
-                // TODO we should eventually handle this -- most likely we'll try to optimize
-                // to have the filtering do a noop that returns no rows, unless the filter is
-                // attributes["x"] == null in which case return all rows.
-                return Err(Error::NotYetSupportedError {
-                    message: "attributes record batch not present when planning".into(),
-                });
-            }
-        };
-
         Ok(AttributeFilterExec {
-            filter: to_physical_exprs(&self.filter, attrs_rb, session_ctx)?,
+            filter: AdaptivePhysicalExprExec::try_new(self.filter.clone())?,
             payload_type: attrs_payload_type,
         })
+    }
+}
+
+impl Composite<AttributesFilterPlan> {
+    pub fn attrs_identifier(&self) -> AttributesIdentifier {
+        match self {
+            Self::Base(filter) => filter.attrs_identifier,
+            Self::Not(filter) => filter.attrs_identifier(),
+
+            // All children should be for the same payload type, so we just traverse one side
+            // of the tree.
+            Self::And(left, _) => left.attrs_identifier(),
+            Self::Or(left, _) => left.attrs_identifier(),
+        }
     }
 }
 
@@ -404,13 +445,17 @@ fn to_physical_exprs(
 }
 
 pub struct FilterExec {
-    predicate: Option<PhysicalExprRef>,
+    predicate: Option<AdaptivePhysicalExprExec>,
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 }
 
 impl FilterExec {
     /// execute the filter expression. returns a selection vector for the passed record batch
-    fn execute(&self, otap_batch: &OtapArrowRecords) -> Result<BooleanArray> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+    ) -> Result<BooleanArray> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
             None => {
@@ -423,28 +468,31 @@ impl FilterExec {
             }
         };
 
-        let mut selection_vec = match self.predicate.as_ref() {
-            Some(predicate) => evaluate_filter(predicate, root_rb)?,
+        let mut selection_vec = match self.predicate.as_mut() {
+            Some(predicate) => predicate.evaluate_filter(root_rb, session_ctx)?,
 
             // TODO -- we might be able to optimize this method by not allocating this here
             // and instead returning None
             None => BooleanArray::new(BooleanBuffer::new_set(root_rb.num_rows()), None),
         };
 
-        if let Some(attrs_filter) = &self.attributes_filter {
-            let id_mask = attrs_filter.execute(otap_batch, false)?;
+        if let Some(attrs_filter) = &mut self.attributes_filter {
+            let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
+                Some(id_col) => id_col,
+                None => {
+                    // None of the records have any attributes, so for now we just assume that all
+                    // the records would be filtered out by the predicate.
+                    //
+                    // TODO Eventually we need to handle this in a more intelligent way (see comment
+                    // below about null attrs)
+                    return Ok(BooleanArray::new(
+                        BooleanBuffer::new_unset(root_rb.num_rows()),
+                        None,
+                    ));
+                }
+            };
 
-            let id_col =
-                get_id_col_from_parent(root_rb, attrs_filter.payload_type())?.ok_or_else(|| {
-                    // TODO we should handle if the ID column is missing from the root record batch.
-                    // This would happen if there were no attributes. If someone tries to filter if
-                    // there are no attributes, the correct behaviour is to treat every record as if
-                    // it was null. See the comment below about null handling ...
-                    Error::ExecutionError {
-                        cause: "ID column not found on root record batch".into(),
-                    }
-                })?;
-
+            let id_mask = attrs_filter.execute(otap_batch, session_ctx, false)?;
             let mut attrs_selection_vec_builder = BooleanBufferBuilder::new(root_rb.num_rows());
 
             // we append to the selection vector in contiguous segments rather than doing it 1-by-1
@@ -465,6 +513,8 @@ impl FilterExec {
                     // passes. But b/c we don't currently support any predicates like this, we just
                     // assume no attr means the row gets filtered out
                     //
+                    // Note: when we fix this TODO, we should also fix the case above where there
+                    // were no attributes at all for any rows (so the id_col is not present).
                     false
                 };
 
@@ -497,34 +547,43 @@ impl FilterExec {
 }
 
 impl Composite<FilterExec> {
-    fn execute(&self, otap_batch: &OtapArrowRecords) -> Result<BooleanArray> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+    ) -> Result<BooleanArray> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch),
-            Self::Not(filter) => Ok(not(&filter.execute(otap_batch)?)?),
-            Self::And((left, right)) => {
-                let left_result = left.execute(otap_batch)?;
-                let right_result = right.execute(otap_batch)?;
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx),
+            Self::Not(filter) => Ok(not(&filter.execute(otap_batch, session_ctx)?)?),
+            Self::And(left, right) => {
+                let left_result = left.execute(otap_batch, session_ctx)?;
+                let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(and(&left_result, &right_result)?)
             }
-            Self::Or((left, right)) => {
-                let left_result = left.execute(otap_batch)?;
-                let right_result = right.execute(otap_batch)?;
+            Self::Or(left, right) => {
+                let left_result = left.execute(otap_batch, session_ctx)?;
+                let right_result = right.execute(otap_batch, session_ctx)?;
                 Ok(or(&left_result, &right_result)?)
             }
         }
     }
 }
 
-struct AttributeFilterExec {
-    filter: PhysicalExprRef,
-    payload_type: ArrowPayloadType,
+pub struct AttributeFilterExec {
+    pub filter: AdaptivePhysicalExprExec,
+    pub payload_type: ArrowPayloadType,
 }
 
 impl AttributeFilterExec {
     /// execute the filter on the attributes. This returns a bitmap of parent_ids that were
     /// selected by the filter. Conversely if invert = `true` it creates a bitmap of parent_ids
     /// not selected by the filter.
-    fn execute(&self, otap_batch: &OtapArrowRecords, inverted: bool) -> Result<RoaringBitmap> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+        inverted: bool,
+    ) -> Result<RoaringBitmap> {
         let record_batch = match otap_batch.get(self.payload_type) {
             Some(rb) => rb,
             None => {
@@ -534,7 +593,7 @@ impl AttributeFilterExec {
             }
         };
 
-        let selection_vec = evaluate_filter(&self.filter, record_batch)?;
+        let selection_vec = self.filter.evaluate_filter(record_batch, session_ctx)?;
         let parent_id_col = get_parent_id_column(record_batch)?;
 
         // create a bitmap containing the parent_ids that passed the filter predicate
@@ -575,13 +634,18 @@ impl Composite<AttributeFilterExec> {
     /// defined by the composite tree. The reason we do here, instead of say combining everything
     /// in `Composite<FilterExec>`, is that this saves us from doing additional conversions between
     /// the parent_id bitmap to a selection vector for the parent record batch.
-    fn execute(&self, otap_batch: &OtapArrowRecords, inverted: bool) -> Result<RoaringBitmap> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_ctx: &SessionContext,
+        inverted: bool,
+    ) -> Result<RoaringBitmap> {
         match self {
-            Self::Base(filter) => filter.execute(otap_batch, inverted),
-            Self::Not(filter) => filter.execute(otap_batch, !inverted),
-            Self::And((left, right)) => {
-                let left_result = left.execute(otap_batch, inverted)?;
-                let right_result = right.execute(otap_batch, inverted)?;
+            Self::Base(filter) => filter.execute(otap_batch, session_ctx, inverted),
+            Self::Not(filter) => filter.execute(otap_batch, session_ctx, !inverted),
+            Self::And(left, right) => {
+                let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+                let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A and B) = (not A) or (not B)
                     left_result | right_result
@@ -589,9 +653,9 @@ impl Composite<AttributeFilterExec> {
                     left_result & right_result
                 })
             }
-            Self::Or((left, right)) => {
-                let left_result = left.execute(otap_batch, inverted)?;
-                let right_result = right.execute(otap_batch, inverted)?;
+            Self::Or(left, right) => {
+                let left_result = left.execute(otap_batch, session_ctx, inverted)?;
+                let right_result = right.execute(otap_batch, session_ctx, inverted)?;
                 Ok(if inverted {
                     // not (A or B) = (not A) and (not B)
                     left_result & right_result
@@ -609,28 +673,286 @@ impl Composite<AttributeFilterExec> {
 
             // All children should be for the same payload type, so we just traverse one side
             // of the tree.
-            Self::And((left, _)) => left.payload_type(),
-            Self::Or((left, _)) => left.payload_type(),
+            Self::And(left, _) => left.payload_type(),
+            Self::Or(left, _) => left.payload_type(),
         }
     }
 }
 
-fn evaluate_filter(
-    predicate: &PhysicalExprRef,
-    record_batch: &RecordBatch,
-) -> Result<BooleanArray> {
-    let arr = predicate
-        .evaluate(record_batch)?
-        .into_array(record_batch.num_rows())?;
+/// This is responsible for evaluating a  [`PhysicalExpr`](datafusion::physical_expr::PhysicalExpr)
+/// while adapting to schema changes that may be encountered between evaluations.
+///
+/// A given payload type's [`RecordBatch`] might have minor changes the schema between batches
+/// - The type of a column may change between Dict<u8, V>, Dict<16, V>, and the native array type
+/// - The order of columns may change
+///
+pub struct AdaptivePhysicalExprExec {
+    /// The physical expression that should be evaluated for each batch. This is initialized lazily
+    /// when the first non-`None` batch is passed to `evaluate`. This should evaluate to a boolean
+    physical_expr: Option<PhysicalExprRef>,
 
-    as_boolean_array(&arr)
-        .cloned()
-        .map_err(|_| Error::ExecutionError {
-            cause: format!(
-                "Cannot create selection vector from non-boolean predicates. Found {}",
-                arr.data_type()
-            ),
+    /// The original logical plan used to produce the [`PhysicalExpr`]
+    logical_expr: Expr,
+
+    /// Definition for how the input record batch should be projected so that it's schema is
+    /// compatible with what is expected by the physical_expr
+    projection: FilterProjection,
+}
+
+impl AdaptivePhysicalExprExec {
+    fn try_new(logical_expr: Expr) -> Result<Self> {
+        let projection = FilterProjection::try_new(&logical_expr)?;
+
+        Ok(Self {
+            physical_expr: None,
+            logical_expr,
+            projection,
         })
+    }
+
+    /// Evaluates the [`PhysicalExpr`] for the passed record batch and returns a selection
+    /// vector for the rows that pass the predicate.
+    fn evaluate_filter(
+        &mut self,
+        record_batch: &RecordBatch,
+        session_ctx: &SessionContext,
+    ) -> Result<BooleanArray> {
+        let record_batch = match self.projection.project(record_batch) {
+            Some(rb) => rb,
+            None => {
+                // we weren't able to project the record batch into the schema expected by the
+                // physical expr. This means that there were some columns referenced in the logical
+                // expr that are missing from the input batch. for now, we assume that this just
+                // means no rows pass the predicate
+                //
+                // TODO the assumption we're making here isn't sound for some predicates, things
+                // like `some_col == null`, so eventually we'll need to handle this
+                return Ok(BooleanArray::new(
+                    BooleanBuffer::new_unset(record_batch.num_rows()),
+                    None,
+                ));
+            }
+        };
+
+        // lazily initialize the physical expr if not already initialized
+        if self.physical_expr.is_none() {
+            let physical_expr = to_physical_exprs(&self.logical_expr, &record_batch, session_ctx)?;
+            self.physical_expr = Some(physical_expr);
+        }
+
+        // safety: this is already initialized
+        let predicate = self.physical_expr.as_ref().expect("initialized");
+
+        // evaluate the predicate
+        let arr = predicate
+            .evaluate(&record_batch)?
+            .into_array(record_batch.num_rows())?;
+
+        // ensure it actually evaluated to a boolean expression, and if so return that as selection vec
+        as_boolean_array(&arr)
+            .cloned()
+            .map_err(|_| Error::ExecutionError {
+                cause: format!(
+                    "Cannot create selection vector from non-boolean predicates. Found {}",
+                    arr.data_type()
+                ),
+            })
+    }
+}
+
+/// This attempts to project the record batch to known schema schema that
+/// [`AdaptivePhysicalExprExec`]'s predicate expression expects.
+///
+/// The [`PhysicalExpr`] basically expects the columns to be in a specific order, so this
+/// projection step is taking the existing columns and rearranging them. It does not do any
+/// transformation/mapping of column data types.
+///
+#[derive(Debug)]
+pub struct FilterProjection {
+    schema: ProjectedSchema,
+}
+
+impl FilterProjection {
+    /// Attempt to create a new instance of [`FilterProjection`]. It will return an error if
+    /// there is some form of [`Expr`] tree which is not recognized
+    fn try_new(logical_expr: &Expr) -> Result<Self> {
+        let mut visitor = ProjectedSchemaExprVisitor::default();
+        logical_expr.visit(&mut visitor)?;
+        Ok(Self {
+            schema: visitor.into(),
+        })
+    }
+
+    /// Project the record batch to the expected schema. If there are some expected columns in
+    /// the passed [`RecordBatch`] which are missing, this will return `None`.
+    fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
+        let original_schema = record_batch.schema_ref();
+
+        // TODO - if the heap allocations here have significant perf overhead, we could try reusing
+        // these arrays between batches.
+        let mut columns = Vec::new();
+        let mut fields = Vec::new();
+
+        for projected_col in &self.schema {
+            match projected_col {
+                ProjectedSchemaColumn::Root(desired_col_name) => {
+                    let index = original_schema.index_of(desired_col_name).ok()?;
+                    let column = record_batch.column(index).clone();
+                    let field = original_schema.fields[index].clone();
+                    columns.push(column);
+                    fields.push(field)
+                }
+                ProjectedSchemaColumn::Struct(desired_struct_name, desired_struct_fields) => {
+                    let struct_index = original_schema.index_of(desired_struct_name).ok()?;
+                    let column = record_batch.column(struct_index);
+                    let col_as_struct = column.as_any().downcast_ref::<StructArray>()?;
+
+                    let mut struct_fields = Vec::new();
+                    let mut struct_field_defs = Vec::new();
+
+                    for field_name in desired_struct_fields {
+                        let (field_index, field) = col_as_struct.fields().find(field_name)?;
+                        struct_fields.push(col_as_struct.column(field_index).clone());
+                        struct_field_defs.push(field.clone());
+                    }
+
+                    // safety: `try_new` will return an error here if the types of arrays we pass
+                    // for the fields do not match the field definitions, or if the arrays have
+                    // different lengths. Based on the way we've constructed inputs, this should
+                    // not happen because we've taken them from the input struct column in order
+                    let projected_struct_arr = StructArray::try_new(
+                        struct_field_defs.into(),
+                        struct_fields,
+                        col_as_struct.nulls().cloned(),
+                    )
+                    .expect("can init StructArray");
+
+                    let projected_field = original_schema.fields[struct_index]
+                        .as_ref()
+                        .clone()
+                        .with_data_type(projected_struct_arr.data_type().clone());
+                    fields.push(Arc::new(projected_field));
+                    columns.push(Arc::new(projected_struct_arr));
+                }
+            }
+        }
+
+        // safety: `try_new` should not return an error here unless the columns do not match the
+        // fields in the schema, or if the columns are different lengths. Based on how we've
+        // constructed the inputs, this should not happen because we've taken them from the input
+        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("can project record batch");
+
+        Some(rb)
+    }
+}
+
+/// Defines that the record batch should be projected as when the filter is applied.
+///
+/// Note that the only thing that matters when applying the filter's `PhysicalExpr` is that the
+/// columns are all present and in the correct order, which is why this is implemented as a lists
+/// of column names without regard to types.
+type ProjectedSchema = Vec<ProjectedSchemaColumn>;
+
+/// Definition of column in the projected schema
+#[derive(Debug, Eq, Hash, PartialEq, PartialOrd)]
+enum ProjectedSchemaColumn {
+    /// Simply column in the [`RecordBatch`] being filtered that should be in the projected schema
+    Root(String),
+
+    /// Columns that should be projected from a nested struct. For example on a Logs record batch
+    /// this could be things like `resource.name`, or `body.str`.
+    Struct(String, Vec<String>),
+}
+
+/// Implementation of [`TreeNodeVisitor`] that will visit the [`Expr`] defining the filter
+/// predicate to determine which columns are referenced in the filter predicate. This information
+/// can then be used to determine how to project the input batches before evaluating the filter's
+/// [`PhysicalExpr`]
+#[derive(Debug, Default)]
+struct ProjectedSchemaExprVisitor {
+    root_columns: HashSet<String>,
+
+    // this is used to keep track of fields in some nested struct which are referenced by the expr.
+    // the map is keyed by struct name, and the set contains the fields within the struct.
+    struct_columns: HashMap<String, HashSet<String>>,
+}
+
+impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
+    type Node = Expr;
+
+    fn f_down(&mut self, node: &'a Self::Node) -> datafusion::error::Result<TreeNodeRecursion> {
+        if let Expr::Column(col) = node {
+            self.root_columns.insert(col.name.clone());
+        }
+
+        // here we're checking if the expression we're visiting references a field within a struct
+        // column. The way we reference these in the plans we build is using an expression like
+        // `col("scope").field("name")` which produces a ScalarFunction expression invoking the
+        // `GetFieldFunc` function with arguments ("scope", "name").
+        if let Expr::ScalarFunction(scalar_udf) = node {
+            if scalar_udf
+                .func
+                .as_ref()
+                .inner()
+                .as_any()
+                .is::<GetFieldFunc>()
+            {
+                let source = scalar_udf.args.first();
+                let field = scalar_udf.args.get(1);
+                match (source, field) {
+                    (
+                        Some(Expr::Column(col)),
+                        Some(Expr::Literal(ScalarValue::Utf8(Some(nested_col)), _)),
+                    ) => {
+                        let struct_fields = self
+                            .struct_columns
+                            .entry(col.name.clone())
+                            .or_insert(HashSet::new());
+                        struct_fields.insert(nested_col.clone());
+
+                        // don't continue as we've found a column. Otherwise this will continue
+                        // down the expression tree and we'll visit the Column expression twice.
+                        return Ok(TreeNodeRecursion::Jump);
+                    }
+                    unexpected_args => {
+                        let err_msg = format!(
+                            "Found unexpected arguments to `GetFieldFunc`. Expected (Col, Literal(Utf8)) found {:?}",
+                            unexpected_args
+                        );
+                        return Err(DataFusionError::Plan(err_msg));
+                    }
+                }
+            }
+        }
+
+        Ok(TreeNodeRecursion::Continue)
+    }
+}
+
+impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
+    fn from(visitor: ProjectedSchemaExprVisitor) -> Self {
+        let num_cols = visitor.root_columns.len()
+            + visitor
+                .struct_columns
+                .values()
+                .map(|cols| cols.len())
+                .sum::<usize>();
+        let mut schema = Vec::with_capacity(num_cols);
+
+        for col in visitor.root_columns.into_iter() {
+            schema.push(ProjectedSchemaColumn::Root(col))
+        }
+
+        for (struct_name, cols) in visitor.struct_columns.into_iter() {
+            schema.push(ProjectedSchemaColumn::Struct(
+                struct_name,
+                cols.into_iter().collect(),
+            ));
+        }
+
+        schema
+    }
 }
 
 /// helper function for getting the ID column associated with the parent_id in the child record
@@ -765,7 +1087,7 @@ impl PipelineStage for FilterPipelineStage {
     async fn execute(
         &mut self,
         mut otap_batch: OtapArrowRecords,
-        _session_context: &SessionContext,
+        session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
     ) -> Result<OtapArrowRecords> {
@@ -777,10 +1099,7 @@ impl PipelineStage for FilterPipelineStage {
             }
         };
 
-        // TODO -- we need to check here if the schema has changed or if any attribute
-        // record batches have gone missing and if so, replan the internal FilterExec
-
-        let selection_vec = self.filter_exec.execute(&otap_batch)?;
+        let selection_vec = self.filter_exec.execute(&otap_batch, session_context)?;
 
         // check if nothing was filtered
         if selection_vec.true_count() == root_batch.num_rows() {
@@ -831,7 +1150,7 @@ mod test {
 
     use super::*;
 
-    use arrow::array::{RecordBatch, StringArray};
+    use arrow::array::{DictionaryArray, Int32Array, RecordBatch, StringArray, UInt8Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_pdata::otap::Logs;
@@ -858,8 +1177,8 @@ mod test {
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let pipeline_expr = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse(kql_expr).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         otap_to_logs_data(result)
     }
@@ -881,8 +1200,8 @@ mod test {
                 .finish(),
         ]);
 
-        let pipeline_expr = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let expected = to_otap(vec![
             LogRecord::build()
@@ -893,8 +1212,8 @@ mod test {
         assert_eq!(result, expected);
 
         // test same filter where the literal is on the left and column name on the right
-        let pipeline_expr = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         assert_eq!(result, expected);
     }
@@ -923,8 +1242,8 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -933,8 +1252,8 @@ mod test {
         );
 
         // test same filter where the literal is on the left and the attribute is on the right
-        let pipeline_expr = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1130,10 +1449,10 @@ mod test {
         let otap_batch = to_otap(log_records.clone());
 
         // check simple filter "and" properties
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where severity_text == \"ERROR\" and event_name == \"2\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1142,11 +1461,11 @@ mod test {
         );
 
         // check simple filter "and" with attributes
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"ERROR\" and attributes[\"x\"] == \"c\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1155,11 +1474,11 @@ mod test {
         );
 
         // check simple filter "and" two attributes
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where attributes[\"y\"] == \"d\" and attributes[\"x\"] == \"a\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1199,11 +1518,11 @@ mod test {
         let otap_batch = to_otap(log_records.clone());
 
         // check simple filter "or" with properties predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"INFO\" or severity_text == \"ERROR\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1212,11 +1531,11 @@ mod test {
         );
 
         // check simple filter "or" with mixed attributes/properties predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where severity_text == \"ERROR\" or attributes[\"x\"] == \"c\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1225,11 +1544,11 @@ mod test {
         );
 
         // check simple filter "or" two attributes predicates
-        let pipeline_expr = KqlParser::parse(
+        let parser_result = KqlParser::parse(
             "logs | where attributes[\"x\"] == \"a\" or attributes[\"y\"] == \"e\"",
         )
         .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
         pretty_assertions::assert_eq!(
@@ -1516,8 +1835,8 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1526,8 +1845,8 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // assert we have the correct behaviour when filtering by attributes as well
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1535,21 +1854,15 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
     }
 
-    // TODO ignored as this test is not current passing b/c we've not implemented the correct
-    // planning logic for when the root record batch is missing
-    #[ignore]
     #[tokio::test]
     async fn test_empty_batch() {
         let input = OtapArrowRecords::Logs(Logs::default());
-        let pipeline_expr = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
     }
 
-    // TODO ignored as this test is currently not passing b/c we've not implemented the correct
-    // planning logic for when filtering by attributes if the attrs record batches are missing
-    #[ignore]
     #[tokio::test]
     async fn test_filter_no_attrs() {
         let log_records = vec![
@@ -1568,8 +1881,8 @@ mod test {
         ];
 
         // check that if there are no attributes to filter by then, we get the empty batch
-        let pipeline_expr = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1577,9 +1890,9 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // check that the same result happens when filtering by resource and scope attrs
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
@@ -1587,14 +1900,59 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // check that the same result happens when filtering by resource and scope attrs
-        let pipeline_expr =
+        let parser_result =
             KqlParser::parse("logs | where instrumentation_scope.attributes[\"a\"] == \"1234\"")
                 .unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap(log_records.clone()))
             .await
             .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // check that inverting the filters above basically just return the original record batch
+        for inverted_attrs_filter in [
+            "logs | where not(attributes[\"a\"] == \"1234\")",
+            "logs | where not(resource.attributes[\"a\"] == \"1234\")",
+            "logs | where not(instrumentation_scope.attributes[\"a\"] == \"1234\")",
+        ] {
+            let parser_result = KqlParser::parse(inverted_attrs_filter).unwrap();
+            let mut pipeline = Pipeline::new(parser_result.pipeline);
+            let input = to_otap(log_records.clone());
+            let result = pipeline.execute(input.clone()).await.unwrap();
+            assert_eq!(result, input);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_optional_attrs_existence_changes() {
+        // what happens if some optional attributes are present one batch, then not present in the
+        // next, then present in the next, etc.
+
+        let query = "logs | where attributes[\"a\"] == \"1234\"";
+        let parser_result = KqlParser::parse(query).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+
+        // no attrs to start
+        let batch1 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
+        let result = pipeline.execute(batch1).await.unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // now process a batch with some attrs
+        let log_records = vec![
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("1234"))])
+                .finish(),
+        ];
+        let batch2 = to_otap(log_records.clone());
+        let result = pipeline.execute(batch2).await.unwrap();
+        let expected = to_otap(log_records[1..2].to_vec());
+        assert_eq!(result, expected);
+
+        // handle another record batch with missing attributes
+        let batch3 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
+        let result = pipeline.execute(batch3).await.unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
     }
 
@@ -1629,8 +1987,8 @@ mod test {
 
         // assert the behaviour is correct when nothing is filtered out
         let otap_input = to_otap(log_records);
-        let pipeline_expr = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
-        let mut pipeline = Pipeline::new(pipeline_expr);
+        let parser_result = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_input.clone()).await.unwrap();
 
         assert_eq!(result, otap_input)
@@ -1686,7 +2044,9 @@ mod test {
                 .to_exec(&session_ctx, &otap_batch)
                 .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([0])
         );
 
@@ -1695,56 +2055,254 @@ mod test {
             .to_exec(&session_ctx, &otap_batch)
             .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([1, 2])
         );
 
         // test "and" filter
-        filter_exec = Composite::And((
+        filter_exec = Composite::And(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_y_eq_d.clone().into()),
-        ))
+        )
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([0])
         );
 
         // test inverted "and" filter
-        filter_exec = Composite::Not(Box::new(Composite::And((
+        filter_exec = Composite::Not(Box::new(Composite::And(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_y_eq_d.clone().into()),
-        ))))
+        )))
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([1, 2])
         );
 
         // test "or" filter
-        filter_exec = Composite::Or((
+        filter_exec = Composite::Or(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_x_eq_b.clone().into()),
-        ))
+        )
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([0, 1])
         );
 
         // test inverted "or" filter
-        filter_exec = Composite::Not(Box::new(Composite::Or((
+        filter_exec = Composite::Not(Box::new(Composite::Or(
             Box::new(filter_x_eq_a.clone().into()),
             Box::new(filter_x_eq_b.clone().into()),
-        ))))
+        )))
         .to_exec(&session_ctx, &otap_batch)
         .unwrap();
         assert_eq!(
-            filter_exec.execute(&otap_batch, false).unwrap(),
+            filter_exec
+                .execute(&otap_batch, &session_ctx, false)
+                .unwrap(),
             RoaringBitmap::from_iter([2])
         );
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_type_change() {
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+
+        let session_ctx = Pipeline::create_session_context();
+
+        // start of with column of type Dict<u8, utf8>
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let rb1 = RecordBatch::try_new(
+            schema1.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 2, 1]),
+                Arc::new(StringArray::from_iter_values(["DEBUG", "INFO", "WARN"])),
+            ))],
+        )
+        .unwrap();
+
+        let result = phys_expr.evaluate_filter(&rb1, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, false, true, false]));
+
+        // next batch has some column, with type utf8
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Utf8,
+            false,
+        )]));
+
+        let rb2 = RecordBatch::try_new(
+            schema2.clone(),
+            vec![Arc::new(StringArray::from_iter_values([
+                "WARN", "INFO", "WARN", "ERROR", "DEBUG",
+            ]))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
+        assert_eq!(
+            result,
+            BooleanArray::from_iter([true, false, true, false, false])
+        );
+
+        // next batch has some column with type Dict<u16, utf8>
+        let schema3 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        )]));
+        let rb3 = RecordBatch::try_new(
+            schema3.clone(),
+            vec![Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 1]),
+                Arc::new(StringArray::from_iter_values(["DEBUG", "WARN"])),
+            ))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb3, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, true, true]));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_optional_column() {
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let session_ctx = Pipeline::create_session_context();
+
+        // send an initial batch with the column missing to ensure we handle this correctly
+        let schema0 = Arc::new(Schema::new(vec![Field::new(
+            consts::EVENT_NAME,
+            DataType::Utf8,
+            false,
+        )]));
+        let rb0 = RecordBatch::try_new(
+            schema0.clone(),
+            vec![Arc::new(StringArray::from_iter_values([
+                "a", "b", "a", "d",
+            ]))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb0, &session_ctx).unwrap();
+        assert_eq!(
+            result,
+            BooleanArray::from_iter([false, false, false, false])
+        );
+
+        // next batch has the column we expect
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new(consts::EVENT_NAME, DataType::Utf8, false),
+            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, false),
+        ]));
+
+        let rb1 = RecordBatch::try_new(
+            schema1.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(["a", "b", "a", "b", "a"])),
+                Arc::new(StringArray::from_iter_values([
+                    "WARN", "INFO", "WARN", "ERROR", "DEBUG",
+                ])),
+            ],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb1, &session_ctx).unwrap();
+        assert_eq!(
+            result,
+            BooleanArray::from_iter([true, false, true, false, false])
+        );
+
+        // next batch, the optional column is omitted
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            consts::EVENT_NAME,
+            DataType::Utf8,
+            false,
+        )]));
+        let rb2 = RecordBatch::try_new(
+            schema2.clone(),
+            vec![Arc::new(StringArray::from_iter_values(["a", "b", "a"]))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, false, false]));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_columns_order_change() {
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let session_ctx = Pipeline::create_session_context();
+
+        // process an initial batch with the columns in some given order
+        let schema0 = Arc::new(Schema::new(vec![
+            Field::new(consts::EVENT_NAME, DataType::Utf8, false),
+            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, false),
+        ]));
+        let rb0 = RecordBatch::try_new(
+            schema0.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(["a", "b", "a", "d"])),
+                Arc::new(StringArray::from_iter_values([
+                    "WARN", "INFO", "ERROR", "DEBUG",
+                ])),
+            ],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb0, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([true, false, false, false]));
+
+        // next batch we switch the column order .. now severity_text is column 0
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Utf8,
+            false,
+        )]));
+
+        let rb1 = RecordBatch::try_new(
+            schema1.clone(),
+            vec![Arc::new(StringArray::from_iter_values([
+                "WARN", "INFO", "WARN", "ERROR", "DEBUG",
+            ]))],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb1, &session_ctx).unwrap();
+        assert_eq!(
+            result,
+            BooleanArray::from_iter([true, false, true, false, false])
+        );
+
+        // next batch, we've changed the order again. now severity_text is column 2
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new(consts::ID, DataType::UInt16, false),
+            Field::new(consts::SEVERITY_NUMBER, DataType::Int32, false),
+            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, false),
+        ]));
+        let rb2 = RecordBatch::try_new(
+            schema2.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2])),
+                Arc::new(Int32Array::from_iter_values([5, 5, 5])),
+                Arc::new(StringArray::from_iter_values(["WARN", "WARN", "ERROR"])),
+            ],
+        )
+        .unwrap();
+        let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([true, true, false]));
     }
 }

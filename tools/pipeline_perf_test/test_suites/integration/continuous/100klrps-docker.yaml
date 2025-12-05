@@ -26,7 +26,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 2-2
       prometheus:
         endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
   df-engine:
@@ -46,7 +47,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 3-3
       prometheus:
         endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
   backend-service:
@@ -66,7 +68,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 1-1
       prometheus:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 

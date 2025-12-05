@@ -8,21 +8,28 @@ use data_engine_expressions::*;
 use crate::*;
 
 pub trait Parser {
-    fn parse(query: &str) -> Result<PipelineExpression, Vec<ParserError>> {
+    fn parse(query: &str) -> Result<ParserResult, Vec<ParserError>> {
         Self::parse_with_options(query, ParserOptions::new())
     }
 
     fn parse_with_options(
         query: &str,
         options: ParserOptions,
-    ) -> Result<PipelineExpression, Vec<ParserError>>;
+    ) -> Result<ParserResult, Vec<ParserError>>;
 }
+
+type ParserFunctionDefinition = (
+    Box<str>,
+    Vec<(PipelineFunctionParameter, Option<ScalarExpression>)>,
+    Option<ValueType>,
+);
 
 #[derive(Clone)]
 pub struct ParserOptions {
     pub(crate) source_map_schema: Option<ParserMapSchema>,
     pub(crate) summary_map_schema: Option<ParserMapSchema>,
     pub(crate) attached_data_names: HashSet<Box<str>>,
+    pub(crate) functions: Vec<ParserFunctionDefinition>,
 }
 
 impl ParserOptions {
@@ -31,6 +38,7 @@ impl ParserOptions {
             source_map_schema: None,
             summary_map_schema: None,
             attached_data_names: HashSet::new(),
+            functions: Vec::new(),
         }
     }
 
@@ -51,6 +59,17 @@ impl ParserOptions {
             self.attached_data_names.insert((*name).into());
         }
 
+        self
+    }
+
+    pub fn with_external_function(
+        mut self,
+        name: &str,
+        parameters: Vec<(PipelineFunctionParameter, Option<ScalarExpression>)>,
+        return_value_type: Option<ValueType>,
+    ) -> ParserOptions {
+        self.functions
+            .push((name.into(), parameters, return_value_type));
         self
     }
 
@@ -297,5 +316,20 @@ impl TryFrom<&str> for ParserMapKeySchema {
             "TimeSpan" => Ok(ParserMapKeySchema::TimeSpan),
             _ => Err(()),
         }
+    }
+}
+
+/// Result returned by parsers, containing the parsed pipeline expression
+/// and any additional metadata that may be useful for consumers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParserResult {
+    /// The parsed pipeline expression
+    pub pipeline: PipelineExpression,
+}
+
+impl ParserResult {
+    /// Create a new ParserResult with the given pipeline expression
+    pub fn new(pipeline: PipelineExpression) -> Self {
+        Self { pipeline }
     }
 }
