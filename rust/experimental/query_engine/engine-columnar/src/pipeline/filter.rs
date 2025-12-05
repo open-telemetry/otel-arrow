@@ -612,7 +612,7 @@ impl Composite<FilterExec> {
 }
 
 /// This represents which IDs have been selected by some filter operation.
-/// 
+///
 /// For example it can be used as the return type from filtering attributes to represent
 /// values from the parent_id column matched some filter that was applied.
 #[derive(Clone, Debug, PartialEq)]
