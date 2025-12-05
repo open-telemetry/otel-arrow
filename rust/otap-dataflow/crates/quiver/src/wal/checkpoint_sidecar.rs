@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Provides read/write helpers for the `truncate.offset` sidecar that tracks the
-// logical WAL cursor (data bytes excluding headers) still required for crash
+// Provides read/write helpers for the `checkpoint.offset` sidecar that tracks the
+// global WAL consumer checkpoint (data bytes excluding headers) still required for crash
 // recovery. The sidecar lets new processes resume from a known safe offset
 // without rescanning the entire WAL and carries a CRC so we can discard
 // corrupted metadata safely.
@@ -18,41 +18,41 @@ use super::{WalError, WalResult};
 #[cfg(test)]
 use super::writer::test_support::{self as writer_test_support, CrashInjection};
 
-pub(crate) const TRUNCATE_SIDECAR_MAGIC: &[u8; 8] = b"QUIVER\0T";
-pub(crate) const TRUNCATE_SIDECAR_VERSION: u16 = 1;
-pub(crate) const TRUNCATE_SIDECAR_LEN: usize = 8 + 2 + 2 + 8 + 8 + 4;
+pub(crate) const CHECKPOINT_SIDECAR_MAGIC: &[u8; 8] = b"QUIVER\0T";
+pub(crate) const CHECKPOINT_SIDECAR_VERSION: u16 = 1;
+pub(crate) const CHECKPOINT_SIDECAR_LEN: usize = 8 + 2 + 2 + 8 + 8 + 4;
 
-/// On-disk metadata describing the safe truncate point in the logical stream and
+/// On-disk metadata describing the consumer checkpoint in the logical stream and
 /// the rotation generation observed when it was recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TruncateSidecar {
-    /// Logical byte index (excluding WAL headers) that has been durably
-    /// consumed.
-    pub logical_offset: u64,
+pub(crate) struct CheckpointSidecar {
+    /// Global data offset (excluding WAL headers) that has been durably
+    /// consumed by readers.
+    pub global_data_offset: u64,
     pub rotation_generation: u64,
 }
 
-impl TruncateSidecar {
-    pub fn new(logical_offset: u64, rotation_generation: u64) -> Self {
+impl CheckpointSidecar {
+    pub fn new(global_data_offset: u64, rotation_generation: u64) -> Self {
         Self {
-            logical_offset,
+            global_data_offset,
             rotation_generation,
         }
     }
 
-    pub fn encode(&self) -> [u8; TRUNCATE_SIDECAR_LEN] {
-        let mut buf = [0u8; TRUNCATE_SIDECAR_LEN];
+    pub fn encode(&self) -> [u8; CHECKPOINT_SIDECAR_LEN] {
+        let mut buf = [0u8; CHECKPOINT_SIDECAR_LEN];
         let mut cursor = 0;
-        buf[cursor..cursor + TRUNCATE_SIDECAR_MAGIC.len()].copy_from_slice(TRUNCATE_SIDECAR_MAGIC);
-        cursor += TRUNCATE_SIDECAR_MAGIC.len();
+        buf[cursor..cursor + CHECKPOINT_SIDECAR_MAGIC.len()].copy_from_slice(CHECKPOINT_SIDECAR_MAGIC);
+        cursor += CHECKPOINT_SIDECAR_MAGIC.len();
 
-        buf[cursor..cursor + 2].copy_from_slice(&TRUNCATE_SIDECAR_VERSION.to_le_bytes());
+        buf[cursor..cursor + 2].copy_from_slice(&CHECKPOINT_SIDECAR_VERSION.to_le_bytes());
         cursor += 2;
 
         buf[cursor..cursor + 2].copy_from_slice(&0u16.to_le_bytes());
         cursor += 2;
 
-        buf[cursor..cursor + 8].copy_from_slice(&self.logical_offset.to_le_bytes());
+        buf[cursor..cursor + 8].copy_from_slice(&self.global_data_offset.to_le_bytes());
         cursor += 8;
 
         buf[cursor..cursor + 8].copy_from_slice(&self.rotation_generation.to_le_bytes());
@@ -64,27 +64,27 @@ impl TruncateSidecar {
     }
 
     pub fn decode(buf: &[u8]) -> WalResult<Self> {
-        if buf.len() < TRUNCATE_SIDECAR_LEN {
-            return Err(WalError::InvalidTruncateSidecar("buffer too short"));
+        if buf.len() < CHECKPOINT_SIDECAR_LEN {
+            return Err(WalError::InvalidCheckpointSidecar("buffer too short"));
         }
         let mut cursor = 0;
-        if &buf[cursor..cursor + TRUNCATE_SIDECAR_MAGIC.len()] != TRUNCATE_SIDECAR_MAGIC {
-            return Err(WalError::InvalidTruncateSidecar("magic mismatch"));
+        if &buf[cursor..cursor + CHECKPOINT_SIDECAR_MAGIC.len()] != CHECKPOINT_SIDECAR_MAGIC {
+            return Err(WalError::InvalidCheckpointSidecar("magic mismatch"));
         }
-        cursor += TRUNCATE_SIDECAR_MAGIC.len();
+        cursor += CHECKPOINT_SIDECAR_MAGIC.len();
 
         let version = u16::from_le_bytes([buf[cursor], buf[cursor + 1]]);
         cursor += 2;
-        if version != TRUNCATE_SIDECAR_VERSION {
-            return Err(WalError::InvalidTruncateSidecar("unsupported version"));
+        if version != CHECKPOINT_SIDECAR_VERSION {
+            return Err(WalError::InvalidCheckpointSidecar("unsupported version"));
         }
 
         if buf[cursor] != 0 || buf[cursor + 1] != 0 {
-            return Err(WalError::InvalidTruncateSidecar("reserved bits non-zero"));
+            return Err(WalError::InvalidCheckpointSidecar("reserved bits non-zero"));
         }
         cursor += 2;
 
-        let logical_offset = u64::from_le_bytes([
+        let global_data_offset = u64::from_le_bytes([
             buf[cursor],
             buf[cursor + 1],
             buf[cursor + 2],
@@ -116,18 +116,18 @@ impl TruncateSidecar {
         ]);
         let computed_crc = compute_crc(&buf[..cursor]);
         if stored_crc != computed_crc {
-            return Err(WalError::InvalidTruncateSidecar("crc mismatch"));
+            return Err(WalError::InvalidCheckpointSidecar("crc mismatch"));
         }
 
         Ok(Self {
-            logical_offset,
+            global_data_offset,
             rotation_generation,
         })
     }
 
     pub fn read_from(path: &Path) -> WalResult<Self> {
         let mut file = OpenOptions::new().read(true).open(path)?;
-        let mut buf = [0u8; TRUNCATE_SIDECAR_LEN];
+        let mut buf = [0u8; CHECKPOINT_SIDECAR_LEN];
         file.read_exact(&mut buf)?;
         Self::decode(&buf)
     }
@@ -148,7 +148,7 @@ impl TruncateSidecar {
         #[cfg(test)]
         if writer_test_support::take_crash(CrashInjection::BeforeSidecarRename) {
             return Err(WalError::InjectedCrash(
-                "crash injected before truncate sidecar rename",
+                "crash injected before checkpoint sidecar rename",
             ));
         }
         std::fs::rename(&tmp_path, path)?;
@@ -173,15 +173,15 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn sample_sidecar() -> TruncateSidecar {
-        TruncateSidecar::new(128, 7)
+    fn sample_sidecar() -> CheckpointSidecar {
+        CheckpointSidecar::new(128, 7)
     }
 
     #[test]
     fn encode_decode_roundtrip() {
         let value = sample_sidecar();
         let encoded = value.encode();
-        let decoded = TruncateSidecar::decode(&encoded).expect("decode");
+        let decoded = CheckpointSidecar::decode(&encoded).expect("decode");
         assert_eq!(decoded, value);
     }
 
@@ -189,10 +189,10 @@ mod tests {
     fn decode_rejects_magic_mismatch() {
         let mut encoded = sample_sidecar().encode();
         encoded[0] ^= 0xFF;
-        let err = TruncateSidecar::decode(&encoded).unwrap_err();
+        let err = CheckpointSidecar::decode(&encoded).unwrap_err();
         assert!(matches!(
             err,
-            WalError::InvalidTruncateSidecar("magic mismatch")
+            WalError::InvalidCheckpointSidecar("magic mismatch")
         ));
     }
 
@@ -201,20 +201,20 @@ mod tests {
         let mut encoded = sample_sidecar().encode();
         let last = encoded.len() - 1;
         encoded[last] ^= 0xFF;
-        let err = TruncateSidecar::decode(&encoded).unwrap_err();
+        let err = CheckpointSidecar::decode(&encoded).unwrap_err();
         assert!(matches!(
             err,
-            WalError::InvalidTruncateSidecar("crc mismatch")
+            WalError::InvalidCheckpointSidecar("crc mismatch")
         ));
     }
 
     #[test]
     fn write_and_read_sidecar() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("truncate.offset");
+        let path = dir.path().join("checkpoint.offset");
         let value = sample_sidecar();
-        TruncateSidecar::write_to(&path, &value).expect("write");
-        let loaded = TruncateSidecar::read_from(&path).expect("read");
+        CheckpointSidecar::write_to(&path, &value).expect("write");
+        let loaded = CheckpointSidecar::read_from(&path).expect("read");
         assert_eq!(loaded, value);
     }
 }

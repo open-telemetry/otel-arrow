@@ -123,10 +123,10 @@ impl QuiverConfigBuilder {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WalConfig {
-    /// Maximum on-disk footprint (across active + rotated chunks).
+    /// Maximum on-disk footprint (across active + rotated files).
     pub max_size_bytes: NonZeroU64,
-    /// Maximum number of chunk files retained during rotation.
-    pub max_chunk_count: u16,
+    /// Maximum number of rotated WAL files retained during rotation.
+    pub max_rotated_files: u16,
     /// Target data size to keep in the active WAL file before rotating.
     pub rotation_target_bytes: NonZeroU64,
     /// Preferred fsync cadence for durability vs. latency.
@@ -135,9 +135,9 @@ pub struct WalConfig {
 
 impl WalConfig {
     fn validate(&self) -> Result<()> {
-        if self.max_chunk_count == 0 {
+        if self.max_rotated_files == 0 {
             return Err(QuiverError::invalid_config(
-                "max_chunk_count must be at least 1",
+                "max_rotated_files must be at least 1",
             ));
         }
         if self.rotation_target_bytes > self.max_size_bytes {
@@ -153,7 +153,7 @@ impl Default for WalConfig {
     fn default() -> Self {
         Self {
             max_size_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).expect("non-zero"),
-            max_chunk_count: 10,
+            max_rotated_files: 10,
             rotation_target_bytes: NonZeroU64::new(64 * 1024 * 1024).expect("non-zero"),
             flush_interval: Duration::from_millis(25),
         }
@@ -287,7 +287,7 @@ mod tests {
     fn builder_overrides_sub_configs() {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1).unwrap(),
-            max_chunk_count: 1,
+            max_rotated_files: 1,
             rotation_target_bytes: NonZeroU64::new(1).unwrap(),
             flush_interval: Duration::from_millis(1),
         };
@@ -325,10 +325,10 @@ mod tests {
     }
 
     #[test]
-    fn wal_validate_rejects_zero_chunk_count() {
+    fn wal_validate_rejects_zero_rotated_files() {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1).unwrap(),
-            max_chunk_count: 0,
+            max_rotated_files: 0,
             rotation_target_bytes: NonZeroU64::new(1).unwrap(),
             flush_interval: Duration::from_millis(1),
         };
@@ -340,7 +340,7 @@ mod tests {
     fn wal_validate_rejects_rotation_target_exceeding_cap() {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1024).unwrap(),
-            max_chunk_count: 1,
+            max_rotated_files: 1,
             rotation_target_bytes: NonZeroU64::new(2048).unwrap(),
             flush_interval: Duration::from_millis(1),
         };

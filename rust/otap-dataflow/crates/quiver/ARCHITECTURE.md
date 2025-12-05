@@ -176,31 +176,31 @@ WAL entries belonging to:
   recovery can jump directly to the latest checkpoint instead of replaying the
   entire log.
 
-##### Truncation & rotation mechanics
+##### Checkpointing & rotation mechanics
 
-- **Track truncate progress**: After a segment finalizes and its metadata + file
+- **Track checkpoint progress**: After a segment finalizes and its metadata + file
   are flushed, we advance a *logical* cursor that counts data bytes (headers
-  excluded) across the entire WAL stream. This `logical_offset` represents "the
+  excluded) across the entire WAL stream. This `global_data_offset` represents "the
   earliest WAL data still needed for crash recovery." We persist that `u64`
   (plus a monotonically increasing rotation generation) into a tiny sidecar file
-  (e.g., `wal/truncate.offset`) immediately after advancing it and fsync the
+  (e.g., `wal/checkpoint.offset`) immediately after advancing it and fsync the
   sidecar so crash recovery can resume from that logical offset without
   rescanning finalized entries.
-- **Truncate sidecar format**: The sidecar is a fixed 32-byte struct written in
+- **Checkpoint sidecar format**: The sidecar is a fixed 32-byte struct written in
   little-endian order:
 
   ```text
-  TruncateSidecar {
+  CheckpointSidecar {
       [u8; 8] magic = b"QUIVER\0T";  // distinguishes from WAL proper
       u16 version = 1;                // bump if layout changes
       u16 reserved = 0;
-      u64 logical_offset;             // logical data bytes still required
+      u64 global_data_offset;         // logical data bytes still required
       u64 rotation_generation;        // increments each WAL rotation
       u32 crc32;                      // covers magic..rotation_generation
   }
   ```
 
-  We write updates via `truncate.offset.tmp`: encode the struct, compute the CRC,
+  We write updates via `checkpoint.offset.tmp`: encode the struct, compute the CRC,
   `pwrite`+`fdatasync`, then `renameat` over the live file so readers see either
   the old or new offset. On startup we verify the magic, version, and checksum
   before trusting the recorded offsets; failure falls back to scanning from the
@@ -211,8 +211,8 @@ WAL entries belonging to:
   readers have progressed through the concatenated stream.
 - **Drop reclaimed prefixes**: Once the active file grows beyond
   `rotation_target_bytes` we rotate it to `quiver.wal.1`, start a fresh WAL, and
-  remember the byte span covered by the retired chunk. When the persisted
-  logical cursor fully covers a rotated chunk we delete the file outright.
+  remember the byte span covered by the retired file. When the persisted
+  consumer checkpoint fully covers a rotated file we delete the file outright.
   Until a rotation occurs the reclaimed bytes remain in the active file even
   though they are logically safe to discard.
   *Note:* We may revisit direct hole punching in the future as a disk-space
@@ -224,17 +224,17 @@ WAL entries belonging to:
   would push the aggregate over the configured cap we rotate immediately: shift
   older suffixes up, close and rename `wal/quiver.wal` to `quiver.wal.1`, and
   reopen a fresh `quiver.wal`. Each rotation records the byte span covered by the
-  retired chunk so cleanup can later delete `quiver.wal.N` only after the
+  retired file so cleanup can later delete `quiver.wal.N` only after the
   persisted logical cursor exceeds that span's upper bound. We never
   rewrite rotated files; they are deleted wholesale once fully covered by the
   durability pointer, avoiding rewrites of large historical blobs while keeping
   the total WAL footprint bounded by `wal.max_size`. To keep rename churn and
-  per-core directory fan-out predictable we retain at most `wal.max_chunks`
+  per-core directory fan-out predictable we retain at most `wal.max_rotated_files`
   files (default `10`, counting the active WAL plus rotated siblings). Operators
-  can override the default. Hitting the chunk cap is treated like hitting the
+  can override the default. Hitting the rotated file cap is treated like hitting the
   byte cap: the next append that *would* require a rotation instead trips
-  backpressure (or `drop_oldest`, if selected) until either truncation reclaims
-  an older chunk or the limit is raised. We never create an eleventh file in the
+  backpressure (or `drop_oldest`, if selected) until either compaction reclaims
+  an older rotated file or the limit is raised. We never create an eleventh file in the
   background because doing so would undermine the predictive bound the knob is
   meant to provide.
 - **Durability-only dependency**: Because WAL truncation depends solely on segment

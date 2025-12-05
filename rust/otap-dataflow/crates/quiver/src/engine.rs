@@ -75,7 +75,7 @@ fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
         config.wal.flush_interval,
     )
     .with_max_wal_size(config.wal.max_size_bytes.get())
-    .with_max_chunks(config.wal.max_chunk_count as usize)
+    .with_max_rotated_files(config.wal.max_rotated_files as usize)
     .with_rotation_target(config.wal.rotation_target_bytes.get());
     Ok(WalWriter::open(options)?)
 }

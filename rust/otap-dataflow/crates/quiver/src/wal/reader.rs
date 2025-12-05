@@ -4,7 +4,7 @@
 //! Read-side companion to the WAL writer.
 //!
 //! The reader validates headers, streams entries starting at arbitrary offsets,
-//! and exposes helper types such as [`WalTruncateCursor`] so higher layers can
+//! and exposes helper types such as [`WalConsumerCheckpoint`] so higher layers can
 //! describe how much of the log is safe to reclaim. Like the writer, it is
 //! currently exercised by tests until the runtime wires in replay logic.
 #![allow(dead_code)]
@@ -73,7 +73,7 @@ impl WalReader {
 }
 
 /// Iterator that yields decoded [`WalRecordBundle`] instances while keeping
-/// track of the next byte offset so callers can build truncate cursors.
+/// track of the next byte offset so callers can build consumer checkpoints.
 pub(crate) struct WalEntryIter<'a> {
     file: &'a mut File,
     buffer: Vec<u8>,
@@ -188,16 +188,16 @@ pub(crate) struct DecodedWalSlot {
     pub payload: Vec<u8>,
 }
 
-/// Shared cursor used by writers and readers to describe how much of the WAL is
+/// Consumer checkpoint used by writers and readers to describe how much of the WAL is
 /// durably processed. `safe_offset` is expressed in absolute bytes (including
 /// the header) while `safe_sequence` guards against replay regressions.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct WalTruncateCursor {
+pub(crate) struct WalConsumerCheckpoint {
     pub safe_offset: u64,
     pub safe_sequence: u64,
 }
 
-impl WalTruncateCursor {
+impl WalConsumerCheckpoint {
     /// Advances the cursor to cover the provided bundle. Callers typically run
     /// this inside a replay loop and later hand the cursor back to the writer so
     /// it can truncate or reclaim the prefix.

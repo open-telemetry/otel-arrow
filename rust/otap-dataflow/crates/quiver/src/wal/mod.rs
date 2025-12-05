@@ -8,16 +8,16 @@ use thiserror::Error;
 
 use crate::record_bundle::SlotId;
 
+mod checkpoint_sidecar;
 mod header;
 mod reader;
 #[cfg(test)]
 mod tests;
-mod truncate_sidecar;
 mod writer;
 
 // Keep reader exports visible even though only tests consume them today.
 #[allow(unused_imports)]
-pub(crate) use reader::{DecodedWalSlot, WalReader, WalRecordBundle, WalTruncateCursor};
+pub(crate) use reader::{DecodedWalSlot, WalReader, WalRecordBundle, WalConsumerCheckpoint};
 // Writer is used broadly soon; suppress warnings while integration lands.
 #[allow(unused_imports)]
 pub(crate) use writer::{WalOffset, WalWriter, WalWriterOptions};
@@ -79,12 +79,12 @@ pub enum WalError {
         /// The hash stored in the WAL header.
         found: [u8; 16],
     },
-    /// Truncate sidecar contains invalid or corrupted bytes.
-    #[error("invalid truncate sidecar: {0}")]
-    InvalidTruncateSidecar(&'static str),
-    /// Truncate cursor failed validation.
-    #[error("invalid truncate cursor: {0}")]
-    InvalidTruncateCursor(&'static str),
+    /// Checkpoint sidecar contains invalid or corrupted bytes.
+    #[error("invalid checkpoint sidecar: {0}")]
+    InvalidCheckpointSidecar(&'static str),
+    /// Consumer checkpoint failed validation.
+    #[error("invalid consumer checkpoint: {0}")]
+    InvalidConsumerCheckpoint(&'static str),
     /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),

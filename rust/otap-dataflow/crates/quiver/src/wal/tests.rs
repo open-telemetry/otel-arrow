@@ -22,11 +22,11 @@ use crate::record_bundle::{
 
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::test_support::{self, ReadFailure};
-use super::truncate_sidecar::{TRUNCATE_SIDECAR_LEN, TruncateSidecar};
+use super::checkpoint_sidecar::{CHECKPOINT_SIDECAR_LEN, CheckpointSidecar};
 use super::writer::test_support as writer_test_support;
 use super::{
     ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
-    WalTruncateCursor, WalWriter, WalWriterOptions,
+    WalConsumerCheckpoint, WalWriter, WalWriterOptions,
 };
 
 struct FixtureSlot {
@@ -518,12 +518,12 @@ fn wal_writer_records_cursor_without_truncating() {
     let mut iter = reader.iter_from(0).expect("iter");
     let first_entry = iter.next().expect("entry").expect("ok");
 
-    let cursor = WalTruncateCursor {
+    let cursor = WalConsumerCheckpoint {
         safe_offset: first_entry.next_offset,
-        ..WalTruncateCursor::default()
+        ..WalConsumerCheckpoint::default()
     };
     writer
-        .record_truncate_cursor(&cursor)
+        .advance_consumer_checkpoint(&cursor)
         .expect("record cursor");
     drop(writer);
 
@@ -531,10 +531,10 @@ fn wal_writer_records_cursor_without_truncating() {
     assert_eq!(len_after, len_before,
         "recording a safe cursor no longer mutates the active wal immediately");
 
-    let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
-    let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    let sidecar_path = wal_path.parent().unwrap().join("checkpoint.offset");
+    let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(
-        sidecar.logical_offset,
+        sidecar.global_data_offset,
         first_entry.next_offset - WAL_HEADER_LEN as u64
     );
 
@@ -575,13 +575,13 @@ fn wal_writer_enforces_safe_offset_boundaries() {
     let mut iter = reader.iter_from(0).expect("iter");
     let first_entry = iter.next().expect("entry").expect("ok");
 
-    let mut cursor = WalTruncateCursor {
+    let mut cursor = WalConsumerCheckpoint {
         safe_offset: first_entry.offset.position + 4,
         safe_sequence: first_entry.sequence,
     };
 
-    match writer.record_truncate_cursor(&cursor) {
-        Err(WalError::InvalidTruncateCursor(message)) => {
+    match writer.advance_consumer_checkpoint(&cursor) {
+        Err(WalError::InvalidConsumerCheckpoint(message)) => {
             assert_eq!(message, "safe offset splits entry boundary")
         }
         other => panic!("expected invalid cursor error, got {other:?}"),
@@ -589,21 +589,21 @@ fn wal_writer_enforces_safe_offset_boundaries() {
 
     cursor.advance(&first_entry);
     writer
-        .record_truncate_cursor(&cursor)
+        .advance_consumer_checkpoint(&cursor)
         .expect("record succeeds with aligned cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
-    let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    let sidecar_path = wal_path.parent().unwrap().join("checkpoint.offset");
+    let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(
-        sidecar.logical_offset,
+        sidecar.global_data_offset,
         first_entry.next_offset - WAL_HEADER_LEN as u64
     );
 }
 
 #[test]
-fn wal_writer_persists_truncate_cursor_sidecar() {
-    let (_dir, wal_path) = temp_wal("truncate_sidecar.wal");
+fn wal_writer_persists_consumer_checkpoint_sidecar() {
+    let (_dir, wal_path) = temp_wal("checkpoint_sidecar.wal");
     let descriptor = logs_descriptor();
 
     let mut writer = WalWriter::open(WalWriterOptions::new(
@@ -620,19 +620,19 @@ fn wal_writer_persists_truncate_cursor_sidecar() {
     let _ = writer.append_bundle(&bundle).expect("append");
 
     let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
-    let cursor = WalTruncateCursor {
+    let cursor = WalConsumerCheckpoint {
         safe_offset: file_len,
-        ..WalTruncateCursor::default()
+        ..WalConsumerCheckpoint::default()
     };
     writer
-        .record_truncate_cursor(&cursor)
+        .advance_consumer_checkpoint(&cursor)
         .expect("record cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().expect("dir").join("truncate.offset");
-    let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    let sidecar_path = wal_path.parent().expect("dir").join("checkpoint.offset");
+    let state = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(
-        state.logical_offset,
+        state.global_data_offset,
         file_len.saturating_sub(WAL_HEADER_LEN as u64)
     );
 }
@@ -645,7 +645,7 @@ fn wal_writer_rotates_when_target_exceeded() {
     let mut writer = WalWriter::open(
         WalWriterOptions::new(wal_path.clone(), [0x51; 16], Duration::ZERO)
             .with_rotation_target(1)
-            .with_max_chunks(4),
+            .with_max_rotated_files(4),
     )
     .expect("writer");
 
@@ -661,7 +661,7 @@ fn wal_writer_rotates_when_target_exceeded() {
     let rotated_path = rotated_path_for(&wal_path, 1);
     assert!(
         rotated_path.exists(),
-        "rotated chunk missing at {:?}",
+        "rotated file missing at {:?}",
         rotated_path
     );
     let rotated_len = std::fs::metadata(&rotated_path)
@@ -672,19 +672,19 @@ fn wal_writer_rotates_when_target_exceeded() {
     let active_len = std::fs::metadata(&wal_path).expect("active metadata").len();
     assert_eq!(active_len, WAL_HEADER_LEN as u64);
 
-    let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
-    let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    let sidecar_path = wal_path.parent().unwrap().join("checkpoint.offset");
+    let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(sidecar.rotation_generation, 1);
 }
 
 #[test]
-fn wal_writer_reloads_rotated_chunks_on_restart() {
+fn wal_writer_reloads_rotated_files_on_restart() {
     let (_dir, wal_path) = temp_wal("replay_rotations.wal");
 
     let descriptor = logs_descriptor();
     let options = WalWriterOptions::new(wal_path.clone(), [0x54; 16], Duration::ZERO)
         .with_rotation_target(1)
-        .with_max_chunks(4);
+        .with_max_rotated_files(4);
 
     {
         let mut writer = WalWriter::open(options.clone()).expect("first writer");
@@ -714,14 +714,14 @@ fn wal_writer_reloads_rotated_chunks_on_restart() {
 }
 
 #[test]
-fn wal_writer_errors_when_chunk_cap_reached() {
-    let (_dir, wal_path) = temp_wal("chunk_cap.wal");
+fn wal_writer_errors_when_rotated_file_cap_reached() {
+    let (_dir, wal_path) = temp_wal("rotated_cap.wal");
 
     let descriptor = logs_descriptor();
     let mut writer = WalWriter::open(
         WalWriterOptions::new(wal_path.clone(), [0x52; 16], Duration::ZERO)
             .with_rotation_target(1)
-            .with_max_chunks(1),
+            .with_max_rotated_files(1),
     )
     .expect("writer");
 
@@ -732,16 +732,16 @@ fn wal_writer_errors_when_chunk_cap_reached() {
         .expect("first append rotates");
     assert!(
         rotated_path_for(&wal_path, 1).exists(),
-        "expected rotated chunk to exist",
+        "expected rotated file to exist",
     );
 
     let err = writer
         .append_bundle(&single_slot_bundle(&descriptor, 0x03, &payload))
-        .expect_err("second rotation should hit chunk cap");
+        .expect_err("second rotation should hit rotated file cap");
     match err {
         WalError::WalAtCapacity(message) => {
             assert!(
-                message.contains("chunk cap"),
+                message.contains("rotated wal file cap"),
                 "unexpected error message: {message}",
             );
         }
@@ -765,7 +765,7 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
     let mut writer = WalWriter::open(
         WalWriterOptions::new(wal_path.clone(), [0x53; 16], Duration::ZERO)
             .with_rotation_target(1)
-            .with_max_chunks(4)
+            .with_max_rotated_files(4)
             .with_max_wal_size(max_wal_size),
     )
     .expect("writer");
@@ -790,12 +790,12 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
         other => panic!("expected WalAtCapacity, got {other:?}"),
     }
 
-    let cursor = WalTruncateCursor {
+    let cursor = WalConsumerCheckpoint {
         safe_offset: WAL_HEADER_LEN as u64,
-        ..WalTruncateCursor::default()
+        ..WalConsumerCheckpoint::default()
     };
     writer
-        .record_truncate_cursor(&cursor)
+        .advance_consumer_checkpoint(&cursor)
         .expect("record cursor purges rotated chunks");
 
     assert!(
@@ -814,7 +814,7 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
 }
 
 #[test]
-fn wal_writer_ignores_invalid_truncate_sidecar() {
+fn wal_writer_ignores_invalid_checkpoint_sidecar() {
     let (_dir, wal_path) = temp_wal("bad_sidecar.wal");
 
     // Create the WAL header so the file exists.
@@ -827,8 +827,8 @@ fn wal_writer_ignores_invalid_truncate_sidecar() {
         .expect("writer");
     }
 
-    let sidecar_path = wal_path.parent().expect("dir").join("truncate.offset");
-    std::fs::write(&sidecar_path, vec![0u8; TRUNCATE_SIDECAR_LEN - 4]).expect("write corrupt");
+    let sidecar_path = wal_path.parent().expect("dir").join("checkpoint.offset");
+    std::fs::write(&sidecar_path, vec![0u8; CHECKPOINT_SIDECAR_LEN - 4]).expect("write corrupt");
 
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
@@ -845,18 +845,18 @@ fn wal_writer_ignores_invalid_truncate_sidecar() {
     let _ = writer.append_bundle(&bundle).expect("append");
     let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
 
-    let cursor = WalTruncateCursor {
+    let cursor = WalConsumerCheckpoint {
         safe_offset: file_len,
-        ..WalTruncateCursor::default()
+        ..WalConsumerCheckpoint::default()
     };
     writer
-        .record_truncate_cursor(&cursor)
+        .advance_consumer_checkpoint(&cursor)
         .expect("record cursor");
     drop(writer);
 
-    let state = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
+    let state = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
     assert_eq!(
-        state.logical_offset,
+        state.global_data_offset,
         file_len.saturating_sub(WAL_HEADER_LEN as u64)
     );
 }
@@ -934,13 +934,13 @@ fn wal_writer_rejects_truncate_beyond_file_end() {
         .expect("metadata")
         .len()
         .saturating_add(8);
-    let cursor = WalTruncateCursor {
+    let cursor = WalConsumerCheckpoint {
         safe_offset: file_len,
         safe_sequence: 0,
     };
 
-    match writer.truncate_to(&cursor) {
-        Err(WalError::InvalidTruncateCursor("safe offset beyond wal tail")) => {}
+    match writer.compact_to(&cursor) {
+        Err(WalError::InvalidConsumerCheckpoint("safe offset beyond wal tail")) => {}
         other => panic!("expected truncate bounds error, got {:?}", other),
     }
 }
@@ -1073,14 +1073,14 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     assert!(iter.next().is_none(), "failed append must not persist");
     drop(iter);
 
-    let mut cursor = WalTruncateCursor::default();
+    let mut cursor = WalConsumerCheckpoint::default();
     cursor.safe_offset = WAL_HEADER_LEN as u64;
     cursor.safe_sequence = only.sequence;
     drop(reader);
 
     writer
-        .truncate_to(&cursor)
-        .expect("truncate removes persisted entry");
+        .compact_to(&cursor)
+        .expect("compact_to removes persisted entry");
 
     let retried = writer
         .append_bundle(&bundle)
@@ -1097,8 +1097,8 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
 }
 
 #[test]
-fn wal_writer_preflight_rejects_when_chunk_cap_hit() {
-    let (_dir, wal_path) = temp_wal("chunk_cap.wal");
+fn wal_writer_preflight_rejects_when_rotated_file_cap_hit() {
+    let (_dir, wal_path) = temp_wal("rotated_file_cap.wal");
     let descriptor = logs_descriptor();
     let bundle = FixtureBundle::new(
         descriptor,
@@ -1108,7 +1108,7 @@ fn wal_writer_preflight_rejects_when_chunk_cap_hit() {
     let hash = [0x77; 16];
     let constrained_opts = WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO)
         .with_rotation_target(1)
-        .with_max_chunks(1);
+        .with_max_rotated_files(1);
 
     {
         let mut writer = WalWriter::open(constrained_opts.clone()).expect("writer");
@@ -1119,12 +1119,12 @@ fn wal_writer_preflight_rejects_when_chunk_cap_hit() {
     let rotated_path = rotated_path_for(&wal_path, 1);
     assert!(
         rotated_path.exists(),
-        "rotation should have produced chunk file"
+        "rotation should have produced rotated file"
     );
 
     {
         let mut writer = WalWriter::open(constrained_opts).expect("writer with cap");
-        let err = writer.append_bundle(&bundle).expect_err("chunk cap hit");
+        let err = writer.append_bundle(&bundle).expect_err("rotated file cap hit");
         assert!(matches!(err, WalError::WalAtCapacity(_)));
     }
 
@@ -1137,9 +1137,9 @@ fn wal_writer_preflight_rejects_when_chunk_cap_hit() {
     let mut writer = WalWriter::open(
         WalWriterOptions::new(wal_path.clone(), hash, Duration::ZERO)
             .with_rotation_target(1)
-            .with_max_chunks(2),
+            .with_max_rotated_files(2),
     )
-    .expect("writer with higher chunk cap");
+    .expect("writer with higher rotated file cap");
     let retry = writer
         .append_bundle(&bundle)
         .expect("retry append succeeds once cap raised");
@@ -1390,7 +1390,7 @@ fn wal_reader_iter_from_respects_offsets() {
     assert_eq!(entry_two.sequence, 1);
     assert_eq!(entry_one.next_offset, entry_two.offset.position);
 
-    let mut cursor = WalTruncateCursor::default();
+    let mut cursor = WalConsumerCheckpoint::default();
     cursor.advance(&entry_one);
     assert_eq!(cursor.safe_offset, entry_one.next_offset);
     assert_eq!(cursor.safe_sequence, entry_one.sequence);
@@ -1558,7 +1558,7 @@ fn wal_writer_handles_large_payload_batches() {
 }
 
 #[test]
-fn wal_truncate_cursor_recovers_after_partial_entry() {
+fn wal_consumer_checkpoint_recovers_after_partial_entry() {
     let (_dir, wal_path) = temp_wal("recovery.wal");
     let descriptor = logs_descriptor();
     let hash = [0x99; 16];
@@ -1585,12 +1585,12 @@ fn wal_truncate_cursor_recovers_after_partial_entry() {
     let _ = writer.append_bundle(&second_bundle).expect("second append");
     drop(writer);
 
-    // Replay the WAL and advance the truncate cursor to the end of the first
+    // Replay the WAL and advance the consumer checkpoint to the end of the first
     // entry—everything before this offset is known to be durable.
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iterator");
     let first_entry = iter.next().expect("first entry").expect("ok");
-    let mut cursor = WalTruncateCursor::default();
+    let mut cursor = WalConsumerCheckpoint::default();
     cursor.advance(&first_entry);
     drop(reader);
 
@@ -1617,7 +1617,7 @@ fn wal_truncate_cursor_recovers_after_partial_entry() {
     }
     drop(reader);
 
-    // Truncate the file back to the cursor's safe offset so future appends
+    // Compact the file back to the checkpoint's safe offset so future appends
     // resume from a clean boundary.
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
@@ -1626,7 +1626,7 @@ fn wal_truncate_cursor_recovers_after_partial_entry() {
     ))
     .expect("writer reopens");
     writer
-        .truncate_to(&cursor)
+        .compact_to(&cursor)
         .expect("truncate back to safe offset");
 
     let recovery_bundle = FixtureBundle::new(
@@ -1760,7 +1760,7 @@ fn run_crash_case(case: CrashCase) {
     let descriptor = logs_descriptor();
     let options = WalWriterOptions::new(wal_path.clone(), [0xC7; 16], Duration::ZERO)
         .with_rotation_target(32 * 1024)
-        .with_max_chunks(4);
+        .with_max_rotated_files(4);
 
     let mut writer = WalWriter::open(options.clone()).expect("writer");
     for value in 0..4 {
@@ -1794,7 +1794,7 @@ fn run_crash_case(case: CrashCase) {
         case.name
     );
     writer_test_support::inject_crash(case.injection);
-    let err = match writer.record_truncate_cursor(&cursor) {
+    let err = match writer.advance_consumer_checkpoint(&cursor) {
         Ok(_) => panic!("{}: crash injection did not trigger", case.name),
         Err(err) => err,
     };
@@ -1810,10 +1810,10 @@ fn run_crash_case(case: CrashCase) {
     writer_test_support::reset_flush_notifications();
 }
 
-fn wal_cursor_after_entries(path: &Path, entry_count: usize) -> WalTruncateCursor {
+fn wal_cursor_after_entries(path: &Path, entry_count: usize) -> WalConsumerCheckpoint {
     let mut reader = WalReader::open(path).expect("reader for cursor");
     let mut iter = reader.iter_from(0).expect("cursor iterator");
-    let mut cursor = WalTruncateCursor::default();
+    let mut cursor = WalConsumerCheckpoint::default();
     for idx in 0..entry_count {
         let bundle = iter
             .next()
@@ -1833,7 +1833,7 @@ fn assert_crash_recovery(
     options: &WalWriterOptions,
     descriptor: &BundleDescriptor,
     case_name: &str,
-    cursor: &WalTruncateCursor,
+    cursor: &WalConsumerCheckpoint,
 ) {
     assert_reader_clean(&options.path, cursor.safe_offset, case_name);
 
@@ -1853,12 +1853,12 @@ fn assert_crash_recovery(
         .path
         .parent()
         .expect("wal dir")
-        .join("truncate.offset");
+        .join("checkpoint.offset");
     if sidecar_path.exists() {
-        let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar readable");
+        let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar readable");
         let total_logical = total_logical_bytes(&options.path);
         assert!(
-            sidecar.logical_offset <= total_logical,
+            sidecar.global_data_offset <= total_logical,
             "{case_name}: logical cursor must stay within logical stream"
         );
     }
