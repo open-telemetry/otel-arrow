@@ -484,7 +484,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -588,7 +590,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -732,7 +736,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: Some(vec![config::PartitioningStrategy::SchemaMetadata(
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
@@ -821,7 +827,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -863,7 +871,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+            storage: crate::object_store::Config::File {
+                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+            },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: Some(50),
@@ -1010,7 +1020,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: None,
@@ -1162,7 +1174,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1232,7 +1246,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1301,7 +1317,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1396,8 +1414,11 @@ mod test {
                 otap_df_config::node::NodeKind::Exporter,
             );
 
-        let exporter_impl =
-            ParquetExporter::from_config(pipeline_ctx, &json!({ "base_uri": base_dir })).unwrap();
+        let exporter_impl = ParquetExporter::from_config(
+            pipeline_ctx,
+            &json!({ "storage": { "file": { "base_uri": base_dir } } }),
+        )
+        .unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -1517,7 +1538,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::Config::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });

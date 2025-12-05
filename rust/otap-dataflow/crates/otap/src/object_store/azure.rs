@@ -126,6 +126,38 @@ mod test {
     use super::*;
 
     #[tokio::test]
+    async fn test_same_different_same() {
+        let provider = setup_provider(vec![
+            "token1".to_string(),
+            "token1".to_string(),
+            "token2".to_string(),
+            "token2".to_string(),
+        ]);
+        let cred1 = provider.get_credential().await.unwrap();
+        let cred2 = provider.get_credential().await.unwrap();
+        assert!(Arc::ptr_eq(&cred1, &cred2));
+
+        let cred3 = provider.get_credential().await.unwrap();
+        let cred4 = provider.get_credential().await.unwrap();
+
+        assert!(!Arc::ptr_eq(&cred1, &cred3));
+        assert!(Arc::ptr_eq(&cred3, &cred4));
+    }
+
+    #[tokio::test]
+    async fn test_same_text_diff_token() {
+        let provider = setup_provider(vec![
+            "token1".to_string(),
+            "token2".to_string(),
+            "token1".to_string(),
+        ]);
+        let cred1 = provider.get_credential().await.unwrap();
+        let _ = provider.get_credential().await.unwrap();
+        let cred3 = provider.get_credential().await.unwrap();
+        assert!(!Arc::ptr_eq(&cred1, &cred3));
+    }
+
+    #[tokio::test]
     async fn test_same_token() {
         let provider = setup_provider(vec!["token1".to_string(), "token1".to_string()]);
         let cred1 = provider.get_credential().await.unwrap();
