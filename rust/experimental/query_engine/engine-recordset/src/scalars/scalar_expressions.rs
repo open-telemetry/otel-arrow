@@ -35,24 +35,7 @@ where
 {
     let value = match scalar_expression {
         ScalarExpression::Source(s) => {
-            if let Some(record) = execution_context.get_record() {
-                let mut selectors = s.get_value_accessor().get_selectors().iter();
-
-                select_from_borrowed_value(
-                    execution_context,
-                    BorrowSource::Source,
-                    record.borrow(),
-                    scalar_expression,
-                    &mut selectors,
-                )?
-            } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
-                    scalar_expression,
-                    || "Source could not be found".into(),
-                );
-                ResolvedValue::Computed(OwnedValue::Null)
-            }
+            execute_source_scalar_expression(execution_context, scalar_expression, s)?
         }
         ScalarExpression::Attached(a) => {
             let name = a.get_name().get_value();
@@ -85,40 +68,7 @@ where
             }
         }
         ScalarExpression::Variable(v) => {
-            let variable_name = v.get_name().get_value();
-
-            if let Some(variable) = execution_context
-                .get_variables()
-                .get_global_or_local_variable(variable_name)
-            {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    scalar_expression,
-                    || {
-                        format!(
-                            "Resolved '{}' variable with name '{variable_name}'",
-                            variable.get_value_type()
-                        )
-                    },
-                );
-
-                let mut selectors = v.get_value_accessor().get_selectors().iter();
-
-                select_from_borrowed_value(
-                    execution_context,
-                    BorrowSource::Variable,
-                    variable,
-                    scalar_expression,
-                    &mut selectors,
-                )?
-            } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
-                    scalar_expression,
-                    || format!("Variable matching name '{variable_name}' could not be found"),
-                );
-                ResolvedValue::Computed(OwnedValue::Null)
-            }
+            execute_variable_scalar_expression(execution_context, scalar_expression, v)?
         }
         ScalarExpression::Static(s) => ResolvedValue::Value(s.to_value()),
         ScalarExpression::Constant(c) => {
@@ -367,7 +317,31 @@ where
                 }
             }
         }
-        ScalarExpression::Argument(_) => todo!(),
+        ScalarExpression::Argument(a) => {
+            let mut value = execution_context
+                .get_arguments()
+                .expect("Arguments were not found")
+                .get_argument(a.get_argument_id())?;
+
+            let selectors = a.get_value_accessor().get_selectors();
+            if !selectors.is_empty() {
+                for selector in selectors {
+                    match value.select(
+                        execution_context,
+                        selector,
+                        execute_scalar_expression(execution_context, selector)?.to_value(),
+                    )? {
+                        Some(v) => value = v,
+                        None => {
+                            value = ResolvedValue::Computed(OwnedValue::Null);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            value
+        }
         ScalarExpression::InvokeFunction(_) => todo!(),
     };
 
@@ -380,11 +354,93 @@ where
     Ok(value)
 }
 
+pub(crate) fn execute_source_scalar_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    expression: &'a dyn Expression,
+    source_scalar_expression: &'a SourceScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    Ok(if let Some(record) = execution_context.get_record() {
+        let mut selectors = source_scalar_expression
+            .get_value_accessor()
+            .get_selectors()
+            .iter();
+
+        select_from_borrowed_value(
+            execution_context,
+            BorrowSource::Source,
+            record.borrow(),
+            expression,
+            &mut selectors,
+        )?
+    } else {
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Warn,
+            expression,
+            || "Source could not be found".into(),
+        );
+        ResolvedValue::Computed(OwnedValue::Null)
+    })
+}
+
+pub(crate) fn execute_variable_scalar_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    expression: &'a dyn Expression,
+    variable_scalar_expression: &'a VariableScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    let variable_name = variable_scalar_expression.get_name().get_value();
+
+    Ok(
+        if let Some(variable) = execution_context
+            .get_variables()
+            .get_global_or_local_variable(variable_name)
+        {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                expression,
+                || {
+                    format!(
+                        "Resolved '{}' variable with name '{variable_name}'",
+                        variable.get_value_type()
+                    )
+                },
+            );
+
+            let mut selectors = variable_scalar_expression
+                .get_value_accessor()
+                .get_selectors()
+                .iter();
+
+            select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Variable,
+                variable,
+                expression,
+                &mut selectors,
+            )?
+        } else {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Warn,
+                expression,
+                || format!("Variable matching name '{variable_name}' could not be found"),
+            );
+            ResolvedValue::Computed(OwnedValue::Null)
+        },
+    )
+}
+
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     borrow_source: BorrowSource,
     borrow: Ref<'b, dyn AsStaticValue + 'static>,
-    expression: &'a ScalarExpression,
+    expression: &'a dyn Expression,
     selectors: &mut Iter<'a, ScalarExpression>,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -2095,5 +2151,82 @@ mod tests {
                 )],
             ))),
         ));
+    }
+
+    #[test]
+    fn test_execute_argument_scalar_expression() {
+        fn run_test_success(input: ArgumentScalarExpression, expected: &str) {
+            let mut test =
+                TestExecutionContext::new().with_record(TestRecord::new().with_key_value(
+                    "Attributes".into(),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([(
+                        "key1".into(),
+                        OwnedValue::String(StringValueStorage::new("value1".into())),
+                    )]))),
+                ));
+
+            let execution_context = test.create_execution_context();
+
+            let arguments = vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                )),
+                InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
+                    ),
+                )),
+            ];
+
+            let execution_context_arguments = ExecutionContextArgumentContainer {
+                parent_execution_context: &execution_context,
+                arguments: &arguments,
+            };
+
+            let scope = execution_context.create_scope(Some(&execution_context_arguments));
+
+            let expression = ScalarExpression::Argument(input);
+
+            let actual = execute_scalar_expression(&scope, &expression).unwrap();
+
+            assert_eq!(
+                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                actual.to_value()
+            );
+        }
+
+        run_test_success(
+            ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                0,
+                ValueAccessor::new(),
+            ),
+            "hello world",
+        );
+
+        run_test_success(
+            ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                1,
+                ValueAccessor::new(),
+            ),
+            "value1",
+        );
     }
 }
