@@ -82,9 +82,9 @@ pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, a
             tenant_id,
         } => {
             let options = Some(azure_identity::AzureCliCredentialOptions {
-                additionally_allowed_tenants: additionally_allowed_tenants,
-                subscription: subscription,
-                tenant_id: tenant_id,
+                additionally_allowed_tenants,
+                subscription,
+                tenant_id,
                 ..Default::default()
             });
             Ok(AzureCliCredential::new(options)?)
