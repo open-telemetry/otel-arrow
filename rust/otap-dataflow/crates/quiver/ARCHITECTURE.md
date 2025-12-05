@@ -181,11 +181,10 @@ WAL entries belonging to:
 - **Track checkpoint progress**: After a segment finalizes and its metadata + file
   are flushed, we advance a *logical* cursor that counts data bytes (headers
   excluded) across the entire WAL stream. This `global_data_offset` represents "the
-  earliest WAL data still needed for crash recovery." We persist that `u64`
-  (plus a monotonically increasing rotation generation) into a tiny sidecar file
-  (e.g., `wal/checkpoint.offset`) immediately after advancing it and fsync the
-  sidecar so crash recovery can resume from that logical offset without
-  rescanning finalized entries.
+  earliest WAL data still needed for crash recovery." We persist that `u64` into
+  a tiny sidecar file (e.g., `wal/checkpoint.offset`) immediately after advancing
+  it and fsync the sidecar so crash recovery can resume from that logical offset
+  without rescanning finalized entries.
 - **Checkpoint sidecar format**: The sidecar is a fixed 24-byte struct written in
   little-endian order:
 
