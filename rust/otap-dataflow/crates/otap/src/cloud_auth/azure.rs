@@ -187,7 +187,7 @@ mod test {
 
     fn test_auth_method(json: &str, expected: AuthMethod) {
         let method: AuthMethod =
-            serde_json::from_str(&json).expect("Failed to deserialize AuthMethod");
+            serde_json::from_str(json).expect("Failed to deserialize AuthMethod");
         assert_eq!(method, expected);
 
         assert!(from_auth_method(method).is_ok());
