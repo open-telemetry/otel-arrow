@@ -429,10 +429,10 @@ impl ToExec for FilterPlan {
             .map(|attr_filter| attr_filter.to_exec(session_ctx, otap_batch))
             .transpose()?;
 
-        // compute how ot handle missing attributes. Basically if the attrs filter is
-        // not(attribute exists), then if there are no attributes for this filter in the
-        // OTAP batch, or if the id column is null for some row then we treat the rows as
-        // it passes the attribute filter because the attribute doesn't exist
+        // compute how ot handle missing attributes. If the attrs filter is not(attr exists), then
+        // if the id column null for some row (meaning no attributes), or if the ID column is
+        // absent entirely (meaning now rows have attributes) then we treat the rows as it passes
+        // the attribute filter because
         let missing_attrs_pass = matches!(
             &self.attribute_filter,
             Some(
@@ -550,9 +550,9 @@ pub struct FilterExec {
     predicate: Option<AdaptivePhysicalExprExec>,
     attributes_filter: Option<Composite<AttributeFilterExec>>,
 
-    /// determines how we treat rows that where the attribute doesn't exist. generally this will
-    /// cause the row not to pass the filter, unless this is true which we'll set it as for
-    /// filters like `attributes["x"] == null`
+    /// determines how we treat rows that where there are no attributes. if false, this cause the
+    /// row not to pass the filter, unless this is true which it should be set it as for filters/
+    /// like `attributes["x"] == null`
     missing_attrs_pass: bool,
 }
 
