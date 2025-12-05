@@ -2,10 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use arc_swap::ArcSwap;
+use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use otap_df_config::tls::TlsServerConfig;
-use rustls::server::{ClientHello, ResolvesServerCert};
+use rustls::RootCertStore;
+use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
+use rustls_native_certs::load_native_certs;
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +22,14 @@ use tonic::transport::{Identity, ServerTlsConfig};
 /// This limit is chosen to be generous enough for typical certificate chains (which are usually < 10KB)
 /// while preventing potential OOM issues from loading extremely large files.
 const MAX_TLS_FILE_SIZE: u64 = 4 * 1024 * 1024; // 4MB
+
+/// Maximum number of concurrent TLS handshakes per receiver instance.
+///
+/// This is a conservative default that balances concurrency with resource usage:
+/// - Allows concurrent handshakes to prevent slow clients from blocking others
+/// - Limits memory overhead for pending handshake state
+/// - May need adjustment based on actual workload characteristics
+const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 
 /// Loads TLS configuration for a server.
 ///
@@ -44,7 +57,7 @@ pub async fn load_server_tls_config(
             (cert, key)
         }
         (None, None, Some(cert_pem), Some(key_pem)) => {
-            (cert_pem.clone().into_bytes(), key_pem.clone().into_bytes())
+            (cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec())
         }
         (None, None, None, None) => {
             return Ok(None);
@@ -67,7 +80,7 @@ pub async fn load_server_tls_config(
     let identity = Identity::from_pem(cert, key);
     let tls_builder = ServerTlsConfig::new().identity(identity);
 
-    // Note: Client CA/mTLS support is intentionally omitted in this simplified version.
+    // Note: Client CA/mTLS support is handled by build_reloadable_server_config instead.
 
     Ok(Some(tls_builder))
 }
@@ -77,36 +90,59 @@ pub async fn load_server_tls_config(
 /// This function handles the TLS handshake for each incoming connection.
 /// TLS handshake failures are logged and filtered out (non-fatal).
 /// Transport-level listener errors are propagated to terminate the server.
+///
+/// # Concurrency
+///
+/// TLS handshakes are performed concurrently (up to `MAX_CONCURRENT_HANDSHAKES`) to prevent
+/// slow or malicious clients from blocking other connections. This is important because
+/// TLS handshakes involve network round-trips and can take significant time.
+///
+/// When the maximum concurrent handshakes limit is reached, backpressure is applied:
+/// new connections wait in the OS TCP accept queue until a handshake slot becomes available.
+/// This prevents unbounded resource consumption while maintaining high throughput.
 pub fn create_tls_stream<S, T>(
     listener_stream: S,
     tls_acceptor: tokio_rustls::TlsAcceptor,
+    handshake_timeout: Option<Duration>,
 ) -> impl Stream<Item = Result<tokio_rustls::server::TlsStream<T>, io::Error>>
 where
     S: Stream<Item = Result<T, io::Error>> + Send + 'static,
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
-    listener_stream.filter_map(move |conn_res| {
-        let acceptor = tls_acceptor.clone();
-        async move {
-            match conn_res {
-                Ok(conn) => {
-                    // Try TLS handshake
-                    match acceptor.accept(conn).await {
-                        Ok(stream) => Some(Ok::<_, io::Error>(stream)),
-                        Err(e) => {
-                            // TLS handshake failed - log and continue
-                            log::warn!("TLS handshake failed: {}", e);
-                            None
+    listener_stream
+        .map(move |conn_res| {
+            let acceptor = tls_acceptor.clone();
+            async move {
+                match conn_res {
+                    Ok(conn) => {
+                        // Try TLS handshake
+                        let handshake_future = acceptor.accept(conn);
+                        let timeout_duration = handshake_timeout.unwrap_or(Duration::from_secs(10));
+
+                        match tokio::time::timeout(timeout_duration, handshake_future).await {
+                            Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
+                            Ok(Err(e)) => {
+                                // TLS handshake failed - log and continue
+                                log::debug!("TLS handshake failed: {}", e);
+                                None
+                            }
+                            Err(_) => {
+                                log::warn!("TLS handshake timed out");
+                                None
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    // Transport-level listener error - propagate to terminate server
-                    Some(Err(e))
+                    Err(e) => {
+                        // Transport-level listener error - propagate to terminate server
+                        Some(Err(e))
+                    }
                 }
             }
-        }
-    })
+        })
+        // Allow concurrent handshakes to prevent slow/malicious clients from blocking others
+        .buffer_unordered(MAX_CONCURRENT_HANDSHAKES)
+        // Filter out failed handshakes (None values)
+        .filter_map(|res| async move { res })
 }
 
 /// A certificate resolver that lazily reloads TLS certificates with throttled file modification time (mtime) checks.
@@ -303,10 +339,9 @@ fn parse_certified_key(
     key_pem: &[u8],
     cert_path_debug: &Path,
 ) -> Result<CertifiedKey, io::Error> {
-    use rustls_pemfile::{certs, private_key};
     use std::io::BufReader;
 
-    let certs: Vec<_> = certs(&mut BufReader::new(cert_pem))
+    let certs: Vec<_> = CertificateDer::pem_reader_iter(&mut BufReader::new(cert_pem))
         .collect::<Result<_, _>>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -317,14 +352,8 @@ fn parse_certified_key(
         ));
     }
 
-    let key = private_key(&mut BufReader::new(key_pem))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "No private key found in key file",
-            )
-        })?;
+    let key = PrivateKeyDer::from_pem_reader(&mut BufReader::new(key_pem))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -362,8 +391,79 @@ pub async fn build_reloadable_server_config(
 
     let builder = rustls::ServerConfig::builder();
 
-    // Client Auth - Disabled in this simplified version
-    let builder = builder.with_no_client_auth();
+    // Client Auth (mTLS)
+    let mut client_ca_pem = Vec::new();
+
+    // Load system roots if requested
+    if config.include_system_ca_certs_pool == Some(true) {
+        let cert_res = tokio::task::spawn_blocking(load_native_certs)
+            .await
+            .map_err(io::Error::other)?;
+
+        for error in &cert_res.errors {
+            log::warn!("Error loading native cert: {}", error);
+        }
+        for cert in cert_res.certs {
+            let base64_cert = BASE64_STANDARD.encode(cert.as_ref());
+            // Wrap base64 at 64 characters per line per RFC 7468
+            let wrapped: String = base64_cert
+                .as_bytes()
+                .chunks(64)
+                .map(|c| std::str::from_utf8(c).expect("base64 is valid utf8"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let pem = format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                wrapped
+            );
+            client_ca_pem.extend_from_slice(pem.as_bytes());
+        }
+    }
+
+    // Load user-provided CA
+    if let Some(client_ca_file) = &config.client_ca_file {
+        let ca = read_file_with_limit_async(client_ca_file).await?;
+        client_ca_pem.extend_from_slice(&ca);
+    } else if let Some(client_ca_pem_str) = &config.client_ca_pem {
+        client_ca_pem.extend_from_slice(client_ca_pem_str.as_bytes());
+    }
+
+    let builder = if !client_ca_pem.is_empty() {
+        log::info!(
+            "Configuring mTLS with {} bytes of CA certs",
+            client_ca_pem.len()
+        );
+        let mut roots = RootCertStore::empty();
+        let mut reader = io::BufReader::new(&client_ca_pem[..]);
+        let mut count = 0;
+        for cert in CertificateDer::pem_reader_iter(&mut reader) {
+            let cert = cert.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            roots
+                .add(cert)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            count += 1;
+        }
+        log::info!("Loaded {} CA certificates", count);
+
+        let verifier = WebPkiClientVerifier::builder(roots.into())
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        log::debug!(
+            "Client auth mandatory: {}",
+            verifier.client_auth_mandatory()
+        );
+        builder.with_client_cert_verifier(verifier)
+    } else {
+        // If system CAs were requested but no certs were loaded (and no user CA provided),
+        // warn the user that mTLS is effectively disabled or might not work as expected.
+        // Note: client_ca_pem is empty here.
+        if config.include_system_ca_certs_pool == Some(true) {
+            log::warn!(
+                "include_system_ca_certs_pool is true, but no CA certificates were loaded. mTLS will be disabled."
+            );
+        }
+        builder.with_no_client_auth()
+    };
 
     // Cert resolver
     let mut server_config = if let (Some(cert_path), Some(key_path)) =
@@ -380,18 +480,12 @@ pub async fn build_reloadable_server_config(
         (&config.config.cert_pem, &config.config.key_pem)
     {
         // PEM-based: static
-        let certs = rustls_pemfile::certs(&mut io::BufReader::new(cert_pem.as_bytes()))
+        let certs = CertificateDer::pem_reader_iter(&mut io::BufReader::new(cert_pem.as_bytes()))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        let key = rustls_pemfile::private_key(&mut io::BufReader::new(key_pem.as_bytes()))
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "No server private key found in PEM",
-                )
-            })?;
+        let key = PrivateKeyDer::from_pem_reader(&mut io::BufReader::new(key_pem.as_bytes()))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         builder
             .with_single_cert(certs, key)
@@ -489,41 +583,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_load_server_tls_config_missing_key() {
-        let config = TlsServerConfig {
-            config: TlsConfig {
-                cert_pem: Some("fake cert".to_string()),
-                key_pem: None,
-                cert_file: None,
-                key_file: None,
-                reload_interval: None,
-            },
-        };
-
-        let result = load_server_tls_config(&config).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("TLS configuration error"));
-    }
-
-    #[tokio::test]
-    async fn test_load_server_tls_config_missing_cert() {
-        let config = TlsServerConfig {
-            config: TlsConfig {
-                cert_pem: None,
-                key_pem: Some("fake key".to_string()),
-                cert_file: None,
-                key_file: None,
-                reload_interval: None,
-            },
-        };
-
-        let result = load_server_tls_config(&config).await;
-        assert!(result.is_err());
-    }
-
     /// Generate a self-signed certificate using OpenSSL CLI.
     ///
     /// # Panics
@@ -577,8 +636,8 @@ mod tests {
 
         // 1. Generate initial cert
         generate_cert(path, "cert1", "localhost");
-        let _ = fs::copy(path.join("cert1.crt"), &cert_path).unwrap();
-        let _ = fs::copy(path.join("cert1.key"), &key_path).unwrap();
+        let _ = fs::copy(path.join("cert1.crt"), &cert_path).expect("Copy cert1.crt");
+        let _ = fs::copy(path.join("cert1.key"), &key_path).expect("Copy cert1.key");
 
         // 2. Create resolver with short interval
         let resolver = LazyReloadableCertResolver::new(
@@ -599,8 +658,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
         generate_cert(path, "cert2", "otherhost");
-        let _ = fs::copy(path.join("cert2.crt"), &cert_path).unwrap();
-        let _ = fs::copy(path.join("cert2.key"), &key_path).unwrap();
+        let _ = fs::copy(path.join("cert2.crt"), &cert_path).expect("Copy cert2.crt");
+        let _ = fs::copy(path.join("cert2.key"), &key_path).expect("Copy cert2.key");
 
         // 5. Trigger reload (async - returns false immediately)
         let reloaded = resolver.check_and_reload_if_interval_expired();
@@ -615,6 +674,49 @@ mod tests {
         // 7. Trigger again immediately - should not reload (interval not expired)
         let reloaded_again = resolver.check_and_reload_if_interval_expired();
         assert!(!reloaded_again, "Should not reload again immediately");
+    }
+
+    #[tokio::test]
+    async fn test_load_server_tls_config_missing_key() {
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_pem: Some("fake cert".to_string()),
+                key_pem: None,
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
+        };
+
+        let result = load_server_tls_config(&config).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("TLS configuration error"));
+    }
+
+    #[tokio::test]
+    async fn test_load_server_tls_config_missing_cert() {
+        let config = TlsServerConfig {
+            config: TlsConfig {
+                cert_pem: None,
+                key_pem: Some("fake key".to_string()),
+                cert_file: None,
+                key_file: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
+        };
+
+        let result = load_server_tls_config(&config).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -637,6 +739,10 @@ mod tests {
                 key_file: None,
                 reload_interval: None,
             },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
         };
 
         let result = load_server_tls_config(&config).await;
@@ -664,6 +770,10 @@ mod tests {
                 key_pem: None,
                 reload_interval: None,
             },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
         };
 
         let result = load_server_tls_config(&config).await;

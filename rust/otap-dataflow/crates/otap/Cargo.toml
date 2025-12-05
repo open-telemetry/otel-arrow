@@ -79,11 +79,11 @@ rustls-native-certs = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
-rustls-pemfile = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 
 [features]
-experimental-tls = ["dep:rustls", "dep:rustls-pemfile", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:base64", "dep:arc-swap"]
+experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:base64", "dep:arc-swap"]
 # Base experimental feature - enabled by all experimental exporters
 experimental-exporters = []
 # Experimental exporters
@@ -106,3 +106,6 @@ url.workspace = true
 tokio-util.workspace = true
 time.workspace = true
 wiremock.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
