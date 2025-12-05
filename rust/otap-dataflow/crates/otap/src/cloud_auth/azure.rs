@@ -134,7 +134,7 @@ mod test {
         let expected = AuthMethod::ManagedIdentity {
             user_assigned_id: Some(UserAssignedId::ClientId("foo".to_string())),
         };
-        test_deserialize(&json, expected);
+        test_auth_method(&json, expected);
     }
 
     #[test]
@@ -148,7 +148,13 @@ mod test {
             tenant_id: None,
             token_file_path: None,
         };
-        test_deserialize(&json, expected);
+
+        // Workload identity requires some env vars to be present to create the
+        // credential and the test methods to override that are not exposed
+        // outside of `azure_identity`.
+        let method: AuthMethod =
+            serde_json::from_str(&json).expect("Failed to deserialize AuthMethod");
+        assert_eq!(method, expected);
     }
 
     #[test]
@@ -160,7 +166,8 @@ mod test {
         let expected = AuthMethod::ManagedIdentity {
             user_assigned_id: None,
         };
-        test_deserialize(&json, expected);
+
+        test_auth_method(&json, expected);
     }
 
     #[test]
@@ -174,12 +181,15 @@ mod test {
             subscription: None,
             tenant_id: None,
         };
-        test_deserialize(&json, expected);
+
+        test_auth_method(&json, expected);
     }
 
-    fn test_deserialize(json: &str, expected: AuthMethod) {
-        let deserialized: AuthMethod =
-            serde_json::from_str(json).expect("Failed to deserialize AuthMethod");
-        assert_eq!(deserialized, expected);
+    fn test_auth_method(json: &str, expected: AuthMethod) {
+        let method: AuthMethod =
+            serde_json::from_str(&json).expect("Failed to deserialize AuthMethod");
+        assert_eq!(method, expected);
+
+        assert!(from_auth_method(method).is_ok());
     }
 }

@@ -210,6 +210,14 @@ mod test {
     }
 
     #[test]
+    fn test_get_testdelayed_file_storage() {
+        let storage = StorageType::File {
+            base_uri: "testdelayed:///tmp".to_string(),
+        };
+        assert!(from_storage_type(&storage).is_ok());
+    }
+
+    #[test]
     fn test_get_file_storage() {
         let storage = StorageType::File {
             base_uri: "/tmp".to_string(),
