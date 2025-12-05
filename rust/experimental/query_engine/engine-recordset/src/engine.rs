@@ -126,6 +126,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
             &self.summaries,
             None,
             None,
+            None,
         );
 
         if execution_context.is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose) {
@@ -210,6 +211,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
             &self.summaries,
             attached_records,
             Some(record),
+            None,
         );
 
         process_record(execution_context, self.pipeline.get_expressions())
@@ -320,6 +322,7 @@ fn process_summaries<'a>(
                 &summaries,
                 None,
                 Some(map),
+                None,
             );
 
             match process_record(execution_context, post_expressions) {
