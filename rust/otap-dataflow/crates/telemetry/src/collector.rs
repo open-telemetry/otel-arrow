@@ -3,7 +3,8 @@
 
 //! Task periodically collecting the metrics emitted by the engine and the pipelines.
 
-use crate::config::Config;
+use otap_df_config::pipeline::TelemetryConfig;
+
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
 use crate::registry::MetricsRegistryHandle;
@@ -25,7 +26,10 @@ pub struct MetricsCollector {
 
 impl MetricsCollector {
     /// Creates a new `MetricsCollector` with a pipeline.
-    pub(crate) fn new(config: Config, registry: MetricsRegistryHandle) -> (Self, MetricsReporter) {
+    pub(crate) fn new(
+        config: &TelemetryConfig,
+        registry: MetricsRegistryHandle,
+    ) -> (Self, MetricsReporter) {
         let (metrics_sender, metrics_receiver) =
             flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
 
@@ -59,6 +63,8 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
+    use otap_df_config::pipeline::MetricsConfig;
+
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
@@ -67,6 +73,7 @@ mod tests {
     };
     use crate::metrics::MetricSetHandler;
     use crate::registry::MetricsKey;
+    use std::collections::HashMap;
     use std::fmt::Debug;
     use std::time::Duration;
 
@@ -162,11 +169,13 @@ mod tests {
         }
     }
 
-    fn create_test_config(_flush_interval_ms: u64) -> Config {
+    fn create_test_config(reporting_interval_ms: u64) -> TelemetryConfig {
         // Flush interval is irrelevant when no pipeline is configured; keep field for completeness.
-        Config {
+        TelemetryConfig {
             reporting_channel_size: 10,
-            flush_interval: Duration::from_millis(_flush_interval_ms),
+            reporting_interval: Duration::from_millis(reporting_interval_ms),
+            metrics: MetricsConfig::default(),
+            resource: HashMap::new(),
         }
     }
 
@@ -187,7 +196,7 @@ mod tests {
     async fn test_collector_without_pipeline_returns_none_on_channel_close() {
         let config = create_test_config(100);
         let registry = create_test_registry();
-        let (collector, _reporter) = MetricsCollector::new(config, registry);
+        let (collector, _reporter) = MetricsCollector::new(&config, registry);
 
         // Close immediately
         drop(_reporter);
@@ -204,7 +213,7 @@ mod tests {
             registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(config, registry.clone());
+        let (collector, reporter) = MetricsCollector::new(&config, registry.clone());
 
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
@@ -249,7 +258,7 @@ mod tests {
             registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(config, registry.clone());
+        let (collector, reporter) = MetricsCollector::new(&config, registry.clone());
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
         reporter
