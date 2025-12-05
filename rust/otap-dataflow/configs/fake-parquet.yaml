@@ -3,8 +3,7 @@ settings:
   default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
 
-nodes:
- 
+nodes: 
   receiver:
     kind: receiver
     plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
@@ -19,7 +18,6 @@ nodes:
         signals_per_second: 30
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otap:parquet:exporter"
