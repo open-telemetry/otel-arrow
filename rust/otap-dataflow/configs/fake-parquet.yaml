@@ -20,28 +20,13 @@ nodes:
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
 
-  # receiver:
-  #   kind: receiver
-  #   plugin_urn: "urn:otel:otlp:receiver"
-  #   out_ports:
-  #     out_port:
-  #       destinations:
-  #         - exporter
-  #       dispatch_strategy: round_robin
-  #   config:
-  #     listening_addr: "0.0.0.0:4317"
-
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otap:parquet:exporter"
     config:
       storage:
-        # file:
-        #   base_uri: /home/jakedern/local-fabric-test
-        azure:
-          base_uri: https://barquettest.blob.core.windows.net/barquet1
-          auth:
-            type: azure_cli
+        file:
+          base_uri: /tmp
       partitioning_strategies:
       - schema_metadata: ["_part_id"]
       writer_options:
