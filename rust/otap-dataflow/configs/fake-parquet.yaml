@@ -3,7 +3,7 @@ settings:
   default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
 
-nodes: 
+nodes:
   receiver:
     kind: receiver
     plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
