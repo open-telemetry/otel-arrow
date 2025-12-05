@@ -33,3 +33,13 @@ nodes:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
     config:
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - periodic:
+            exporter:
+              console:
+    resource:
+      service.name: "fake-debug-noop-service"
