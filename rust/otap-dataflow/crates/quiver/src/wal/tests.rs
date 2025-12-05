@@ -542,9 +542,7 @@ fn wal_writer_records_cursor_without_truncating() {
         safe_offset: first_entry.next_offset,
         ..WalConsumerCheckpoint::default()
     };
-    writer
-        .advance_consumer_checkpoint(&cursor)
-        .expect("record cursor");
+    writer.checkpoint_cursor(&cursor).expect("record cursor");
     drop(writer);
 
     let len_after = std::fs::metadata(&wal_path).expect("metadata").len();
@@ -602,16 +600,16 @@ fn wal_writer_enforces_safe_offset_boundaries() {
         safe_sequence: first_entry.sequence,
     };
 
-    match writer.advance_consumer_checkpoint(&cursor) {
+    match writer.checkpoint_cursor(&cursor) {
         Err(WalError::InvalidConsumerCheckpoint(message)) => {
             assert_eq!(message, "safe offset splits entry boundary")
         }
         other => panic!("expected invalid cursor error, got {other:?}"),
     }
 
-    cursor.advance(&first_entry);
+    cursor.increment(&first_entry);
     writer
-        .advance_consumer_checkpoint(&cursor)
+        .checkpoint_cursor(&cursor)
         .expect("record succeeds with aligned cursor");
     drop(writer);
 
@@ -639,9 +637,7 @@ fn wal_writer_persists_consumer_checkpoint_sidecar() {
         safe_offset: file_len,
         ..WalConsumerCheckpoint::default()
     };
-    writer
-        .advance_consumer_checkpoint(&cursor)
-        .expect("record cursor");
+    writer.checkpoint_cursor(&cursor).expect("record cursor");
     drop(writer);
 
     let sidecar_path = wal_path.parent().expect("dir").join("checkpoint.offset");
@@ -803,7 +799,7 @@ fn wal_writer_enforces_size_cap_and_purges_rotations() {
         ..WalConsumerCheckpoint::default()
     };
     writer
-        .advance_consumer_checkpoint(&cursor)
+        .checkpoint_cursor(&cursor)
         .expect("record cursor purges rotated chunks");
 
     assert!(
@@ -857,9 +853,7 @@ fn wal_writer_ignores_invalid_checkpoint_sidecar() {
         safe_offset: file_len,
         ..WalConsumerCheckpoint::default()
     };
-    writer
-        .advance_consumer_checkpoint(&cursor)
-        .expect("record cursor");
+    writer.checkpoint_cursor(&cursor).expect("record cursor");
     drop(writer);
 
     let state = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
@@ -1407,7 +1401,7 @@ fn wal_reader_iter_from_respects_offsets() {
     assert_eq!(entry_one.next_offset, entry_two.offset.position);
 
     let mut cursor = WalConsumerCheckpoint::default();
-    cursor.advance(&entry_one);
+    cursor.increment(&entry_one);
     assert_eq!(cursor.safe_offset, entry_one.next_offset);
     assert_eq!(cursor.safe_sequence, entry_one.sequence);
 
@@ -1607,7 +1601,7 @@ fn wal_consumer_checkpoint_recovers_after_partial_entry() {
     let mut iter = reader.iter_from(0).expect("iterator");
     let first_entry = iter.next().expect("first entry").expect("ok");
     let mut cursor = WalConsumerCheckpoint::default();
-    cursor.advance(&first_entry);
+    cursor.increment(&first_entry);
     drop(reader);
 
     // Simulate a crash that truncates the file in the middle of the second
@@ -1811,7 +1805,7 @@ fn run_crash_case(case: CrashCase) {
         case.name
     );
     writer_test_support::inject_crash(case.injection);
-    let err = match writer.advance_consumer_checkpoint(&cursor) {
+    let err = match writer.checkpoint_cursor(&cursor) {
         Ok(_) => panic!("{}: crash injection did not trigger", case.name),
         Err(err) => err,
     };
@@ -1841,7 +1835,7 @@ fn wal_cursor_after_entries(path: &Path, entry_count: usize) -> WalConsumerCheck
                 )
             })
             .expect("entry ok while building cursor");
-        cursor.advance(&bundle);
+        cursor.increment(&bundle);
     }
     cursor
 }
@@ -2061,7 +2055,7 @@ fn wal_writer_rejects_checkpoint_sequence_regression() {
         safe_sequence: entries[1].sequence,
     };
     writer
-        .advance_consumer_checkpoint(&cursor_at_second)
+        .checkpoint_cursor(&cursor_at_second)
         .expect("advance to second entry");
 
     // Now try to regress to the first entry (sequence=0)
@@ -2070,7 +2064,7 @@ fn wal_writer_rejects_checkpoint_sequence_regression() {
         safe_sequence: entries[0].sequence, // sequence=0, which is less than 1
     };
 
-    match writer.advance_consumer_checkpoint(&cursor_at_first) {
+    match writer.checkpoint_cursor(&cursor_at_first) {
         Err(WalError::InvalidConsumerCheckpoint(msg)) => {
             assert!(
                 msg.contains("regressed"),
@@ -2105,7 +2099,7 @@ fn wal_writer_rejects_checkpoint_offset_regression() {
         safe_sequence: entries[1].sequence,
     };
     writer
-        .advance_consumer_checkpoint(&cursor_at_second)
+        .checkpoint_cursor(&cursor_at_second)
         .expect("advance to second entry");
 
     // Now try to advance with a higher sequence but lower offset
@@ -2115,7 +2109,7 @@ fn wal_writer_rejects_checkpoint_offset_regression() {
         safe_sequence: entries[1].sequence + 1, // higher sequence to pass that check
     };
 
-    match writer.advance_consumer_checkpoint(&bad_cursor) {
+    match writer.checkpoint_cursor(&bad_cursor) {
         Err(WalError::InvalidConsumerCheckpoint(msg)) => {
             assert!(
                 msg.contains("regressed"),
@@ -2218,7 +2212,7 @@ fn wal_recovery_clamps_stale_sidecar_offset() {
         safe_sequence: offset.sequence,
     };
     writer
-        .advance_consumer_checkpoint(&cursor)
+        .checkpoint_cursor(&cursor)
         .expect("advance checkpoint to end of WAL");
     drop(writer);
 

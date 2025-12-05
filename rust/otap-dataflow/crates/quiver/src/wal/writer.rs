@@ -130,27 +130,46 @@ use super::{
 };
 
 /// Controls when the WAL flushes data to disk.
+///
+/// Flushing calls `fsync()` to ensure data reaches stable storage. More frequent
+/// flushes improve durability but reduce throughput.
 #[derive(Debug, Clone, Default)]
 pub(crate) enum FlushPolicy {
-    /// Flush after every write (safest, slowest).
+    /// Flush after every write. Safest but slowest.
     #[default]
     Immediate,
     /// Flush when unflushed bytes exceed the threshold.
     EveryNBytes(u64),
     /// Flush when elapsed time since last flush exceeds the duration.
     EveryDuration(Duration),
-    /// Flush when either bytes or duration threshold is exceeded (whichever comes first).
+    /// Flush when either bytes or duration threshold is exceeded.
+    /// This is the recommended policy for production.
     BytesOrDuration { bytes: u64, duration: Duration },
 }
 
-/// Low-level tunables that bridge the user-facing [`QuiverConfig`] into the WAL.
+/// Low-level tunables for the WAL writer.
+///
+/// Most users should use [`WalWriterOptions::new()`] with defaults, then
+/// customize via the builder methods:
+///
+/// ```ignore
+/// let options = WalWriterOptions::new(path, hash, FlushPolicy::Immediate)
+///     .with_max_wal_size(1024 * 1024 * 1024)  // 1 GB cap
+///     .with_rotation_target_bytes(64 * 1024 * 1024);  // 64 MB per file
+/// ```
 #[derive(Debug, Clone)]
 pub(crate) struct WalWriterOptions {
+    /// Path to the active WAL file (e.g., `wal/quiver.wal`).
     pub path: PathBuf,
+    /// Hash of segment configuration; mismatches reject existing files.
     pub segment_cfg_hash: [u8; 16],
+    /// When to call `fsync()` for durability.
     pub flush_policy: FlushPolicy,
+    /// Maximum aggregate size of active + rotated files (default: unlimited).
     pub max_wal_size: u64,
+    /// Maximum number of rotated files to keep (default: 8).
     pub max_rotated_files: usize,
+    /// Rotate the active file when it exceeds this size (default: 64 MB).
     pub rotation_target_bytes: u64,
 }
 
@@ -239,11 +258,16 @@ struct WalCoordinator {
     last_checkpoint_sequence: Option<u64>,
 }
 
-/// Opaque marker returned to callers after an append so they can correlate
-/// persisted entries with reader positions.
+/// Opaque marker returned after an append.
+///
+/// Contains the byte position and sequence number of the written entry.
+/// Useful for correlating writer positions with reader cursors during testing
+/// or debugging. Operators typically don't need to inspect these values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WalOffset {
+    /// Byte offset where the entry starts in the active WAL file.
     pub position: u64,
+    /// Monotonically increasing sequence number assigned to this entry.
     pub sequence: u64,
 }
 
@@ -398,15 +422,18 @@ impl WalWriter {
             .trim_active_file(&mut self.active_file, checkpoint)
     }
 
-    /// Updates the checkpoint sidecar without touching the underlying WAL bytes.
-    /// This is used when we merely want to record a new consumer checkpoint so future
-    /// rotations know how far readers have progressed.
-    pub(crate) fn advance_consumer_checkpoint(
+    /// Persists the cursor position and enables cleanup of consumed WAL data.
+    ///
+    /// This validates the cursor, writes to the checkpoint sidecar with fsync,
+    /// and purges any rotated files fully covered by the new position.
+    ///
+    /// Call this after downstream has confirmed durability (e.g., segment flush).
+    pub(crate) fn checkpoint_cursor(
         &mut self,
         checkpoint: &WalConsumerCheckpoint,
     ) -> WalResult<()> {
         self.coordinator
-            .advance_consumer_checkpoint(&mut self.active_file, checkpoint)
+            .checkpoint_cursor(&mut self.active_file, checkpoint)
     }
 
     fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {
@@ -648,7 +675,7 @@ impl WalCoordinator {
         self.persist_checkpoint(checkpoint, safe_offset)
     }
 
-    fn advance_consumer_checkpoint(
+    fn checkpoint_cursor(
         &mut self,
         active_file: &mut ActiveWalFile,
         checkpoint: &WalConsumerCheckpoint,

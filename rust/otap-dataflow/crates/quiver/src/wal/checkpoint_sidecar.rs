@@ -1,11 +1,22 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Provides read/write helpers for the `checkpoint.offset` sidecar that tracks the
-// global WAL consumer checkpoint (data bytes excluding headers) still required for crash
-// recovery. The sidecar lets new processes resume from a known safe offset
-// without rescanning the entire WAL. It carries a CRC so we can discard corrupted
-// metadata safely.
+//! Crash-safe checkpoint offset persistence.
+//!
+//! The checkpoint sidecar is a tiny file (`checkpoint.offset`) that tracks how
+//! much of the WAL has been durably consumed. It survives crashes so restarts
+//! can resume from the last known safe offset without rescanning the entire log.
+//!
+//! # Format (24 bytes)
+//!
+//! ```text
+//! ┌────────────┬─────────┬──────────┬─────────────────────┬──────────┐
+//! │ magic (8)  │ ver (2) │ rsv (2)  │ global_data_off (8) │ crc (4)  │
+//! └────────────┴─────────┴──────────┴─────────────────────┴──────────┘
+//! ```
+//!
+//! Writes use atomic rename (`write_to` → `.tmp` → `rename`) plus parent
+//! directory fsync to ensure durability across power loss.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Write};

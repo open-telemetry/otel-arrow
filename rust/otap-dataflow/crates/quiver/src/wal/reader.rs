@@ -4,9 +4,38 @@
 //! Read-side companion to the WAL writer.
 //!
 //! The reader validates headers, streams entries starting at arbitrary offsets,
-//! and exposes helper types such as [`WalConsumerCheckpoint`] so higher layers can
-//! describe how much of the log is safe to reclaim. Like the writer, it is
-//! currently exercised by tests until the runtime wires in replay logic.
+//! and exposes helper types for tracking replay progress.
+//!
+//! # Entry Format
+//!
+//! Each WAL entry has this layout:
+//!
+//! ```text
+//! ┌──────────┬────────────────┬─────────────────┬──────────┐
+//! │ len (4)  │ entry_hdr (25) │ slot_data (var) │ crc (4)  │
+//! └──────────┴────────────────┴─────────────────┴──────────┘
+//! ```
+//!
+//! - **len**: Size of `entry_hdr + slot_data` (excludes len and crc fields)
+//! - **entry_hdr**: Type (1), timestamp (8), sequence (8), slot_bitmap (8)
+//! - **slot_data**: For each set bit: slot_id (2), fingerprint (32), rows (4),
+//!   payload_len (4), Arrow IPC bytes (payload_len)
+//! - **crc**: CRC32 over `entry_hdr + slot_data`
+//!
+//! # Usage
+//!
+//! ```ignore
+//! let mut reader = WalReader::open("wal/quiver.wal")?;
+//! let mut cursor = WalConsumerCheckpoint::default();
+//!
+//! for result in reader.iter_from(0)? {
+//!     let bundle = result?;
+//!     println!("seq={} slots={}", bundle.sequence, bundle.slots.len());
+//!     cursor.increment(&bundle);  // in-memory only
+//! }
+//! // cursor now points past the last entry
+//! // call writer.checkpoint_cursor(&cursor) to persist
+//! ```
 #![allow(dead_code)]
 
 #[cfg(test)]
@@ -188,12 +217,16 @@ pub(crate) struct DecodedWalSlot {
     pub payload: Vec<u8>,
 }
 
-/// Opaque cursor describing how much of the WAL has been durably processed.
+/// Opaque cursor describing how much of the WAL has been seen.
 ///
-/// Operators should not interpret the internal fields directly. Instead:
+/// This is an **in-memory only** cursor. Updating it has no durability effect.
+/// To persist progress and allow WAL cleanup, pass the cursor to
+/// [`WalWriter::checkpoint_cursor()`].
+///
+/// Usage:
 /// 1. Start with `WalConsumerCheckpoint::default()` (beginning of WAL)
-/// 2. Call `cursor.advance(&bundle)` after processing each entry
-/// 3. Pass the cursor to `advance_consumer_checkpoint()` to persist progress
+/// 2. Call `cursor.increment(&bundle)` after processing each entry (in-memory)
+/// 3. Call `writer.checkpoint_cursor(&cursor)` to persist and enable cleanup
 ///
 /// The writer validates that checkpoints land on entry boundaries and rejects
 /// stale or regressed values.
@@ -209,7 +242,7 @@ impl WalConsumerCheckpoint {
     /// Creates a checkpoint positioned immediately after the given bundle.
     ///
     /// This is equivalent to `WalConsumerCheckpoint::default()` followed by
-    /// `advance(bundle)`, but clearer when you only need to checkpoint a
+    /// `increment(bundle)`, but clearer when you only need to checkpoint a
     /// single entry.
     pub fn after(bundle: &WalRecordBundle) -> Self {
         Self {
@@ -218,18 +251,21 @@ impl WalConsumerCheckpoint {
         }
     }
 
-    /// Advances the cursor to cover the provided bundle.
+    /// Moves the cursor past the provided bundle (in-memory only).
+    ///
+    /// This does **not** persist the checkpoint or trigger WAL cleanup.
+    /// Call [`WalWriter::checkpoint_cursor()`] to make progress durable.
     ///
     /// Typical usage in a replay loop:
     /// ```ignore
     /// let mut cursor = WalConsumerCheckpoint::default();
     /// for bundle in reader.iter_from(0)? {
     ///     process(&bundle?);
-    ///     cursor.advance(&bundle);
+    ///     cursor.increment(&bundle);  // in-memory only
     /// }
-    /// writer.advance_consumer_checkpoint(&cursor)?;
+    /// writer.checkpoint_cursor(&cursor)?;  // persist + cleanup
     /// ```
-    pub fn advance(&mut self, bundle: &WalRecordBundle) {
+    pub fn increment(&mut self, bundle: &WalRecordBundle) {
         self.safe_offset = bundle.next_offset;
         self.safe_sequence = bundle.sequence;
     }

@@ -1,6 +1,21 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! WAL file header encoding and validation.
+//!
+//! Every WAL file starts with a fixed 30-byte header:
+//!
+//! ```text
+//! ┌────────────┬─────────┬──────────┬──────────────────┐
+//! │ magic (10) │ ver (2) │ rsv (2)  │ segment_hash (16)│
+//! └────────────┴─────────┴──────────┴──────────────────┘
+//! ```
+//!
+//! - **magic**: `b"QUIVER\0WAL"` identifies the file type
+//! - **version**: Format version (currently 1)
+//! - **reserved**: Zero padding for future use
+//! - **segment_hash**: MD5 of segment configuration; mismatches reject the file
+
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use super::{WAL_MAGIC, WalError};

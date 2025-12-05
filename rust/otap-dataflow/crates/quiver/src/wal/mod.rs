@@ -1,6 +1,62 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Write-Ahead Log (WAL) for Quiver crash recovery.
+//!
+//! This module provides durable, append-only storage for Arrow record batches.
+//! On crash, the WAL replays uncommitted data to restore in-memory state.
+//!
+//! # Quick Start
+//!
+//! ```ignore
+//! // Writing
+//! let mut writer = WalWriter::open(options)?;
+//! let offset = writer.append_bundle(&bundle)?;
+//!
+//! // Reading (for replay)
+//! let mut reader = WalReader::open(&path)?;
+//! let mut cursor = WalConsumerCheckpoint::default();
+//! for entry in reader.iter_from(0)? {
+//!     let bundle = entry?;
+//!     // ... rebuild state from bundle ...
+//!     cursor.increment(&bundle);  // in-memory only
+//! }
+//!
+//! // Checkpointing (after downstream confirms durability)
+//! writer.checkpoint_cursor(&cursor)?;  // persists + enables cleanup
+//! ```
+//!
+//! # Module Organization
+//!
+//! | File                    | Purpose                                          |
+//! |-------------------------|--------------------------------------------------|
+//! | `writer.rs`             | Append entries, rotate files, manage checkpoints |
+//! | `reader.rs`             | Iterate entries, decode payloads, track progress |
+//! | `header.rs`             | WAL file header format (magic, version, config)  |
+//! | `checkpoint_sidecar.rs` | Crash-safe checkpoint offset persistence         |
+//! | `tests.rs`              | Integration tests and crash simulation           |
+//!
+//! # On-Disk Layout
+//!
+//! ```text
+//! wal/
+//! ├── quiver.wal           # Active WAL file (append target)
+//! ├── quiver.wal.1         # Rotated file (oldest)
+//! ├── quiver.wal.2         # Rotated file
+//! └── checkpoint.offset    # Consumer progress (24 bytes, CRC-protected)
+//! ```
+//!
+//! # Key Concepts
+//!
+//! - **Entry**: One [`RecordBundle`] serialized with CRC32 integrity check
+//! - **Rotation**: When the active file exceeds `rotation_target_bytes`, it's
+//!   renamed to `quiver.wal.N` and a fresh file starts
+//! - **Checkpoint**: Consumers call [`WalConsumerCheckpoint::increment()`] while
+//!   iterating (in-memory), then [`WalWriter::checkpoint_cursor()`] to persist
+//! - **Purge**: Rotated files are deleted once fully covered by the checkpoint
+//!
+//! See [`writer`] module docs for detailed lifecycle documentation.
+
 use std::io;
 
 use arrow_schema::ArrowError;
@@ -31,6 +87,9 @@ pub(crate) const SLOT_HEADER_LEN: usize = 2 + SCHEMA_FINGERPRINT_LEN + 4 + 4;
 pub(crate) type WalResult<T> = Result<T, WalError>;
 
 /// Errors produced while reading or writing WAL data.
+///
+/// Most variants include context about where the failure occurred.
+/// [`WalError::Io`] wraps underlying filesystem errors.
 #[derive(Error, Debug)]
 pub enum WalError {
     /// Underlying filesystem failure.
