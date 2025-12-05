@@ -76,7 +76,7 @@ steps:
   - name: Observe Load
     action:
       wait:
-        delay_seconds: {{observation_interval | default(20)}}
+        delay_seconds: {{observation_interval | default(60)}}
     hooks:
       run:
         pre:

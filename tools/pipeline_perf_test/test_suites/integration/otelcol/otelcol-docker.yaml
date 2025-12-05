@@ -44,6 +44,7 @@ components:
         command:
           - "--config"
           - "/tmp/config.yaml"
+        cpuset: "3"
     monitoring:
       docker_component: {}
       prometheus:
