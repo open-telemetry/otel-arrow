@@ -41,56 +41,30 @@
 //!
 //! ## Offset coordinate systems
 //!
-//! Checkpoint metadata uses two overlapping coordinate spaces:
+//! Checkpoint metadata uses two coordinate spaces:
 //!
-//! 1. **Global data offset** – `checkpoint_state.global_data_offset` is the number
-//!    of data bytes (headers excluded) that have been validated across the
-//!    entire WAL stream. This is the only value persisted in the
-//!    `checkpoint.offset` sidecar so it remains stable across rotations.
-//! 2. **Per-file offsets** – Derived from the global offset by subtracting
-//!    `rotated_data_bytes` (the payload currently living in rotated files)
-//!    and adding `WAL_HEADER_LEN`. This gives the byte location inside the
-//!    active file so we can touch OS file descriptors without ambiguity.
+//! | Coordinate            | Measures                          | Stored in                          |
+//! |-----------------------|-----------------------------------|------------------------------------|
+//! | `global_data_offset`  | Total data bytes consumed across  | `checkpoint.offset` sidecar        |
+//! |                       | the entire WAL (headers excluded) | (stable across rotations)          |
+//! | per-file offset       | Byte position within the active   | Derived at runtime via             |
+//! |                       | WAL file (includes header)        | `to_active_file_offset()`          |
 //!
-//! `purge_rotated_files` compares the global offset against each file's
-//! `end_data_offset` so we only delete files once the checkpoint has moved past
-//! their logical range.
+//! Each [`RotatedWalFile`] stores a `cumulative_data_offset` representing the
+//! global data offset at the *end* of that file. This lets `purge_rotated_files`
+//! delete a file once `global_data_offset` exceeds its cumulative boundary.
 //!
-//! ```text
-//! wal.3 (oldest)    wal.2             wal.1    wal (active)
-//! ┌──────────────┬──────────┬────────────────┬───────┬────────────┬──────────┐
-//! │ rotated data │ rotated  │ rotated data   │header │ per-file   │ data tail│
-//! │   (oldest)   │  data    │   (newest)     │       │ data bytes │          │
-//! └──────────────┴──────────┴────────────────┴───────┴────────────┴──────────┘
-//! ^                        ^                 ^       ^
-//! │                        │                 │       │
-//! oldest bytes   global checkpoint (sidecar) │       per-file offset derived
-//!                                            │       from global offset
-//!                                            │ 
-//!                                            └── data bytes in rotated files (rotated_data_bytes)
-//! ```
-
-//! Single-file case (no rotated files yet):
+//! **Conversion:** `to_global_offset(file_offset)` adds data bytes from rotated
+//! files to the per-file data position. `to_active_file_offset(global)` reverses
+//! the transformation, clamping to the active file's bounds.
 //!
-//! ```text
-//! wal (active)
-//! ┌───────┬──────────────────────────┬──────────────┐
-//! │header │ per-file data bytes      │   data tail  │
-//! └───────┴──────────────────────────┴──────────────┘
-//! ^       ^                          ^
-//! │       │                          │
-//! header per-file offset             global offset (no header bias)
-//! ```
+//! ## Lifecycle events
 //!
-//! When no rotated files exist `rotated_data_bytes` is `0`, so both arrows land on
-//! the same byte boundary within the active file even though one value includes
-//! the header prefix and the other does not. As soon as rotation occurs the
-//! global offset continues to advance across the concatenated stream while the
-//! per-file offset snaps back to `WAL_HEADER_LEN` in the brand-new active file.
-//!
-//! This separation lets restarts resume from the sidecar-safe position inside
-//! the freshly created active file while still honoring previously persisted
-//! checkpoints that might point into older files.
+//! | Event               | Trigger                                              |
+//! |---------------------|------------------------------------------------------|
+//! | **Rotation**        | Active file exceeds `rotation_target_bytes`          |
+//! | **Purge**           | `global_data_offset` passes a rotated file's cumulative end |
+//! | **Backpressure**    | `aggregate_bytes > max_wal_size` or rotated file cap hit |
 //!
 //! ## Internal structure
 //!
@@ -107,27 +81,30 @@
 //! about: `WalWriter` asks the coordinator for admission, streams bytes via the
 //! active file, then records whatever book-keeping the coordinator dictates.
 //!
-//! ## Failure and recovery cues
+//! ## Startup and recovery
 //!
-//! ```text
-//!         checkpoint state
-//!        ┌──────────────────────┐
-//!   WAL  │ offset + generation  │  sidecar (checkpoint.offset)
-//! header ├──────────────────────┤<──────────────────────────────┐
-//!   ...  │   active data tail   │                               │
-//!        └──────────────────────┘                               │
-//!              ▲           ▲                                    │
-//!              │           │                                    │
-//!          reclaim request └────── crash-safe checkpoint  ──────┘
-//! ```
+//! On [`WalWriter::open`]:
 //!
-//! * Failpoints in `test_support` let us simulate crashes before the checkpoint
-//!   sidecar rename. Clearing the crash flag allows resuming normal operation.
-//! * Drop flushing is skipped when `test_force_crash` was invoked so tests can
-//!   model abrupt exits without double-syncing.
+//! 1. Read `checkpoint.offset` sidecar → recover `global_data_offset` and
+//!    `rotation_generation`.
+//! 2. Scan for rotated files (`wal.1`, `wal.2`, …) and rebuild the
+//!    `rotated_files` queue with cumulative offsets.
+//! 3. Convert `global_data_offset` → per-file offset inside the active WAL.
+//! 4. Detect the highest sequence number across all files; resume from
+//!    `highest + 1`.
+//! 5. Position the file cursor at EOF and accept new appends.
 //!
-//! These docs focus on the writer-facing lifecycle. See the reader module for
-//! how consumer checkpoints are derived from WAL entries.
+//! If the sidecar is missing or corrupt, we fall back to starting from offset
+//! zero and scanning all entries.
+//!
+//! ## Testing hooks
+//!
+//! * Failpoints in `test_support` simulate crashes before the checkpoint sidecar
+//!   rename so we can verify idempotent recovery.
+//! * `test_force_crash` skips drop-time flushes to model abrupt exits.
+//!
+//! See the reader module for how [`WalConsumerCheckpoint`] values are derived
+//! from WAL entries.
 #![allow(dead_code)]
 
 use std::collections::VecDeque;
@@ -244,8 +221,6 @@ struct WalCoordinator {
     aggregate_bytes: u64,
     /// Metadata describing each rotated `wal.N` file on disk.
     rotated_files: VecDeque<RotatedWalFile>,
-    /// Total data bytes (excluding headers) in all rotated files combined.
-    rotated_data_bytes: u64,
     /// Most recent offset validated to be on an entry boundary in the active file.
     active_file_checkpoint_offset: u64,
     /// Sequence number associated with the last committed consumer checkpoint.
@@ -315,10 +290,6 @@ impl WalWriter {
         };
         writer.next_sequence = writer.coordinator.detect_next_sequence()?;
         Ok(writer)
-    }
-
-    fn options(&self) -> &WalWriterOptions {
-        self.coordinator.options()
     }
 
     /// Serializes a [`RecordBundle`] into the active WAL file and returns the
@@ -465,10 +436,6 @@ impl ActiveWalFile {
         &mut self.file
     }
 
-    fn file(&self) -> &File {
-        &self.file
-    }
-
     fn set_len(&mut self, len: u64) {
         self.current_len = len;
     }
@@ -480,6 +447,14 @@ impl ActiveWalFile {
         self.unflushed_bytes = 0;
     }
 
+    /// Writes a complete WAL entry to disk and returns the starting byte offset.
+    ///
+    /// Entry layout:
+    /// ```text
+    /// ┌──────────┬──────────────┬─────────────────┬──────────┐
+    /// │ u32 len  │ entry header │  payload bytes  │ u32 crc  │
+    /// └──────────┴──────────────┴─────────────────┴──────────┘
+    /// ```
     fn write_entry(
         &mut self,
         entry_len: u32,
@@ -518,8 +493,6 @@ impl ActiveWalFile {
         sync_file_data(&self.file)?;
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
-        #[cfg(test)]
-        test_support::record_flush();
         Ok(())
     }
 }
@@ -537,10 +510,17 @@ impl WalCoordinator {
             checkpoint_state,
             aggregate_bytes: current_len,
             rotated_files: VecDeque::new(),
-            rotated_data_bytes: 0,
             active_file_checkpoint_offset: WAL_HEADER_LEN as u64,
             last_checkpoint_sequence: None,
         }
+    }
+
+    /// Returns the total data bytes (excluding headers) across all rotated files.
+    /// Derived from the last rotated file's cumulative offset.
+    fn rotated_data_bytes(&self) -> u64 {
+        self.rotated_files
+            .back()
+            .map_or(0, |f| f.cumulative_data_offset)
     }
 
     fn options(&self) -> &WalWriterOptions {
@@ -552,7 +532,6 @@ impl WalCoordinator {
         if discovered.is_empty() {
             self.aggregate_bytes = active_len;
             self.rotated_files.clear();
-            self.rotated_data_bytes = 0;
             return Ok(());
         }
 
@@ -567,13 +546,12 @@ impl WalCoordinator {
             files.push_back(RotatedWalFile {
                 path: rotated_wal_path(&self.options.path, index),
                 file_bytes: len,
-                end_data_offset: cumulative_data,
+                cumulative_data_offset: cumulative_data,
             });
         }
 
         self.rotated_files = files;
         self.aggregate_bytes = aggregate;
-        self.rotated_data_bytes = cumulative_data;
         Ok(())
     }
 
@@ -581,7 +559,7 @@ impl WalCoordinator {
         let header = WAL_HEADER_LEN as u64;
         let active_data = active_len.saturating_sub(header);
         let total_logical = self
-            .rotated_data_bytes
+            .rotated_data_bytes()
             .saturating_add(active_data);
 
         if self.checkpoint_state.global_data_offset > total_logical {
@@ -651,7 +629,7 @@ impl WalCoordinator {
         checkpoint: &WalConsumerCheckpoint,
     ) -> WalResult<u64> {
         let requested_offset = checkpoint.safe_offset.max(WAL_HEADER_LEN as u64);
-        let file_len = active_file.file().metadata()?.len();
+        let file_len = active_file.file_mut().metadata()?.len();
         if requested_offset > file_len {
             return Err(WalError::InvalidConsumerCheckpoint(
                 "safe offset beyond wal tail",
@@ -754,14 +732,13 @@ impl WalCoordinator {
         std::fs::rename(&self.options.path, &new_rotated_path)?;
 
         let data_bytes = old_len.saturating_sub(WAL_HEADER_LEN as u64);
-        let end_data_offset = self.rotated_data_bytes.saturating_add(data_bytes);
+        let cumulative_data_offset = self.rotated_data_bytes().saturating_add(data_bytes);
         self.rotated_files.push_back(RotatedWalFile {
             path: new_rotated_path,
             file_bytes: old_len,
-            end_data_offset,
+            cumulative_data_offset,
         });
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(old_len);
-        self.rotated_data_bytes = end_data_offset;
 
         let mut file = reopen_wal_file(&self.options.path, self.options.segment_cfg_hash)?;
         let _ = file.seek(SeekFrom::End(0))?; // ensure positioned at end
@@ -797,7 +774,7 @@ impl WalCoordinator {
 
     fn purge_rotated_files(&mut self) -> WalResult<()> {
         while let Some(front) = self.rotated_files.front() {
-            if front.end_data_offset <= self.checkpoint_state.global_data_offset {
+            if front.cumulative_data_offset <= self.checkpoint_state.global_data_offset {
                 std::fs::remove_file(&front.path)?;
                 self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
                 let _ = self.rotated_files.pop_front();
@@ -819,19 +796,20 @@ impl WalCoordinator {
 
     fn to_global_offset(&self, file_offset: u64) -> u64 {
         let data_offset = file_offset.saturating_sub(WAL_HEADER_LEN as u64);
-        self.rotated_data_bytes.saturating_add(data_offset)
+        self.rotated_data_bytes().saturating_add(data_offset)
     }
 
     fn to_active_file_offset(&self, global_offset: u64, active_len: u64) -> u64 {
         let header = WAL_HEADER_LEN as u64;
         let active_data_len = active_len.saturating_sub(header);
+        let rotated_data = self.rotated_data_bytes();
 
-        if global_offset <= self.rotated_data_bytes {
+        if global_offset <= rotated_data {
             return header;
         }
 
         let data_within_active = global_offset
-            .saturating_sub(self.rotated_data_bytes)
+            .saturating_sub(rotated_data)
             .min(active_data_len);
         header.saturating_add(data_within_active)
     }
@@ -1011,7 +989,10 @@ struct EncodedSlot {
 struct RotatedWalFile {
     path: PathBuf,
     file_bytes: u64,
-    end_data_offset: u64,
+    /// Global data offset at the *end* of this file (cumulative across older
+    /// rotated files). When `global_data_offset >= cumulative_data_offset` the
+    /// file is fully consumed and can be deleted.
+    cumulative_data_offset: u64,
 }
 
 impl RotatedWalFile {
@@ -1048,7 +1029,6 @@ pub(super) mod test_support {
     use std::cell::Cell;
 
     thread_local! {
-        static FLUSH_NOTIFIED: Cell<bool> = const { Cell::new(false) };
         static DROP_FLUSH_NOTIFIED: Cell<bool> = const { Cell::new(false) };
         static SYNC_DATA_NOTIFIED: Cell<bool> = const { Cell::new(false) };
         static NEXT_CRASH: Cell<Option<CrashInjection>> = const { Cell::new(None) };
@@ -1057,10 +1037,6 @@ pub(super) mod test_support {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) enum CrashInjection {
         BeforeSidecarRename,
-    }
-
-    pub fn record_flush() {
-        FLUSH_NOTIFIED.with(|cell| cell.set(true));
     }
 
     pub fn record_drop_flush() {
@@ -1076,7 +1052,6 @@ pub(super) mod test_support {
     }
 
     pub fn reset_flush_notifications() {
-        FLUSH_NOTIFIED.with(|cell| cell.set(false));
         DROP_FLUSH_NOTIFIED.with(|cell| cell.set(false));
         SYNC_DATA_NOTIFIED.with(|cell| cell.set(false));
         NEXT_CRASH.with(|cell| cell.set(None));
