@@ -62,52 +62,63 @@ pub enum PartitioningStrategy {
     SchemaMetadata(Vec<String>),
 }
 
-// #[cfg(test)]
-// mod test {
-//     use super::*;
-//
-//     #[test]
-//     fn test_deserialize() {
-//         let json_cfg = "{
-//             \"base_uri\": \"s3://albert-bucket/parquet-files\",
-//             \"partitioning_strategies\": [
-//                 {
-//                     \"schema_metadata\": [ \"_part_id\" ]
-//                 }
-//             ],
-//             \"writer_options\": {
-//                 \"target_rows_per_file\": 1000000000,
-//                 \"flush_when_older_than\": \"5m\"
-//             }
-//         }";
-//
-//         let config: Config = serde_json::from_str(json_cfg).unwrap();
-//         let expected = Config {
-//             base_uri: "s3://albert-bucket/parquet-files".to_string(),
-//             partitioning_strategies: Some(vec![PartitioningStrategy::SchemaMetadata(vec![
-//                 "_part_id".to_string(),
-//             ])]),
-//             writer_options: Some(WriterOptions {
-//                 flush_when_older_than: Some(Duration::from_secs(300)),
-//                 target_rows_per_file: Some(1000000000),
-//             }),
-//         };
-//         assert_eq!(config, expected)
-//     }
-//
-//     #[test]
-//     fn test_deserialize_error_unknown_fields() {
-//         // this has a mistake in it where target_rows_per_file should be
-//         // nested w/in writer_options:
-//         let json_cfg = "{
-//             \"base_uri\": \"s3://albert-bucket/parquet-files\",
-//             \"partitioning_strategies\": [
-//                 {
-//                     \"schema_metadata\": [ \"_part_id\" ]
-//                 }
-//             ],
-//             \"target_rows_per_file\": 1000000000
-//         }";
-//         assert!(serde_json::from_str::<Config>(json_cfg).is_err())
-//     }
-// }
+#[cfg(test)]
+mod test {
+    use serde_json::json;
+
+    use crate::object_store::StorageType;
+
+    use super::*;
+
+    #[test]
+    fn test_deserialize() {
+        let json_cfg = json!({
+            "storage": {
+                "file": {
+                  "base_uri": "s3://albert-bucket/parquet-files"
+                }
+            },
+            "partitioning_strategies": [
+                {
+                    "schema_metadata": [ "_part_id" ]
+                }
+            ],
+            "writer_options": {
+            "flush_when_older_than": "300s",
+            "target_rows_per_file": 1000000000
+            }
+        })
+        .to_string();
+
+        let config: Config = serde_json::from_str(&json_cfg).unwrap();
+        let expected = Config {
+            storage: StorageType::File {
+                base_uri: "s3://albert-bucket/parquet-files".to_string(),
+            },
+            partitioning_strategies: Some(vec![PartitioningStrategy::SchemaMetadata(vec![
+                "_part_id".to_string(),
+            ])]),
+            writer_options: Some(WriterOptions {
+                flush_when_older_than: Some(Duration::from_secs(300)),
+                target_rows_per_file: Some(1000000000),
+            }),
+        };
+        assert_eq!(config, expected)
+    }
+
+    #[test]
+    fn test_deserialize_error_unknown_fields() {
+        // this has a mistake in it where target_rows_per_file should be
+        // nested w/in writer_options:
+        let json_cfg = "{
+            \"base_uri\": \"s3://albert-bucket/parquet-files\",
+            \"partitioning_strategies\": [
+                {
+                    \"schema_metadata\": [ \"_part_id\" ]
+                }
+            ],
+            \"target_rows_per_file\": 1000000000
+        }";
+        assert!(serde_json::from_str::<Config>(json_cfg).is_err())
+    }
+}

@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use azure_core::credentials::TokenCredential;
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use serde::Deserialize;
@@ -11,6 +10,7 @@ use serde::Deserialize;
 use crate::cloud_auth;
 
 /// Azure object storage
+#[cfg(feature = "azure")]
 pub mod azure;
 
 /// Supported object storage types
@@ -66,6 +66,7 @@ pub fn from_storage_type(
             storage_scope,
             auth,
         } => {
+            use azure_core::credentials::TokenCredential;
             use object_store::azure::MicrosoftAzureBuilder;
 
             let token_credential: Arc<dyn TokenCredential> =
