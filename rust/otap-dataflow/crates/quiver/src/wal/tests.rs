@@ -254,6 +254,34 @@ fn single_slot_bundle(
     )
 }
 
+/// Creates a WalWriter with default options for tests that just need basic functionality.
+fn open_test_writer(path: PathBuf, hash: [u8; 16]) -> WalWriter {
+    WalWriter::open(WalWriterOptions::new(path, hash, FlushPolicy::Immediate)).expect("writer")
+}
+
+/// Creates a WalWriter with custom options builder.
+fn open_test_writer_with<F>(path: PathBuf, hash: [u8; 16], configure: F) -> WalWriter
+where
+    F: FnOnce(WalWriterOptions) -> WalWriterOptions,
+{
+    let options = WalWriterOptions::new(path, hash, FlushPolicy::Immediate);
+    WalWriter::open(configure(options)).expect("writer")
+}
+
+/// Reads all entries from a WAL file starting at the header.
+fn read_all_entries(path: &Path) -> Vec<super::WalRecordBundle> {
+    let mut reader = WalReader::open(path).expect("reader");
+    let iter = reader.iter_from(0).expect("iter");
+    iter.map(|r| r.expect("entry")).collect()
+}
+
+/// Reads the first N entries from a WAL file.
+fn read_entries(path: &Path, count: usize) -> Vec<super::WalRecordBundle> {
+    let mut reader = WalReader::open(path).expect("reader");
+    let iter = reader.iter_from(0).expect("iter");
+    iter.take(count).map(|r| r.expect("entry")).collect()
+}
+
 fn measure_bundle_data_bytes(mut build_bundle: impl FnMut() -> FixtureBundle) -> u64 {
     let (_dir, wal_path) = temp_wal("measure_bundle.wal");
     let mut writer = WalWriter::open(WalWriterOptions::new(
@@ -368,12 +396,7 @@ fn wal_writer_reader_roundtrip_recovers_payloads() {
 #[test]
 fn wal_writer_rejects_slot_ids_outside_bitmap() {
     let (_dir, wal_path) = temp_wal("slot_range.wal");
-    let mut writer = WalWriter::open(WalWriterOptions::new(
-        wal_path,
-        [0; 16],
-        FlushPolicy::Immediate,
-    ))
-    .expect("writer");
+    let mut writer = open_test_writer(wal_path, [0; 16]);
 
     let descriptor = BundleDescriptor::new(vec![slot_descriptor(65, "Overflow")]);
     let bundle = FixtureBundle::new(
@@ -388,12 +411,7 @@ fn wal_writer_rejects_slot_ids_outside_bitmap() {
 #[test]
 fn wal_writer_rejects_pre_epoch_timestamp() {
     let (_dir, wal_path) = temp_wal("pre_epoch.wal");
-    let mut writer = WalWriter::open(WalWriterOptions::new(
-        wal_path,
-        [0; 16],
-        FlushPolicy::Immediate,
-    ))
-    .expect("writer");
+    let mut writer = open_test_writer(wal_path, [0; 16]);
 
     let descriptor = logs_descriptor();
     let bundle = FixtureBundle::new(descriptor, vec![])
@@ -506,30 +524,19 @@ fn wal_writer_records_cursor_without_truncating() {
     let (_dir, wal_path) = temp_wal("record_cursor.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(WalWriterOptions::new(
-        wal_path.clone(),
-        [0x20; 16],
-        FlushPolicy::Immediate,
-    ))
-    .expect("writer");
+    let mut writer = open_test_writer(wal_path.clone(), [0x20; 16]);
 
-    let first_bundle = FixtureBundle::new(
-        descriptor.clone(),
-        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3])],
-    );
-    let _ = writer.append_bundle(&first_bundle).expect("first append");
-
-    let second_bundle = FixtureBundle::new(
-        descriptor,
-        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[4, 5, 6])],
-    );
-    let _ = writer.append_bundle(&second_bundle).expect("second append");
+    let _ = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .expect("first append");
+    let _ = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5, 6]))
+        .expect("second append");
 
     let len_before = std::fs::metadata(&wal_path).expect("metadata").len();
 
-    let mut reader = WalReader::open(&wal_path).expect("reader");
-    let mut iter = reader.iter_from(0).expect("iter");
-    let first_entry = iter.next().expect("entry").expect("ok");
+    let entries = read_entries(&wal_path, 1);
+    let first_entry = &entries[0];
 
     let cursor = WalConsumerCheckpoint {
         safe_offset: first_entry.next_offset,
@@ -621,18 +628,11 @@ fn wal_writer_persists_consumer_checkpoint_sidecar() {
     let (_dir, wal_path) = temp_wal("checkpoint_sidecar.wal");
     let descriptor = logs_descriptor();
 
-    let mut writer = WalWriter::open(WalWriterOptions::new(
-        wal_path.clone(),
-        [0x99; 16],
-        FlushPolicy::Immediate,
-    ))
-    .expect("writer");
+    let mut writer = open_test_writer(wal_path.clone(), [0x99; 16]);
 
-    let bundle = FixtureBundle::new(
-        descriptor,
-        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2])],
-    );
-    let _ = writer.append_bundle(&bundle).expect("append");
+    let _ = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2]))
+        .expect("append");
 
     let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
     let cursor = WalConsumerCheckpoint {
@@ -657,19 +657,12 @@ fn wal_writer_rotates_when_target_exceeded() {
     let (_dir, wal_path) = temp_wal("force_rotate.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x51; 16], FlushPolicy::Immediate)
-            .with_rotation_target(1)
-            .with_max_rotated_files(4),
-    )
-    .expect("writer");
+    let mut writer = open_test_writer_with(wal_path.clone(), [0x51; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(4)
+    });
 
-    let bundle = FixtureBundle::new(
-        descriptor,
-        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3, 4])],
-    );
     let _ = writer
-        .append_bundle(&bundle)
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3, 4]))
         .expect("append triggers rotation");
     drop(writer);
 
@@ -736,12 +729,9 @@ fn wal_writer_errors_when_rotated_file_cap_reached() {
     let (_dir, wal_path) = temp_wal("rotated_cap.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), [0x52; 16], FlushPolicy::Immediate)
-            .with_rotation_target(1)
-            .with_max_rotated_files(1),
-    )
-    .expect("writer");
+    let mut writer = open_test_writer_with(wal_path.clone(), [0x52; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(1)
+    });
 
     let payload = [10, 11, 12];
     let first_bundle = single_slot_bundle(&descriptor, 0x02, &payload);
@@ -1900,4 +1890,408 @@ fn assert_reader_clean(path: &Path, offset: u64, case_name: &str) {
     for entry in iter {
         let _ = entry.unwrap_or_else(|err| panic!("{}: wal entry error {:?}", case_name, err));
     }
+}
+
+#[test]
+fn wal_writer_flushes_with_bytes_or_duration_policy_on_bytes() {
+    // Test that BytesOrDuration flushes when byte threshold is exceeded
+    let (_dir, wal_path) = temp_wal("flush_bytes_or_duration_bytes.wal");
+
+    let descriptor = logs_descriptor();
+    // Set a very small byte threshold and very long duration
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::BytesOrDuration {
+            bytes: 1,
+            duration: Duration::from_secs(3600),
+        },
+    ))
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x99, &[1, 2, 3])],
+    );
+
+    let before = writer.test_last_flush();
+    let _offset = writer
+        .append_bundle(&bundle)
+        .expect("append triggers flush via bytes threshold");
+    assert!(
+        writer.test_last_flush() > before,
+        "flush should occur when bytes threshold exceeded"
+    );
+}
+
+#[test]
+fn wal_writer_flushes_with_bytes_or_duration_policy_on_duration() {
+    // Test that BytesOrDuration flushes when duration threshold is exceeded
+    let (_dir, wal_path) = temp_wal("flush_bytes_or_duration_time.wal");
+
+    let descriptor = logs_descriptor();
+    // Set a very large byte threshold and very short duration
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::BytesOrDuration {
+            bytes: u64::MAX,
+            duration: Duration::from_millis(1),
+        },
+    ))
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x99, &[1, 2, 3])],
+    );
+
+    // Force the last_flush to be in the past
+    writer.test_set_last_flush(Instant::now() - Duration::from_secs(1));
+    let before = writer.test_last_flush();
+
+    let _offset = writer
+        .append_bundle(&bundle)
+        .expect("append triggers flush via duration threshold");
+    assert!(
+        writer.test_last_flush() > before,
+        "flush should occur when duration threshold exceeded"
+    );
+}
+
+#[test]
+fn wal_writer_skips_flush_when_neither_threshold_met() {
+    // Test that BytesOrDuration does NOT flush when neither threshold is met
+    writer_test_support::reset_flush_notifications();
+
+    let (_dir, wal_path) = temp_wal("flush_bytes_or_duration_skip.wal");
+
+    let descriptor = logs_descriptor();
+    // Set very large byte threshold and very long duration
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::BytesOrDuration {
+            bytes: u64::MAX,
+            duration: Duration::from_secs(3600),
+        },
+    ))
+    .expect("writer");
+
+    let bundle = FixtureBundle::new(
+        descriptor,
+        vec![FixtureSlot::new(SlotId::new(0), 0x99, &[1, 2, 3])],
+    );
+
+    // Ensure last_flush is recent
+    writer.test_set_last_flush(Instant::now());
+    let before = writer.test_last_flush();
+
+    let _offset = writer.append_bundle(&bundle).expect("append without flush");
+
+    // last_flush should not have changed (no flush occurred during append)
+    assert_eq!(
+        writer.test_last_flush(),
+        before,
+        "flush should NOT occur when neither threshold is met"
+    );
+}
+
+#[test]
+fn wal_writer_appends_empty_bundle_with_no_slots() {
+    // Test that a bundle with zero populated slots can be appended
+    let (_dir, wal_path) = temp_wal("empty_bundle.wal");
+
+    let descriptor = logs_descriptor();
+    let mut writer = open_test_writer(wal_path.clone(), [0x11; 16]);
+
+    // Create a bundle with no slots populated (empty slots vec)
+    let empty_bundle = FixtureBundle::new(descriptor.clone(), vec![]);
+    let offset = writer
+        .append_bundle(&empty_bundle)
+        .expect("empty bundle should append successfully");
+    assert_eq!(offset.sequence, 0);
+
+    // Append a normal bundle after to verify the writer is still functional
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x22, &[1, 2, 3]))
+        .expect("normal bundle after empty");
+    assert_eq!(offset2.sequence, 1);
+    drop(writer);
+
+    // Verify both entries can be read back
+    let entries = read_all_entries(&wal_path);
+    assert_eq!(entries.len(), 2);
+
+    assert_eq!(entries[0].sequence, 0);
+    assert_eq!(
+        entries[0].slot_bitmap, 0,
+        "empty bundle should have zero bitmap"
+    );
+    assert!(
+        entries[0].slots.is_empty(),
+        "empty bundle should have no slots"
+    );
+
+    assert_eq!(entries[1].sequence, 1);
+    assert_eq!(entries[1].slots.len(), 1);
+}
+
+#[test]
+fn wal_writer_rejects_checkpoint_sequence_regression() {
+    // Test that advancing checkpoint with a lower sequence number fails
+    let (_dir, wal_path) = temp_wal("sequence_regression.wal");
+
+    let descriptor = logs_descriptor();
+    let mut writer = open_test_writer(wal_path.clone(), [0x33; 16]);
+
+    // Append three bundles
+    for i in 0..3 {
+        let _ = writer
+            .append_bundle(&single_slot_bundle(&descriptor, i, &[i as i64]))
+            .expect("append");
+    }
+
+    // Read entries to get offsets
+    let entries = read_entries(&wal_path, 2);
+
+    // First, advance to the second entry (sequence=1)
+    let cursor_at_second = WalConsumerCheckpoint {
+        safe_offset: entries[1].next_offset,
+        safe_sequence: entries[1].sequence,
+    };
+    writer
+        .advance_consumer_checkpoint(&cursor_at_second)
+        .expect("advance to second entry");
+
+    // Now try to regress to the first entry (sequence=0)
+    let cursor_at_first = WalConsumerCheckpoint {
+        safe_offset: entries[0].next_offset,
+        safe_sequence: entries[0].sequence, // sequence=0, which is less than 1
+    };
+
+    match writer.advance_consumer_checkpoint(&cursor_at_first) {
+        Err(WalError::InvalidConsumerCheckpoint(msg)) => {
+            assert!(
+                msg.contains("regressed"),
+                "expected regression error, got: {msg}"
+            );
+        }
+        other => panic!("expected sequence regression error, got {other:?}"),
+    }
+}
+
+#[test]
+fn wal_writer_rejects_checkpoint_offset_regression() {
+    // Test that advancing checkpoint with a lower offset fails
+    let (_dir, wal_path) = temp_wal("offset_regression.wal");
+
+    let descriptor = logs_descriptor();
+    let mut writer = open_test_writer(wal_path.clone(), [0x44; 16]);
+
+    // Append two bundles
+    for i in 0..2 {
+        let _ = writer
+            .append_bundle(&single_slot_bundle(&descriptor, i, &[i as i64]))
+            .expect("append");
+    }
+
+    // Read entries to get offsets
+    let entries = read_entries(&wal_path, 2);
+
+    // Advance to the second entry
+    let cursor_at_second = WalConsumerCheckpoint {
+        safe_offset: entries[1].next_offset,
+        safe_sequence: entries[1].sequence,
+    };
+    writer
+        .advance_consumer_checkpoint(&cursor_at_second)
+        .expect("advance to second entry");
+
+    // Now try to advance with a higher sequence but lower offset
+    // This simulates a malformed checkpoint
+    let bad_cursor = WalConsumerCheckpoint {
+        safe_offset: entries[0].next_offset, // lower offset than before
+        safe_sequence: entries[1].sequence + 1, // higher sequence to pass that check
+    };
+
+    match writer.advance_consumer_checkpoint(&bad_cursor) {
+        Err(WalError::InvalidConsumerCheckpoint(msg)) => {
+            assert!(
+                msg.contains("regressed"),
+                "expected offset regression error, got: {msg}"
+            );
+        }
+        other => panic!("expected offset regression error, got {other:?}"),
+    }
+}
+
+#[test]
+fn wal_writer_handles_bundle_with_unpopulated_descriptor_slots() {
+    // Test a bundle where the descriptor has slots but payload() returns None for some
+    let (_dir, wal_path) = temp_wal("sparse_bundle.wal");
+
+    // Descriptor declares 3 slots
+    let descriptor = BundleDescriptor::new(vec![
+        slot_descriptor(0, "Logs"),
+        slot_descriptor(1, "LogAttrs"),
+        slot_descriptor(2, "ScopeAttrs"),
+    ]);
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x55; 16],
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer");
+
+    // Only populate slot 1 (middle slot), leaving 0 and 2 empty
+    let sparse_bundle = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(1), 0xBB, &[100, 200])],
+    );
+
+    let offset = writer
+        .append_bundle(&sparse_bundle)
+        .expect("sparse bundle appends");
+    assert_eq!(offset.sequence, 0);
+    drop(writer);
+
+    // Verify the entry
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iter");
+    let entry = iter.next().expect("entry").expect("ok");
+
+    // Only bit 1 should be set in the bitmap
+    assert_eq!(entry.slot_bitmap, 1u64 << 1);
+    assert_eq!(entry.slots.len(), 1);
+    assert_eq!(entry.slots[0].slot_id, SlotId::new(1));
+    assert_eq!(entry.slots[0].row_count, 2);
+}
+
+#[test]
+fn wal_recovery_clamps_stale_sidecar_offset() {
+    // Test that recovery handles a sidecar with global_data_offset beyond actual WAL data
+    let (_dir, wal_path) = temp_wal("stale_sidecar.wal");
+    let sidecar_path = wal_path.parent().unwrap().join("checkpoint.offset");
+
+    let descriptor = logs_descriptor();
+
+    // First, create a WAL with some data
+    {
+        let mut writer = WalWriter::open(WalWriterOptions::new(
+            wal_path.clone(),
+            [0x66; 16],
+            FlushPolicy::Immediate,
+        ))
+        .expect("writer");
+
+        let bundle = single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]);
+        let _ = writer.append_bundle(&bundle).expect("append");
+    }
+
+    // Now write a sidecar with an absurdly large offset
+    let stale_sidecar = CheckpointSidecar::new(u64::MAX / 2);
+    CheckpointSidecar::write_to(&sidecar_path, &stale_sidecar).expect("write stale sidecar");
+
+    // Reopen the writer - it should clamp the offset internally and not panic
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0x66; 16],
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer should recover from stale sidecar");
+
+    // Writer should still be functional
+    let bundle = single_slot_bundle(&descriptor, 0x02, &[4, 5, 6]);
+    let offset = writer
+        .append_bundle(&bundle)
+        .expect("append after recovery");
+    assert_eq!(offset.sequence, 1, "sequence should continue from WAL scan");
+
+    // Advance the checkpoint to the END of the WAL (after the second entry)
+    // The clamped global_data_offset equals total_logical_bytes from before the second append.
+    // After appending, we can checkpoint to the new end, which is beyond the clamped value.
+    let wal_len = std::fs::metadata(&wal_path).expect("metadata").len();
+    let cursor = WalConsumerCheckpoint {
+        safe_offset: wal_len,
+        safe_sequence: offset.sequence,
+    };
+    writer
+        .advance_consumer_checkpoint(&cursor)
+        .expect("advance checkpoint to end of WAL");
+    drop(writer);
+
+    // Verify the sidecar now has a valid offset
+    let recovered_sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("read sidecar");
+    let max_logical = wal_len.saturating_sub(WAL_HEADER_LEN as u64);
+    assert!(
+        recovered_sidecar.global_data_offset <= max_logical,
+        "sidecar offset {} should be within actual WAL data {}",
+        recovered_sidecar.global_data_offset,
+        max_logical
+    );
+}
+
+#[test]
+fn wal_recovery_handles_rotated_files_with_gaps_in_ids() {
+    // Test that recovery handles rotated files with non-contiguous IDs (e.g., wal.1, wal.5, wal.12)
+    let (_dir, wal_path) = temp_wal("rotation_gaps.wal");
+
+    let descriptor = logs_descriptor();
+
+    // Manually create rotated files with gaps in their IDs
+    // We'll create wal.2 and wal.7 (skipping 1, 3-6)
+    for rotation_id in [2u64, 7u64] {
+        let rotated_path = rotated_path_for(&wal_path, rotation_id as usize);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&rotated_path)
+            .expect("create rotated file");
+        WalHeader::new([0x77; 16])
+            .write_to(&mut file)
+            .expect("write header");
+        file.flush().expect("flush");
+    }
+
+    // Create the active WAL file
+    {
+        let mut writer = WalWriter::open(WalWriterOptions::new(
+            wal_path.clone(),
+            [0x77; 16],
+            FlushPolicy::Immediate,
+        ))
+        .expect("writer");
+
+        let bundle = single_slot_bundle(&descriptor, 0x01, &[1]);
+        let _ = writer.append_bundle(&bundle).expect("append");
+    }
+
+    // Reopen and verify the writer picks up where it left off
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0x77; 16], FlushPolicy::Immediate)
+            .with_rotation_target(1)
+            .with_max_rotated_files(10),
+    )
+    .expect("writer with gap-id rotations");
+
+    // Append and trigger a rotation
+    let bundle = single_slot_bundle(&descriptor, 0x02, &[2, 3, 4, 5]);
+    let _ = writer
+        .append_bundle(&bundle)
+        .expect("append triggers rotation");
+    drop(writer);
+
+    // The new rotation should use ID 8 (max existing + 1 = 7 + 1)
+    let expected_new_rotation = rotated_path_for(&wal_path, 8);
+    assert!(
+        expected_new_rotation.exists(),
+        "new rotation should use ID 8 (after existing max of 7)"
+    );
+
+    // Verify wal.2 and wal.7 still exist
+    assert!(rotated_path_for(&wal_path, 2).exists());
+    assert!(rotated_path_for(&wal_path, 7).exists());
 }
