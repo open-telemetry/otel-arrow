@@ -20,14 +20,14 @@ use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
 
+use super::checkpoint_sidecar::{CHECKPOINT_SIDECAR_LEN, CheckpointSidecar};
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::test_support::{self, ReadFailure};
-use super::checkpoint_sidecar::{CHECKPOINT_SIDECAR_LEN, CheckpointSidecar};
-use super::writer::test_support as writer_test_support;
 use super::writer::FlushPolicy;
+use super::writer::test_support as writer_test_support;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalError, WalReader,
-    WalConsumerCheckpoint, WalWriter, WalWriterOptions,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, WalConsumerCheckpoint,
+    WalError, WalReader, WalWriter, WalWriterOptions,
 };
 
 struct FixtureSlot {
@@ -368,8 +368,12 @@ fn wal_writer_reader_roundtrip_recovers_payloads() {
 #[test]
 fn wal_writer_rejects_slot_ids_outside_bitmap() {
     let (_dir, wal_path) = temp_wal("slot_range.wal");
-    let mut writer =
-        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate)).expect("writer");
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer");
 
     let descriptor = BundleDescriptor::new(vec![slot_descriptor(65, "Overflow")]);
     let bundle = FixtureBundle::new(
@@ -384,8 +388,12 @@ fn wal_writer_rejects_slot_ids_outside_bitmap() {
 #[test]
 fn wal_writer_rejects_pre_epoch_timestamp() {
     let (_dir, wal_path) = temp_wal("pre_epoch.wal");
-    let mut writer =
-        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate)).expect("writer");
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer");
 
     let descriptor = logs_descriptor();
     let bundle = FixtureBundle::new(descriptor, vec![])
@@ -476,8 +484,12 @@ fn wal_writer_flush_syncs_file_data() {
     let (_dir, wal_path) = temp_wal("flush_sync.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer =
-        WalWriter::open(WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::Immediate)).expect("writer");
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer");
 
     let bundle = FixtureBundle::new(
         descriptor,
@@ -529,8 +541,10 @@ fn wal_writer_records_cursor_without_truncating() {
     drop(writer);
 
     let len_after = std::fs::metadata(&wal_path).expect("metadata").len();
-    assert_eq!(len_after, len_before,
-        "recording a safe cursor no longer mutates the active wal immediately");
+    assert_eq!(
+        len_after, len_before,
+        "recording a safe cursor no longer mutates the active wal immediately"
+    );
 
     let sidecar_path = wal_path.parent().unwrap().join("checkpoint.offset");
     let sidecar = CheckpointSidecar::read_from(&sidecar_path).expect("sidecar");
@@ -870,9 +884,11 @@ fn wal_writer_flushes_after_unflushed_byte_threshold() {
     let (_dir, wal_path) = temp_wal("flush_bytes.wal");
 
     let descriptor = logs_descriptor();
-    let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::EveryNBytes(1)),
-    )
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::EveryNBytes(1),
+    ))
     .expect("writer");
 
     let bundle = FixtureBundle::new(
@@ -896,9 +912,11 @@ fn wal_writer_flushes_pending_bytes_on_drop() {
 
     let descriptor = logs_descriptor();
     // Use a duration-based flush with a very long interval so we don't flush during the test
-    let writer = WalWriter::open(
-        WalWriterOptions::new(wal_path, [0; 16], FlushPolicy::EveryDuration(Duration::from_secs(3600))),
-    )
+    let writer = WalWriter::open(WalWriterOptions::new(
+        wal_path,
+        [0; 16],
+        FlushPolicy::EveryDuration(Duration::from_secs(3600)),
+    ))
     .expect("writer");
 
     {
@@ -1064,7 +1082,8 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     let wal_cap = std::fs::metadata(&wal_path).expect("metadata").len();
 
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate).with_max_wal_size(wal_cap),
+        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate)
+            .with_max_wal_size(wal_cap),
     )
     .expect("writer with cap");
     let err = writer.append_bundle(&bundle).expect_err("cap hit");
@@ -1093,7 +1112,8 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     drop(writer);
 
     let mut writer = WalWriter::open(
-        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate).with_max_wal_size(u64::MAX),
+        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate)
+            .with_max_wal_size(u64::MAX),
     )
     .expect("writer after cap removed");
     let retry = writer.append_bundle(&bundle).expect("retry append");
@@ -1128,7 +1148,9 @@ fn wal_writer_preflight_rejects_when_rotated_file_cap_hit() {
 
     {
         let mut writer = WalWriter::open(constrained_opts).expect("writer with cap");
-        let err = writer.append_bundle(&bundle).expect_err("rotated file cap hit");
+        let err = writer
+            .append_bundle(&bundle)
+            .expect_err("rotated file cap hit");
         assert!(matches!(err, WalError::WalAtCapacity(_)));
     }
 
@@ -1669,7 +1691,8 @@ fn wal_writer_rejects_segment_config_mismatch() {
 
     // Create a WAL with one config hash.
     {
-        let options = WalWriterOptions::new(wal_path.clone(), original_hash, FlushPolicy::Immediate);
+        let options =
+            WalWriterOptions::new(wal_path.clone(), original_hash, FlushPolicy::Immediate);
         let _writer = WalWriter::open(options).expect("initial open");
     }
 

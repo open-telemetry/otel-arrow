@@ -7,7 +7,7 @@
 //! files when size thresholds are exceeded, and reclaiming durable space once
 //! downstream consumers advance the consumer checkpoint. Safe offsets are always
 //! validated against real entry boundaries so we never expose partially written
-//! frames to readers. 
+//! frames to readers.
 //!
 //! # WAL lifecycle at a glance
 //!
@@ -122,8 +122,8 @@ use super::checkpoint_sidecar::CheckpointSidecar;
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::WalReader;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError,
-    WalResult, WalConsumerCheckpoint,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN,
+    WalConsumerCheckpoint, WalError, WalResult,
 };
 
 /// Controls when the WAL flushes data to disk.
@@ -182,7 +182,6 @@ impl WalWriterOptions {
         self.rotation_target_bytes = target_bytes.max(1);
         self
     }
-
 }
 
 /// Stateful writer that maintains append position, rotation metadata, and
@@ -282,12 +281,8 @@ impl WalWriter {
         let checkpoint_state = load_checkpoint_state(&sidecar_path)?;
 
         let active_file = ActiveWalFile::new(file, metadata_len);
-        let mut coordinator = WalCoordinator::new(
-            options,
-            sidecar_path,
-            checkpoint_state,
-            metadata_len,
-        );
+        let mut coordinator =
+            WalCoordinator::new(options, sidecar_path, checkpoint_state, metadata_len);
         coordinator.reload_rotated_files(active_file.len())?;
         coordinator.restore_checkpoint_offsets(active_file.len());
 
@@ -365,15 +360,18 @@ impl WalWriter {
             .preflight_append(&self.active_file, entry_total_bytes)?;
 
         let mut payload_bytes = std::mem::take(&mut self.active_file.payload_buffer);
-        let entry_start = self
-            .active_file
-            .write_entry(entry_len, &entry_header, &payload_bytes, crc)?;
+        let entry_start =
+            self.active_file
+                .write_entry(entry_len, &entry_header, &payload_bytes, crc)?;
         payload_bytes.clear();
         self.active_file.payload_buffer = payload_bytes;
 
         self.next_sequence = self.next_sequence.wrapping_add(1);
 
-        self.active_file.current_len = self.active_file.current_len.saturating_add(entry_total_bytes);
+        self.active_file.current_len = self
+            .active_file
+            .current_len
+            .saturating_add(entry_total_bytes);
         self.coordinator.record_append(entry_total_bytes);
         self.active_file
             .maybe_flush(&self.coordinator.options().flush_policy, entry_total_bytes)?;
@@ -400,7 +398,10 @@ impl WalWriter {
     /// Updates the checkpoint sidecar without touching the underlying WAL bytes.
     /// This is used when we merely want to record a new consumer checkpoint so future
     /// rotations know how far readers have progressed.
-    pub(crate) fn advance_consumer_checkpoint(&mut self, checkpoint: &WalConsumerCheckpoint) -> WalResult<()> {
+    pub(crate) fn advance_consumer_checkpoint(
+        &mut self,
+        checkpoint: &WalConsumerCheckpoint,
+    ) -> WalResult<()> {
         self.coordinator
             .advance_consumer_checkpoint(&mut self.active_file, checkpoint)
     }
@@ -586,9 +587,7 @@ impl WalCoordinator {
     fn restore_checkpoint_offsets(&mut self, active_len: u64) {
         let header = WAL_HEADER_LEN as u64;
         let active_data = active_len.saturating_sub(header);
-        let total_logical = self
-            .rotated_data_bytes()
-            .saturating_add(active_data);
+        let total_logical = self.rotated_data_bytes().saturating_add(active_data);
 
         if self.checkpoint_state.global_data_offset > total_logical {
             self.checkpoint_state.global_data_offset = total_logical;
@@ -602,7 +601,11 @@ impl WalCoordinator {
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(entry_total_bytes);
     }
 
-    fn preflight_append(&mut self, active_file: &ActiveWalFile, entry_total_bytes: u64) -> WalResult<()> {
+    fn preflight_append(
+        &mut self,
+        active_file: &ActiveWalFile,
+        entry_total_bytes: u64,
+    ) -> WalResult<()> {
         let will_rotate = active_file
             .len()
             .saturating_add(entry_total_bytes)
@@ -665,14 +668,20 @@ impl WalCoordinator {
         }
         if let Some(last_seq) = self.last_checkpoint_sequence {
             if checkpoint.safe_sequence < last_seq {
-                return Err(WalError::InvalidConsumerCheckpoint("safe sequence regressed"));
+                return Err(WalError::InvalidConsumerCheckpoint(
+                    "safe sequence regressed",
+                ));
             }
         }
         self.ensure_entry_boundary(active_file, requested_offset)?;
         Ok(requested_offset)
     }
 
-    fn ensure_entry_boundary(&mut self, active_file: &mut ActiveWalFile, target: u64) -> WalResult<()> {
+    fn ensure_entry_boundary(
+        &mut self,
+        active_file: &mut ActiveWalFile,
+        target: u64,
+    ) -> WalResult<()> {
         if target == self.active_file_checkpoint_offset {
             return Ok(());
         }
@@ -794,11 +803,7 @@ impl WalCoordinator {
     }
 
     fn recalculate_aggregate_bytes(&mut self, active_len: u64) {
-        let rotated_total: u64 = self
-            .rotated_files
-            .iter()
-            .map(|f| f.total_bytes())
-            .sum();
+        let rotated_total: u64 = self.rotated_files.iter().map(|f| f.total_bytes()).sum();
         self.aggregate_bytes = rotated_total.saturating_add(active_len);
     }
 

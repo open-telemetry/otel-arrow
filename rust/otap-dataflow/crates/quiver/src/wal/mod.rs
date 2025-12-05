@@ -17,7 +17,7 @@ mod writer;
 
 // Keep reader exports visible even though only tests consume them today.
 #[allow(unused_imports)]
-pub(crate) use reader::{DecodedWalSlot, WalReader, WalRecordBundle, WalConsumerCheckpoint};
+pub(crate) use reader::{DecodedWalSlot, WalConsumerCheckpoint, WalReader, WalRecordBundle};
 // Writer is used broadly soon; suppress warnings while integration lands.
 #[allow(unused_imports)]
 pub(crate) use writer::{FlushPolicy, WalOffset, WalWriter, WalWriterOptions};

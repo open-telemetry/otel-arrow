@@ -32,15 +32,14 @@ pub(crate) struct CheckpointSidecar {
 
 impl CheckpointSidecar {
     pub fn new(global_data_offset: u64) -> Self {
-        Self {
-            global_data_offset,
-        }
+        Self { global_data_offset }
     }
 
     pub fn encode(&self) -> [u8; CHECKPOINT_SIDECAR_LEN] {
         let mut buf = [0u8; CHECKPOINT_SIDECAR_LEN];
         let mut cursor = 0;
-        buf[cursor..cursor + CHECKPOINT_SIDECAR_MAGIC.len()].copy_from_slice(CHECKPOINT_SIDECAR_MAGIC);
+        buf[cursor..cursor + CHECKPOINT_SIDECAR_MAGIC.len()]
+            .copy_from_slice(CHECKPOINT_SIDECAR_MAGIC);
         cursor += CHECKPOINT_SIDECAR_MAGIC.len();
 
         buf[cursor..cursor + 2].copy_from_slice(&CHECKPOINT_SIDECAR_VERSION.to_le_bytes());
@@ -101,9 +100,7 @@ impl CheckpointSidecar {
             return Err(WalError::InvalidCheckpointSidecar("crc mismatch"));
         }
 
-        Ok(Self {
-            global_data_offset,
-        })
+        Ok(Self { global_data_offset })
     }
 
     pub fn read_from(path: &Path) -> WalResult<Self> {
