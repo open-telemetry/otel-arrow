@@ -10,37 +10,45 @@ use serde::Deserialize;
 
 use crate::cloud_auth;
 
-/// TODO(jakedern): Docs
+/// Azure object storage
 pub mod azure;
 
-/// TODO(jakedern): Docs
+/// Supported object storage types
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum Config {
-    /// TODO(jakedern): Docs
+pub enum StorageType {
+    /// File storage
     File {
-        /// TODO(jakedern): Docs
+        /// The root directory for writing files
         base_uri: String,
     },
 
-    /// TODO(jakedern): Docs
+    /// Azure storage
     #[cfg(feature = "azure")]
     Azure {
-        /// TODO(jakedern): Docs
+        /// The base URI for the azure storage backend. Many are supported:
+        ///
+        /// - Blob: `https://<account>.blob.core.windows.net/<container>`
+        /// - Fabric: `https://<account>.dfs.fabric.microsoft.com`
+        /// - More: See [object_store::azure::MicrosoftAzureBuilder::with_url]
         base_uri: String,
 
-        /// TODO(jakedern): Docs
+        /// Optional storage scope to request tokens for, mostly useful for
+        /// operating in azure clouds other than public. Defaults to
+        /// [azure::DEFAULT_STORAGE_SCOPE] if not provided.
         storage_scope: Option<String>,
 
-        /// TODO(jakedern): Docs
+        /// The auth settings, see [cloud_auth::azure::AuthMethod]
         auth: cloud_auth::azure::AuthMethod,
     },
 }
 
-/// TODO(jakedern): Docs
-pub fn from_storage_config(storage: &Config) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+/// Fetch an object store based on the provide storage
+pub fn from_storage_type(
+    storage: &StorageType,
+) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
     match storage {
-        Config::File { base_uri } => {
+        StorageType::File { base_uri } => {
             #[cfg(test)]
             {
                 if base_uri.starts_with("testdelayed://") {
@@ -53,7 +61,7 @@ pub fn from_storage_config(storage: &Config) -> Result<Arc<dyn ObjectStore>, obj
         }
 
         #[cfg(feature = "azure")]
-        Config::Azure {
+        StorageType::Azure {
             base_uri,
             storage_scope,
             auth,
@@ -83,15 +91,15 @@ pub fn from_storage_config(storage: &Config) -> Result<Arc<dyn ObjectStore>, obj
 
 #[cfg(test)]
 mod test {
-    use std::fmt::Display;
-    use std::time::Duration;
-
     use futures::stream::BoxStream;
     use object_store::path::Path;
     use object_store::{
         GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, PutMultipartOptions,
         PutOptions, PutPayload, PutResult, Result,
     };
+    use serde_json::json;
+    use std::fmt::Display;
+    use std::time::Duration;
     use tokio::time::sleep;
     use url::Url;
 
@@ -197,5 +205,108 @@ mod test {
         async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
             self.inner.copy_if_not_exists(from, to).await
         }
+    }
+
+    #[test]
+    fn test_file_config() {
+        let json = json!({
+            "file": {
+                "base_uri": "/tmp/test"
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::File {
+            base_uri: "/tmp/test".to_string(),
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_azure_config_with_azure_cli() {
+        let json = json!({
+            "azure": {
+                "base_uri": "https://mystorageaccount.blob.core.windows.net/container",
+                "auth": {
+                    "type": "azure_cli"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::Azure {
+            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
+            storage_scope: None,
+            auth: cloud_auth::azure::AuthMethod::AzureCli {
+                additionally_allowed_tenants: vec![],
+                subscription: None,
+                tenant_id: None,
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_azure_config_with_managed_identity() {
+        let json = json!({
+            "azure": {
+                "base_uri": "https://mystorageaccount.blob.core.windows.net/container",
+                "storage_scope": "https://storage.azure.com/.default",
+                "auth": {
+                    "type": "managed_identity",
+                    "user_assigned_id": {
+                        "client_id": "test-client-id"
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::Azure {
+            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
+            storage_scope: Some("https://storage.azure.com/.default".to_string()),
+            auth: cloud_auth::azure::AuthMethod::ManagedIdentity {
+                user_assigned_id: Some(cloud_auth::azure::UserAssignedId::ClientId(
+                    "test-client-id".to_string(),
+                )),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_azure_config_with_workload_identity() {
+        let json = json!({
+            "azure": {
+                "base_uri": "https://mystorageaccount.blob.core.windows.net/container",
+                "auth": {
+                    "type": "workload_identity",
+                    "client_id": "test-client-id",
+                    "tenant_id": "test-tenant-id",
+                    "token_file_path": "/var/run/secrets/token"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::Azure {
+            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
+            storage_scope: None,
+            auth: cloud_auth::azure::AuthMethod::WorkloadIdentity {
+                client_id: Some("test-client-id".to_string()),
+                tenant_id: Some("test-tenant-id".to_string()),
+                token_file_path: Some("/var/run/secrets/token".into()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    fn test_deserialize(json: &str, expected: StorageType) {
+        let deserialized: StorageType =
+            serde_json::from_str(json).expect("Failed to deserialize Config");
+        assert_eq!(deserialized, expected);
     }
 }

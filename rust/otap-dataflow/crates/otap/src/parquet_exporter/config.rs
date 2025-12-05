@@ -10,7 +10,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The base URI for where the parquet files should be written
-    pub storage: crate::object_store::Config,
+    pub storage: crate::object_store::StorageType,
 
     /// Configuration for how to compute partitions from the dataset
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
