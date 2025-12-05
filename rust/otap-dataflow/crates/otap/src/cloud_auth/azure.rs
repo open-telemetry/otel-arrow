@@ -117,24 +117,27 @@ pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, a
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use serde_json::json;
 
-    fn test_deserialize(yaml: &str, expected: AuthMethod) {
-        let deserialized: AuthMethod = serde_yaml::from_str(yaml)
-            .expect("Failed to deserialize AuthMethod");
-        assert_eq!(deserialized, expected);
-    }
+    use super::*;
 
     #[test]
     fn test_azure_cli_minimal() {
-        let yaml = r#"
-type: azure_cli
-"#;
+        let json = json!({
+            "type": "azure_cli"
+        })
+        .to_string();
         let expected = AuthMethod::AzureCli {
             additionally_allowed_tenants: vec![],
             subscription: None,
             tenant_id: None,
         };
-        test_deserialize(yaml, expected);
+        test_deserialize(&json, expected);
+    }
+
+    fn test_deserialize(json: &str, expected: AuthMethod) {
+        let deserialized: AuthMethod =
+            serde_json::from_str(json).expect("Failed to deserialize AuthMethod");
+        assert_eq!(deserialized, expected);
     }
 }

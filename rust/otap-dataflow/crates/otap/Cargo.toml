@@ -98,7 +98,6 @@ azure = []
 flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
-serde_yaml.workspace = true
 tempfile.workspace = true
 url.workspace = true
 tokio-util.workspace = true
