@@ -58,21 +58,31 @@ batching on performance.
 
 - Total input load: 100,000 log records/second
 - Average log record size: 1 KB
-- Batch sizes tested: 10, 100, and 1000 records per request
+- Batch sizes tested: 10, 100, 1000, and 10000 records per request
 
-##### OTAP → OTAP (Native Protocol)
+This wide range of batch sizes evaluates performance across diverse deployment
+scenarios. Small batches (10-100) represent edge collectors or real-time
+streaming requirements, while large batches (1000-10000) represent gateway
+collectors and high-throughput aggregation points. This approach ensures a fair
+assessment, highlighting both the overhead for small batches and the significant
+efficiency gains inherent to Arrow's columnar format at larger batch sizes.
+
+##### Standard Load - OTAP -> OTAP (Native Protocol)
 
 | CPU Cores | Batch Size | CPU Usage | Memory Usage |
 |-----------|------------|-----------|---------------|
 | 1 Core    | 10/batch | TBD | TBD |
 | 1 Core    | 100/batch | TBD | TBD |
 | 1 Core    | 1000/batch | TBD | TBD |
+| 1 Core    | 10000/batch | TBD | TBD |
 | 4 Cores   | 10/batch | TBD | TBD |
 | 4 Cores   | 100/batch | TBD | TBD |
 | 4 Cores   | 1000/batch | TBD | TBD |
+| 4 Cores   | 10000/batch | TBD | TBD |
 | 8 Cores   | 10/batch | TBD | TBD |
 | 8 Cores   | 100/batch | TBD | TBD |
 | 8 Cores   | 1000/batch | TBD | TBD |
+| 8 Cores   | 10000/batch | TBD | TBD |
 
 This represents the optimal scenario where the df-engine operates with its
 native protocol end-to-end, eliminating protocol conversion overhead. The
@@ -80,19 +90,22 @@ thread-per-core architecture demonstrates linear scaling across CPU cores
 without contention, allowing the engine to be configured for specific deployment
 requirements.
 
-##### OTLP → OTAP (Protocol Conversion)
+##### Standard Load - OTLP -> OTAP (Protocol Conversion)
 
 | CPU Cores | Batch Size | CPU Usage | Memory Usage |
 |-----------|------------|-----------|---------------|
-| 1 Core | 10/batch | TBD | TBD |
-| 1 Core | 100/batch | TBD | TBD |
-| 1 Core | 1000/batch | TBD | TBD |
-| 4 Cores | 10/batch | TBD | TBD |
-| 4 Cores | 100/batch | TBD | TBD |
-| 4 Cores | 1000/batch | TBD | TBD |
-| 8 Cores | 10/batch | TBD | TBD |
-| 8 Cores | 100/batch | TBD | TBD |
-| 8 Cores | 1000/batch | TBD | TBD |
+| 1 Core    | 10/batch | TBD | TBD |
+| 1 Core    | 100/batch | TBD | TBD |
+| 1 Core    | 1000/batch | TBD | TBD |
+| 1 Core    | 10000/batch | TBD | TBD |
+| 4 Cores   | 10/batch | TBD | TBD |
+| 4 Cores   | 100/batch | TBD | TBD |
+| 4 Cores   | 1000/batch | TBD | TBD |
+| 4 Cores   | 10000/batch | TBD | TBD |
+| 8 Cores   | 10/batch | TBD | TBD |
+| 8 Cores   | 100/batch | TBD | TBD |
+| 8 Cores   | 1000/batch | TBD | TBD |
+| 8 Cores   | 10000/batch | TBD | TBD |
 
 This scenario represents the common case where OpenTelemetry SDK clients emit
 OTLP (not yet capable of OTAP), and the df-engine converts to OTAP for egress.
@@ -103,7 +116,7 @@ while maintaining linear scaling characteristics across CPU cores.
 
 Behavior at maximum capacity when physical resource limits are reached.
 
-##### OTAP → OTAP (Native Protocol)
+##### Saturation Load - OTAP -> OTAP (Native Protocol)
 
 | CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
 |-----------|------------------------------|-------------------|--------------|
@@ -111,7 +124,7 @@ Behavior at maximum capacity when physical resource limits are reached.
 | 4 Cores   | TBD                          | TBD               | TBD          |
 | 8 Cores   | TBD                          | TBD               | TBD          |
 
-##### OTLP → OTAP (Protocol Conversion)
+##### Saturation Load - OTLP -> OTAP (Protocol Conversion)
 
 | CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
 |-----------|------------------------------|-------------------|--------------|
@@ -126,9 +139,9 @@ demonstrate the maximum throughput achievable with different CPU core
 allocations. The **Throughput / Core** metric provides a key efficiency
 indicator for capacity planning.
 
-<!--TODO: Document what is the behavior - is it applying backpressure 
+<!--TODO: Document what is the behavior - is it applying backpressure
 (`wait_for_result` feature)? or dropping items and keeping internal metric
-about it. -->
+about it.-->
 
 ### Architecture
 
