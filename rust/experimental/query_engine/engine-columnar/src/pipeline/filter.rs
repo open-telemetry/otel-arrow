@@ -199,6 +199,19 @@ impl FilterPlan {
         let left_arg = BinaryArg::try_from(left_expr)?;
         let right_arg = BinaryArg::try_from(right_expr)?;
 
+        // don't allow non equals comparisons for null
+        if binary_op != Operator::Eq
+            && (matches!(left_arg, BinaryArg::Null) || matches!(right_arg, BinaryArg::Null))
+        {
+            return Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "cannot compare null using operator {}. only == is allowed",
+                    binary_op
+                ),
+                query_location: None,
+            });
+        }
+
         // TODO there are several branches below which are not yet supported supported
         // - comparing two literals. e.g "a" == "b"
         // - comparing non-literal left with non-literal right. e.g.
@@ -306,14 +319,16 @@ impl FilterPlan {
                     }
                 },
                 BinaryArg::Null => {
-                    todo!()
+                    // literal == null
+                    Err(Error::NotYetSupportedError {
+                        message: "comparing left literal with right null".into(),
+                    })
                 }
             },
             BinaryArg::Null => match right_arg {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
                         // left = null & right = column
-                        // TODO need check here the operation is Eq!!
                         Ok(FilterPlan::from(col(right_col_name).is_null()))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
@@ -322,12 +337,25 @@ impl FilterPlan {
                             col(right_struct_name).field(right_struct_field).is_null(),
                         ))
                     }
-                    _ => {
-                        todo!()
+                    ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
+                        // left = null & right = attribute (e.g. doesn't have attribute)
+                        Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                            attrs_identifier,
+                        ))))
                     }
                 },
-                _ => {
-                    todo!()
+                BinaryArg::Literal(_lit) => {
+                    // null == lit
+                    Err(Error::NotYetSupportedError {
+                        message: "comparing left null with right literal".into(),
+                    })
+                }
+                BinaryArg::Null => {
+                    // null == null
+                    Err(Error::NotYetSupportedError {
+                        message: "comparing left null with right null".into(),
+                    })
                 }
             },
         }
@@ -401,9 +429,22 @@ impl ToExec for FilterPlan {
             .map(|attr_filter| attr_filter.to_exec(session_ctx, otap_batch))
             .transpose()?;
 
+        // compute how ot handle missing attributes. Basically if the attrs filter is
+        // not(attribute exists), then if there are no attributes for this filter in the
+        // OTAP batch, or if the id column is null for some row then we treat the rows as
+        // it passes the attribute filter because the attribute doesn't exist
+        let missing_attrs_pass = matches!(
+            &self.attribute_filter,
+            Some(
+                Composite::Not(filter)) if matches!(filter.as_ref(),
+                Composite::Base(f) if f.checks_existence_only()
+            )
+        );
+
         Ok(FilterExec {
             predicate: physical_expr,
             attributes_filter: attrs_filter,
+            missing_attrs_pass,
         })
     }
 }
@@ -419,7 +460,7 @@ pub struct AttributesFilterPlan {
     /// `col("key").eq(lit("x")).and(col("str").eq(lit("y")))`
     pub filter: Expr,
 
-    /// The identifier of which attributes will be considered when filtering
+    /// The identifier of which attributes will be considered when filtering.
     pub attrs_identifier: AttributesIdentifier,
 }
 
@@ -428,6 +469,26 @@ impl AttributesFilterPlan {
         Self {
             filter,
             attrs_identifier,
+        }
+    }
+
+    /// returns true if the expression is only checking for the existence of some attribute versus
+    /// checking that the attribute has some given value
+    fn checks_existence_only(&self) -> bool {
+        // inspect the pattern -- we're looking for col(key).eq(lit("attr name"))
+        match &self.filter {
+            Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {
+                let is_attr_column = matches!(
+                    binary_expr.left.as_ref(),
+                    Expr::Column(col) if col.name == consts::ATTRIBUTE_KEY
+                );
+                let is_string_literal = matches!(
+                    binary_expr.right.as_ref(),
+                    Expr::Literal(ScalarValue::Utf8(_), None)
+                );
+                is_attr_column && is_string_literal
+            }
+            _ => false,
         }
     }
 }
@@ -488,6 +549,11 @@ fn to_physical_exprs(
 pub struct FilterExec {
     predicate: Option<AdaptivePhysicalExprExec>,
     attributes_filter: Option<Composite<AttributeFilterExec>>,
+
+    /// determines how we treat rows that where the attribute doesn't exist. generally this will
+    /// cause the row not to pass the filter, unless this is true which we'll set it as for
+    /// filters like `attributes["x"] == null`
+    missing_attrs_pass: bool,
 }
 
 impl FilterExec {
@@ -521,13 +587,13 @@ impl FilterExec {
             let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
                 Some(id_col) => id_col,
                 None => {
-                    // None of the records have any attributes, so for now we just assume that all
-                    // the records would be filtered out by the predicate.
-                    //
-                    // TODO Eventually we need to handle this in a more intelligent way (see comment
-                    // below about null attrs)
+                    // None of the records have any attributes
                     return Ok(BooleanArray::new(
-                        BooleanBuffer::new_unset(root_rb.num_rows()),
+                        if self.missing_attrs_pass {
+                            BooleanBuffer::new_set(root_rb.num_rows())
+                        } else {
+                            BooleanBuffer::new_unset(root_rb.num_rows())
+                        },
                         None,
                     ));
                 }
@@ -545,18 +611,8 @@ impl FilterExec {
                 let row_validity = if id_col.is_valid(index) {
                     id_mask.contains(id_col.value(index) as u32)
                 } else {
-                    // TODO -- here the record has no attributes, so the row should be filtered out
-                    // in all cases except for the attribute predicate was something like
-                    // `attributes["x"] == null`.
-                    //
-                    // Generally speaking, we need to eventually add a way to inspect the attribute
-                    // filter's predicate to determine if the attribute not being present means
-                    // passes. But b/c we don't currently support any predicates like this, we just
-                    // assume no attr means the row gets filtered out
-                    //
-                    // Note: when we fix this TODO, we should also fix the case above where there
-                    // were no attributes at all for any rows (so the id_col is not present).
-                    false
+                    // attribute does not exist
+                    self.missing_attrs_pass
                 };
 
                 if segment_validity != row_validity {
@@ -2233,6 +2289,54 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone(), log_records[2].clone()],
+        );
+
+        // check the same thing works if we put null on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_null_no_attrs() {
+        let log_records = vec![
+            LogRecord::build().event_name("1").finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        // double check that when we encode this as OTLP that the attributes
+        // record batch is not present
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"x\"] == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records.clone()
+        );
+
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records.clone()
         );
     }
 
