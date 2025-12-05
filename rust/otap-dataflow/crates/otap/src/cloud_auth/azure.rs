@@ -7,14 +7,17 @@ use azure_core::credentials::TokenCredential;
 use azure_identity::AzureCliCredential;
 use serde::{Deserialize, Serialize};
 
-/// TODO(jakedern): Docs
+/// Azure authentication methods. This can be leveraged in component
+/// configuration objects for a consistent way to specify Azure auth information.
+/// The next step here may be to add an equivalent to the Go collector's auth
+/// extensions rather thatn borrow this across component configs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthMethod {
-    /// TODO(jakedern): Docs
+    /// See [azure_identity::AzureCliCredential].
     AzureCli {
         /// Additional tenants that the credential should be allowed to
-        /// authenticate in
+        /// authenticate in.
         #[serde(default)]
         additionally_allowed_tenants: Vec<String>,
 
@@ -26,13 +29,13 @@ pub enum AuthMethod {
         /// cli's default tenant.
         tenant_id: Option<String>,
     },
-    /// TODO(jakedern): Docs
+    /// See [azure_identity::ManagedIdentityCredential].
     ManagedIdentity {
         /// User assigned identity to use when authenticating, otherwise the
         /// system assigned identity will be used if available.
         user_assigned_id: Option<UserAssignedId>,
     },
-    /// TODO(jakedern): Docs
+    /// See [azure_identity::WorkloadIdentityCredential].
     WorkloadIdentity {
         /// Client ID of the Entra identity. Defaults to the value of the
         /// `AZURE_CLIENT_ID` environment variable.
@@ -48,8 +51,7 @@ pub enum AuthMethod {
     },
 }
 
-/// TODO(jakedern): Docs
-/// TODO(jakedern): Test how this deserializes
+/// Equivalent of [azure_identity::UserAssignedId]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub enum UserAssignedId {
     /// The client ID of a user-assigned identity
@@ -70,7 +72,7 @@ impl From<UserAssignedId> for azure_identity::UserAssignedId {
     }
 }
 
-/// TODO(jakedern): Docs
+/// Create a [TokenCredential] from the given [AuthMethod].
 pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, azure_core::Error> {
     match value {
         AuthMethod::AzureCli {
@@ -110,5 +112,29 @@ pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, a
                 options,
             ))?)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn test_deserialize(yaml: &str, expected: AuthMethod) {
+        let deserialized: AuthMethod = serde_yaml::from_str(yaml)
+            .expect("Failed to deserialize AuthMethod");
+        assert_eq!(deserialized, expected);
+    }
+
+    #[test]
+    fn test_azure_cli_minimal() {
+        let yaml = r#"
+type: azure_cli
+"#;
+        let expected = AuthMethod::AzureCli {
+            additionally_allowed_tenants: vec![],
+            subscription: None,
+            tenant_id: None,
+        };
+        test_deserialize(yaml, expected);
     }
 }

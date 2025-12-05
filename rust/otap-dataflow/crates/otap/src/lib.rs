@@ -79,10 +79,11 @@ mod metrics;
 /// gRPC service implementation
 pub mod otlp_grpc;
 
-/// Cloud authentication utilities
+/// Cloud specific auth utilities
 pub mod cloud_auth;
 
-/// Object storage utilities and auth adapters for different cloud providers
+/// Object storage utilities including integrations for different cloud
+/// providers
 pub mod object_store;
 
 /// Factory for OTAP-based pipeline
