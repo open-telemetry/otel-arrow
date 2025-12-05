@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
 
+use super::writer::sync_parent_dir;
 use super::{WalError, WalResult};
 
 #[cfg(test)]
@@ -130,6 +131,7 @@ impl CheckpointSidecar {
             ));
         }
         std::fs::rename(&tmp_path, path)?;
+        sync_parent_dir(path)?;
         Ok(())
     }
 }

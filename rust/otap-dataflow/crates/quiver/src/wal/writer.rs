@@ -771,6 +771,7 @@ impl WalCoordinator {
 
         let new_rotated_path = rotated_wal_path(&self.options.path, rotation_id);
         std::fs::rename(&self.options.path, &new_rotated_path)?;
+        sync_parent_dir(&self.options.path)?;
 
         let data_bytes = old_len.saturating_sub(WAL_HEADER_LEN as u64);
         let cumulative_data_offset = self.rotated_data_bytes().saturating_add(data_bytes);
@@ -918,6 +919,26 @@ fn sync_file_data(file: &File) -> WalResult<()> {
     #[cfg(test)]
     test_support::record_sync_data();
     file.sync_data()?;
+    Ok(())
+}
+
+/// Syncs the parent directory to ensure rename durability.
+///
+/// On POSIX systems, `rename()` is atomic but not necessarily durable until the
+/// parent directory is fsynced. This matters on filesystems without automatic
+/// rename barriers (older ext3, NFS, non-default mount options).
+///
+/// On non-Unix platforms this is a no-op since directory sync semantics differ.
+pub(super) fn sync_parent_dir(path: &Path) -> WalResult<()> {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            let dir = File::open(parent)?;
+            dir.sync_all()?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path; // silence unused warning
     Ok(())
 }
 
