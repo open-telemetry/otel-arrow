@@ -234,6 +234,12 @@ impl FilterPlan {
                             Box::new(try_static_scalar_to_literal(&right_lit)?),
                         ))))
                     }
+                    BinaryArg::Null => {
+                        // left = struct col & right = null
+                        Ok(FilterPlan::from(
+                            col(left_struct_name).field(left_struct_field).is_null(),
+                        ))
+                    }
                     _ => Err(Error::NotYetSupportedError {
                         message: "comparing left struct column with non-literal right in filter"
                             .into(),
@@ -300,8 +306,14 @@ impl FilterPlan {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
                         // left = null & right = column
-                        // TODO need check here the opeation is Eq!!
+                        // TODO need check here the operation is Eq!!
                         Ok(FilterPlan::from(col(right_col_name).is_null()))
+                    }
+                    ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
+                        // left = null, right = struct column
+                        Ok(FilterPlan::from(
+                            col(right_struct_name).field(right_struct_field).is_null(),
+                        ))
                     }
                     _ => {
                         todo!()
@@ -759,7 +771,6 @@ impl AdaptivePhysicalExprExec {
                 // we weren't able to project the record batch into the schema expected by the
                 // physical expr. This means that there were some columns referenced in the logical
                 // expr that are missing from the input batch.
-
                 return Ok(BooleanArray::new(
                     if self.missing_data_passes {
                         BooleanBuffer::new_set(record_batch.num_rows())
@@ -2073,6 +2084,122 @@ mod test {
                 log_records[1].clone(),
                 log_records[2].clone()
             ],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_null() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .name("name1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        // test filter by scope properties
+        let result = exec_logs_pipeline(
+            "logs | where instrumentation_scope.name == string(null)",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[1].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+
+        // test filter by scope properties, this time the null is on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == instrumentation_scope.name",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[1].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_null_missing_column() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        // test filter by scope properties
+        let result = exec_logs_pipeline(
+            "logs | where instrumentation_scope.name == string(null)",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[0].clone(), scope_logs[1].clone()],
+                    ..Default::default()
+                }],
+            }
         );
     }
 
