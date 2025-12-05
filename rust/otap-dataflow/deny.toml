@@ -83,6 +83,7 @@ ignore = [
     { id="RUSTSEC-2023-0081", reason = "unmaintained `safemem` crate that is a dependency of weaver_semconv"}, # is a warning level in weaver deny.toml
     { id="RUSTSEC-2018-0017", reason = "unmaintained `tempdir` crate that is a dependency of weaver_semconv and weaver_forge"}, # is a warning level in weaver deny.toml
     { id="RUSTSEC-2021-0146", reason = "unmaintained `twoway` crate that is a dependency of weaver_semconv and weaver_forge"}, # is a warning level in weaver deny.toml
+    { id="RUSTSEC-2025-0134", reason = "TODO fix documented in https://github.com/open-telemetry/otel-arrow/issues/1535" }
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
