@@ -53,6 +53,7 @@ pub enum AuthMethod {
 
 /// Equivalent of [azure_identity::UserAssignedId]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UserAssignedId {
     /// The client ID of a user-assigned identity
     ClientId(String),
@@ -117,12 +118,53 @@ pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, a
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use serde_json::json;
 
-    use super::*;
+    #[test]
+    fn test_user_assigned_id() {
+        let json = json!({
+            "type": "managed_identity",
+            "user_assigned_id": {
+                "client_id": "foo"
+            }
+        })
+        .to_string();
+
+        let expected = AuthMethod::ManagedIdentity {
+            user_assigned_id: Some(UserAssignedId::ClientId("foo".to_string())),
+        };
+        test_deserialize(&json, expected);
+    }
 
     #[test]
-    fn test_azure_cli_minimal() {
+    fn test_workload_identity() {
+        let json = json!({
+            "type": "workload_identity"
+        })
+        .to_string();
+        let expected = AuthMethod::WorkloadIdentity {
+            client_id: None,
+            tenant_id: None,
+            token_file_path: None,
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    fn test_managed_identity() {
+        let json = json!({
+            "type": "managed_identity"
+        })
+        .to_string();
+        let expected = AuthMethod::ManagedIdentity {
+            user_assigned_id: None,
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    fn test_azure_cli() {
         let json = json!({
             "type": "azure_cli"
         })
