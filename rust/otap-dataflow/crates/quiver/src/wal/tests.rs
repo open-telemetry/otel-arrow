@@ -489,8 +489,8 @@ fn wal_writer_flush_syncs_file_data() {
 }
 
 #[test]
-fn wal_writer_reclaim_prefix_records_cursor() {
-    let (_dir, wal_path) = temp_wal("reclaim_cursor.wal");
+fn wal_writer_records_cursor_without_truncating() {
+    let (_dir, wal_path) = temp_wal("record_cursor.wal");
 
     let descriptor = logs_descriptor();
     let mut writer = WalWriter::open(WalWriterOptions::new(
@@ -522,12 +522,14 @@ fn wal_writer_reclaim_prefix_records_cursor() {
         safe_offset: first_entry.next_offset,
         ..WalTruncateCursor::default()
     };
-    writer.reclaim_prefix(&cursor).expect("record cursor");
+    writer
+        .record_truncate_cursor(&cursor)
+        .expect("record cursor");
     drop(writer);
 
     let len_after = std::fs::metadata(&wal_path).expect("metadata").len();
     assert_eq!(len_after, len_before,
-        "reclaiming prefix no longer mutates the active wal immediately");
+        "recording a safe cursor no longer mutates the active wal immediately");
 
     let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
     let sidecar = TruncateSidecar::read_from(&sidecar_path).expect("sidecar");
@@ -578,7 +580,7 @@ fn wal_writer_enforces_safe_offset_boundaries() {
         safe_sequence: first_entry.sequence,
     };
 
-    match writer.reclaim_prefix(&cursor) {
+    match writer.record_truncate_cursor(&cursor) {
         Err(WalError::InvalidTruncateCursor(message)) => {
             assert_eq!(message, "safe offset splits entry boundary")
         }
@@ -587,8 +589,8 @@ fn wal_writer_enforces_safe_offset_boundaries() {
 
     cursor.advance(&first_entry);
     writer
-        .reclaim_prefix(&cursor)
-        .expect("reclaim succeeds with aligned cursor");
+        .record_truncate_cursor(&cursor)
+        .expect("record succeeds with aligned cursor");
     drop(writer);
 
     let sidecar_path = wal_path.parent().unwrap().join("truncate.offset");
@@ -1792,7 +1794,7 @@ fn run_crash_case(case: CrashCase) {
         case.name
     );
     writer_test_support::inject_crash(case.injection);
-    let err = match writer.reclaim_prefix(&cursor) {
+    let err = match writer.record_truncate_cursor(&cursor) {
         Ok(_) => panic!("{}: crash injection did not trigger", case.name),
         Err(err) => err,
     };

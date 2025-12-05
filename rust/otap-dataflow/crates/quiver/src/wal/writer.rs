@@ -424,13 +424,6 @@ impl WalWriter {
             .record_truncate_cursor(&mut self.segment, cursor)
     }
 
-    /// Records a new truncate cursor and lets future rotations delete fully
-    /// safe chunks. This validates the cursor just like [`truncate_to`] but
-    /// leaves the active file untouched until rotation thresholds are met.
-    pub fn reclaim_prefix(&mut self, cursor: &WalTruncateCursor) -> WalResult<()> {
-        self.coordinator.reclaim_prefix(&mut self.segment, cursor)
-    }
-
     fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {
         let row_count = u32::try_from(payload.batch.num_rows())
             .map_err(|_| WalError::RowCountOverflow(payload.batch.num_rows()))?;
@@ -644,15 +637,6 @@ impl WalCoordinator {
     }
 
     fn record_truncate_cursor(
-        &mut self,
-        segment: &mut WalSegment,
-        cursor: &WalTruncateCursor,
-    ) -> WalResult<()> {
-        let safe_offset = self.resolve_truncate_cursor(segment, cursor)?;
-        self.commit_truncate_state(cursor, safe_offset)
-    }
-
-    fn reclaim_prefix(
         &mut self,
         segment: &mut WalSegment,
         cursor: &WalTruncateCursor,
