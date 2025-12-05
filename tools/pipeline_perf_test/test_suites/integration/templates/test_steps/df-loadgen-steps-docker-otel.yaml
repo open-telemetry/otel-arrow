@@ -137,7 +137,7 @@ steps:
                   destination:
                     console: {}
                 - format:
-                    template: 
+                    template:
                       path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
                   destination:
                     file:
