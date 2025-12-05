@@ -210,6 +210,29 @@ mod test {
     }
 
     #[test]
+    fn test_get_file_storage() {
+        let storage = StorageType::File {
+            base_uri: "/tmp".to_string(),
+        };
+        assert!(from_storage_type(&storage).is_ok());
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_get_azure_storage() {
+        let storage = StorageType::Azure {
+            base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
+            storage_scope: None,
+            auth: cloud_auth::azure::AuthMethod::AzureCli {
+                additionally_allowed_tenants: vec![],
+                subscription: None,
+                tenant_id: None,
+            },
+        };
+        assert!(from_storage_type(&storage).is_ok());
+    }
+
+    #[test]
     fn test_file_config() {
         let json = json!({
             "file": {
