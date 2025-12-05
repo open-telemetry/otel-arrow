@@ -337,7 +337,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_tx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+          SELECT 'network_tx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -345,7 +345,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_rx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+          SELECT 'network_rx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
