@@ -382,7 +382,7 @@ fn now_f64() -> f64 {
 }
 
 /// State tracking for retry attempts, sized for Context8u8.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct RetryState {
     /// Number of retry attempts so far (0 = first attempt, 1+ = retries).
     retries: u64,
