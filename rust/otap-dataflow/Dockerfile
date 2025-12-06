@@ -7,13 +7,15 @@
 # with the arrow enabled go collector build files in the repo root, the image
 # must be built with additional --build-context flags as follows:
 # docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
-ARG FEATURES=""
-ARG RUSTFLAGS=""
 FROM --platform=$BUILDPLATFORM docker.io/rust:1.91@sha256:4a29b0db5c961cd530f39276ece3eb6e66925b59599324c8c19723b72a423615 AS dataflow-build
 WORKDIR /build/rust/dataflow
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
+
+ARG RUSTFLAGS
+ENV RUSTFLAGS=${RUSTFLAGS}
 ARG FEATURES
+ENV FEATURES=${FEATURES}
 
 RUN apt-get update && apt-get install -y protobuf-compiler
 
@@ -26,8 +28,8 @@ COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-pro
 COPY . /build/rust/dataflow/.
 
 # Build dataflow engine
-ENV FEATURES=${FEATURES}
-ENV RUSTFLAGS=${RUSTFLAGS}
+# ENV FEATURES=${FEATURES}
+# ENV RUSTFLAGS=${RUSTFLAGS}
 RUN ./cross-arch-build.sh
 
 # The runtime image

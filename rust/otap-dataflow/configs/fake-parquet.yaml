@@ -24,11 +24,9 @@ nodes:
     plugin_urn: "urn:otel:otap:parquet:exporter"
     config:
       storage:
-        azure:
-          base_uri: https://barquettest.blob.core.windows.net/barquet1
-          auth:
-            type: azure_cli
+        file:
+          base_uri: /tmp
       partitioning_strategies:
       - schema_metadata: ["_part_id"]
       writer_options:
-        flush_when_older_than: 5s
+        flush_when_older_than: 10s
