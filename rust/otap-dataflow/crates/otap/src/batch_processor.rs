@@ -1682,7 +1682,7 @@ mod tests {
     /// Test nack delivery
     fn test_split_with_nack_ordering(
         create_marked_input: impl Fn(usize) -> OtlpProtoMessage + Send + 'static,
-        _extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
+        extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
         nack_position: usize,
     ) {
         let cfg = json!({
@@ -1713,8 +1713,30 @@ mod tests {
                     AckPolicy::Ack
                 }
             }),
-            move |_event_outputs| {
-                // Note: There was an intention here
+            move |event_outputs| {
+                let mut max_marker: Option<u64> = None;
+
+                for output_msg in event_outputs {
+                    let markers: Vec<_> = output_msg
+                        .messages()
+                        .iter()
+                        .flat_map(|m| extract_markers(m))
+                        .collect();
+
+                    if markers.is_empty() {
+                        continue;
+                    }
+
+                    let batch_min = *markers.iter().min().unwrap();
+                    let batch_max = *markers.iter().max().unwrap();
+
+                    // Verify in-line property: current batch's minimum must be > previous max
+                    if let Some(prev_max) = max_marker {
+                        assert!(batch_min > prev_max);
+                    }
+
+                    max_marker = Some(batch_max);
+                }
             },
         );
     }
