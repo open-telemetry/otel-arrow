@@ -91,7 +91,6 @@ pub mod opentelemetry {
 /// objects are required. OtlpProtoBytes has an efficient translation
 /// into OtapArrowRecords, this type does not.
 ///
-///
 /// Note this could be considered for #[cfg(test)], however we are
 /// aware of uses in otap-df-otap's fake_signal_generator and
 /// debug_processor.
@@ -259,7 +258,8 @@ impl From<opentelemetry::trace::v1::TracesData> for OtlpProtoMessage {
     }
 }
 
-//#[cfg(test)]
+// This would be #[cfg(test)] because it's an expensive operation we
+// never expect in production, except we can't because ... (not sure)
 impl TryFrom<crate::otlp::OtlpProtoBytes> for OtlpProtoMessage {
     type Error = prost::DecodeError;
 
