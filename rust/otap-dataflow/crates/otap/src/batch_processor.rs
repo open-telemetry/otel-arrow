@@ -782,6 +782,7 @@ impl SignalBuffer {
         output_batches: &mut Vec<OtapArrowRecords>,
         last_items: usize,
     ) {
+        // SAFETY: protected by output_batches.len() > 1.
         let remaining = output_batches.pop().expect("has last");
         let last_input = from_inputs.context.last().expect("has last");
         let new_part = BatchPortion::new(last_input.inkey, last_items);
