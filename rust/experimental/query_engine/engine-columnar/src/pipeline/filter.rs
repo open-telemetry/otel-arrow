@@ -429,7 +429,7 @@ impl ToExec for FilterPlan {
             .map(|attr_filter| attr_filter.to_exec(session_ctx, otap_batch))
             .transpose()?;
 
-        // compute how ot handle missing attributes. If the attrs filter is not(attr exists), then
+        // compute how to handle missing attributes. If the attrs filter is not(attr exists), then
         // if the id column null for some row (meaning no attributes), or if the ID column is
         // absent entirely (meaning now rows have attributes) then we treat the rows as it passes
         // the attribute filter because
