@@ -91,7 +91,6 @@ pub mod opentelemetry {
 /// objects are required. OtlpProtoBytes has an efficient translation
 /// into OtapArrowRecords, this type does not.
 ///
-///
 /// Note this could be considered for #[cfg(test)], however we are
 /// aware of uses in otap-df-otap's fake_signal_generator and
 /// debug_processor.
@@ -256,6 +255,32 @@ impl From<opentelemetry::metrics::v1::MetricsData> for OtlpProtoMessage {
 impl From<opentelemetry::trace::v1::TracesData> for OtlpProtoMessage {
     fn from(data: opentelemetry::trace::v1::TracesData) -> Self {
         Self::Traces(data)
+    }
+}
+
+// This would be #[cfg(test)] because it's an expensive operation we
+// never expect in production, except we can't because ... (not sure)
+impl TryFrom<crate::otlp::OtlpProtoBytes> for OtlpProtoMessage {
+    type Error = prost::DecodeError;
+
+    fn try_from(bytes: crate::otlp::OtlpProtoBytes) -> Result<Self, Self::Error> {
+        use crate::otlp::OtlpProtoBytes;
+        use crate::proto::opentelemetry::logs::v1::LogsData;
+        use crate::proto::opentelemetry::metrics::v1::MetricsData;
+        use crate::proto::opentelemetry::trace::v1::TracesData;
+        use prost::Message;
+
+        Ok(match bytes {
+            OtlpProtoBytes::ExportLogsRequest(b) => {
+                OtlpProtoMessage::Logs(LogsData::decode(b.as_ref())?)
+            }
+            OtlpProtoBytes::ExportTracesRequest(b) => {
+                OtlpProtoMessage::Traces(TracesData::decode(b.as_ref())?)
+            }
+            OtlpProtoBytes::ExportMetricsRequest(b) => {
+                OtlpProtoMessage::Metrics(MetricsData::decode(b.as_ref())?)
+            }
+        })
     }
 }
 
