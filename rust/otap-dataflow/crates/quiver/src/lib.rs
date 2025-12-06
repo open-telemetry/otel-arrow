@@ -11,9 +11,13 @@
 //! # Example
 //! ```
 //! use quiver::{engine::QuiverEngine, config::QuiverConfig};
+//! use tempfile::tempdir;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let engine = QuiverEngine::new(QuiverConfig::default())?;
+//! let tmp = tempdir()?;
+//! let cfg = QuiverConfig::default().with_data_dir(tmp.path());
+//! let engine = QuiverEngine::new(cfg)?;
+//! assert_eq!(engine.config().data_dir, tmp.path());
 //! assert_eq!(engine.config().segment.target_size_bytes.get(), 32 * 1024 * 1024);
 //! # Ok(())
 //! # }
@@ -24,7 +28,9 @@ pub mod engine;
 pub mod error;
 pub mod record_bundle;
 pub mod telemetry;
+pub(crate) mod wal;
 
 pub use config::{QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
 pub use engine::QuiverEngine;
 pub use error::{QuiverError, Result};
+pub use wal::WalError;

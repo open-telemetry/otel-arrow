@@ -23,11 +23,19 @@ serde = ["dep:serde"]
 [dependencies]
 arrow-array.workspace = true
 arrow-schema.workspace = true
+arrow-ipc.workspace = true
+crc32fast.workspace = true
+blake3.workspace = true
+parking_lot.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
