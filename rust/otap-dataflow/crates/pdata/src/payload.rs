@@ -143,6 +143,12 @@ impl OtapPayload {
             Self::OtapArrowRecords(value) => value.num_items(),
         }
     }
+
+    /// Return an empty payload of a certain type.
+    #[must_use]
+    pub fn empty(signal: SignalType) -> Self {
+        Self::OtlpBytes(OtlpProtoBytes::empty(signal))
+    }
 }
 
 /* -------- Trait implementations -------- */
