@@ -562,6 +562,7 @@ impl From<AdaptivePhysicalExprExec> for FilterExec {
         Self {
             predicate: Some(predicate),
             attributes_filter: None,
+            missing_attrs_pass: false,
         }
     }
 }
@@ -3080,6 +3081,7 @@ mod test {
                 projection: FilterProjection {
                     schema: vec![ProjectedSchemaColumn::Root("x".into())],
                 },
+                missing_data_passes: false,
             }),
         );
 
@@ -3108,6 +3110,7 @@ mod test {
                 projection: FilterProjection {
                     schema: vec![ProjectedSchemaColumn::Root("x".into())],
                 },
+                missing_data_passes: false,
             }),
         );
 
@@ -3141,6 +3144,7 @@ mod test {
                     projection: FilterProjection {
                         schema: vec![ProjectedSchemaColumn::Root("x".into())],
                     },
+                    missing_data_passes: false,
                 },
             },
         );
