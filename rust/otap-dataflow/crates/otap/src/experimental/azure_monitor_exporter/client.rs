@@ -3,6 +3,9 @@
 
 use azure_core::credentials::TokenCredential;
 use azure_core::time::OffsetDateTime;
+
+use bytes::Bytes;
+
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderValue},
@@ -28,6 +31,8 @@ pub struct LogsIngestionClient {
 
     /// Token expiry time using monotonic clock for faster comparisons
     pub token_valid_until: Instant,
+
+    token_refresh_after: Instant,
 }
 
 impl LogsIngestionClient {
@@ -53,6 +58,7 @@ impl LogsIngestionClient {
             auth: Auth::from_credential(credential, scope),
             auth_header: HeaderValue::from_static("Bearer "),
             token_valid_until: Instant::now(),
+            token_refresh_after: Instant::now(),
         }
     }
 
@@ -79,7 +85,8 @@ impl LogsIngestionClient {
         );
 
         let auth =
-            Auth::new(&config.auth).map_err(|e| format!("Failed to create auth handler: {e}"))?;
+            Auth::new(&config.auth)
+                .map_err(|e| format!("Failed to create auth handler: {e}"))?;
 
         Ok(Self {
             http_client,
@@ -87,6 +94,7 @@ impl LogsIngestionClient {
             auth,
             auth_header: HeaderValue::from_static("Bearer "),
             token_valid_until: Instant::now(),
+            token_refresh_after: Instant::now(),
         })
     }
 
@@ -96,7 +104,7 @@ impl LogsIngestionClient {
         let now = Instant::now();
 
         // Fast path: token is still valid
-        if now < self.token_valid_until {
+        if now < self.token_refresh_after {
             return Ok(());
         }
 
@@ -114,10 +122,10 @@ impl LogsIngestionClient {
         // Calculate validity using Instant for faster comparisons
         // Refresh 5 minutes before expiry
         let valid_seconds = (token.expires_on - OffsetDateTime::now_utc())
-            .whole_seconds()
-            .saturating_sub(300); // 5 minutes = 300 seconds
+            .whole_seconds();
 
         self.token_valid_until = now + Duration::from_secs(valid_seconds.max(0) as u64);
+        self.token_refresh_after = self.token_valid_until - Duration::from_secs(300);
 
         println!("[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}, current time {:?}", valid_seconds, self.token_valid_until, now);
 
@@ -134,10 +142,7 @@ impl LogsIngestionClient {
     /// # Returns
     /// * `Ok(())` - If the request was successful
     /// * `Err(String)` - Error message if the request failed
-    pub async fn send(&mut self, body: Vec<u8>) -> Result<(), String> {
-        // Ensure we have a valid token (fast path when cached)
-        self.ensure_valid_token().await?;
-
+    pub async fn send(&mut self, body: Bytes) -> Result<(), String> {
         let start = Instant::now();
 
         // Send compressed body - avoid cloning headers by setting them individually
@@ -168,7 +173,9 @@ impl LogsIngestionClient {
             401 => {
                 // Invalidate token and force refresh on next call
                 self.token_valid_until = Instant::now();
-                self.auth.invalidate_token();
+                self.auth.invalidate_token().await;
+                self.ensure_valid_token().await?;
+
                 Err(format!("Authentication failed: {error}"))
             }
             403 => Err(format!("Authorization failed: {error}")),
@@ -183,6 +190,7 @@ impl LogsIngestionClient {
 mod tests {
     use super::*;
     use super::super::config::{ApiConfig, AuthConfig, AuthMethod};
+    use azure_core::Bytes;
     use azure_core::credentials::TokenRequestOptions;
     use azure_core::credentials::{AccessToken, TokenCredential};
     use std::sync::Mutex;
@@ -277,7 +285,7 @@ mod tests {
             "scope".to_string(),
         );
 
-        let result = client.send(vec![1, 2, 3]).await;
+        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_ok());
         assert_eq!(*call_count.lock().unwrap(), 1); // Token fetched once
     }
@@ -312,7 +320,7 @@ mod tests {
         );
 
         // This should fail with 401, but invalidate the token
-        let result = client.send(vec![1, 2, 3]).await;
+        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Authentication failed"));
 
@@ -326,7 +334,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let result = client.send(vec![1, 2, 3]).await;
+        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_ok());
         assert_eq!(*call_count.lock().unwrap(), 2); // Token fetched again
     }
@@ -357,7 +365,7 @@ mod tests {
             "scope".to_string(),
         );
 
-        let result = client.send(vec![1, 2, 3]).await;
+        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Rate limited"));
     }
