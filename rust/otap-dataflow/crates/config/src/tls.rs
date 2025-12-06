@@ -65,16 +65,24 @@ pub struct TlsServerConfig {
     /// Common TLS configuration.
     #[serde(flatten)]
     pub config: TlsConfig,
-    // TODO: Implement mTLS fields when needed.
-    // /// Path to the TLS cert to use by the server to verify a client certificate.
-    // pub client_ca_file: Option<PathBuf>,
 
-    // /// In memory PEM encoded cert to use by the server to verify a client certificate.
-    // pub client_ca_pem: Option<String>,
+    /// Path to the TLS cert to use by the server to verify a client certificate.
+    pub client_ca_file: Option<PathBuf>,
 
-    // /// Controls whether system CA certificates are loaded for client certificate verification.
-    // pub include_system_ca_certs_pool: Option<bool>,
+    /// In memory PEM encoded cert to use by the server to verify a client certificate.
+    pub client_ca_pem: Option<String>,
 
+    /// Controls whether system CA certificates are loaded for client certificate verification.
+    pub include_system_ca_certs_pool: Option<bool>,
     // /// Path to the Certificate Revocation List (CRL) to use by the server to verify a client certificate.
     // pub client_crl_file: Option<PathBuf>,
+    /// Timeout for TLS handshake. Defaults to 10 seconds.
+    /// Prevents slow/malicious clients from holding connection slots.
+    #[serde(default = "default_handshake_timeout", with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub handshake_timeout: Option<Duration>,
+}
+
+fn default_handshake_timeout() -> Option<Duration> {
+    Some(Duration::from_secs(10))
 }

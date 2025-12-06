@@ -35,6 +35,10 @@ mod tests {
                 key_pem: None,
                 reload_interval: None,
             },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
         };
 
         let result = load_server_tls_config(&config).await;

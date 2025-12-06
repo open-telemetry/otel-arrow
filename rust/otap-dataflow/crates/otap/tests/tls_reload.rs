@@ -7,7 +7,9 @@
 #[cfg(feature = "experimental-tls")]
 mod tests {
     use otap_df_config::tls::{TlsConfig, TlsServerConfig};
-    use otap_df_otap::tls_utils::build_reloadable_server_config;
+    use otap_df_otap::tls_utils::{build_reloadable_server_config, build_tls_acceptor};
+    use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
     use std::fs;
     use std::io::BufReader;
     use std::net::SocketAddr;
@@ -152,6 +154,10 @@ mod tests {
                 cert_pem: None,
                 key_pem: None,
             },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
         };
 
         let addr: SocketAddr = "127.0.0.1:0".parse().expect("Invalid address");
@@ -165,7 +171,7 @@ mod tests {
         // 3. Connect with Client trusting CA1 (Should Succeed)
         let mut root_store1 = rustls::RootCertStore::empty();
         let ca1_pem = fs::read(path.join("ca1.crt")).unwrap();
-        for cert in rustls_pemfile::certs(&mut BufReader::new(&ca1_pem[..])) {
+        for cert in CertificateDer::pem_reader_iter(&mut BufReader::new(&ca1_pem[..])) {
             root_store1.add(cert.unwrap()).unwrap();
         }
 
@@ -205,7 +211,7 @@ mod tests {
         // 6. Connect with Client trusting CA2 (Should Succeed)
         let mut root_store2 = rustls::RootCertStore::empty();
         let ca2_pem = fs::read(path.join("ca2.crt")).unwrap();
-        for cert in rustls_pemfile::certs(&mut BufReader::new(&ca2_pem[..])) {
+        for cert in CertificateDer::pem_reader_iter(&mut BufReader::new(&ca2_pem[..])) {
             root_store2.add(cert.unwrap()).unwrap();
         }
 
