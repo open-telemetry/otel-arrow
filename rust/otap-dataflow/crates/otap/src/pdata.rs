@@ -111,6 +111,12 @@ impl Context {
     pub fn current_calldata(&self) -> Option<CallData> {
         self.stack.last().map(|f| f.calldata.clone())
     }
+
+    /// Are there any subscribers?
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        !self.stack.is_empty()
+    }
 }
 
 /// Per-node interests, context, and identity.
@@ -214,6 +220,13 @@ impl OtapPdata {
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
         self
+    }
+
+    /// Returns Context::has_subscribers()
+    #[cfg(test)]
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        self.context.has_subscribers()
     }
 
     /// Return the current calldata.
