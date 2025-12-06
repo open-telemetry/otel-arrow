@@ -8,6 +8,7 @@ use azure_identity::{
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::experimental::azure_monitor_exporter::config::{AuthConfig, AuthMethod};
 
@@ -15,7 +16,8 @@ use crate::experimental::azure_monitor_exporter::config::{AuthConfig, AuthMethod
 pub struct Auth {
     credential: Arc<dyn TokenCredential>,
     scope: String,
-    cached_token: AccessToken,
+    // Thread-safe shared token cache
+    cached_token: Arc<RwLock<Option<AccessToken>>>,
 }
 
 impl Auth {
@@ -25,10 +27,7 @@ impl Auth {
         Ok(Self {
             credential,
             scope: auth_config.scope.clone(),
-            cached_token: AccessToken {
-                token: "".into(),
-                expires_on: OffsetDateTime::now_utc(),
-            },
+            cached_token: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -36,20 +35,31 @@ impl Auth {
         Self {
             credential,
             scope,
-            cached_token: AccessToken {
-                token: "".into(),
-                expires_on: OffsetDateTime::now_utc(),
-            },
+            cached_token: Arc::new(RwLock::new(None)),
         }
     }
 
-    pub async fn get_token(&mut self) -> Result<AccessToken, String> {
+    pub async fn get_token(&self) -> Result<AccessToken, String> {
         println!("[AzureMonitorExporter][Auth] Acquiring token");
 
-        if self.cached_token.expires_on
-            > OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(5)
+        // Try to use cached token
         {
-            return Ok(self.cached_token.clone());
+            let cached = self.cached_token.read().await;
+            if let Some(token) = &*cached {
+                if token.expires_on > OffsetDateTime::now_utc() {
+                    return Ok(token.clone());
+                }
+            }
+        }
+
+        // Need to refresh - acquire write lock
+        let mut cached = self.cached_token.write().await;
+
+        // Double-check in case another thread refreshed while we waited
+        if let Some(token) = &*cached {
+            if token.expires_on > OffsetDateTime::now_utc() {
+                return Ok(token.clone());
+            }
         }
 
         let token_response = self
@@ -62,16 +72,14 @@ impl Auth {
             .map_err(|e| format!("Failed to get token: {e}"))?;
 
         // Update the cached token
-        self.cached_token = token_response.clone();
+        *cached = Some(token_response.clone());
 
         Ok(token_response)
     }
 
-    pub fn invalidate_token(&mut self) {
-        self.cached_token = AccessToken {
-            token: "".into(),
-            expires_on: OffsetDateTime::now_utc(),
-        };
+    pub async fn invalidate_token(&self) {
+        let mut cached = self.cached_token.write().await;
+        *cached = None;
     }
 
     #[allow(clippy::print_stdout)]
@@ -148,7 +156,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let mut auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // First call should hit the credential
         let token1 = auth.get_token().await.unwrap();
@@ -171,7 +179,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let mut auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // First call
         let _ = auth.get_token().await.unwrap();
@@ -191,22 +199,22 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let mut auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // First call
         let _ = auth.get_token().await.unwrap();
         assert_eq!(*call_count.lock().unwrap(), 1);
 
         // Invalidate
-        auth.invalidate_token();
+        auth.invalidate_token().await;
 
         // Should refresh
         let _ = auth.get_token().await.unwrap();
         assert_eq!(*call_count.lock().unwrap(), 2);
     }
 
-    #[test]
-    fn test_new_with_managed_identity() {
+    #[tokio::test]
+    async fn test_new_with_managed_identity() {
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: Some("test-client-id".to_string()),
@@ -217,11 +225,12 @@ mod tests {
         assert!(auth.is_ok());
         let auth = auth.unwrap();
         assert_eq!(auth.scope, "https://test.scope");
-        assert_eq!(auth.cached_token.token.secret(), "");
+        // Check that cached_token is None initially
+        assert!(auth.cached_token.read().await.is_none());
     }
 
-    #[test]
-    fn test_new_with_system_assigned_managed_identity() {
+    #[tokio::test]
+    async fn test_new_with_system_assigned_managed_identity() {
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: None,
@@ -232,11 +241,12 @@ mod tests {
         assert!(auth.is_ok());
         let auth = auth.unwrap();
         assert_eq!(auth.scope, "https://test.scope");
-        assert_eq!(auth.cached_token.token.secret(), "");
+        // Check that cached_token is None initially
+        assert!(auth.cached_token.read().await.is_none());
     }
 
-    #[test]
-    fn test_new_with_development_auth() {
+    #[tokio::test]
+    async fn test_new_with_development_auth() {
         let auth_config = AuthConfig {
             method: AuthMethod::Development,
             client_id: None,
@@ -248,13 +258,29 @@ mod tests {
         match auth {
             Ok(auth) => {
                 assert_eq!(auth.scope, "https://test.scope");
-                assert_eq!(auth.cached_token.token.secret(), "");
+                // Check that cached_token is None initially
+                assert!(auth.cached_token.read().await.is_none());
             }
             Err(err) => {
                 // Expected if Azure CLI/Azure Developer CLI is not installed
                 assert!(err.contains("Failed to create developer tools credential"));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_from_credential_initializes_with_none() {
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: Arc::new(Mutex::new(0)),
+        });
+
+        let auth = Auth::from_credential(credential, "test_scope".to_string());
+
+        // Check that initial cached token is None
+        assert!(auth.cached_token.read().await.is_none());
+        assert_eq!(auth.scope, "test_scope");
     }
 
     #[tokio::test]
@@ -267,7 +293,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let mut auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // First call
         let _ = auth.get_token().await.unwrap();
@@ -298,7 +324,7 @@ mod tests {
         }
 
         let credential = Arc::new(FailingCredential);
-        let mut auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         let result = auth.get_token().await;
         assert!(result.is_err());
@@ -314,7 +340,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let mut auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // Get token twice and verify they are different instances (cloned)
         let token1 = auth.get_token().await.unwrap();
@@ -326,8 +352,8 @@ mod tests {
         assert_eq!(*call_count.lock().unwrap(), 1);
     }
 
-    #[test]
-    fn test_from_credential_initializes_with_expired_token() {
+    #[tokio::test]
+    async fn test_from_credential_initializes_with_expired_token() {
         let credential = Arc::new(MockCredential {
             token: "test_token".to_string(),
             expires_in: azure_core::time::Duration::minutes(60),
@@ -336,9 +362,9 @@ mod tests {
 
         let auth = Auth::from_credential(credential, "test_scope".to_string());
 
-        // Check that initial cached token is expired
-        assert_eq!(auth.cached_token.token.secret(), "");
-        assert!(auth.cached_token.expires_on <= OffsetDateTime::now_utc());
+        // Check that initial cached token is None
+        let cached = auth.cached_token.read().await;
+        assert!(cached.is_none(), "Initial cached token should be None");
         assert_eq!(auth.scope, "test_scope");
     }
 }

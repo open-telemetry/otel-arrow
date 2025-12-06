@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use bytes::Bytes;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
@@ -11,21 +12,29 @@ const MAX_GZIP_FLUSH_COUNT: usize = 100;
 pub struct GzipBatcher {
     buf: GzEncoder<Vec<u8>>,
     remaining_size: usize,
-    current_uncompressed_size: usize,
+    uncompressed_size: usize,
     total_uncompressed_size: usize,
     row_count: f64,
     flush_count: usize,
+    batch_id: u64,
+    pending_batch: Option<GzipResult>,
 }
 
 pub enum PushResult {
-    Ok,
+    Ok(u64),
     TooLarge,
-    Full(Vec<u8>, f64),
+    BatchReady,
 }
 
 pub enum FlushResult {
     Empty,
-    Flush(Vec<u8>, f64),
+    Flush,
+}
+
+pub struct GzipResult {
+    pub batch_id: u64,
+    pub compressed_data: Bytes,
+    pub row_count: f64,
 }
 
 // TODO: actual logging instead of print statements
@@ -35,10 +44,12 @@ impl GzipBatcher {
         Self {
             buf: Self::new_encoder(),
             remaining_size: ONE_MB,
-            current_uncompressed_size: 0,
+            uncompressed_size: 0,
             total_uncompressed_size: 0,
             row_count: 0.0,
             flush_count: 0,
+            batch_id: 0,
+            pending_batch: None,
         }
     }
 
@@ -47,6 +58,14 @@ impl GzipBatcher {
     }
 
     pub fn push(&mut self, data: &[u8]) -> PushResult {
+        if self.pending_batch.is_some() {
+            return PushResult::BatchReady;
+        }
+
+        self.push_internal(data)
+    }
+
+    fn push_internal(&mut self, data: &[u8]) -> PushResult {
         // This limits uncompressed data size to a maximum of 1MB
         // Is this a good compromise for code simplicity vs efficiency?
         // This algorithm is still very good up to 100KB per entry, which
@@ -56,20 +75,21 @@ impl GzipBatcher {
         }
 
         if self.total_uncompressed_size == 0 {
+            self.batch_id += 1;
             self.buf
                 .write_all(b"[")
                 .expect("write to memory buffer failed");
             self.total_uncompressed_size += 1;
-            self.current_uncompressed_size += 1;
+            self.uncompressed_size += 1;
         } else {
             self.buf
                 .write_all(b",")
                 .expect("write to memory buffer failed");
             self.total_uncompressed_size += 1;
-            self.current_uncompressed_size += 1;
+            self.uncompressed_size += 1;
         }
 
-        let next_size = self.current_uncompressed_size + data.len() + 1;
+        let next_size = self.uncompressed_size + data.len() + 1;
 
         if next_size > self.remaining_size {
             self.buf.flush().expect("flush to memory buffer failed");
@@ -78,30 +98,30 @@ impl GzipBatcher {
             let compressed_size = self.buf.get_ref().len();
 
             self.remaining_size = ONE_MB.saturating_sub(compressed_size + 1);
-            self.current_uncompressed_size = 0;
+            self.uncompressed_size = 0;
         }
 
-        let next_size = self.current_uncompressed_size + data.len() + 1;
+        let next_size = self.uncompressed_size + data.len() + 1;
 
         if next_size > self.remaining_size || self.flush_count >= MAX_GZIP_FLUSH_COUNT {
             let flush_result = self.flush();
-            _ = self.push(data);
+            _ = self.push_internal(data);
 
             match flush_result {
-                FlushResult::Empty => PushResult::Ok,
-                FlushResult::Flush(compressed_data, row_count) => {
-                    PushResult::Full(compressed_data, row_count)
+                FlushResult::Empty => PushResult::Ok(self.batch_id),
+                FlushResult::Flush => {
+                    PushResult::BatchReady
                 }
             }
         } else {
             self.buf
                 .write_all(data)
                 .expect("write to memory buffer failed");
-            self.current_uncompressed_size += data.len();
+            self.uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
             self.row_count += 1.0;
 
-            PushResult::Ok
+            PushResult::Ok(self.batch_id)
         }
     }
 
@@ -142,12 +162,23 @@ impl GzipBatcher {
 
         // Reset state
         self.remaining_size = ONE_MB;
-        self.current_uncompressed_size = 0;
+        self.uncompressed_size = 0;
         self.total_uncompressed_size = 0;
         self.row_count = 0.0;
         self.flush_count = 0;
 
-        FlushResult::Flush(compressed_data, row_count)
+        self.pending_batch = Some(GzipResult {
+            batch_id: self.batch_id,
+            compressed_data: Bytes::from(compressed_data),
+            row_count,
+        });
+
+        // Convert Vec<u8> to Bytes (zero-copy)
+        FlushResult::Flush
+    }
+
+    pub fn take_pending_batch(&mut self) -> Option<GzipResult> {
+        self.pending_batch.take()
     }
 }
 
@@ -200,32 +231,39 @@ mod tests {
         let mut push_count = 0;
         let mut total_uncompressed_sent = 0;
 
-        // Keep pushing 1KB chunks until we get a Full result
+        // Keep pushing 1KB chunks until we get a BatchReady result
         loop {
             let data = generate_1kb_data();
             let data_len = data.len();
 
             match batcher.push(&data) {
-                PushResult::Ok => {
+                PushResult::Ok(_) => {
                     push_count += 1;
                     total_uncompressed_sent += data_len;
                     // Continue pushing
                 }
-                PushResult::Full(compressed_data, _) => {
+                PushResult::BatchReady => {
                     push_count += 1;
                     total_uncompressed_sent += data_len;
 
+                    // Get the pending batch
+                    let gzip_result = batcher.take_pending_batch()
+                        .expect("BatchReady should have pending batch");
+
                     // Verify we got compressed data back
                     assert!(
-                        !compressed_data.is_empty(),
+                        !gzip_result.compressed_data.is_empty(),
                         "Compressed data should not be empty"
                     );
 
+                    // Verify batch_id is set
+                    assert!(gzip_result.batch_id > 0, "Batch ID should be set");
+                    
                     // Verify the compressed data is valid gzip
                     // Try to decompress it
                     use flate2::read::GzDecoder;
                     use std::io::Read;
-                    let mut decoder = GzDecoder::new(&compressed_data[..]);
+                    let mut decoder = GzDecoder::new(&gzip_result.compressed_data[..]);
                     let mut decompressed = String::new();
                     let _ = decoder
                         .read_to_string(&mut decompressed)
@@ -242,17 +280,19 @@ mod tests {
                     );
 
                     println!(
-                        "Pushed {} 1KB entries before getting Full result",
+                        "Pushed {} 1KB entries before getting BatchReady result",
                         push_count
                     );
                     println!(
                         "Total uncompressed data sent: {} bytes",
                         total_uncompressed_sent
                     );
-                    println!("Compressed data size: {} bytes", compressed_data.len());
+                    println!("Compressed data size: {} bytes", gzip_result.compressed_data.len());
+                    println!("Batch ID: {}", gzip_result.batch_id);
+                    println!("Row count: {}", gzip_result.row_count);
                     println!(
                         "Compression ratio: {:.2}%",
-                        (compressed_data.len() as f64 / total_uncompressed_sent as f64) * 100.0
+                        (gzip_result.compressed_data.len() as f64 / total_uncompressed_sent as f64) * 100.0
                     );
 
                     break;
@@ -264,7 +304,7 @@ mod tests {
 
             // Safety check to prevent infinite loop in case of bugs
             if push_count > 2000 {
-                panic!("Too many pushes without getting Full result");
+                panic!("Too many pushes without getting BatchReady result");
             }
         }
 
@@ -279,30 +319,46 @@ mod tests {
         let mut full_count = 0;
         let mut total_push_count = 0;
         let mut batch_sizes = Vec::new();
+        let mut batch_ids = Vec::new();
 
-        // Keep pushing until we get 2 Full results
+        // Keep pushing until we get 2 BatchReady results
         while full_count < 2 {
             let data = generate_1kb_data();
 
             match batcher.push(&data) {
-                PushResult::Ok => {
+                PushResult::Ok(_) => {
                     total_push_count += 1;
                 }
-                PushResult::Full(compressed_data, _) => {
+                PushResult::BatchReady => {
                     total_push_count += 1;
                     full_count += 1;
 
+                    let gzip_result = batcher.take_pending_batch()
+                        .expect("BatchReady should have pending batch");
+
                     // Verify compressed data is valid
                     assert!(
-                        !compressed_data.is_empty(),
+                        !gzip_result.compressed_data.is_empty(),
                         "Batch {} should not be empty",
                         full_count
                     );
 
+                    // Verify batch ID increments
+                    batch_ids.push(gzip_result.batch_id);
+                    if batch_ids.len() > 1 {
+                        assert!(
+                            batch_ids[1] > batch_ids[0],
+                            "Batch IDs should increment"
+                        );
+                    }
+
+                    // Verify row count
+                    assert!(gzip_result.row_count > 0.0, "Row count should be positive");
+
                     // Decompress and validate
                     use flate2::read::GzDecoder;
                     use std::io::Read;
-                    let mut decoder = GzDecoder::new(&compressed_data[..]);
+                    let mut decoder = GzDecoder::new(&gzip_result.compressed_data[..]);
                     let mut decompressed = String::new();
                     _ = decoder
                         .read_to_string(&mut decompressed)
@@ -320,12 +376,14 @@ mod tests {
                         full_count
                     );
 
-                    batch_sizes.push(compressed_data.len());
+                    batch_sizes.push(gzip_result.compressed_data.len());
 
                     println!(
-                        "Batch {}: compressed size = {} bytes",
+                        "Batch {}: compressed size = {} bytes, batch_id = {}, row_count = {}",
                         full_count,
-                        compressed_data.len()
+                        gzip_result.compressed_data.len(),
+                        gzip_result.batch_id,
+                        gzip_result.row_count
                     );
                 }
                 PushResult::TooLarge => {
@@ -335,7 +393,7 @@ mod tests {
 
             // Safety limit
             if total_push_count > 4000 {
-                panic!("Too many pushes without getting 2 Full results");
+                panic!("Too many pushes without getting 2 BatchReady results");
             }
         }
 
@@ -359,24 +417,120 @@ mod tests {
             total_push_count
         );
         println!("Batch sizes: {:?}", batch_sizes);
+        println!("Batch IDs: {:?}", batch_ids);
     }
 
     #[test]
     fn test_push_single_large_entry() {
         let mut batcher = GzipBatcher::new();
 
-        // Create a very large entry that should trigger Full immediately
+        // Create a very large entry that should trigger TooLarge
         let large_data = vec![b'x'; 2 * 1024 * 1024]; // 2MB
 
         match batcher.push(&large_data) {
-            PushResult::Full(_, _) => {
-                panic!("Large entry should not be accepted, got Full instead");
+            PushResult::BatchReady => {
+                panic!("Large entry should not be accepted, got BatchReady instead");
             }
-            PushResult::Ok => {
-                panic!("Large entry should trigger Full result");
+            PushResult::Ok(_) => {
+                panic!("Large entry should trigger TooLarge result");
             }
             PushResult::TooLarge => {
                 // Expected result - large entry correctly identified
+            }
+        }
+    }
+
+    #[test]
+    fn test_bytes_cloning_is_cheap() {
+        let mut batcher = GzipBatcher::new();
+        
+        // Push until we get a full batch
+        loop {
+            let data = generate_1kb_data();
+            
+            match batcher.push(&data) {
+                PushResult::Ok(_) => continue,
+                PushResult::BatchReady => {
+                    let gzip_result = batcher.take_pending_batch().unwrap();
+                    
+                    // Test that cloning Bytes is cheap
+                    let start = std::time::Instant::now();
+                    let _clone1 = gzip_result.compressed_data.clone();
+                    let _clone2 = gzip_result.compressed_data.clone();
+                    let _clone3 = gzip_result.compressed_data.clone();
+                    let elapsed = start.elapsed();
+                    
+                    // Cloning should be very fast (microseconds at most)
+                    assert!(elapsed.as_micros() < 100, "Cloning Bytes should be very fast");
+                    
+                    // All clones point to the same data
+                    assert_eq!(gzip_result.compressed_data.len(), _clone1.len());
+                    assert_eq!(gzip_result.compressed_data.len(), _clone2.len());
+                    assert_eq!(gzip_result.compressed_data.len(), _clone3.len());
+                    
+                    // Verify the GzipResult fields are present
+                    assert!(gzip_result.batch_id > 0, "Batch ID should be set");
+                    assert!(gzip_result.row_count > 0.0, "Row count should be positive");
+                    
+                    break;
+                }
+                PushResult::TooLarge => panic!("Unexpected TooLarge"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_flush_empty() {
+        let mut batcher = GzipBatcher::new();
+        
+        // Flush without pushing anything
+        match batcher.flush() {
+            FlushResult::Empty => {
+                // Expected result
+            }
+            FlushResult::Flush => {
+                panic!("Flush on empty batcher should return Empty");
+            }
+        }
+    }
+
+    #[test]
+    fn test_flush_with_data() {
+        let mut batcher = GzipBatcher::new();
+        
+        // Push some data but not enough to trigger BatchReady
+        for _ in 0..5 {
+            let data = generate_1kb_data();
+            match batcher.push(&data) {
+                PushResult::Ok(_) => continue,
+                PushResult::BatchReady => panic!("Should not be full after 5 pushes"),
+                PushResult::TooLarge => panic!("Unexpected TooLarge"),
+            }
+        }
+        
+        // Now flush
+        match batcher.flush() {
+            FlushResult::Empty => {
+                panic!("Flush with data should return Flush variant");
+            }
+            FlushResult::Flush => {
+                let gzip_result = batcher.take_pending_batch()
+                    .expect("Flush should have pending batch");
+                
+                // Verify we got valid compressed data
+                assert!(!gzip_result.compressed_data.is_empty(), "Should have data");
+                assert!(gzip_result.batch_id > 0, "Batch ID should be set");
+                assert_eq!(gzip_result.row_count, 5.0, "Should have 5 rows");
+                
+                // Decompress and verify
+                use flate2::read::GzDecoder;
+                use std::io::Read;
+                let mut decoder = GzDecoder::new(&gzip_result.compressed_data[..]);
+                let mut decompressed = String::new();
+                _ = decoder.read_to_string(&mut decompressed).expect("Should decompress");
+                
+                assert!(decompressed.starts_with('['), "Should start with [");
+                assert!(decompressed.ends_with(']'), "Should end with ]");
             }
         }
     }
