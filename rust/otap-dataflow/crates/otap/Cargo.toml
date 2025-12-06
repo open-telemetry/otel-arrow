@@ -70,7 +70,7 @@ geneva-uploader = { version = "0.3.0", optional = true }
 # Azure Monitor Exporter dependencies
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, default-features = false, features = ["rustls-tls-native-roots"] }
 azure_core = { workspace = true, optional = true }
 
 # OpenTelemetry proto with tonic feature enabled
