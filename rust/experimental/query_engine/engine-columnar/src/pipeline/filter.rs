@@ -212,7 +212,7 @@ impl FilterPlan {
             });
         }
 
-        // TODO there are several branches below which are not yet supported supported
+        // TODO there are several branches below which are not yet supported
         // - comparing two literals. e.g "a" == "b"
         // - comparing non-literal left with non-literal right. e.g.
         //   - severity_text == event_name
