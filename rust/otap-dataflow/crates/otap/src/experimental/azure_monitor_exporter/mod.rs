@@ -18,9 +18,11 @@ use std::sync::Arc;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 
+mod auth;
 mod client;
 mod config;
 mod exporter;
+mod gzip_batcher;
 mod transformer;
 
 pub use client::LogsIngestionClient;

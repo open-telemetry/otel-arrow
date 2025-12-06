@@ -9,6 +9,8 @@ use super::config::{Config, SchemaConfig};
 
 const ATTRIBUTES_FIELD: &str = "attributes";
 
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
 // TODO: Performance review and improvements
 // TODO: Make sure mapping of all fields are covered
 /// Converts OTLP logs to Azure Log Analytics format
@@ -26,29 +28,27 @@ impl Transformer {
         }
     }
 
-    /// Convert OTLP logs to flat JSON objects for Log Analytics.
-    /// Must be used; otherwise transformed entries are lost.
-    #[must_use]
+    /// Convert OTLP logs to JSON bytes for Log Analytics.
+    /// Returns a vector of serialized JSON bytes for each log record.
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
-    pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Value> {
-        let mut entries = Vec::new();
-
+    pub fn convert_to_log_analytics(
+        &self,
+        request: &ExportLogsServiceRequest,
+    ) -> Vec<Vec<u8>> {
+        let mut results = Vec::new();
+        
         for resource_logs in &request.resource_logs {
             let resource_attrs = if !self.schema.disable_schema_mapping {
-                // Schema mapping enabled: only add mapped resource attributes
                 self.apply_resource_mapping(&resource_logs.resource)
             } else {
-                // Schema mapping disabled: no resource attributes in legacy format
                 serde_json::Map::new()
             };
 
             for scope_logs in &resource_logs.scope_logs {
                 let scope_attrs = if !self.schema.disable_schema_mapping {
-                    // Schema mapping enabled: only add mapped scope attributes
                     self.apply_scope_mapping(&scope_logs.scope)
                 } else {
-                    // Schema mapping disabled: no scope attributes in legacy format
                     serde_json::Map::new()
                 };
 
@@ -56,12 +56,9 @@ impl Transformer {
                     let mut entry = serde_json::Map::new();
 
                     if self.schema.disable_schema_mapping {
-                        // Legacy transform when schema mapping is disabled
                         Self::legacy_transform(&mut entry, log_record);
                     } else {
-                        // Apply configured mappings when schema mapping is enabled
-
-                        // Add resource and scope attributes first
+                        // Add resource and scope attributes
                         for (k, v) in &resource_attrs {
                             let _ = entry.insert(k.clone(), v.clone());
                         }
@@ -69,21 +66,26 @@ impl Transformer {
                             let _ = entry.insert(k.clone(), v.clone());
                         }
 
-                        // Transform log record based on mapping
-                        // TODO: a mechanism needed to handle logs that are dropped
                         if let Err(e) = self.transform_log_record(&mut entry, log_record) {
-                            // TODO: log it appropriately (perhaps as part of monmon)
-                            println!("Failed to transform log record: {e}");
+                            // TODO: log error
+                            println!("[AzureMonitorExporter] Skipping log record due to transformation error: {e}");
                             continue;
                         }
                     }
 
-                    entries.push(Value::Object(entry));
+                    // Serialize directly from the Map
+                    match serde_json::to_vec(&entry) {
+                        Ok(bytes) => results.push(bytes),
+                        Err(e) => {
+                            // TODO: Log this error properly
+                            println!("Failed to serialize log entry: {e}");
+                        }
+                    }
                 }
             }
         }
-
-        entries
+        
+        results
     }
 
     /// Legacy transform when schema mapping is disabled (matches Go implementation)
@@ -277,10 +279,6 @@ impl Transformer {
 
     /// Convert bytes to hex string
     fn bytes_to_hex(bytes: &[u8]) -> String {
-        // Pre-allocate the exact size needed (2 hex chars per byte)
-        // This avoids repeated allocations
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-
         let mut hex = String::with_capacity(bytes.len() * 2);
         for &byte in bytes {
             hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
@@ -402,8 +400,10 @@ mod tests {
 
         let result = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 1);
-        assert!(result[0]["TimeGenerated"].as_str().is_some());
-        assert_eq!(result[0]["RawData"], "test body");
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["TimeGenerated"].as_str().is_some());
+        assert_eq!(json["RawData"], "test body");
     }
 
     #[test]
@@ -456,11 +456,13 @@ mod tests {
 
         let result = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["ServiceName"], "my-service");
-        assert_eq!(result[0]["ScopeName"], "my-scope");
-        assert_eq!(result[0]["Body"], "42");
-        assert_eq!(result[0]["Severity"], "INFO");
-        assert_eq!(result[0]["TestAttr"], true);
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["ServiceName"], "my-service");
+        assert_eq!(json["ScopeName"], "my-scope");
+        assert_eq!(json["Body"], "42");
+        assert_eq!(json["Severity"], "INFO");
+        assert_eq!(json["TestAttr"], true);
     }
 
     #[test]
@@ -497,13 +499,15 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert!(result[0]["Time"].as_str().unwrap().contains("1970"));
-        assert!(result[0]["ObservedTime"].as_str().unwrap().contains("1970"));
-        assert_eq!(result[0]["TraceId"], "ff00");
-        assert_eq!(result[0]["SpanId"], "abcd");
-        assert_eq!(result[0]["Flags"], 1);
-        assert_eq!(result[0]["SeverityNum"], 9);
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+
+        assert!(json["Time"].as_str().unwrap().contains("1970"));
+        assert!(json["ObservedTime"].as_str().unwrap().contains("1970"));
+        assert_eq!(json["TraceId"], "ff00");
+        assert_eq!(json["SpanId"], "abcd");
+        assert_eq!(json["Flags"], 1);
+        assert_eq!(json["SeverityNum"], 9);
     }
 
     #[test]
@@ -537,8 +541,9 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result[0]["Body"], "[4.14, dead]");
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "[4.14, dead]");
     }
 
     #[test]
@@ -572,8 +577,9 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert!(result[0]["Body"].as_str().unwrap().contains("nested"));
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["Body"].as_str().unwrap().contains("nested"));
     }
 
     #[test]
@@ -614,10 +620,11 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result[0]["TraceId"], json!(null));
-        assert_eq!(result[0]["SpanId"], json!(null));
-        assert_eq!(result[0]["Body"], json!(null));
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TraceId"], json!(null));
+        assert_eq!(json["SpanId"], json!(null));
+        assert_eq!(json["Body"], json!(null));
     }
 
     #[test]
@@ -643,7 +650,7 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 0); // Record skipped due to error
     }
 
@@ -674,12 +681,8 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert!(
-            result[0]["TimeGenerated"]
-                .as_str()
-                .unwrap()
-                .contains("1970")
-        );
+        let result: Vec<Vec<u8>> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["TimeGenerated"].as_str().unwrap().contains("1970"));
     }
 }
