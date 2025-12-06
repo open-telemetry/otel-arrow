@@ -1140,8 +1140,6 @@ mod tests {
         assert!(cfg.validate().is_err());
     }
 
-    /// Unified test harness for all batch processor scenarios
-
     /// Test event: either process input or deliver pending timers
     enum TestEvent {
         Input(OtlpProtoMessage),
@@ -1417,7 +1415,7 @@ mod tests {
             |event_outputs| {
                 // Find first non-empty event (should have size-triggered output)
                 let first_output_event = event_outputs
-                    .into_iter()
+                    .iter()
                     .find(|e| !e.outputs.is_empty())
                     .expect("should have at least one output event");
 
@@ -1693,8 +1691,7 @@ mod tests {
 
         // Use inputs with unique markers
         let num_inputs = 20;
-        let inputs_otlp: Vec<OtlpProtoMessage> =
-            (0..num_inputs).map(|i| create_marked_input(i)).collect();
+        let inputs_otlp: Vec<OtlpProtoMessage> = (0..num_inputs).map(create_marked_input).collect();
 
         let mut events: Vec<TestEvent> = inputs_otlp
             .iter()
@@ -1720,7 +1717,7 @@ mod tests {
                     let markers: Vec<_> = output_msg
                         .messages()
                         .iter()
-                        .flat_map(|m| extract_markers(m))
+                        .flat_map(&extract_markers)
                         .collect();
 
                     if markers.is_empty() {
