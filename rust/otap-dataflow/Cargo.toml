@@ -150,8 +150,8 @@ zip = "=4.2.0"
 byte-unit = "5.2.0"
 
 # Azure Monnitor Exporter
-azure_core = {version = "0.30.1", default-features = false, features = ["reqwest"] }
-azure_identity = {version = "0.30.0", default-features = false, features = [] }
+azure_core = {version = "0.30.1", default-features = false }
+azure_identity = {version = "0.30.0", default-features = false }
 flate2 = "1.1.5"
 reqwest = { version = "0.12.24", default-features = false }
 time = "0.3.44"
