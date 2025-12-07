@@ -153,7 +153,7 @@ byte-unit = "5.2.0"
 azure_core = {version = "0.30.1", default-features = false, features = ["reqwest"] }
 azure_identity = {version = "0.30.0", default-features = false, features = [] }
 flate2 = "1.1.5"
-reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12.24", default-features = false }
 time = "0.3.44"
 wiremock = "0.6.5"
 
