@@ -464,7 +464,11 @@ impl WalWriter {
     ///
     /// Writes the slot header (id, fingerprint, row_count, payload_len) followed by
     /// the Arrow IPC-encoded payload bytes.
-    fn encode_slot_into_buffer(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<()> {
+    fn encode_slot_into_buffer(
+        &mut self,
+        slot_id: SlotId,
+        payload: PayloadRef<'_>,
+    ) -> WalResult<()> {
         let row_count = u32::try_from(payload.batch.num_rows())
             .map_err(|_| WalError::RowCountOverflow(payload.batch.num_rows()))?;
         let payload_bytes = encode_record_batch(payload.batch)?;
