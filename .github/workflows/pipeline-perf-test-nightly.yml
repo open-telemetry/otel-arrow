@@ -92,6 +92,11 @@ jobs:
             cd tools/pipeline_perf_test
             python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/filter-docker.yaml
 
+        - name: Run filter performance test otelcol log suite
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/otelcol-docker.yaml
+
         - name: Upload syslog results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
@@ -109,6 +114,12 @@ jobs:
           with:
             name: filter-nightly-results
             path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
+
+        - name: Upload otelcol filter results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: filter-otelcol-results
+            path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
@@ -148,6 +159,12 @@ jobs:
               merge-multiple: true
               path: filter_results
 
+          - name: Download otelcol filter artifacts
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: filter-otelcol-results*
+              merge-multiple: true
+              path: filter_otelcol_results
 
           - name: Consolidate syslog benchmark data
             run: |
@@ -194,6 +211,21 @@ jobs:
               echo "Consolidated benchmark data:"
               cat filter_output.json
 
+          - name: Consolidate otelcol filter benchmark data
+            run: |
+              echo "Consolidating benchmark JSON files..."
+              find filter_otelcol_results -name "*.json" -type f | while read file; do
+                echo "Processing: $file"
+                cat "$file"
+                echo
+              done
+
+              # Combine all benchmark JSON files into a single output (find them recursively)
+              find filter_otelcol_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > filter_otelcol_output.json
+
+              echo "Consolidated benchmark data:"
+              cat filter_otelcol_output.json
+
           - name: Update benchmark data
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
             with:
@@ -223,6 +255,18 @@ jobs:
             with:
               tool: "customSmallerIsBetter"
               output-file-path: filter_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
+              auto-push: true
+              save-data-file: true
+
+          - name: Update filter otelcol benchmark data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: filter_otelcol_output.json
               gh-pages-branch: benchmarks
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
