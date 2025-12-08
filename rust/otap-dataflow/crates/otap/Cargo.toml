@@ -101,6 +101,7 @@ azure-monitor-exporter = [
 flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
+rcgen.workspace = true
 tempfile.workspace = true
 url.workspace = true
 tokio-util.workspace = true

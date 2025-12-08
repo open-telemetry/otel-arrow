@@ -123,7 +123,7 @@ where
                             Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
                             Ok(Err(e)) => {
                                 // TLS handshake failed - log and continue
-                                log::debug!("TLS handshake failed: {}", e);
+                                log::warn!("TLS handshake failed: {}", e);
                                 None
                             }
                             Err(_) => {
