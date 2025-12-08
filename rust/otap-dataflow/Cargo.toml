@@ -67,7 +67,7 @@ chrono = { version = "0.4", features = ["serde"] }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
 core_affinity = "0.8.3"
-criterion = "0.7.0"
+criterion = "0.8.0"
 data-encoding = "2.9.0"
 fluke-hpack = "0.3.1"
 flume = { version = "0.11.1", default-features = false, features = ["async"] }
