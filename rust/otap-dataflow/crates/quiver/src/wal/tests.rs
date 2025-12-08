@@ -917,40 +917,6 @@ fn wal_writer_flushes_pending_bytes_on_drop() {
 }
 
 #[test]
-fn wal_writer_rejects_truncate_beyond_file_end() {
-    let (_dir, wal_path) = temp_wal("truncate_oob.wal");
-    let hash = [0xAB; 16];
-
-    let mut writer = WalWriter::open(WalWriterOptions::new(
-        wal_path.clone(),
-        hash,
-        FlushPolicy::Immediate,
-    ))
-    .expect("writer");
-
-    let descriptor = logs_descriptor();
-    let bundle = FixtureBundle::new(
-        descriptor,
-        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
-    );
-    let _ = writer.append_bundle(&bundle).expect("append entry");
-
-    let file_len = std::fs::metadata(&wal_path)
-        .expect("metadata")
-        .len()
-        .saturating_add(8);
-    let cursor = WalConsumerCheckpoint {
-        safe_offset: file_len,
-        safe_sequence: 0,
-    };
-
-    match writer.trim_partial_entries(&cursor) {
-        Err(WalError::InvalidConsumerCheckpoint("safe offset beyond wal tail")) => {}
-        other => panic!("expected truncate bounds error, got {:?}", other),
-    }
-}
-
-#[test]
 fn wal_reader_rewind_allows_replay_from_start() {
     let (_dir, wal_path) = temp_wal("rewind.wal");
     let descriptor = logs_descriptor();
@@ -1073,35 +1039,23 @@ fn wal_writer_preflight_rejects_when_size_cap_hit() {
     let err = writer.append_bundle(&bundle).expect_err("cap hit");
     assert!(matches!(err, WalError::WalAtCapacity(_)));
 
+    // Verify failed append did not persist
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iter");
     let only = iter.next().expect("entry").expect("ok");
     assert!(iter.next().is_none(), "failed append must not persist");
     drop(iter);
-
-    let cursor = WalConsumerCheckpoint {
-        safe_offset: WAL_HEADER_LEN as u64,
-        safe_sequence: only.sequence,
-    };
     drop(reader);
-
-    writer
-        .trim_partial_entries(&cursor)
-        .expect("trim_partial_entries removes persisted entry");
-
-    let retried = writer
-        .append_bundle(&bundle)
-        .expect("append should succeed once space reclaimed");
-    assert_eq!(retried.sequence, only.sequence + 1);
     drop(writer);
 
+    // Reopening with higher cap allows appending
     let mut writer = WalWriter::open(
         WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate)
             .with_max_wal_size(u64::MAX),
     )
     .expect("writer after cap removed");
     let retry = writer.append_bundle(&bundle).expect("retry append");
-    assert_eq!(retry.sequence, retried.sequence + 1);
+    assert_eq!(retry.sequence, only.sequence + 1);
 }
 
 #[test]
@@ -1567,14 +1521,17 @@ fn wal_writer_handles_large_payload_batches() {
     assert!(iter.next().is_none());
 }
 
+/// Verifies that `WalWriter::open` automatically truncates trailing garbage
+/// when the file has been truncated mid-entry (simulating a crash where bytes
+/// were lost). This complements `wal_writer_auto_truncates_trailing_garbage_on_open`
+/// which tests garbage appended at the end.
 #[test]
-fn wal_consumer_checkpoint_recovers_after_partial_entry() {
+fn wal_writer_auto_truncates_after_mid_entry_truncation() {
     let (_dir, wal_path) = temp_wal("recovery.wal");
     let descriptor = logs_descriptor();
     let hash = [0x99; 16];
 
-    // Start with a WAL containing two valid entries so the cursor has
-    // something to mark as safe.
+    // Write two valid entries
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         hash,
@@ -1595,50 +1552,41 @@ fn wal_consumer_checkpoint_recovers_after_partial_entry() {
     let _ = writer.append_bundle(&second_bundle).expect("second append");
     drop(writer);
 
-    // Replay the WAL and advance the consumer checkpoint to the end of the first
-    // entry—everything before this offset is known to be durable.
+    // Record valid file length after first entry for later comparison
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iterator");
     let first_entry = iter.next().expect("first entry").expect("ok");
-    let mut cursor = WalConsumerCheckpoint::default();
-    cursor.increment(&first_entry);
+    let first_entry_end = first_entry.next_offset;
     drop(reader);
 
     // Simulate a crash that truncates the file in the middle of the second
-    // entry body, making it unreadable.
+    // entry, losing bytes (not appending garbage)
     {
-        let metadata = std::fs::metadata(&wal_path).expect("metadata");
-        assert!(metadata.len() > cursor.safe_offset + 1);
         let file = std::fs::OpenOptions::new()
             .write(true)
             .open(&wal_path)
-            .expect("open for corruption");
-        file.set_len(cursor.safe_offset + 1)
+            .expect("open for truncation");
+        // Truncate one byte into the second entry
+        file.set_len(first_entry_end + 1)
             .expect("truncate inside entry");
     }
 
-    // Reader now sees the first entry but errors on the partial second entry.
-    let mut reader = WalReader::open(&wal_path).expect("reader after corruption");
-    let mut iter = reader.iter_from(0).expect("iterator");
-    let _ = iter.next().expect("first entry remains").expect("ok");
-    match iter.next() {
-        Some(Err(WalError::UnexpectedEof("entry length"))) => {}
-        other => panic!("expected entry length eof, got {:?}", other),
-    }
-    drop(reader);
-
-    // Compact the file back to the checkpoint's safe offset so future appends
-    // resume from a clean boundary.
+    // Reopen the writer - it should auto-truncate to end of first entry
     let mut writer = WalWriter::open(WalWriterOptions::new(
         wal_path.clone(),
         hash,
         FlushPolicy::Immediate,
     ))
-    .expect("writer reopens");
-    writer
-        .trim_partial_entries(&cursor)
-        .expect("trim_partial_entries to safe offset");
+    .expect("writer reopens and auto-truncates");
 
+    // Verify file was truncated to first entry boundary
+    let file_len = std::fs::metadata(&wal_path).expect("metadata").len();
+    assert_eq!(
+        file_len, first_entry_end,
+        "file should be truncated to end of first valid entry"
+    );
+
+    // Append a recovery entry - should continue from sequence 1
     let recovery_bundle = FixtureBundle::new(
         descriptor,
         vec![FixtureSlot::new(SlotId::new(0), 0x03, &[3])],
@@ -1646,26 +1594,121 @@ fn wal_consumer_checkpoint_recovers_after_partial_entry() {
     let recovery_offset = writer
         .append_bundle(&recovery_bundle)
         .expect("append recovery entry");
-    assert_eq!(recovery_offset.position, cursor.safe_offset);
+    assert_eq!(recovery_offset.position, first_entry_end);
+    assert_eq!(
+        recovery_offset.sequence, 1,
+        "sequence continues from last valid"
+    );
     drop(writer);
 
-    // Opening again now yields the original first entry and the repaired
-    // entry, with no lingering corruption.
+    // Verify the WAL now has exactly two entries: first + recovery
     let mut reader = WalReader::open(&wal_path).expect("reader after recovery");
     let mut iter = reader.iter_from(0).expect("iterator");
     let first = iter.next().expect("first entry").expect("ok");
     assert_eq!(first.sequence, 0);
-    let repaired = iter.next().expect("repaired entry").expect("ok");
-    assert!(iter.next().is_none(), "only two entries remain");
-
+    let recovery = iter.next().expect("recovery entry").expect("ok");
+    assert_eq!(recovery.sequence, 1);
     assert_eq!(
-        repaired
-            .slots
-            .first()
-            .expect("slot present")
-            .schema_fingerprint,
+        recovery.slots.first().expect("slot").schema_fingerprint,
         [0x03; 32]
     );
+    assert!(iter.next().is_none(), "only two entries should exist");
+}
+
+/// Verifies that `WalWriter::open` automatically truncates trailing garbage
+/// left by a crash that interrupted a write. This test simulates the scenario
+/// where a process crashes mid-write, leaving a partial entry at the end of
+/// the WAL file. On reopen, the writer should automatically detect and remove
+/// this garbage so that subsequent appends resume from a clean boundary.
+#[test]
+fn wal_writer_auto_truncates_trailing_garbage_on_open() {
+    let (_dir, wal_path) = temp_wal("auto_truncate.wal");
+    let descriptor = logs_descriptor();
+    let hash = [0xAA; 16];
+
+    // Write two valid entries to establish a baseline.
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        hash,
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer");
+
+    let bundle1 = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
+    );
+    let _ = writer.append_bundle(&bundle1).expect("first append");
+
+    let bundle2 = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x02, &[2])],
+    );
+    let _ = writer.append_bundle(&bundle2).expect("second append");
+    drop(writer);
+
+    // Get the file length before corruption
+    let valid_len = std::fs::metadata(&wal_path).expect("metadata").len();
+
+    // Simulate a crash mid-write by appending garbage bytes to the WAL file
+    // (this simulates a partial entry header or body that was interrupted).
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&wal_path)
+            .expect("open for corruption");
+        // Write partial "entry length" field plus some garbage
+        file.write_all(&[0xFF, 0x00, 0x10, 0x00, 0xDE, 0xAD, 0xBE, 0xEF])
+            .expect("append garbage");
+    }
+
+    let corrupted_len = std::fs::metadata(&wal_path).expect("metadata").len();
+    assert!(corrupted_len > valid_len, "garbage should extend file");
+
+    // Reopen the writer - it should automatically truncate the garbage
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        hash,
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer reopens and truncates garbage");
+
+    // File should be truncated back to valid length
+    let after_open_len = std::fs::metadata(&wal_path).expect("metadata").len();
+    assert_eq!(
+        after_open_len, valid_len,
+        "garbage should be truncated on open"
+    );
+
+    // Append a third entry - it should continue from the correct position
+    let bundle3 = FixtureBundle::new(
+        descriptor.clone(),
+        vec![FixtureSlot::new(SlotId::new(0), 0x03, &[3])],
+    );
+    let offset3 = writer.append_bundle(&bundle3).expect("third append");
+
+    // The third entry should have sequence 2 (continuing from 0, 1)
+    assert_eq!(offset3.sequence, 2, "sequence should continue correctly");
+    drop(writer);
+
+    // Verify all three entries are readable and valid
+    let mut reader = WalReader::open(&wal_path).expect("reader");
+    let mut iter = reader.iter_from(0).expect("iterator");
+
+    let e1 = iter.next().expect("first entry").expect("ok");
+    assert_eq!(e1.sequence, 0);
+    assert_eq!(e1.slots.first().unwrap().schema_fingerprint, [0x01; 32]);
+
+    let e2 = iter.next().expect("second entry").expect("ok");
+    assert_eq!(e2.sequence, 1);
+    assert_eq!(e2.slots.first().unwrap().schema_fingerprint, [0x02; 32]);
+
+    let e3 = iter.next().expect("third entry").expect("ok");
+    assert_eq!(e3.sequence, 2);
+    assert_eq!(e3.slots.first().unwrap().schema_fingerprint, [0x03; 32]);
+
+    assert!(iter.next().is_none(), "only three entries should exist");
 }
 
 #[test]
@@ -2288,4 +2331,134 @@ fn wal_recovery_handles_rotated_files_with_gaps_in_ids() {
     // Verify wal.2 and wal.7 still exist
     assert!(rotated_path_for(&wal_path, 2).exists());
     assert!(rotated_path_for(&wal_path, 7).exists());
+}
+
+#[test]
+#[ignore] // Run manually: cargo test wal_recovery_scan_benchmark --release -- --ignored --nocapture
+fn wal_recovery_scan_benchmark() {
+    use std::time::Instant;
+
+    let (_dir, wal_path) = temp_wal("benchmark.wal");
+    let descriptor = logs_descriptor();
+    let hash = [0xBE; 16];
+
+    // Create entries with realistic payload sizes
+    // Typical telemetry batch might be ~1-4 KB
+    let payload: Vec<i64> = (0..256).collect(); // ~2KB payload
+
+    // Test 1: Single file (no rotation)
+    println!("\n=== WAL Recovery Benchmark ===\n");
+    println!("--- Test 1: Single file (64 MB, no rotation) ---");
+
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), hash, FlushPolicy::Immediate)
+            .with_rotation_target(512 * 1024 * 1024) // 512 MB - no rotation
+            .with_max_wal_size(512 * 1024 * 1024),
+    )
+    .expect("writer");
+
+    let target_bytes = 64 * 1024 * 1024u64;
+    let mut total_bytes = 0u64;
+    let mut entry_count = 0u64;
+
+    while total_bytes < target_bytes {
+        let bundle = single_slot_bundle(&descriptor, 0x01, payload.as_slice());
+        let offset = writer.append_bundle(&bundle).expect("append");
+        total_bytes = offset.position;
+        entry_count += 1;
+    }
+    drop(writer);
+
+    println!(
+        "Total data: {} MB, {} entries",
+        total_bytes / 1024 / 1024,
+        entry_count
+    );
+
+    let recovery_start = Instant::now();
+    let _writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        hash,
+        FlushPolicy::Immediate,
+    ))
+    .expect("reopen");
+    let recovery_elapsed = recovery_start.elapsed();
+
+    println!("Recovery time: {:?}", recovery_elapsed);
+    println!(
+        "Scan rate: {:.2} MB/s",
+        (total_bytes as f64 / 1024.0 / 1024.0) / recovery_elapsed.as_secs_f64()
+    );
+
+    // Test 2: Multiple rotated files
+    let (_dir2, wal_path2) = temp_wal("benchmark_rotated.wal");
+    println!("\n--- Test 2: With rotation (8 MB per file, ~8 rotated files) ---");
+
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path2.clone(), hash, FlushPolicy::Immediate)
+            .with_rotation_target(8 * 1024 * 1024) // 8 MB per file
+            .with_max_rotated_files(16) // Allow enough rotated files
+            .with_max_wal_size(512 * 1024 * 1024),
+    )
+    .expect("writer");
+
+    entry_count = 0;
+    // Write a fixed number of entries to get ~64 MB total
+    let entries_for_64mb = 26000u64;
+    for _ in 0..entries_for_64mb {
+        let bundle = single_slot_bundle(&descriptor, 0x01, payload.as_slice());
+        let _ = writer.append_bundle(&bundle).expect("append");
+        entry_count += 1;
+    }
+    drop(writer);
+
+    // Count rotated files
+    let rotated_count = std::fs::read_dir(wal_path2.parent().unwrap())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .contains(".wal.")
+        })
+        .count();
+    println!(
+        "Total entries: {}, {} rotated files",
+        entry_count, rotated_count
+    );
+
+    // Calculate total size from all files
+    let total_size: u64 = std::fs::read_dir(wal_path2.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .unwrap()
+                .contains("benchmark_rotated")
+        })
+        .map(|e| e.metadata().unwrap().len())
+        .sum();
+    println!(
+        "Total data across all files: {} MB",
+        total_size / 1024 / 1024
+    );
+
+    let recovery_start = Instant::now();
+    let _writer = WalWriter::open(
+        WalWriterOptions::new(wal_path2.clone(), hash, FlushPolicy::Immediate)
+            .with_rotation_target(8 * 1024 * 1024)
+            .with_max_rotated_files(16),
+    )
+    .expect("reopen");
+    let recovery_elapsed = recovery_start.elapsed();
+
+    println!("Recovery time: {:?}", recovery_elapsed);
+    println!(
+        "Note: Only scans active file (~8 MB), not {} rotated files",
+        rotated_count
+    );
+    println!("\n===============================\n");
 }

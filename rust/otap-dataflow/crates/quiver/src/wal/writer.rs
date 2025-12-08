@@ -285,11 +285,12 @@ impl WalWriter {
             .open(&options.path)?;
 
         let metadata = file.metadata()?;
-        let metadata_len = if metadata.len() == 0 {
+        let is_new_file = metadata.len() == 0;
+
+        if is_new_file {
             let header = WalHeader::new(options.segment_cfg_hash);
             header.write_to(&mut file)?;
             file.flush()?;
-            WAL_HEADER_LEN as u64
         } else if metadata.len() < WAL_HEADER_LEN as u64 {
             return Err(WalError::InvalidHeader("file smaller than header"));
         } else {
@@ -300,28 +301,44 @@ impl WalWriter {
                     found: header.segment_cfg_hash,
                 });
             }
-            metadata.len()
-        };
+        }
 
-        let _ = file.seek(SeekFrom::End(0))?;
         let sidecar_path = checkpoint_sidecar_path(&options.path);
         let checkpoint_state = load_checkpoint_state(&sidecar_path)?;
 
-        let active_file = ActiveWalFile::new(file, metadata_len);
-        let mut coordinator =
-            WalCoordinator::new(options, sidecar_path, checkpoint_state, metadata_len);
-        coordinator.reload_rotated_files(active_file.len())?;
-        coordinator.restore_checkpoint_offsets(active_file.len());
+        // Create coordinator first to scan for valid entries
+        let mut coordinator = WalCoordinator::new(
+            options,
+            sidecar_path,
+            checkpoint_state,
+            WAL_HEADER_LEN as u64,
+        );
+        coordinator.reload_rotated_files(metadata.len())?;
 
-        let mut writer = Self {
+        // Scan to find the last valid entry and truncate any trailing garbage
+        let (next_sequence, valid_offset) = coordinator.detect_next_sequence()?;
+        let current_file_len = file.metadata()?.len();
+
+        if valid_offset < current_file_len {
+            // Truncate trailing garbage from a partial write (e.g., crash mid-write)
+            file.set_len(valid_offset)?;
+            file.sync_all()?;
+        }
+
+        // Position at the end of valid data
+        let _ = file.seek(SeekFrom::Start(valid_offset))?;
+
+        let active_file = ActiveWalFile::new(file, valid_offset);
+        coordinator.restore_checkpoint_offsets(active_file.len());
+        coordinator.recalculate_aggregate_bytes(active_file.len());
+
+        Ok(Self {
             active_file,
             coordinator,
-            next_sequence: 0,
+            next_sequence,
             #[cfg(test)]
             test_crashed: false,
-        };
-        writer.next_sequence = writer.coordinator.detect_next_sequence()?;
-        Ok(writer)
+        })
     }
 
     /// Serializes a [`RecordBundle`] into the active WAL file and returns the
@@ -410,16 +427,6 @@ impl WalWriter {
             position: entry_start,
             sequence,
         })
-    }
-
-    /// Physically truncates the active WAL file to the provided checkpoint, removing
-    /// any partial or corrupted entries that may exist after a crash. This is used
-    /// during recovery to trim incomplete writes; the checkpoint must align to valid
-    /// entry boundaries. The call also refreshes the checkpoint sidecar so future
-    /// restarts keep the same safe point.
-    pub fn trim_partial_entries(&mut self, checkpoint: &WalConsumerCheckpoint) -> WalResult<()> {
-        self.coordinator
-            .trim_active_file(&mut self.active_file, checkpoint)
     }
 
     /// Persists the cursor position and enables cleanup of consumed WAL data.
@@ -662,19 +669,6 @@ impl WalCoordinator {
         Ok(())
     }
 
-    fn trim_active_file(
-        &mut self,
-        active_file: &mut ActiveWalFile,
-        checkpoint: &WalConsumerCheckpoint,
-    ) -> WalResult<()> {
-        let safe_offset = self.resolve_consumer_checkpoint(active_file, checkpoint)?;
-        active_file.file_mut().set_len(safe_offset)?;
-        let _ = active_file.file_mut().seek(SeekFrom::Start(safe_offset))?;
-        active_file.set_len(safe_offset);
-        self.recalculate_aggregate_bytes(active_file.len());
-        self.persist_checkpoint(checkpoint, safe_offset)
-    }
-
     fn checkpoint_cursor(
         &mut self,
         active_file: &mut ActiveWalFile,
@@ -858,36 +852,56 @@ impl WalCoordinator {
         header.saturating_add(data_within_active)
     }
 
-    fn detect_next_sequence(&self) -> WalResult<u64> {
-        let mut highest = self.scan_file_last_sequence(&self.options.path)?;
-        for rotated_file in &self.rotated_files {
-            if let Some(seq) = self.scan_file_last_sequence(&rotated_file.path)? {
-                highest = Some(match highest {
-                    Some(current) => current.max(seq),
-                    None => seq,
-                });
+    /// Determines the next sequence number and last valid offset in the active file.
+    ///
+    /// Since sequence numbers are monotonically increasing, the highest sequence
+    /// is always in the active file (or the most recent rotated file if the active
+    /// file is empty after a rotation). Returns (next_sequence, active_file_valid_offset).
+    fn detect_next_sequence(&self) -> WalResult<(u64, u64)> {
+        let (active_seq, active_valid_offset) = self.scan_file_last_sequence(&self.options.path)?;
+
+        // If active file has entries, use its sequence
+        if let Some(seq) = active_seq {
+            return Ok((seq.wrapping_add(1), active_valid_offset));
+        }
+
+        // Active file is empty - check the most recent rotated file (highest rotation_id)
+        if let Some(most_recent) = self.rotated_files.iter().max_by_key(|f| f.rotation_id) {
+            let (seq, _) = self.scan_file_last_sequence(&most_recent.path)?;
+            if let Some(s) = seq {
+                return Ok((s.wrapping_add(1), active_valid_offset));
             }
         }
-        Ok(highest.map_or(0, |seq| seq.wrapping_add(1)))
+
+        // No entries anywhere - start at sequence 0
+        Ok((0, active_valid_offset))
     }
 
-    fn scan_file_last_sequence(&self, path: &Path) -> WalResult<Option<u64>> {
+    /// Scans a WAL file and returns the last valid sequence number and the
+    /// byte offset immediately after the last valid entry (i.e., where new
+    /// writes should begin).
+    fn scan_file_last_sequence(&self, path: &Path) -> WalResult<(Option<u64>, u64)> {
         if !path.exists() {
-            return Ok(None);
+            return Ok((None, 0));
         }
         let mut reader = WalReader::open(path)?;
         let iter = reader.iter_from(0)?;
-        let mut last = None;
+        let mut last_seq = None;
+        let mut last_valid_offset = WAL_HEADER_LEN as u64;
         for entry in iter {
             match entry {
-                Ok(bundle) => last = Some(bundle.sequence),
+                Ok(bundle) => {
+                    last_seq = Some(bundle.sequence);
+                    last_valid_offset = bundle.next_offset;
+                }
                 Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {
+                    // Partial or corrupted entry - stop here
                     break;
                 }
                 Err(err) => return Err(err),
             }
         }
-        Ok(last)
+        Ok((last_seq, last_valid_offset))
     }
 }
 
