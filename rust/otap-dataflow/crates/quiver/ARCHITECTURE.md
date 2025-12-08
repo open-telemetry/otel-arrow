@@ -139,7 +139,7 @@ WAL entries belonging to:
         }
         [u8;payload_len] arrow_payload;  // streaming IPC bytes for the slot
     }
-    u32 crc32c;                      // trailer; covers EntryHeader..payloads
+    u32 crc32;                       // trailer; covers EntryHeader..payloads
     ```
 
   - Arrow payload blobs are serialized in the **streaming** IPC format. For each
@@ -150,8 +150,9 @@ WAL entries belonging to:
     [metadata1][payload1]...` Absent slots (bitmap bit cleared) contribute neither
     metadata nor bytes; they are implicitly `None` when reconstructing the
     bundle.
-  - Every entry ends with a 4-byte little-endian CRC32C checksum that covers the
-    entry header, bitmap, metadata blocks, and payload bytes (everything except
+  - Every entry ends with a 4-byte little-endian CRC32 (IEEE polynomial)
+    checksum that covers the entry header, bitmap, metadata blocks, and payload
+    bytes (everything except
     the leading length field and the checksum itself). Replay verifies the CRC
     before decoding Arrow IPC bytes; a mismatch marks the WAL as corrupted and
     triggers truncation back to the last known-good offset.
@@ -171,78 +172,69 @@ WAL entries belonging to:
   introduce new entry types (e.g., periodic checkpoints) or swap serialization
   without breaking older data; unknown entry types are skipped using the recorded
   length. A checkpoint entry (`entry_type = 1`) would embed the current
-  open-segment manifest, `truncate_offset`, and high-water sequence numbers so
+  open-segment manifest, `logical_offset`, and high-water sequence numbers so
   recovery can jump directly to the latest checkpoint instead of replaying the
   entire log.
 
-##### Truncation & rotation mechanics
+##### Checkpointing & rotation mechanics
 
-- **Track truncate progress**: After a segment finalizes and its metadata + file
-  are flushed, we advance a `truncate_offset` pointer to the first byte belonging
-  to the next entry in the open segment. Think of `truncate_offset` as "the
-  earliest WAL byte still needed for crash recovery." We persist that `u64`
-  (plus a monotonically increasing rotation generation) into a tiny sidecar file
-  (e.g., `wal/truncate.offset`) immediately after advancing it and fsync the
-  sidecar so crash recovery can seek straight to that logical offset without
-  rescanning finalized entries.
-- **Truncate sidecar format**: The sidecar is a fixed 32-byte struct written in
+- **Track checkpoint progress**: After a segment finalizes and its metadata + file
+  are flushed, we advance a *logical* cursor that counts data bytes (headers
+  excluded) across the entire WAL stream. This `global_data_offset` represents "the
+  earliest WAL data still needed for crash recovery." We persist that `u64` into
+  a tiny sidecar file (e.g., `wal/checkpoint.offset`) immediately after advancing
+  it and fsync the sidecar so crash recovery can resume from that logical offset
+  without rescanning finalized entries.
+- **Checkpoint sidecar format**: The sidecar is a fixed 24-byte struct written in
   little-endian order:
 
   ```text
-  TruncateSidecar {
+  CheckpointSidecar {
       [u8; 8] magic = b"QUIVER\0T";  // distinguishes from WAL proper
       u16 version = 1;                // bump if layout changes
       u16 reserved = 0;
-      u64 truncate_offset;            // first byte still needed in wal/quiver.wal
-      u64 rotation_generation;        // increments each WAL rotation
-      u32 crc32c;                     // covers magic..rotation_generation
+      u64 global_data_offset;         // logical data bytes still required
+      u32 crc32;                      // covers magic..global_data_offset
   }
   ```
 
-  We write updates via `truncate.offset.tmp`: encode the struct, compute the CRC,
+  We write updates via `checkpoint.offset.tmp`: encode the struct, compute the CRC,
   `pwrite`+`fdatasync`, then `renameat` over the live file so readers see either
   the old or new offset. On startup we verify the magic, version, and checksum
   before trusting the recorded offsets; failure falls back to scanning from the
   beginning of `quiver.wal`.
-- **Probe prefix reclamation**: On startup we test whether the active filesystem
-  supports punching holes out of the current WAL file. Linux builds attempt
-  `fallocate(FALLOC_FL_PUNCH_HOLE)` against a temporary WAL stub while Windows
-  builds issue `FSCTL_SET_ZERO_DATA` on a sparse scratch file. If the probe
-  fails with `EOPNOTSUPP`/`ERROR_INVALID_FUNCTION` we mark the capability as
-  disabled and fall back to rewriting until the process restarts.
-- **Drop reclaimed prefixes**: When support exists, or when the pointer crosses a
-  configurable threshold, we invoke `fallocate(FALLOC_FL_PUNCH_HOLE)` in-place to
-  discard bytes `[header_len, truncate_offset)`, leaving the fixed header (30
-  bytes: magic + version + reserved + cfg hash) intact. On filesystems where hole
-  punching is not supported, we instead perform a rewrite: copy every byte from
-  `truncate_offset` through the current end-of-file into `quiver.wal.new` (using
-  `copy_file_range`/`CopyFile2` where available) while the writer stays paused,
-  then reopen the new file and stream the fixed header back to the front so the
-  layout matches a freshly created WAL. Once the copy completes we fsync the new
-  file, atomically rename it over the original, and resume appends at offset
-  `(header_len) + (old_len - truncate_offset)`. Windows builds rely on
-  `CopyFile2` plus `SetFileInformationByHandle` for the same sequence. This
-  rewrite path preserves the header bytes verbatim, so replay cannot distinguish
-  a rewritten WAL from one that was never hole-punched.
+- **Record prefix reclamation**: When higher layers report a safe cursor, we
+  translate it into the logical coordinate space and persist it via the sidecar
+  while leaving the active WAL file unchanged. The pointer simply marks how far
+  readers have progressed through the concatenated stream.
+- **Drop reclaimed prefixes**: Once the active file grows beyond
+  `rotation_target_bytes` we rotate it to `quiver.wal.N` (where N is a
+  monotonically increasing rotation id), start a fresh WAL, and remember the
+  byte span covered by the retired file. When the persisted consumer checkpoint
+  fully covers a rotated file we delete the file outright. Until a rotation
+  occurs the reclaimed bytes remain in the active file even though they are
+  logically safe to discard.
+  *Note:* We may revisit direct hole punching in the future as a disk-space
+  optimization if production workloads show that waiting for rotation leaves too
+  much reclaimed data stranded in the active file.
 - **Rotate on size**: `wal.max_size` caps the *aggregate* footprint of the active
   WAL plus every still-referenced rotated sibling. We keep a running total of the
   active file and the byte spans tracked for `quiver.wal.N`; when the next append
-  would push the aggregate over the configured cap we rotate immediately: shift
-  older suffixes up, close and rename `wal/quiver.wal` to `quiver.wal.1`, and
-  reopen a fresh `quiver.wal`. Each rotation records the byte span covered by the
-  retired chunk so cleanup can later delete `quiver.wal.N` only after the
-  persisted `truncate_offset` exceeds that span's upper bound. We never
-  hole-punch rotated files; they are deleted wholesale once fully covered by the
-  durability pointer, avoiding rewrites of large historical blobs while keeping
-  the total WAL footprint bounded by `wal.max_size`. To keep rename churn and
-  per-core directory fan-out predictable we retain at most `wal.max_chunks`
-  files (default `10`, counting the active WAL plus rotated siblings). Operators
-  can override the default. Hitting the chunk cap is treated like hitting the
-  byte cap: the next append that *would* require a rotation instead trips
-  backpressure (or `drop_oldest`, if selected) until either truncation reclaims
-  an older chunk or the limit is raised. We never create an eleventh file in the
-  background because doing so would undermine the predictive bound the knob is
-  meant to provide.
+  would push the aggregate over the configured cap we rotate immediately: rename
+  `wal/quiver.wal` to `quiver.wal.{next_rotation_id}` and reopen a fresh
+  `quiver.wal`. Each rotation records the byte span covered by the retired file
+  so cleanup can later delete `quiver.wal.N` only after the persisted logical
+  cursor exceeds that span's upper bound. We never rewrite rotated files; they
+  are deleted wholesale once fully covered by the durability pointer, avoiding
+  rewrites of large historical blobs while keeping the total WAL footprint
+  bounded by `wal.max_size`. To keep per-core directory fan-out predictable we
+  retain at most `wal.max_rotated_files` files (default `10`, counting the
+  active WAL plus rotated siblings). Operators can override the default. Hitting
+  the rotated file cap is treated like hitting the byte cap: the next append
+  that *would* require a rotation instead trips backpressure (or `drop_oldest`,
+  if selected) until either compaction reclaims an older rotated file or the
+  limit is raised. We never create more files in the background because doing so
+  would undermine the predictive bound the knob is meant to provide.
 - **Durability-only dependency**: Because WAL truncation depends solely on segment
   durability, exporter ACK lag never blocks WAL cleanup; segments themselves
   remain on disk until subscribers advance, but the WAL only needs to cover the
