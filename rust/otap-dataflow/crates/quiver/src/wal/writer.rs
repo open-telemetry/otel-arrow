@@ -119,14 +119,14 @@ use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
-use crate::record_bundle::{PayloadRef, RecordBundle, SchemaFingerprint, SlotId};
+use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::checkpoint_sidecar::CheckpointSidecar;
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::WalReader;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, SCHEMA_FINGERPRINT_LEN,
-    SLOT_HEADER_LEN, WalConsumerCheckpoint, WalError, WalResult,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, WalConsumerCheckpoint,
+    WalError, WalResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -377,15 +377,15 @@ impl WalWriter {
         let ingestion_time = bundle.ingestion_time();
         let ingestion_ts_nanos = system_time_to_nanos(ingestion_time)?;
 
-        let mut encoded_slots = Vec::new();
-        let mut total_payload_bytes = 0usize;
-
         self.active_file.payload_buffer.clear();
 
         let sequence = self.next_sequence;
 
         let mut slot_bitmap = 0u64;
 
+        // Single pass: validate slots and write directly to payload_buffer.
+        // The buffer is reused across calls, so after a few appends it stabilizes
+        // at a capacity that fits typical bundles without reallocation.
         for slot in &descriptor.slots {
             let slot_index = slot.id.0 as usize;
             if slot_index >= 64 {
@@ -393,18 +393,8 @@ impl WalWriter {
             }
             if let Some(payload) = bundle.payload(slot.id) {
                 slot_bitmap |= 1u64 << slot_index;
-                let encoded_slot = self.prepare_slot(slot.id, payload)?;
-                let slot_size = encoded_slot.serialized_size();
-                total_payload_bytes = total_payload_bytes
-                    .checked_add(slot_size)
-                    .ok_or(WalError::EntryTooLarge(slot_size))?;
-                encoded_slots.push(encoded_slot);
+                self.encode_slot_into_buffer(slot.id, payload)?;
             }
-        }
-
-        self.active_file.payload_buffer.reserve(total_payload_bytes);
-        for slot in encoded_slots {
-            slot.write_into(&mut self.active_file.payload_buffer);
         }
 
         let mut entry_header = [0u8; ENTRY_HEADER_LEN];
@@ -470,20 +460,29 @@ impl WalWriter {
             .checkpoint_cursor(&mut self.active_file, checkpoint)
     }
 
-    fn prepare_slot(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<EncodedSlot> {
+    /// Encodes a slot directly into `payload_buffer`, avoiding intermediate allocations.
+    ///
+    /// Writes the slot header (id, fingerprint, row_count, payload_len) followed by
+    /// the Arrow IPC-encoded payload bytes.
+    fn encode_slot_into_buffer(&mut self, slot_id: SlotId, payload: PayloadRef<'_>) -> WalResult<()> {
         let row_count = u32::try_from(payload.batch.num_rows())
             .map_err(|_| WalError::RowCountOverflow(payload.batch.num_rows()))?;
         let payload_bytes = encode_record_batch(payload.batch)?;
         let payload_len = u32::try_from(payload_bytes.len())
             .map_err(|_| WalError::PayloadTooLarge(payload_bytes.len()))?;
 
-        Ok(EncodedSlot {
-            slot_id_raw: slot_id.0,
-            schema_fingerprint: payload.schema_fingerprint,
-            row_count,
-            payload_len,
-            payload_bytes,
-        })
+        let buf = &mut self.active_file.payload_buffer;
+
+        // Write slot header
+        buf.extend_from_slice(&slot_id.0.to_le_bytes());
+        buf.extend_from_slice(&payload.schema_fingerprint);
+        buf.extend_from_slice(&row_count.to_le_bytes());
+        buf.extend_from_slice(&payload_len.to_le_bytes());
+
+        // Write payload
+        buf.extend_from_slice(&payload_bytes);
+
+        Ok(())
     }
 }
 
@@ -1101,14 +1100,6 @@ fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {
     Ok(file)
 }
 
-struct EncodedSlot {
-    slot_id_raw: u16,
-    schema_fingerprint: SchemaFingerprint,
-    row_count: u32,
-    payload_len: u32,
-    payload_bytes: Vec<u8>,
-}
-
 /// Metadata describing an on-disk rotated WAL file. We retain enough information
 /// to decide when the file can be deleted once readers have safely advanced
 /// past its logical range.
@@ -1127,29 +1118,6 @@ struct RotatedWalFile {
 impl RotatedWalFile {
     fn total_bytes(&self) -> u64 {
         self.file_bytes
-    }
-}
-
-impl EncodedSlot {
-    fn serialized_size(&self) -> usize {
-        SLOT_HEADER_LEN + self.payload_bytes.len()
-    }
-
-    fn write_into(self, buffer: &mut Vec<u8>) {
-        let total = self.serialized_size();
-        let start = buffer.len();
-        buffer.resize(start + total, 0);
-
-        let mut cursor = start;
-        buffer[cursor..cursor + 2].copy_from_slice(&self.slot_id_raw.to_le_bytes());
-        cursor += 2;
-        buffer[cursor..cursor + SCHEMA_FINGERPRINT_LEN].copy_from_slice(&self.schema_fingerprint);
-        cursor += SCHEMA_FINGERPRINT_LEN;
-        buffer[cursor..cursor + 4].copy_from_slice(&self.row_count.to_le_bytes());
-        cursor += 4;
-        buffer[cursor..cursor + 4].copy_from_slice(&self.payload_len.to_le_bytes());
-        cursor += 4;
-        buffer[cursor..cursor + self.payload_bytes.len()].copy_from_slice(&self.payload_bytes);
     }
 }
 
