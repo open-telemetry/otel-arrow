@@ -16,5 +16,5 @@ else
 fi
 
 rustup target add "${RUST_TARGET}"
-cargo build --release --target="${RUST_TARGET}"
+cargo build --release --features "$FEATURES" --target="${RUST_TARGET}"
 cp "target/${RUST_TARGET}/release/df_engine" .
