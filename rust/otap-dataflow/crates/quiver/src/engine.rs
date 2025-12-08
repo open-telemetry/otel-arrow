@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use blake3::Hasher;
 use parking_lot::Mutex;
 
 use crate::config::QuiverConfig;
@@ -87,18 +86,27 @@ fn wal_path(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("wal").join("quiver.wal")
 }
 
-fn segment_cfg_hash(config: &QuiverConfig) -> [u8; 16] {
-    // Placeholder fingerprint derived from segment configuration; later phases will
-    // mix in adapter-specific layout metadata once available.
-    let mut hasher = Hasher::new();
-    let _ = hasher.update(&config.segment.target_size_bytes.get().to_le_bytes());
-    let _ = hasher.update(&config.segment.max_stream_count.to_le_bytes());
-    let _ = hasher.update(&config.segment.max_open_duration.as_nanos().to_le_bytes());
-
-    let digest = hasher.finalize();
-    let mut hash = [0u8; 16];
-    hash.copy_from_slice(&digest.as_bytes()[..16]);
-    hash
+fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
+    // Placeholder: the segment_cfg_hash should be derived from adapter-owned
+    // layout contracts (slot id → payload mappings, per-slot ordering, checksum
+    // policy toggles) once available. Operational knobs like segment.target_size,
+    // flush cadence, or retention caps are intentionally excluded so that tuning
+    // never invalidates an otherwise healthy WAL.
+    //
+    // For now we return a fixed placeholder until adapter metadata is implemented.
+    //
+    // Future implementation might look like:
+    // ```
+    // let mut hasher = Hasher::new();
+    // hasher.update(&adapter.slot_layout_fingerprint());
+    // hasher.update(&adapter.checksum_policy().to_le_bytes());
+    // // ... other adapter-specific layout settings
+    // let digest = hasher.finalize();
+    // let mut hash = [0u8; 16];
+    // hash.copy_from_slice(&digest.as_bytes()[..16]);
+    // hash
+    // ```
+    *b"QUIVER_SEGCFG\0\0\0"
 }
 
 #[cfg(test)]
