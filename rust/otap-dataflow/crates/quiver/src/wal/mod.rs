@@ -112,6 +112,17 @@ pub(crate) const SCHEMA_FINGERPRINT_LEN: usize = 32;
 /// See ARCHITECTURE.md § "Framed entries" → SlotMeta block.
 pub(crate) const SLOT_HEADER_LEN: usize = 2 + SCHEMA_FINGERPRINT_LEN + 4 + 4;
 
+/// Maximum allowed rotation target size (256 MiB).
+///
+/// This bounds the maximum size of any single WAL file and, by extension, the
+/// maximum size of any single entry. Both writer and reader enforce this limit:
+/// - Writer clamps `rotation_target_bytes` to this value
+/// - Reader rejects entries exceeding this size
+///
+/// 256 MiB is generous for telemetry workloads while preventing excessive
+/// memory allocation from corrupted or malicious WAL files.
+pub(crate) const MAX_ROTATION_TARGET_BYTES: u64 = 256 * 1024 * 1024;
+
 pub(crate) type WalResult<T> = Result<T, WalError>;
 
 /// Errors produced while reading or writing WAL data.

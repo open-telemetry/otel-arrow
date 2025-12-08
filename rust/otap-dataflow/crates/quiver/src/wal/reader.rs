@@ -50,9 +50,16 @@ use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN, WalError,
-    WalOffset, WalResult,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, SCHEMA_FINGERPRINT_LEN,
+    SLOT_HEADER_LEN, WalError, WalOffset, WalResult,
 };
+
+/// Maximum allowed entry size, derived from [`MAX_ROTATION_TARGET_BYTES`].
+///
+/// Since entries cannot span files and files are capped at 256 MiB, no valid
+/// entry can exceed this size. The reader rejects larger entries to guard
+/// against corrupted or malicious WAL files causing excessive allocation.
+const MAX_ENTRY_SIZE: usize = MAX_ROTATION_TARGET_BYTES as usize;
 
 /// Sequential reader that validates the WAL header before exposing iterators
 /// over decoded entries.
@@ -149,8 +156,16 @@ impl<'a> Iterator for WalEntryIter<'a> {
 
         let entry_len = u32::from_le_bytes(len_buf) as usize;
 
-        // Guard against corrupted or malicious length values that could cause
-        // excessive allocation. An entry cannot exceed the remaining file bytes.
+        // Guard against malicious or corrupted length values. Check the hard
+        // cap first (avoids allocation bombs even with huge files), then verify
+        // against actual remaining bytes.
+        if entry_len > MAX_ENTRY_SIZE {
+            self.finished = true;
+            return Some(Err(WalError::InvalidEntry(
+                "entry length exceeds maximum allowed size",
+            )));
+        }
+
         let remaining_bytes = self.file_len.saturating_sub(entry_start + 4) as usize;
         if entry_len > remaining_bytes {
             self.finished = true;

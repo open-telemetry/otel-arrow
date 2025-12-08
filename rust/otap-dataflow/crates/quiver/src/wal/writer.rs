@@ -125,8 +125,8 @@ use super::checkpoint_sidecar::CheckpointSidecar;
 use super::header::{WAL_HEADER_LEN, WalHeader};
 use super::reader::WalReader;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, SCHEMA_FINGERPRINT_LEN, SLOT_HEADER_LEN,
-    WalConsumerCheckpoint, WalError, WalResult,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, SCHEMA_FINGERPRINT_LEN,
+    SLOT_HEADER_LEN, WalConsumerCheckpoint, WalError, WalResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ impl WalWriterOptions {
     }
 
     pub fn with_rotation_target(mut self, target_bytes: u64) -> Self {
-        self.rotation_target_bytes = target_bytes.max(1);
+        self.rotation_target_bytes = target_bytes.clamp(1, MAX_ROTATION_TARGET_BYTES);
         self
     }
 }
