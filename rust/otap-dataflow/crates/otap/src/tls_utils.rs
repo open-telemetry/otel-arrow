@@ -455,12 +455,13 @@ pub async fn build_reloadable_server_config(
         builder.with_client_cert_verifier(verifier)
     } else {
         // If system CAs were requested but no certs were loaded (and no user CA provided),
-        // warn the user that mTLS is effectively disabled or might not work as expected.
-        // Note: client_ca_pem is empty here.
+        // return an error.
         if config.include_system_ca_certs_pool == Some(true) {
-            log::warn!(
-                "include_system_ca_certs_pool is true, but no CA certificates were loaded. mTLS will be disabled."
-            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "include_system_ca_certs_pool is true, but no CA certificates were loaded. \
+                 Cannot enable mTLS without CA certificates.",
+            ));
         }
         builder.with_no_client_auth()
     };
