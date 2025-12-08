@@ -200,7 +200,20 @@ impl FilterPlan {
         let left_arg = BinaryArg::try_from(left_expr)?;
         let right_arg = BinaryArg::try_from(right_expr)?;
 
-        // TODO there are several branches below which are not yet supported supported
+        // don't allow non equals comparisons for null
+        if binary_op != Operator::Eq
+            && (matches!(left_arg, BinaryArg::Null) || matches!(right_arg, BinaryArg::Null))
+        {
+            return Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "cannot compare null using operator {}. only == is allowed",
+                    binary_op
+                ),
+                query_location: None,
+            });
+        }
+
+        // TODO there are several branches below which are not yet supported
         // - comparing two literals. e.g "a" == "b"
         // - comparing non-literal left with non-literal right. e.g.
         //   - severity_text == event_name
@@ -218,6 +231,10 @@ impl FilterPlan {
                             Box::new(try_static_scalar_to_literal(&right_lit)?),
                         ))))
                     }
+                    BinaryArg::Null => {
+                        // left = column & right == null
+                        Ok(FilterPlan::from(col(left_col_name).is_null()))
+                    }
                     _ => Err(Error::NotYetSupportedError {
                         message: "comparing left column with non-literal right in filter.".into(),
                     }),
@@ -231,6 +248,12 @@ impl FilterPlan {
                             Box::new(try_static_scalar_to_literal(&right_lit)?),
                         ))))
                     }
+                    BinaryArg::Null => {
+                        // left = struct col & right = null
+                        Ok(FilterPlan::from(
+                            col(left_struct_name).field(left_struct_field).is_null(),
+                        ))
+                    }
                     _ => Err(Error::NotYetSupportedError {
                         message: "comparing left struct column with non-literal right in filter"
                             .into(),
@@ -238,8 +261,8 @@ impl FilterPlan {
                 },
                 ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
                     match right_arg {
-                        // left = attribute & right = literal
                         BinaryArg::Literal(right_lit) => {
+                            // left = attribute & right = literal
                             Ok(FilterPlan::from(AttributesFilterPlan::new(
                                 col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)).and(
                                     Expr::BinaryExpr(try_attrs_value_filter_from_literal(
@@ -248,6 +271,13 @@ impl FilterPlan {
                                 ),
                                 attrs_identifier,
                             )))
+                        }
+                        BinaryArg::Null => {
+                            // left = attribute & right = null (e.g. doesn't have attribute)
+                            Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
+                                col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                                attrs_identifier,
+                            ))))
                         }
                         _ => Err(Error::NotYetSupportedError {
                             message: "comparing left attribute with non-literal right in filter"
@@ -289,6 +319,45 @@ impl FilterPlan {
                         )))
                     }
                 },
+                BinaryArg::Null => {
+                    // literal == null
+                    Err(Error::NotYetSupportedError {
+                        message: "comparing left literal with right null".into(),
+                    })
+                }
+            },
+            BinaryArg::Null => match right_arg {
+                BinaryArg::Column(right_column) => match right_column {
+                    ColumnAccessor::ColumnName(right_col_name) => {
+                        // left = null & right = column
+                        Ok(FilterPlan::from(col(right_col_name).is_null()))
+                    }
+                    ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
+                        // left = null, right = struct column
+                        Ok(FilterPlan::from(
+                            col(right_struct_name).field(right_struct_field).is_null(),
+                        ))
+                    }
+                    ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
+                        // left = null & right = attribute (e.g. doesn't have attribute)
+                        Ok(FilterPlan::from(Composite::not(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY).eq(lit(attrs_key)),
+                            attrs_identifier,
+                        ))))
+                    }
+                },
+                BinaryArg::Literal(_lit) => {
+                    // null == lit
+                    Err(Error::NotYetSupportedError {
+                        message: "comparing left null with right literal".into(),
+                    })
+                }
+                BinaryArg::Null => {
+                    // null == null
+                    Err(Error::NotYetSupportedError {
+                        message: "comparing left null with right null".into(),
+                    })
+                }
             },
         }
     }
@@ -361,9 +430,22 @@ impl ToExec for FilterPlan {
             .map(|attr_filter| attr_filter.to_exec(session_ctx, otap_batch))
             .transpose()?;
 
+        // compute how to handle missing attributes. If the attrs filter is not(attr exists), then
+        // if the id column null for some row (meaning no attributes), or if the ID column is
+        // absent entirely (meaning now rows have attributes) then we treat the rows as it passes
+        // the attribute filter because
+        let missing_attrs_pass = matches!(
+            &self.attribute_filter,
+            Some(
+                Composite::Not(filter)) if matches!(filter.as_ref(),
+                Composite::Base(f) if f.checks_existence_only()
+            )
+        );
+
         Ok(FilterExec {
             predicate: physical_expr,
             attributes_filter: attrs_filter,
+            missing_attrs_pass,
         })
     }
 }
@@ -379,7 +461,7 @@ pub struct AttributesFilterPlan {
     /// `col("key").eq(lit("x")).and(col("str").eq(lit("y")))`
     pub filter: Expr,
 
-    /// The identifier of which attributes will be considered when filtering
+    /// The identifier of which attributes will be considered when filtering.
     pub attrs_identifier: AttributesIdentifier,
 }
 
@@ -388,6 +470,26 @@ impl AttributesFilterPlan {
         Self {
             filter,
             attrs_identifier,
+        }
+    }
+
+    /// returns true if the expression is only checking for the existence of some attribute versus
+    /// checking that the attribute has some given value
+    fn checks_existence_only(&self) -> bool {
+        // inspect the pattern -- we're looking for col(key).eq(lit("attr name"))
+        match &self.filter {
+            Expr::BinaryExpr(binary_expr) if binary_expr.op == Operator::Eq => {
+                let is_attr_column = matches!(
+                    binary_expr.left.as_ref(),
+                    Expr::Column(col) if col.name == consts::ATTRIBUTE_KEY
+                );
+                let is_string_literal = matches!(
+                    binary_expr.right.as_ref(),
+                    Expr::Literal(ScalarValue::Utf8(_), None)
+                );
+                is_attr_column && is_string_literal
+            }
+            _ => false,
         }
     }
 }
@@ -448,6 +550,11 @@ fn to_physical_exprs(
 pub struct FilterExec {
     predicate: Option<AdaptivePhysicalExprExec>,
     attributes_filter: Option<Composite<AttributeFilterExec>>,
+
+    /// determines how we treat rows that where there are no attributes. if false, this cause the
+    /// row not to pass the filter, unless this is true which it should be set it as for filters/
+    /// like `attributes["x"] == null`
+    missing_attrs_pass: bool,
 }
 
 impl From<AdaptivePhysicalExprExec> for FilterExec {
@@ -455,6 +562,7 @@ impl From<AdaptivePhysicalExprExec> for FilterExec {
         Self {
             predicate: Some(predicate),
             attributes_filter: None,
+            missing_attrs_pass: false,
         }
     }
 }
@@ -490,13 +598,13 @@ impl FilterExec {
             let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
                 Some(id_col) => id_col,
                 None => {
-                    // None of the records have any attributes, so for now we just assume that all
-                    // the records would be filtered out by the predicate.
-                    //
-                    // TODO Eventually we need to handle this in a more intelligent way (see comment
-                    // below about null attrs)
+                    // None of the records have any attributes
                     return Ok(BooleanArray::new(
-                        BooleanBuffer::new_unset(root_rb.num_rows()),
+                        if self.missing_attrs_pass {
+                            BooleanBuffer::new_set(root_rb.num_rows())
+                        } else {
+                            BooleanBuffer::new_unset(root_rb.num_rows())
+                        },
                         None,
                     ));
                 }
@@ -514,18 +622,8 @@ impl FilterExec {
                 let row_validity = if id_col.is_valid(index) {
                     id_mask.contains(id_col.value(index) as u32)
                 } else {
-                    // TODO -- here the record has no attributes, so the row should be filtered out
-                    // in all cases except for the attribute predicate was something like
-                    // `attributes["x"] == null`.
-                    //
-                    // Generally speaking, we need to eventually add a way to inspect the attribute
-                    // filter's predicate to determine if the attribute not being present means
-                    // passes. But b/c we don't currently support any predicates like this, we just
-                    // assume no attr means the row gets filtered out
-                    //
-                    // Note: when we fix this TODO, we should also fix the case above where there
-                    // were no attributes at all for any rows (so the id_col is not present).
-                    false
+                    // attribute does not exist
+                    self.missing_attrs_pass
                 };
 
                 if segment_validity != row_validity {
@@ -839,16 +937,30 @@ pub struct AdaptivePhysicalExprExec {
     /// Definition for how the input record batch should be projected so that it's schema is
     /// compatible with what is expected by the physical_expr
     projection: FilterProjection,
+
+    /// Determines the behaviour of the predicate when some columns are missing from the batch.
+    ///
+    /// When a column is missing, it is implied that all the values are null or default value.
+    /// Normally this means that all the rows would fail the predicate, except for a few cases
+    /// like `<some_col> == null`
+    missing_data_passes: bool,
 }
 
 impl AdaptivePhysicalExprExec {
     fn try_new(logical_expr: Expr) -> Result<Self> {
         let projection = FilterProjection::try_new(&logical_expr)?;
 
+        // TODO eventually we may want more sophisticated logic here to handle when the column
+        // is a default value. Cases like `dropped_attribute_count == 0`, in this case should
+        // also pass the filter if the `dropped_attribute_count` column is missing b/c the column
+        // could contain all 0s.
+        let missing_data_passes = matches!(logical_expr, Expr::IsNull(_));
+
         Ok(Self {
             physical_expr: None,
             logical_expr,
             projection,
+            missing_data_passes,
         })
     }
 
@@ -864,13 +976,13 @@ impl AdaptivePhysicalExprExec {
             None => {
                 // we weren't able to project the record batch into the schema expected by the
                 // physical expr. This means that there were some columns referenced in the logical
-                // expr that are missing from the input batch. for now, we assume that this just
-                // means no rows pass the predicate
-                //
-                // TODO the assumption we're making here isn't sound for some predicates, things
-                // like `some_col == null`, so eventually we'll need to handle this
+                // expr that are missing from the input batch.
                 return Ok(BooleanArray::new(
-                    BooleanBuffer::new_unset(record_batch.num_rows()),
+                    if self.missing_data_passes {
+                        BooleanBuffer::new_set(record_batch.num_rows())
+                    } else {
+                        BooleanBuffer::new_unset(record_batch.num_rows())
+                    },
                     None,
                 ));
             }
@@ -2068,6 +2180,311 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_property_is_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .severity_text("DEBUG")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone()],
+        );
+
+        // check it's supported if null literal on the left and column on the right
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_null_missing_column() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        // just double check this gets encoded as something w/out the column we're using
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
+
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
+        );
+
+        // check it's supported if null literal on the left and column on the right
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[
+                log_records[0].clone(),
+                log_records[1].clone(),
+                log_records[2].clone()
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_null() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .name("name1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        // test filter by scope properties
+        let result = exec_logs_pipeline(
+            "logs | where instrumentation_scope.name == string(null)",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[1].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+
+        // test filter by scope properties, this time the null is on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == instrumentation_scope.name",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[1].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_null_missing_column() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        // test filter by scope properties
+        let result = exec_logs_pipeline(
+            "logs | where instrumentation_scope.name == string(null)",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[0].clone(), scope_logs[1].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("b"))])
+                .finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"x\"] == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
+        );
+
+        // check the same thing works if we put null on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_null_no_attrs() {
+        let log_records = vec![
+            LogRecord::build().event_name("1").finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        // double check that when we encode this as OTLP that the attributes
+        // record batch is not present
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"x\"] == string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records.clone()
+        );
+
+        let result = exec_logs_pipeline(
+            "logs | where string(null) == attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &log_records.clone()
+        );
+    }
+
+    #[tokio::test]
     async fn test_optional_attrs_existence_changes() {
         // what happens if some optional attributes are present one batch, then not present in the
         // next, then present in the next, etc.
@@ -2664,6 +3081,7 @@ mod test {
                 projection: FilterProjection {
                     schema: vec![ProjectedSchemaColumn::Root("x".into())],
                 },
+                missing_data_passes: false,
             }),
         );
 
@@ -2692,6 +3110,7 @@ mod test {
                 projection: FilterProjection {
                     schema: vec![ProjectedSchemaColumn::Root("x".into())],
                 },
+                missing_data_passes: false,
             }),
         );
 
@@ -2725,6 +3144,7 @@ mod test {
                     projection: FilterProjection {
                         schema: vec![ProjectedSchemaColumn::Root("x".into())],
                     },
+                    missing_data_passes: false,
                 },
             },
         );

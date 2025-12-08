@@ -22,12 +22,27 @@ COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-pro
 
 COPY . /build/rust/dataflow/.
 
+# RUSTFLAGS can be used to pass argument to rustc e.g. 
+# --build-arg RUSTFLAGS="-C target-feature=-gfni"
+ARG RUSTFLAGS="-C target-cpu=native"
+ENV RUSTFLAGS=${RUSTFLAGS}
+
+# These are used to enable features and are passed to carg's --features argument
+# e.g. --build-arg FEATURES="azure,quiver-persistence"
+ARG FEATURES
+ENV FEATURES=${FEATURES}
+
 # Build dataflow engine
 RUN ./cross-arch-build.sh
 
 # The runtime image
-FROM docker.io/alpine:3.22@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
+FROM docker.io/alpine:3.23@sha256:51183f2cfa6320055da30872f211093f9ff1d3cf06f39a0bdb212314c5dc7375
 LABEL maintainer="The OpenTelemetry Authors"
+
+# Passing --build-arg BUILD=1 adds additional debugging features to the image.
+ARG DEBUG="0"
+RUN if [ "$DEBUG" = "1" ]; then apk add --no-cache gdb; fi
+
 RUN addgroup dataflow \
   && adduser \
   --ingroup dataflow \
