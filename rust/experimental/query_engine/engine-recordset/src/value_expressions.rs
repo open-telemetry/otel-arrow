@@ -5,7 +5,7 @@ use std::{cell::RefMut, ops::Deref, vec::Drain};
 
 use data_engine_expressions::*;
 
-use crate::{execution_context::*, resolved_value_mut::*, scalars::*, *};
+use crate::{execution_context::*, scalars::*, *};
 
 pub fn execute_mutable_value_expression<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
@@ -115,6 +115,32 @@ where
 
             Ok(value)
         }
+        MutableValueExpression::Argument(a) => {
+            let mut selectors = capture_selector_values_for_mutable_write(
+                execution_context,
+                mutable_value_expression,
+                a.get_value_accessor().get_selectors(),
+            )?;
+
+            let value = execution_context
+                .get_arguments()
+                .expect("Arguments were not found")
+                .get_argument_mut(a.get_argument_id())?;
+
+            if !selectors.is_empty() {
+                todo!();
+            }
+
+            let value = value.map(|v| ResolvedValueMut::Argument(v));
+
+            log_mutable_value_expression_evaluated(
+                execution_context,
+                mutable_value_expression,
+                &value,
+            );
+
+            Ok(value)
+        }
     }
 }
 
@@ -165,6 +191,8 @@ fn log_mutable_value_expression_evaluated<'a, TRecord: Record>(
                         }
                         ResolvedValueMut::ArrayIndex { array: _, index } =>
                             format!("Array write for '{index}' index"),
+                        ResolvedValueMut::Argument(_) =>
+                            "Argument write".into()
                     },
                 }
             )
@@ -211,39 +239,20 @@ where
     match current_selector.1.try_resolve_string() {
         Ok(map_key) => {
             if let Some(next_selector) = remaining_selectors.next() {
-                let next_borrow = RefMut::filter_map(current_borrow, |v| {
-                    match v.get_mut(map_key.get_value()) {
-                        ValueMutGetResult::Found(v) => {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Verbose,
-                                expression,
-                                || format!("Resolved '{}' value for key '{}' specified in accessor expression", v.get_value_type(), map_key.get_value()),
-                            );
-                            Some(v)
-                        }
-                        _ => {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Warn,
-                                expression,
-                                || format!(
-                                    "Could not find map key '{}' specified in accessor expression",
-                                    map_key.get_value()
-                                ),
-                            );
-                            None
-                        }
-                    }
-                });
-
-                match next_borrow {
-                    Ok(v) => select_from_as_value_mut(
+                match resolve_map_key_mut(
+                    execution_context,
+                    expression,
+                    current_borrow,
+                    map_key.get_value(),
+                ) {
+                    Some(v) => select_from_as_value_mut(
                         execution_context,
                         expression,
                         v,
                         next_selector,
                         remaining_selectors,
                     ),
-                    Err(_) => Ok(None),
+                    None => Ok(None),
                 }
             } else {
                 Ok(Some(ResolvedValueMut::MapKey {
@@ -275,59 +284,33 @@ where
     'b: 'c,
 {
     if let Value::Integer(array_index) = current_selector.1.to_value() {
-        if let Some(next_selector) = remaining_selectors.next() {
-            let next_borrow = RefMut::filter_map(current_borrow, |v| {
-                match validate_array_index(
-                    execution_context,
-                    current_selector.0,
-                    array_index.get_value(),
-                    v.deref(),
-                ) {
-                    Some(i) => match v.get_mut(i) {
-                        ValueMutGetResult::Found(v) => {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Verbose,
-                                expression,
-                                || format!("Resolved '{}' value for array index '{}' specified in accessor expression", v.get_value_type(), array_index.get_value()),
-                            );
-                            Some(v)
-                        }
-                        _ => {
-                            execution_context.add_diagnostic_if_enabled(
-                                RecordSetEngineDiagnosticLevel::Warn,
-                                expression,
-                                || format!("Could not find array index '{}' specified in accessor expression", array_index.get_value()),
-                            );
-                            None
-                        }
-                    },
-                    None => None,
+        match validate_array_index(
+            execution_context,
+            current_selector.0,
+            array_index.get_value(),
+            current_borrow.deref(),
+        ) {
+            Some(i) => {
+                if let Some(next_selector) = remaining_selectors.next() {
+                    match resolve_array_index_mut(execution_context, expression, current_borrow, i)
+                    {
+                        Some(v) => select_from_as_value_mut(
+                            execution_context,
+                            expression,
+                            v,
+                            next_selector,
+                            remaining_selectors,
+                        ),
+                        None => Ok(None),
+                    }
+                } else {
+                    Ok(Some(ResolvedValueMut::ArrayIndex {
+                        array: current_borrow,
+                        index: i,
+                    }))
                 }
-            });
-
-            match next_borrow {
-                Ok(v) => select_from_as_value_mut(
-                    execution_context,
-                    expression,
-                    v,
-                    next_selector,
-                    remaining_selectors,
-                ),
-                Err(_) => Ok(None),
             }
-        } else {
-            match validate_array_index(
-                execution_context,
-                current_selector.0,
-                array_index.get_value(),
-                current_borrow.deref(),
-            ) {
-                Some(i) => Ok(Some(ResolvedValueMut::ArrayIndex {
-                    array: current_borrow,
-                    index: i,
-                })),
-                None => Ok(None),
-            }
+            None => Ok(None),
         }
     } else {
         execution_context.add_diagnostic_if_enabled(
@@ -396,9 +379,9 @@ where
     }
 }
 
-fn validate_array_index<'a, TRecord: Record>(
+pub(crate) fn validate_array_index<'a, TRecord: Record>(
     execution_context: &ExecutionContext<'a, '_, TRecord>,
-    expression: &'a ScalarExpression,
+    expression: &'a dyn Expression,
     mut index: i64,
     array: &dyn ArrayValueMut,
 ) -> Option<usize> {

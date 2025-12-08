@@ -318,29 +318,7 @@ where
             }
         }
         ScalarExpression::Argument(a) => {
-            let mut value = execution_context
-                .get_arguments()
-                .expect("Arguments were not found")
-                .get_argument(a.get_argument_id())?;
-
-            let selectors = a.get_value_accessor().get_selectors();
-            if !selectors.is_empty() {
-                for selector in selectors {
-                    match value.select(
-                        execution_context,
-                        selector,
-                        execute_scalar_expression(execution_context, selector)?.to_value(),
-                    )? {
-                        Some(v) => value = v,
-                        None => {
-                            value = ResolvedValue::Computed(OwnedValue::Null);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            value
+            execute_argument_scalar_expression(execution_context, a)?
         }
         ScalarExpression::InvokeFunction(_) => todo!(),
     };
@@ -434,6 +412,39 @@ where
             ResolvedValue::Computed(OwnedValue::Null)
         },
     )
+}
+
+pub(crate) fn execute_argument_scalar_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    argument_scalar_expression: &'a ArgumentScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    let mut value = execution_context
+        .get_arguments()
+        .expect("Arguments were not found")
+        .get_argument(argument_scalar_expression.get_argument_id())?;
+
+    let selectors = argument_scalar_expression.get_value_accessor().get_selectors();
+    if !selectors.is_empty() {
+        for selector in selectors {
+            match value.select(
+                execution_context,
+                selector,
+                execute_scalar_expression(execution_context, selector)?.to_value(),
+            )? {
+                Some(v) => value = v,
+                None => {
+                    value = ResolvedValue::Computed(OwnedValue::Null);
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(value)
 }
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(

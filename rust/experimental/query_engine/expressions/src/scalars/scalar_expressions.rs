@@ -8,7 +8,7 @@ pub type ScalarStaticResolutionResult<'a> =
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
-    /// Resolve a value from a function argument. Values may be mutable or immutable.
+    /// Resolve a value from a function argument.
     Argument(ArgumentScalarExpression),
 
     /// Resolve a value from an immutable record attached to a query.

@@ -5,6 +5,9 @@ use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MutableValueExpression {
+    /// Resolve a value from a function argument.
+    Argument(ArgumentScalarExpression),
+
     /// Source value.
     ///
     /// Note: Source may refer to the source itself (root) or data on the source
@@ -24,6 +27,7 @@ impl MutableValueExpression {
         scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
         match self {
+            MutableValueExpression::Argument(a) => a.try_fold(scope),
             MutableValueExpression::Source(s) => s.try_fold(scope),
             MutableValueExpression::Variable(v) => v.try_fold(scope),
         }
@@ -33,6 +37,7 @@ impl MutableValueExpression {
 impl Expression for MutableValueExpression {
     fn get_query_location(&self) -> &QueryLocation {
         match self {
+            MutableValueExpression::Argument(a) => a.get_query_location(),
             MutableValueExpression::Source(s) => s.get_query_location(),
             MutableValueExpression::Variable(v) => v.get_query_location(),
         }
@@ -40,6 +45,7 @@ impl Expression for MutableValueExpression {
 
     fn get_name(&self) -> &'static str {
         match self {
+            MutableValueExpression::Argument(_) => "MutableValueExpression(Argument)",
             MutableValueExpression::Source(_) => "MutableValueExpression(Source)",
             MutableValueExpression::Variable(_) => "MutableValueExpression(Variable)",
         }
@@ -47,6 +53,7 @@ impl Expression for MutableValueExpression {
 
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         match self {
+            MutableValueExpression::Argument(a) => a.fmt_with_indent(f, indent),
             MutableValueExpression::Source(s) => s.fmt_with_indent(f, indent),
             MutableValueExpression::Variable(v) => v.fmt_with_indent(f, indent),
         }

@@ -11,7 +11,6 @@ use data_engine_expressions::*;
 
 use crate::{
     execution_context::*,
-    resolved_value_mut::*,
     scalars::*,
     transform::{
         reduce_map_transform_expression::execute_map_reduce_transform_expression,
@@ -82,6 +81,12 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                                 );
                                 old
                             }
+                        }
+                    }
+                    ResolvedValueMut::Argument(a) => {
+                        match a.value {
+                            ResolvedMutableArgumentValue::Map(ref_mut) => todo!(),
+                            ResolvedMutableArgumentValue::Any(ref_mut) => todo!(),
                         }
                     }
                 },
