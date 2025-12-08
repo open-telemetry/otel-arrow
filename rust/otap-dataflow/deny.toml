@@ -102,6 +102,7 @@ allow = [
     "MIT-0",
     "Apache-2.0",
     "Unicode-3.0",
+    "BSD-2-Clause",
     "BSD-3-Clause",
     "Zlib",
     "MPL-2.0",

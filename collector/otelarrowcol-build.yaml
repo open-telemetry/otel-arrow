@@ -43,6 +43,9 @@ receivers:
   # OTLP receiver is included for the OTLP/HTTP Receiver, test and validation.
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.140.0
 
+processors:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.140.1
+
 extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.140.1
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.140.1
