@@ -2232,6 +2232,58 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_property_is_not_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .severity_text("DEBUG")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where severity_text != string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()],
+        );
+
+        // check it's supported if null literal on the left and column on the right
+        let result = exec_logs_pipeline(
+            "logs | where string(null) != severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()],
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_property_is_null_missing_column() {
         let log_records = vec![
             LogRecord::build()
@@ -2295,7 +2347,57 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_struct_property_is_null() {
+    async fn test_filter_property_is_not_null_missing_column() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        // just double check this gets encoded as something w/out the column we're using
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
+
+        let parser_result = KqlParser::parse("logs | where severity_text != string(null)").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap(log_records.clone()))
+            .await
+            .unwrap();
+        // assert it's equal to empty batch because there were no matches
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // assert we do the right thing where the null is on the left and value on the right
+        let parser_result = KqlParser::parse("logs | where string(null) != severity_text").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap(log_records.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_null() {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -2362,7 +2464,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_struct_property_is_null_missing_column() {
+    async fn test_filter_struct_property_is_null_missing_column() {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -2408,6 +2510,114 @@ mod test {
                 }],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_not_null() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .name("name1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        // test filter by scope properties
+        let result = exec_logs_pipeline(
+            "logs | where instrumentation_scope.name != string(null)",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[0].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+
+        // test filter by scope properties, this time the null is on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) != instrumentation_scope.name",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[0].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_not_null_missing_column() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        let parser_result =
+            KqlParser::parse("logs | where instrumentation_scope.name != string(null)").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(input)))
+            .await
+            .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
     }
 
     #[tokio::test]
@@ -2482,6 +2692,78 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &log_records.clone()
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_not_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("b"))])
+                .finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"x\"] != string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+
+        // check the same thing works if we put null on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) != attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_not_null_no_attrs() {
+        let log_records = vec![
+            LogRecord::build().event_name("1").finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        // double check that when we encode this as OTLP that the attributes
+        // record batch is not present
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+
+        let parser_result =
+            KqlParser::parse("logs | where attributes[\"x\"] != string(null)").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap(log_records.clone()))
+            .await
+            .unwrap();
+        // assert it's equal to empty batch because there were no matches
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // assert we do the right thing where the null is on the left and value on the right
+        let parser_result =
+            KqlParser::parse("logs | where string(null) != attributes[\"x\"]").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap(log_records.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
     }
 
     #[tokio::test]
