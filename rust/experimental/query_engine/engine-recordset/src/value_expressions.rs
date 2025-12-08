@@ -29,7 +29,7 @@ where
                     mutable_value_expression,
                     record.borrow_mut(),
                     selectors.drain(..),
-                )?
+                )
             } else {
                 None
             };
@@ -105,7 +105,7 @@ where
                 variable,
                 selectors.next().unwrap(),
                 selectors,
-            )?;
+            );
 
             log_mutable_value_expression_evaluated(
                 execution_context,
@@ -205,7 +205,7 @@ fn select_from_borrowed_root_map<'a, 'b, 'c, TRecord: Record>(
     root_expression: &'a dyn Expression,
     root: RefMut<'b, dyn MapValueMut + 'static>,
     mut selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
-) -> Result<Option<ResolvedValueMut<'b, 'c>>, ExpressionError>
+) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
     'b: 'c,
@@ -220,7 +220,7 @@ where
                 root_expression,
                 || "Resolved root map for accessor expression".into(),
             );
-            Ok(Some(ResolvedValueMut::Map(root)))
+            Some(ResolvedValueMut::Map(root))
         }
     }
 }
@@ -231,7 +231,7 @@ fn select_from_map_value_mut<'a, 'b, 'c, TRecord: Record>(
     current_borrow: RefMut<'b, dyn MapValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
     mut remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
-) -> Result<Option<ResolvedValueMut<'b, 'c>>, ExpressionError>
+) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
     'b: 'c,
@@ -255,10 +255,10 @@ where
                     None => Ok(None),
                 }
             } else {
-                Ok(Some(ResolvedValueMut::MapKey {
+                Some(ResolvedValueMut::MapKey {
                     map: current_borrow,
                     key: map_key,
-                }))
+                })
             }
         }
         Err(v) => {
@@ -267,7 +267,7 @@ where
                 expression,
                 || format!("Unexpected scalar expression with '{:?}' value encountered when expecting string in accessor expression", v.get_value_type())
             );
-            Ok(None)
+            None
         }
     }
 }
@@ -278,7 +278,7 @@ fn select_from_array_value_mut<'a, 'b, 'c, TRecord: Record>(
     current_borrow: RefMut<'b, dyn ArrayValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
     mut remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
-) -> Result<Option<ResolvedValueMut<'b, 'c>>, ExpressionError>
+) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
     'b: 'c,
@@ -318,7 +318,7 @@ where
             expression,
             || format!("Unexpected scalar expression with '{:?}' value encountered when expecting integer in accessor expression", current_selector.1.get_value_type())
         );
-        Ok(None)
+        None
     }
 }
 
@@ -328,7 +328,7 @@ fn select_from_as_value_mut<'a, 'b, 'c, TRecord: Record>(
     current_borrow: RefMut<'b, dyn AsStaticValueMut + 'static>,
     current_selector: (&'a ScalarExpression, ResolvedValue<'c>),
     remaining_selectors: Drain<(&'a ScalarExpression, ResolvedValue<'c>)>,
-) -> Result<Option<ResolvedValueMut<'b, 'c>>, ExpressionError>
+) -> Option<ResolvedValueMut<'b, 'c>>
 where
     'a: 'c,
     'b: 'c,
@@ -374,7 +374,7 @@ where
                 expression,
                 || format!("Unexpected '{:?}' value encountered when expecting an array or map in accessor expression", current_borrow.get_value_type())
             );
-            Ok(None)
+            None
         }
     }
 }
