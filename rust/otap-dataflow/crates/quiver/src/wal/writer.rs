@@ -129,6 +129,33 @@ use super::{
     WalConsumerCheckpoint, WalError, WalResult,
 };
 
+// ---------------------------------------------------------------------------
+// Default configuration constants
+//
+// These defaults balance durability, I/O efficiency, and recovery time. See
+// ARCHITECTURE.md § "Configuration defaults and rationale" for background.
+// ---------------------------------------------------------------------------
+
+/// Default maximum aggregate size of active + rotated WAL files.
+///
+/// `u64::MAX` means unlimited—backpressure is only applied by
+/// `max_rotated_files`.
+pub const DEFAULT_MAX_WAL_SIZE: u64 = u64::MAX;
+
+/// Default maximum number of rotated WAL files to retain.
+///
+/// New rotations are blocked when this limit is reached; the writer returns
+/// `WalAtCapacity` until the checkpoint advances and older files are purged.
+/// Eight rotated files is a reasonable trade-off: it keeps enough history for
+/// slow consumers while limiting disk footprint and recovery scan time.
+pub const DEFAULT_MAX_ROTATED_FILES: usize = 8;
+
+/// Default size threshold (in bytes) that triggers WAL file rotation.
+///
+/// 64 MiB keeps individual files manageable for sequential scans while
+/// amortizing rotation overhead (header writes, renames).
+pub const DEFAULT_ROTATION_TARGET_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Controls when the WAL flushes data to disk.
 ///
 /// Flushing calls `fsync()` to ensure data reaches stable storage. More frequent
@@ -179,9 +206,9 @@ impl WalWriterOptions {
             path,
             segment_cfg_hash,
             flush_policy,
-            max_wal_size: u64::MAX,
-            max_rotated_files: 8,
-            rotation_target_bytes: 64 * 1024 * 1024,
+            max_wal_size: DEFAULT_MAX_WAL_SIZE,
+            max_rotated_files: DEFAULT_MAX_ROTATED_FILES,
+            rotation_target_bytes: DEFAULT_ROTATION_TARGET_BYTES,
         }
     }
 

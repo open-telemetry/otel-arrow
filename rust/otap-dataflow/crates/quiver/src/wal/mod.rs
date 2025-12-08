@@ -78,10 +78,38 @@ pub(crate) use reader::{DecodedWalSlot, WalConsumerCheckpoint, WalReader, WalRec
 #[allow(unused_imports)]
 pub(crate) use writer::{FlushPolicy, WalOffset, WalWriter, WalWriterOptions};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WAL Format Constants
+//
+// See ARCHITECTURE.md § "Write-Ahead Log" for the full on-disk layout.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Magic bytes identifying a Quiver WAL file.
+///
+/// The file header starts with these 10 bytes: `b"QUIVER\0WAL"`.
+/// See ARCHITECTURE.md: "File header: fixed-width preamble (`b\"QUIVER\\0WAL\"`)"
 pub(crate) const WAL_MAGIC: &[u8; 10] = b"QUIVER\0WAL";
+
+/// Entry type marker for a serialized [`RecordBundle`].
+///
+/// Currently the only defined entry type. Future versions may add additional
+/// types (e.g., for schema evolution or control records).
+/// See ARCHITECTURE.md: "Entry header (`u8 entry_type`, currently `0 = RecordBundle`)"
 pub(crate) const ENTRY_TYPE_RECORD_BUNDLE: u8 = 0;
+
+/// Size of the entry header in bytes: `entry_type(1) + timestamp(8) + sequence(8) + bitmap(8)`.
+///
+/// Layout: `{ u8 entry_type, i64 ingestion_ts_nanos, u64 per_core_sequence, u64 slot_bitmap }`
+/// See ARCHITECTURE.md § "Framed entries" for the complete entry structure.
 pub(crate) const ENTRY_HEADER_LEN: usize = 1 + 8 + 8 + 8;
+
+/// Size of a schema fingerprint (BLAKE3 truncated to 256 bits).
 pub(crate) const SCHEMA_FINGERPRINT_LEN: usize = 32;
+
+/// Size of per-slot metadata: `payload_type_id(2) + fingerprint(32) + row_count(4) + payload_len(4)`.
+///
+/// Layout: `{ u16 payload_type_id, [u8;32] schema_fingerprint, u32 row_count, u32 payload_len }`
+/// See ARCHITECTURE.md § "Framed entries" → SlotMeta block.
 pub(crate) const SLOT_HEADER_LEN: usize = 2 + SCHEMA_FINGERPRINT_LEN + 4 + 4;
 
 pub(crate) type WalResult<T> = Result<T, WalError>;
