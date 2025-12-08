@@ -63,11 +63,12 @@ base64 = "0.22.1"
 bitflags = "2.10"
 bytes = "1.11"
 bytemuck = "1.24"
+blake3 = "1.5.5"
 chrono = { version = "0.4", features = ["serde"] }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
 core_affinity = "0.8.3"
-criterion = "0.7.0"
+criterion = "0.8.0"
 data-encoding = "2.9.0"
 fluke-hpack = "0.3.1"
 flume = { version = "0.11.1", default-features = false, features = ["async"] }
@@ -83,9 +84,9 @@ local-sync = "0.1.1"
 log = "0.4"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc-rust = "0.2.1"
-nix = { version = "0.30.1", features = ["process", "signal"] }
+nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
 num_enum = "0.7"
-object_store = "0.12.3"
+object_store = {version = "0.12.3", default-features = false}
 once_cell = "1.20.2"
 opentelemetry = "0.31.0"
 opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"]} #TODO - use it from submodule instead of crate(?)
@@ -111,6 +112,7 @@ serde_cbor = "0.11.2"
 serde_json = { version = "1.0.145" }
 serde_with = { version = "3.16.0", features = ["std", "macros", "json"] }
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
+crc32fast = "1.4.2"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
@@ -150,10 +152,10 @@ zip = "=4.2.0"
 byte-unit = "5.2.0"
 
 # Azure Monnitor Exporter
-azure_identity = "0.30.0"
+azure_core = {version = "0.30.1", default-features = false }
+azure_identity = {version = "0.30.0", default-features = false }
 flate2 = "1.1.5"
-reqwest = "0.12.24"
-azure_core = "0.30.1"
+reqwest = { version = "0.12.24", default-features = false }
 time = "0.3.44"
 wiremock = "0.6.5"
 

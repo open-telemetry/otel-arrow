@@ -5,7 +5,8 @@
 
 use crate::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
 use crate::testing::equiv::canonical::{
-    assert_equivalent, canonicalize_any_value, canonicalize_vec,
+    assert_equivalent, canonicalize_any_value, canonicalize_resource, canonicalize_scope,
+    canonicalize_vec,
 };
 
 /// Split a LogsData into individual singleton LogsData messages (one per log record).
@@ -38,23 +39,11 @@ fn logs_split_into_singletons(logs_data: &LogsData) -> Vec<LogsData> {
 fn logs_canonicalize_singleton_in_place(logs_data: &mut LogsData) {
     // Canonicalize resource attributes
     for resource_logs in &mut logs_data.resource_logs {
-        if let Some(resource) = &mut resource_logs.resource {
-            canonicalize_vec(&mut resource.attributes, |attr| {
-                if let Some(value) = &mut attr.value {
-                    canonicalize_any_value(value);
-                }
-            });
-        }
+        canonicalize_resource(&mut resource_logs.resource);
 
-        // Canonicalize scope attributes
+        // Canonicalize scopes
         for scope_logs in &mut resource_logs.scope_logs {
-            if let Some(scope) = &mut scope_logs.scope {
-                canonicalize_vec(&mut scope.attributes, |attr| {
-                    if let Some(value) = &mut attr.value {
-                        canonicalize_any_value(value);
-                    }
-                });
-            }
+            canonicalize_scope(&mut scope_logs.scope);
 
             // Canonicalize log record attributes
             for log_record in &mut scope_logs.log_records {

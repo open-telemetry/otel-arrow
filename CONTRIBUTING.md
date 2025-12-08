@@ -17,6 +17,7 @@ To work with this repository, you'll need:
 
 - **Go (Golang):** v1.18 or higher. [Installation
   Guide](https://golang.org/doc/install)
+- **Rust:** v1.87.0 or higher. [Installation Guide](https://www.rust-lang.org/tools/install)
 - **Protocol Buffer Compiler (protoc):** Required for regenerating gRPC
   services. [Installation Guide](https://grpc.io/docs/protoc-installation/)
 - **protoc-gen-go:** Install using:
