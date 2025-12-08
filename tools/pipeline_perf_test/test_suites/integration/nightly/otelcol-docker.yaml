@@ -1,5 +1,5 @@
 # while true; do python ./orchestrator/run_orchestrator.py --config ./test_suites/tech_summit/test-demo-docker.yaml; done
-name: Demo Suite
+name: Nightly - OTel Collector
 components:
   load-generator:
     deployment:
@@ -27,7 +27,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 2-2
       prometheus:
         endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
   go-collector:
@@ -46,7 +47,8 @@ components:
           - "/tmp/config.yaml"
         cpuset: "3"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches cpuset: 3
       prometheus:
         endpoint: http://localhost:8086/metrics
   backend-service:
@@ -66,7 +68,8 @@ components:
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
-      docker_component: {}
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 1-1
       prometheus:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 tests:

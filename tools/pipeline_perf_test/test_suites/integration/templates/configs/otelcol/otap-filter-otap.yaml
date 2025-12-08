@@ -6,8 +6,6 @@ receivers:
 
 
 exporters:
-  debug:
-    verbosity: detailed
   otelarrow:
     endpoint: '{{backend_hostname}}:1235'
     compression: none
