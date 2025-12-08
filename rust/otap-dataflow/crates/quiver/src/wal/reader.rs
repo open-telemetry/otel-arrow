@@ -89,8 +89,9 @@ impl WalReader {
     /// position right after the WAL header.
     pub fn iter_from(&mut self, offset: u64) -> WalResult<WalEntryIter<'_>> {
         let start = offset.max(WAL_HEADER_LEN as u64);
+        let file_len = self.file.metadata()?.len();
         let _ = self.file.seek(SeekFrom::Start(start))?;
-        Ok(WalEntryIter::new(&mut self.file, start))
+        Ok(WalEntryIter::new(&mut self.file, start, file_len))
     }
 
     /// Seeks back to the entry immediately after the header so a fresh scan can
@@ -107,15 +108,18 @@ pub(crate) struct WalEntryIter<'a> {
     file: &'a mut File,
     buffer: Vec<u8>,
     next_offset: u64,
+    /// Known file size at iterator creation, used to reject impossibly large entries.
+    file_len: u64,
     finished: bool,
 }
 
 impl<'a> WalEntryIter<'a> {
-    fn new(file: &'a mut File, offset: u64) -> Self {
+    fn new(file: &'a mut File, offset: u64, file_len: u64) -> Self {
         Self {
             file,
             buffer: Vec::new(),
             next_offset: offset,
+            file_len,
             finished: false,
         }
     }
@@ -144,6 +148,17 @@ impl<'a> Iterator for WalEntryIter<'a> {
         }
 
         let entry_len = u32::from_le_bytes(len_buf) as usize;
+
+        // Guard against corrupted or malicious length values that could cause
+        // excessive allocation. An entry cannot exceed the remaining file bytes.
+        let remaining_bytes = self.file_len.saturating_sub(entry_start + 4) as usize;
+        if entry_len > remaining_bytes {
+            self.finished = true;
+            return Some(Err(WalError::InvalidEntry(
+                "entry length exceeds remaining file size",
+            )));
+        }
+
         self.buffer.resize(entry_len, 0);
         if let Err(err) = read_entry_body(self.file, &mut self.buffer) {
             self.finished = true;

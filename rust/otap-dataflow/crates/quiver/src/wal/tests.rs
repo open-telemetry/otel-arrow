@@ -1253,9 +1253,11 @@ fn wal_reader_errors_on_truncated_entry_body() {
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iterator");
+    // The reader rejects entries whose declared length exceeds remaining file bytes.
+    // This guards against corrupted/malicious length values causing excessive allocation.
     match iter.next() {
-        Some(Err(WalError::UnexpectedEof("entry body"))) => {}
-        other => panic!("expected entry body EOF, got {:?}", other),
+        Some(Err(WalError::InvalidEntry("entry length exceeds remaining file size"))) => {}
+        other => panic!("expected entry length overflow error, got {:?}", other),
     }
 }
 
