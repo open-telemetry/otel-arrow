@@ -20,25 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          submodules: true
-      - uses: dorny/paths-filter@v2
-        id: filter
-        with:
-          filters: |
-            rust:
-              - 'rust/**'
-              - '.github/workflows/rust-ci.yml'
-
   test_and_coverage:
-    needs: check-changes
-    if: needs.check-changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -74,8 +56,6 @@ jobs:
           fail_ci_if_error: true
 
   fmt:
-    needs: check-changes
-    if: needs.check-changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -100,8 +80,6 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
 
   clippy:
-    needs: check-changes
-    if: needs.check-changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -127,8 +105,6 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
 
   deny:
-    needs: check-changes
-    if: needs.check-changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -173,8 +149,6 @@ jobs:
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
 
   docs:
-    needs: check-changes
-    if: needs.check-changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -198,8 +172,6 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
 
   structure_check:
-    needs: check-changes
-    if: needs.check-changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
