@@ -24,7 +24,7 @@ COPY . /build/rust/dataflow/.
 
 # RUSTFLAGS can be used to pass argument to rustc e.g. 
 # --build-arg RUSTFLAGS="-C target-feature=-gfni"
-ARG RUSTFLAGS
+ARG RUSTFLAGS="-C target-cpu=native"
 ENV RUSTFLAGS=${RUSTFLAGS}
 
 # These are used to enable features and are passed to carg's --features argument
