@@ -9,7 +9,8 @@ use crate::proto::opentelemetry::metrics::v1::{
     SummaryDataPoint, metric,
 };
 use crate::testing::equiv::canonical::{
-    assert_equivalent, canonicalize_any_value, canonicalize_vec,
+    assert_equivalent, canonicalize_any_value, canonicalize_resource, canonicalize_scope,
+    canonicalize_vec,
 };
 
 /// Split a MetricsData into individual singleton MetricsData messages (one per data point).
@@ -168,23 +169,11 @@ fn create_summary_singletons(
 fn metrics_canonicalize_singleton(metrics_data: &mut MetricsData) {
     // Canonicalize resource attributes
     for resource_metrics in &mut metrics_data.resource_metrics {
-        if let Some(resource) = &mut resource_metrics.resource {
-            canonicalize_vec(&mut resource.attributes, |attr| {
-                if let Some(value) = &mut attr.value {
-                    canonicalize_any_value(value);
-                }
-            });
-        }
+        canonicalize_resource(&mut resource_metrics.resource);
 
         // Canonicalize scope attributes
         for scope_metrics in &mut resource_metrics.scope_metrics {
-            if let Some(scope) = &mut scope_metrics.scope {
-                canonicalize_vec(&mut scope.attributes, |attr| {
-                    if let Some(value) = &mut attr.value {
-                        canonicalize_any_value(value);
-                    }
-                });
-            }
+            canonicalize_scope(&mut scope_metrics.scope);
 
             // Canonicalize metric fields
             for metric in &mut scope_metrics.metrics {

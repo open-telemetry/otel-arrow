@@ -3,11 +3,16 @@
 
 use std::{cell::*, collections::HashMap};
 
-use data_engine_expressions::{AsStaticValue, Expression, MapValue, PipelineExpression};
+use crate::*;
+
+use data_engine_expressions::*;
 
 #[cfg(test)]
 use crate::TestRecord;
-use crate::*;
+#[cfg(test)]
+use crate::scalars::{
+    execute_scalar_expression, execute_source_scalar_expression, execute_variable_scalar_expression,
+};
 
 pub(crate) struct ExecutionContext<'a, 'b, TRecord>
 where
@@ -20,6 +25,7 @@ where
     summaries: &'b Summaries<'a>,
     attached_records: Option<&'b dyn AttachedRecords>,
     record: Option<RefCell<TRecord>>,
+    arguments: Option<&'b dyn ExecutionContextArguments<'a>>,
 }
 
 impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
@@ -30,6 +36,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         summaries: &'b Summaries<'a>,
         attached_records: Option<&'b dyn AttachedRecords>,
         record: Option<TRecord>,
+        arguments: Option<&'b dyn ExecutionContextArguments<'a>>,
     ) -> ExecutionContext<'a, 'b, TRecord> {
         Self {
             diagnostic_level,
@@ -39,7 +46,24 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
             record: record.map(|v| RefCell::new(v)),
             variables: ExecutionContextVariables::new(global_variables),
             summaries,
+            arguments,
         }
+    }
+
+    #[cfg(test)]
+    pub fn create_scope(
+        &self,
+        arguments: Option<&'b dyn ExecutionContextArguments<'a>>,
+    ) -> ExecutionContext<'a, 'b, MapValueStorage<OwnedValue>> {
+        ExecutionContext::<MapValueStorage<OwnedValue>>::new(
+            self.diagnostic_level.clone(),
+            self.pipeline,
+            self.get_variables().global_variables,
+            self.summaries,
+            None,
+            None,
+            arguments,
+        )
     }
 
     pub fn is_diagnostic_level_enabled(
@@ -90,6 +114,10 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
 
     pub fn get_summaries(&self) -> &Summaries<'a> {
         self.summaries
+    }
+
+    pub fn get_arguments(&self) -> Option<&dyn ExecutionContextArguments<'a>> {
+        self.arguments
     }
 
     pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
@@ -155,6 +183,50 @@ impl<'a> ExecutionContextVariables<'a> {
     }
 }
 
+pub trait ExecutionContextArguments<'a> {
+    fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError>;
+}
+
+#[cfg(test)]
+pub struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
+where
+    TRecord: Record + 'static,
+{
+    pub parent_execution_context: &'c ExecutionContext<'a, 'b, TRecord>,
+    pub arguments: &'a [InvokeFunctionArgument],
+}
+
+#[cfg(test)]
+impl<'a, 'b, 'c, TRecord> ExecutionContextArguments<'a>
+    for ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
+where
+    TRecord: Record + 'static,
+{
+    fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError> {
+        let argument = self
+            .arguments
+            .get(id)
+            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
+
+        match argument {
+            InvokeFunctionArgument::Scalar(s) => {
+                execute_scalar_expression(self.parent_execution_context, s)
+            }
+            InvokeFunctionArgument::MutableValue(m) => {
+                // Note: In this branch mutable values are retured as immutables which is totally fine
+                match m {
+                    MutableValueExpression::Source(s) => {
+                        execute_source_scalar_expression(self.parent_execution_context, m, s)
+                    }
+                    MutableValueExpression::Variable(v) => {
+                        execute_variable_scalar_expression(self.parent_execution_context, m, v)
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub struct TestExecutionContext<'a> {
     pipeline: PipelineExpression,
@@ -208,6 +280,7 @@ impl<'a> TestExecutionContext<'a> {
                 .as_ref()
                 .map(|v| v as &dyn AttachedRecords),
             self.record.take(),
+            None,
         )
     }
 }

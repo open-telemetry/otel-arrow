@@ -79,6 +79,12 @@ mod metrics;
 /// gRPC service implementation
 pub mod otlp_grpc;
 
+/// Cloud specific auth utilities
+pub mod cloud_auth;
+
+/// Object storage utilities including integrations for different cloud
+/// providers
+pub mod object_store;
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;

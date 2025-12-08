@@ -96,6 +96,7 @@ azure-monitor-exporter = [
     "dep:reqwest",
     "dep:azure_core"
 ]
+azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 
 [dev-dependencies]
 flume.workspace = true
