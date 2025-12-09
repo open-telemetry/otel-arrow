@@ -77,13 +77,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let telemetry_config = &pipeline.service().telemetry;
         let opentelemetry_client = OpentelemetryClient::new(telemetry_config);
         let metrics_system = MetricsSystem::new(telemetry_config);
-
-        // Only create the dispatcher if there are metric readers configured.
-        let metrics_dispatcher = if telemetry_config.has_metric_readers() {
-            Some(metrics_system.dispatcher())
-        } else {
-            None
-        };
+        let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
@@ -98,10 +92,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             })?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
-        let metrics_dispatcher_handle = if let Some(dispatcher) = metrics_dispatcher {
+        let metrics_dispatcher_handle = if telemetry_config.has_metric_readers() {
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
-                move |cancellation_token| dispatcher.run_dispatch_loop(cancellation_token),
+                move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
             )?)
         } else {
             None
