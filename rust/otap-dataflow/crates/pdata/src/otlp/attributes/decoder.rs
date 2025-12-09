@@ -6,10 +6,8 @@
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::proto::opentelemetry::common::v1::any_value;
 
-#[allow(missing_docs)]
 pub type Attrs16ParentIdDecoder = AttrsParentIdDecoder<u16>;
 
-#[allow(missing_docs)]
 pub type Attrs32ParentIdDecoder = AttrsParentIdDecoder<u32>;
 
 // AttrsParentIdDecoder implements parent_id decoding for attribute
@@ -20,7 +18,6 @@ pub type Attrs32ParentIdDecoder = AttrsParentIdDecoder<u32>;
 // Phase 1 note: there were several experimental encoding schemes
 // tested.  Two schemes named "ParentIdDeltaEncoding",
 // "ParentIdNoEncoding" have been removed.
-#[allow(missing_docs)]
 pub struct AttrsParentIdDecoder<T> {
     prev_parent_id: T,
     prev_key: Option<String>,
@@ -44,7 +41,6 @@ impl<T> AttrsParentIdDecoder<T>
 where
     T: ParentId,
 {
-    #[allow(missing_docs)]
     pub fn decode(&mut self, delta_or_parent_id: T, key: &str, value: &any_value::Value) -> T {
         if self.prev_key.as_deref() == Some(key) && self.prev_value.as_ref() == Some(value) {
             let parent_id = self.prev_parent_id.add(delta_or_parent_id);

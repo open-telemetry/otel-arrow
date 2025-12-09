@@ -194,7 +194,6 @@ impl ProtoBytesEncoder for TracesProtoBytesEncoder {
     }
 }
 
-#[allow(missing_docs)]
 impl TracesProtoBytesEncoder {
     #[must_use]
     pub fn new() -> Self {

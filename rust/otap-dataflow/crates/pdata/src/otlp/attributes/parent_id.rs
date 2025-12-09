@@ -11,15 +11,12 @@ use arrow::datatypes::{UInt16Type, UInt32Type};
 use std::hash::Hash;
 use std::ops::{Add, AddAssign};
 
-#[allow(missing_docs)]
 pub trait ParentId: Copy + Hash + Eq + Default + Add<Output = Self> + AddAssign
 where
     <Self as ParentId>::ArrayType: ArrowPrimitiveType,
 {
-    #[allow(missing_docs)]
     type ArrayType;
 
-    #[allow(missing_docs)]
     fn new_decoder() -> AttrsParentIdDecoder<Self>;
 
     /// Get the parent id columns from the record batch, downcast to the correct type

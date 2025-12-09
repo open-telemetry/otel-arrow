@@ -17,7 +17,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors related to OTAP or OTLP pipeline data
 #[derive(thiserror::Error, Debug)]
-#[allow(missing_docs)]
 pub enum Error {
     #[error("Cannot find column: {}", name)]
     ColumnNotFound { name: String },

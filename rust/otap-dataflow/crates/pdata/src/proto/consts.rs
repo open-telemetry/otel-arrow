@@ -18,7 +18,6 @@ pub mod wire_types {
 
 /// field number for OTLP protobuf messages
 pub mod field_num {
-    #[allow(missing_docs)]
     pub mod common {
         pub const KEY_VALUE_KEY: u64 = 1;
         pub const KEY_VALUE_VALUE: u64 = 2;
@@ -40,7 +39,6 @@ pub mod field_num {
         pub const INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT: u64 = 4;
     }
 
-    #[allow(missing_docs)]
     pub mod logs {
         pub const LOGS_DATA_RESOURCE: u64 = 1;
 
@@ -65,7 +63,6 @@ pub mod field_num {
         pub const LOG_RECORD_EVENT_NAME: u64 = 12;
     }
 
-    #[allow(missing_docs)]
     pub mod metrics {
         pub const METRICS_DATA_RESOURCE_METRICS: u64 = 1;
 
@@ -158,13 +155,11 @@ pub mod field_num {
         pub const EXEMPLAR_TRACE_ID: u64 = 5;
     }
 
-    #[allow(missing_docs)]
     pub mod resource {
         pub const RESOURCE_ATTRIBUTES: u64 = 1;
         pub const RESOURCE_DROPPED_ATTRIBUTES_COUNT: u64 = 2;
     }
 
-    #[allow(missing_docs)]
     pub mod traces {
         pub const TRACES_DATA_RESOURCE_SPANS: u64 = 1;
 
