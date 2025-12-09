@@ -189,6 +189,9 @@ pub enum WalError {
     /// Writer cannot proceed because configured capacity limits were reached.
     #[error("wal at capacity: {0}")]
     WalAtCapacity(&'static str),
+    /// Configuration parameter is invalid.
+    #[error("invalid wal configuration: {0}")]
+    InvalidConfig(&'static str),
     /// Test-only failure that simulates a crash at a specific point.
     #[error("wal crash injected: {0}")]
     InjectedCrash(&'static str),
