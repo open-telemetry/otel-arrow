@@ -23,7 +23,7 @@ pub struct GzipBatcher {
 pub enum PushResult {
     Ok(u64),
     TooLarge,
-    BatchReady,
+    BatchReady(u64),
 }
 
 pub enum FlushResult {
@@ -59,7 +59,9 @@ impl GzipBatcher {
 
     pub fn push(&mut self, data: &[u8]) -> PushResult {
         if self.pending_batch.is_some() {
-            return PushResult::BatchReady;
+            // this is the new batch id that we are currently building
+            // the pending batch id is available in the pending_batch field
+            return PushResult::BatchReady(self.batch_id);
         }
 
         self.push_internal(data)
@@ -110,7 +112,9 @@ impl GzipBatcher {
             match flush_result {
                 FlushResult::Empty => PushResult::Ok(self.batch_id),
                 FlushResult::Flush => {
-                    PushResult::BatchReady
+                    // this is the new batch id that we are currently building
+                    // the pending batch id is available in the pending_batch field
+                    PushResult::BatchReady(self.batch_id)
                 }
             }
         } else {
@@ -137,28 +141,28 @@ impl GzipBatcher {
         let old_buf = std::mem::replace(&mut self.buf, Self::new_encoder());
 
         let compressed_data = old_buf.finish().expect("compression failed");
-        let compressed_size = compressed_data.len();
-        let uncompressed_size = self.total_uncompressed_size;
+        // let compressed_size = compressed_data.len();
+        // let uncompressed_size = self.total_uncompressed_size;
         let row_count = self.row_count;
 
-        // Calculate compression ratio
-        let compression_ratio = if uncompressed_size > 0 {
-            (compressed_size as f64 / uncompressed_size as f64) * 100.0
-        } else {
-            0.0
-        };
+        // // Calculate compression ratio
+        // let compression_ratio = if uncompressed_size > 0 {
+        //     (compressed_size as f64 / uncompressed_size as f64) * 100.0
+        // } else {
+        //     0.0
+        // };
 
         // Get human-readable timestamp
-        let now = std::time::SystemTime::now();
-        let datetime = chrono::DateTime::<chrono::Utc>::from(now);
-        let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
+        // let now = std::time::SystemTime::now();
+        // let datetime = chrono::DateTime::<chrono::Utc>::from(now);
+        // let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
 
-        let avg_row_size = uncompressed_size as f64 / row_count;
+        // let avg_row_size = uncompressed_size as f64 / row_count;
 
-        println!(
-            "[{}] Flushed batch: flush count: {}, {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%), avg row size: {:.2} bytes",
-            timestamp, self.flush_count, row_count, uncompressed_size, compressed_size, compression_ratio, avg_row_size
-        );
+        // println!(
+        //     "[{}] Flushed batch: flush count: {}, {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%), avg row size: {:.2} bytes",
+        //     timestamp, self.flush_count, row_count, uncompressed_size, compressed_size, compression_ratio, avg_row_size
+        // );
 
         // Reset state
         self.remaining_size = ONE_MB;
@@ -242,7 +246,7 @@ mod tests {
                     total_uncompressed_sent += data_len;
                     // Continue pushing
                 }
-                PushResult::BatchReady => {
+                PushResult::BatchReady(batch_id) => {
                     push_count += 1;
                     total_uncompressed_sent += data_len;
 
@@ -329,7 +333,7 @@ mod tests {
                 PushResult::Ok(_) => {
                     total_push_count += 1;
                 }
-                PushResult::BatchReady => {
+                PushResult::BatchReady(batch_id) => {
                     total_push_count += 1;
                     full_count += 1;
 
@@ -428,7 +432,7 @@ mod tests {
         let large_data = vec![b'x'; 2 * 1024 * 1024]; // 2MB
 
         match batcher.push(&large_data) {
-            PushResult::BatchReady => {
+            PushResult::BatchReady(batch_id) => {
                 panic!("Large entry should not be accepted, got BatchReady instead");
             }
             PushResult::Ok(_) => {
@@ -450,7 +454,7 @@ mod tests {
             
             match batcher.push(&data) {
                 PushResult::Ok(_) => continue,
-                PushResult::BatchReady => {
+                PushResult::BatchReady(batch_id) => {
                     let gzip_result = batcher.take_pending_batch().unwrap();
                     
                     // Test that cloning Bytes is cheap
@@ -503,7 +507,7 @@ mod tests {
             let data = generate_1kb_data();
             match batcher.push(&data) {
                 PushResult::Ok(_) => continue,
-                PushResult::BatchReady => panic!("Should not be full after 5 pushes"),
+                PushResult::BatchReady(batch_id) => panic!("Should not be full after 5 pushes"),
                 PushResult::TooLarge => panic!("Unexpected TooLarge"),
             }
         }

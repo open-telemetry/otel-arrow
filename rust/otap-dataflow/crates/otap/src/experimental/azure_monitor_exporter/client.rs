@@ -35,6 +35,37 @@ pub struct LogsIngestionClient {
     token_refresh_after: Instant,
 }
 
+pub struct LogsIngestionClientPool {
+    clients: Vec<LogsIngestionClient>,
+}
+
+impl LogsIngestionClientPool {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            clients: Vec::with_capacity(capacity),
+        }
+    }
+
+    pub fn initialize(&mut self, client: &LogsIngestionClient) {
+        let capacity = self.clients.capacity();
+        for _ in 0..capacity {
+            self.clients.push(client.clone());
+        }
+    }
+
+    #[inline(always)]
+    pub fn take(&mut self) -> LogsIngestionClient {
+        self.clients
+            .pop()
+            .expect("client pool is empty")
+    }
+
+    #[inline(always)]
+    pub fn release(&mut self, client: LogsIngestionClient) {
+        self.clients.push(client);
+    }
+}
+
 impl LogsIngestionClient {
     /// Creates a new Azure Monitor logs ingestion client instance from provided components.
     ///
@@ -98,17 +129,8 @@ impl LogsIngestionClient {
         })
     }
 
-    /// Refresh the token if needed and update the pre-formatted header
-    #[inline]
-    pub async fn ensure_valid_token(&mut self) -> Result<(), String> {
-        let now = Instant::now();
-
-        // Fast path: token is still valid
-        if now < self.token_refresh_after {
-            return Ok(());
-        }
-
-        // Slow path: need to refresh token
+    /// Refresh the token and update the pre-formatted header
+    pub async fn refresh_token(&mut self) -> Result<(), String> {
         let token = self
             .auth
             .get_token()
@@ -124,17 +146,32 @@ impl LogsIngestionClient {
         let valid_seconds = (token.expires_on - OffsetDateTime::now_utc())
             .whole_seconds();
 
-        self.token_valid_until = now + Duration::from_secs(valid_seconds.max(0) as u64);
+        self.token_valid_until = Instant::now() + Duration::from_secs(valid_seconds.max(0) as u64);
         self.token_refresh_after = self.token_valid_until - Duration::from_secs(300);
 
-        println!("[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}, current time {:?}", valid_seconds, self.token_valid_until, now);
+        println!("[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}", valid_seconds, self.token_valid_until);
+
+        Ok(())
+    }
+
+    /// Refresh the token if needed and update the pre-formatted header
+    #[inline]
+    pub async fn ensure_valid_token(&mut self) -> Result<(), String> {
+        let now = Instant::now();
+
+        // Fast path: token is still valid
+        if now < self.token_refresh_after {
+            return Ok(());
+        }
+
+        self.refresh_token().await?;
 
         Ok(())
     }
 
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
-    /// Send compressed data to Log Analytics ingestion API.
+    /// Export compressed data to Log Analytics ingestion API.
     ///
     /// # Arguments
     /// * `body` - The data to send (must be serializable to JSON)
@@ -142,7 +179,7 @@ impl LogsIngestionClient {
     /// # Returns
     /// * `Ok(())` - If the request was successful
     /// * `Err(String)` - Error message if the request failed
-    pub async fn send(&mut self, body: Bytes) -> Result<(), String> {
+    pub async fn export(&mut self, body: Bytes) -> Result<(), String> {
         let start = Instant::now();
 
         // Send compressed body - avoid cloning headers by setting them individually
@@ -256,7 +293,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_send_success() {
+    async fn test_export_success() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -285,13 +322,13 @@ mod tests {
             "scope".to_string(),
         );
 
-        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
+        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_ok());
         assert_eq!(*call_count.lock().unwrap(), 1); // Token fetched once
     }
 
     #[tokio::test]
-    async fn test_send_auth_failure_refreshes_token() {
+    async fn test_export_auth_failure_refreshes_token() {
         let mock_server = MockServer::start().await;
 
         // First request fails with 401
@@ -320,7 +357,7 @@ mod tests {
         );
 
         // This should fail with 401, but invalidate the token
-        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
+        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Authentication failed"));
 
@@ -334,13 +371,13 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
+        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_ok());
         assert_eq!(*call_count.lock().unwrap(), 2); // Token fetched again
     }
 
     #[tokio::test]
-    async fn test_send_rate_limited() {
+    async fn test_export_rate_limited() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -365,7 +402,7 @@ mod tests {
             "scope".to_string(),
         );
 
-        let result = client.send(Bytes::from(vec![1, 2, 3])).await;
+        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Rate limited"));
     }

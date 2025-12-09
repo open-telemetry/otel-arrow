@@ -93,7 +93,8 @@ azure-monitor-exporter = [
     "dep:azure_identity",
     "dep:flate2",
     "dep:reqwest",
-    "dep:azure_core"
+    "dep:azure_core",
+    "dep:ahash",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 

@@ -24,6 +24,8 @@ mod config;
 mod exporter;
 mod gzip_batcher;
 mod transformer;
+mod in_flight_exports;
+mod state;
 
 pub use client::LogsIngestionClient;
 pub use config::Config;
