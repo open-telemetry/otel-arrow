@@ -101,9 +101,10 @@ proc-macro2 = "1.0"
 prost = "0.14"
 quote = "1.0"
 rand = "0.9.2"
+rcgen = "0.13"
 roaring = "0.11.2"
 rustls = { version = "0.23.22", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2.0"
+rustls-pki-types = { version = "1.11", features = ["std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls-native-certs = "0.8.2"
 schemars = { version = "1.0.0" }
