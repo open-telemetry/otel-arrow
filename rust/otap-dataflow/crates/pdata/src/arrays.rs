@@ -420,6 +420,7 @@ pub enum MaybeDictArrayAccessor<'a, V> {
 
 impl<'a, V> MaybeDictArrayAccessor<'a, V> {
     /// returns an iterator over the values in the array
+    #[must_use]
     pub fn iter(&'a self) -> MaybeDictArrayIter<'a, V> {
         MaybeDictArrayIter::new(self)
     }
@@ -506,6 +507,7 @@ where
     }
 
     /// returns wether the array is valid (not null) at the given index
+    #[must_use]
     pub fn is_valid(&self, index: usize) -> bool {
         match self {
             Self::Dictionary16(d) => d.is_valid(index),
@@ -515,11 +517,23 @@ where
     }
 
     /// returns the length of the array
+    #[must_use]
     pub fn len(&self) -> usize {
         match self {
             Self::Native(d) => d.len(),
             Self::Dictionary8(d) => d.len(),
             Self::Dictionary16(d) => d.len(),
+        }
+    }
+
+    /// returns whether the contained array is empty
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Native(d) => d.is_empty(),
+            Self::Dictionary8(d) => d.is_empty(),
+            Self::Dictionary16(d) => d.is_empty(),
+
         }
     }
 }
@@ -543,6 +557,7 @@ where
     }
 
     /// returns the number of nulls in the contained array
+    #[must_use]
     pub fn null_count(&self) -> usize {
         match self {
             Self::Dictionary16(d) => d.null_count(),
@@ -715,6 +730,10 @@ where
 
     pub(crate) fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
     pub(crate) fn null_count(&self) -> usize {
