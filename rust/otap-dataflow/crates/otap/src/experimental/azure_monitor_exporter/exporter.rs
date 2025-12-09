@@ -253,10 +253,10 @@ impl AzureMonitorExporter
     async fn handle_pdata(&mut self, effect_handler: &EffectHandler<OtapPdata>, request: ExportLogsServiceRequest, context: Context, bytes: Bytes, msg_id: u64) -> Result<(), Error>
     {
         if context.may_return_payload() {
-            self.state.add_msg_data(msg_id, context, bytes.clone());
+            self.state.add_msg_to_data(msg_id, context, bytes.clone());
         }
         else {
-            self.state.add_msg_data(msg_id, context, Bytes::new());
+            self.state.add_msg_to_data(msg_id, context, Bytes::new());
         }
 
         let log_entries_iterator = self.transformer
@@ -439,11 +439,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 continue;
             }
 
-            while let Some(completed_export) = self.in_flight_exports.next_completion().now_or_never().flatten()
-            {
-                self.finalize_export(&effect_handler, completed_export).await?;
-            }
-
             futures::select_biased! {
                 _ = tokio::time::sleep_until(next_token_refresh).fuse() => {
                     original_client.refresh_token()
@@ -453,17 +448,17 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     next_token_refresh = Self::get_next_token_refresh(original_client.token_valid_until);
                 }
 
+                completed = self.in_flight_exports.next_completion().fuse() => {
+                    if let Some(completed_export) = completed {
+                        self.finalize_export(&effect_handler, completed_export).await?;
+                    }
+                }
+
                 _ = tokio::time::sleep_until(next_export).fuse() => {
                     if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL)
                         && self.gzip_batcher.has_pending_data() {
                         println!("[AzureMonitorExporter] Periodic export pending data");
                         self.queue_current_batch(&effect_handler).await?;
-                    }
-                }
-
-                completed = self.in_flight_exports.next_completion().fuse() => {
-                    if let Some(completed_export) = completed {
-                        self.finalize_export(&effect_handler, completed_export).await?;
                     }
                 }
 
@@ -498,12 +493,13 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         
                         println!(
                             "\n\
-─────────────── AzureMonitorExporter ──────────────────
- perf    │ th/s={:.2}  avg_lat={:.2}ms         
+─────────────── AzureMonitorExporter ──────────────────────────
+ perf    │ th/s={:.2}  avg_lat={:.2}ms
  success │ rows={:.0}  batches={:.0}  msgs={:.0}         
  fail    │ rows={:.0}  batches={:.0}  msgs={:.0}       
- time    │ elapsed={:.1}s  active={:.1}s  idle={:.1}s     
-───────────────────────────────────────────────────────\n",
+ time    │ elapsed={:.1}s  active={:.1}s  idle={:.1}s
+ state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
+───────────────────────────────────────────────────────────────\n",
                             throughput,
                             self.stats.average_client_latency_secs * 1000.0,
                             self.stats.successful_row_count,
@@ -515,6 +511,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             elapsed,
                             active,
                             self.stats.get_idle_duration_secs(),
+                            self.state.batch_to_msg.len(),
+                            self.state.msg_to_batch.len(),
+                            self.state.msg_to_data.len(),
                         );
                     }
                 }

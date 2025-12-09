@@ -12,7 +12,7 @@ pub struct AzureMonitorExporterState {
     pub msg_to_batch: HashMap<u64, HashSet<u64>>,
 
     /// msg_id → (context, bytes)
-    pub msg_data: HashMap<u64, (Context, Bytes)>,
+    pub msg_to_data: HashMap<u64, (Context, Bytes)>,
 }
 
 impl AzureMonitorExporterState {
@@ -21,7 +21,7 @@ impl AzureMonitorExporterState {
         Self {
             batch_to_msg: HashMap::with_capacity(262144),
             msg_to_batch: HashMap::with_capacity(262144),
-            msg_data: HashMap::with_capacity(262144),
+            msg_to_data: HashMap::with_capacity(262144),
         }
     }
 
@@ -52,19 +52,19 @@ impl AzureMonitorExporterState {
             Some(batches) if !batches.is_empty() => None, // Has batches, not orphaned
             _ => {
                 _ = self.msg_to_batch.remove(&msg_id);
-                self.msg_data.remove(&msg_id)
+                self.msg_to_data.remove(&msg_id)
             }
         }
     }
 
     #[inline]
-    pub fn add_msg_data(
+    pub fn add_msg_to_data(
         &mut self,
         msg_id: u64,
         context: Context,
         bytes: Bytes,
     ) {
-        _ = self.msg_data
+        _ = self.msg_to_data
             .entry(msg_id)
             .or_insert((context, bytes));
     }
@@ -81,7 +81,7 @@ impl AzureMonitorExporterState {
                     // Only return if no remaining batches
                     if batches.is_empty() {
                         _ = self.msg_to_batch.remove(&msg_id);
-                        if let Some((context, bytes)) = self.msg_data.remove(&msg_id) {
+                        if let Some((context, bytes)) = self.msg_to_data.remove(&msg_id) {
                             orphaned.push((msg_id, context, bytes));
                         }
                     }
@@ -111,7 +111,7 @@ impl AzureMonitorExporterState {
                 }
 
                 // Take the message data
-                if let Some((context, bytes)) = self.msg_data.remove(&msg_id) {
+                if let Some((context, bytes)) = self.msg_to_data.remove(&msg_id) {
                     failed.push((msg_id, context, bytes));
                 }
             }
@@ -128,7 +128,7 @@ impl AzureMonitorExporterState {
         self.msg_to_batch.clear();
         
         // Drain and return all message data
-        self.msg_data
+        self.msg_to_data
             .drain()
             .map(|(msg_id, (context, bytes))| (msg_id, context, bytes))
             .collect()
