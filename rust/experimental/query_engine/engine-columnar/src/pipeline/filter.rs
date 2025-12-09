@@ -1509,6 +1509,14 @@ impl PipelineStage for FilterPipelineStage {
                     &mut otap_batch,
                     ArrowPayloadType::NumberDpAttrs,
                 )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplars,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplarAttrs,
+                )?;
                 self.filter_child_batch::<UInt16Type>(
                     &mut otap_batch,
                     ArrowPayloadType::HistogramDataPoints,
@@ -1516,6 +1524,14 @@ impl PipelineStage for FilterPipelineStage {
                 self.filter_child_batch::<UInt32Type>(
                     &mut otap_batch,
                     ArrowPayloadType::HistogramDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplars
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplarAttrs
                 )?;
                 self.filter_child_batch::<UInt16Type>(
                     &mut otap_batch,
@@ -1525,6 +1541,14 @@ impl PipelineStage for FilterPipelineStage {
                     &mut otap_batch,
                     ArrowPayloadType::ExpHistogramDpAttrs,
                 )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplars,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                )?;                
             }
             signal_type => {
                 return Err(Error::ExecutionError {
@@ -1560,8 +1584,8 @@ mod test {
     };
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint,
-        Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
+        Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
@@ -1885,6 +1909,7 @@ mod test {
                     data_points: vec![
                         NumberDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .exemplars(vec![Exemplar::build().trace_id(vec![1; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
                             .finish(),
                     ],
                 })
@@ -1896,6 +1921,7 @@ mod test {
                     data_points: vec![
                         NumberDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .exemplars(vec![Exemplar::build().trace_id(vec![2; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
                             .finish(),
                     ],
                 })
@@ -1907,6 +1933,7 @@ mod test {
                     data_points: vec![
                         HistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .exemplars(vec![Exemplar::build().trace_id(vec![1; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
                             .finish(),
                     ],
                     aggregation_temporality: 0,
@@ -1919,6 +1946,7 @@ mod test {
                     data_points: vec![
                         HistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .exemplars(vec![Exemplar::build().trace_id(vec![2; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
                             .finish(),
                     ],
                     aggregation_temporality: 0,
@@ -1931,6 +1959,7 @@ mod test {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .exemplars(vec![Exemplar::build().trace_id(vec![1; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))]).finish()])
                             .positive(Buckets::default())
                             .negative(Buckets::default())
                             .finish(),
@@ -1945,6 +1974,11 @@ mod test {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .exemplars(vec![
+                                Exemplar::build().trace_id(vec![2; 16])
+                                .filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                                .finish()
+                            ])
                             .finish(),
                     ],
                     aggregation_temporality: 0,
@@ -1993,17 +2027,42 @@ mod test {
         let number_dp_attrs = result.get(ArrowPayloadType::NumberDpAttrs).unwrap();
         assert_eq!(number_dp_attrs.num_rows(), 1);
 
+        let number_dp_exemplars = result.get(ArrowPayloadType::NumberDpExemplars).unwrap();
+        assert_eq!(number_dp_exemplars.num_rows(), 1);
+
+                let number_dp_exemplar_attrs = result.get(ArrowPayloadType::NumberDpExemplarAttrs).unwrap();
+        assert_eq!(number_dp_exemplar_attrs.num_rows(), 1);
+
         let hist_dps = result.get(ArrowPayloadType::HistogramDataPoints).unwrap();
         assert_eq!(hist_dps.num_rows(), 1);
+
         let hist_dp_attrs = result.get(ArrowPayloadType::HistogramDpAttrs).unwrap();
         assert_eq!(hist_dp_attrs.num_rows(), 1);
+
+        let hist_dp_exemplars = result.get(ArrowPayloadType::HistogramDpExemplars).unwrap();
+        assert_eq!(hist_dp_exemplars.num_rows(), 1);
+
+                let hist_dp_exemplar_attrs = result.get(ArrowPayloadType::HistogramDpExemplarAttrs).unwrap();
+        assert_eq!(hist_dp_exemplar_attrs.num_rows(), 1);
 
         let exp_hist_dps = result
             .get(ArrowPayloadType::ExpHistogramDataPoints)
             .unwrap();
         assert_eq!(exp_hist_dps.num_rows(), 1);
+        
         let exp_hist_dp_attrs = result.get(ArrowPayloadType::ExpHistogramDpAttrs).unwrap();
         assert_eq!(exp_hist_dp_attrs.num_rows(), 1);
+
+        let exp_hist_dp_exemplars = result
+            .get(ArrowPayloadType::ExpHistogramDpExemplars)
+            .unwrap();
+        assert_eq!(exp_hist_dp_exemplars.num_rows(), 1);
+
+
+        let exp_hist_dp_exemplar_attrs = result
+            .get(ArrowPayloadType::ExpHistogramDpExemplarAttrs)
+            .unwrap();
+        assert_eq!(exp_hist_dp_exemplar_attrs.num_rows(), 1);
 
         let summary_dps = result.get(ArrowPayloadType::SummaryDataPoints).unwrap();
         assert_eq!(summary_dps.num_rows(), 1);
