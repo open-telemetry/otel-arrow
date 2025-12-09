@@ -92,7 +92,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             })?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
-        let metrics_dispatcher_handle = if telemetry_config.has_metric_readers() {
+        let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
                 move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
@@ -245,12 +245,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
-
-        // Only shutdown the metrics dispatcher if it was created.
         if let Some(handle) = metrics_dispatcher_handle {
             handle.shutdown_and_join()?;
         }
-
         obs_state_join_handle.shutdown_and_join()?;
         opentelemetry_client.shutdown()?;
 

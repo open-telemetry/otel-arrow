@@ -662,17 +662,6 @@ impl Default for TelemetryConfig {
     }
 }
 
-impl TelemetryConfig {
-    /// Returns `true` if there are any metric readers configured.
-    ///
-    /// This can be used to conditionally initialize OpenTelemetry SDK components
-    /// only when telemetry export is actually configured.
-    #[must_use]
-    pub fn has_metric_readers(&self) -> bool {
-        !self.metrics.readers.is_empty()
-    }
-}
-
 fn default_reporting_channel_size() -> usize {
     100
 }
@@ -687,6 +676,13 @@ pub struct MetricsConfig {
     /// The list of metrics readers to configure.
     #[serde(default)]
     pub readers: Vec<MetricsReaderConfig>,
+}
+
+impl MetricsConfig {
+    /// Returns `true` if there are any metric readers configured.
+    pub fn has_readers(&self) -> bool {
+        !self.readers.is_empty()
+    }
 }
 
 /// Opentelemetry Metrics Reader configuration.
