@@ -27,7 +27,7 @@ use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
-use otap_df_pdata::otap::filter::build_uint16_id_filter;
+use otap_df_pdata::otap::filter::{build_uint16_id_filter, build_uint32_id_filter};
 use otap_df_pdata::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
@@ -1216,6 +1216,8 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
     }
 }
 
+/// This trait makes some helper functions for filtering child [`RecordBatch`]s generic over the
+/// type of ID (u16/u32) that are used to make the relationship between parent and child
 trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
     /// helper function for getting the ID column associated with the parent_id in the child record
     /// batch which is identified by the passed payload type
@@ -1224,6 +1226,8 @@ trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
         child_payload_type: ArrowPayloadType,
     ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>>;
 
+    /// build a selection vector for the parent ID column based on which IDs are contained within
+    /// the id_mask bitmap
     fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray>;
 }
 
@@ -1280,7 +1284,9 @@ impl ChildBatchFilterIdHelper for UInt32Type {
     }
 
     fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
-        todo!()
+        build_uint32_id_filter(parent_ids, &id_mask).map_err(|e| Error::ExecutionError {
+            cause: format!("error filtering child batch {:?}", e),
+        })
     }
 }
 
@@ -1461,9 +1467,17 @@ impl PipelineStage for FilterPipelineStage {
                     &mut otap_batch,
                     ArrowPayloadType::SpanEvents,
                 )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEventAttrs,
+                )?;
                 self.filter_child_batch::<UInt16Type>(
                     &mut otap_batch,
                     ArrowPayloadType::SpanLinks,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinkAttrs,
                 )?;
             }
             signal_type => {
@@ -1678,32 +1692,76 @@ mod test {
             Span::build()
                 .name("span1")
                 .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                .events(vec![Event::build().name("event1.1").finish()])
-                .links(vec![Link::build().span_id(vec![11; 8]).finish()])
+                .events(vec![
+                    Event::build()
+                        .name("event1.1")
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .finish(),
+                ])
+                .links(vec![
+                    Link::build()
+                        .span_id(vec![11; 8])
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .finish(),
+                ])
                 .finish(),
             Span::build()
                 .name("span2")
                 .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                 .events(vec![
-                    Event::build().name("event2.1").finish(),
-                    Event::build().name("event2.2").finish(),
+                    Event::build()
+                        .name("event2.1")
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Event::build()
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .name("event2.2")
+                        .finish(),
                 ])
                 .links(vec![
-                    Link::build().span_id(vec![21; 8]).finish(),
-                    Link::build().span_id(vec![22; 8]).finish(),
+                    Link::build()
+                        .span_id(vec![21; 8])
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Link::build()
+                        .span_id(vec![22; 8])
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .finish(),
                 ])
                 .finish(),
             Span::build()
                 .name("span3")
                 .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
                 .events(vec![
-                    Event::build().name("event3.1").finish(),
+                    Event::build()
+                        .name("event3.1")
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
                     Event::build().name("event3.2").finish(),
                     Event::build().name("event3.2").finish(),
                 ])
                 .links(vec![
                     Link::build().span_id(vec![31; 8]).finish(),
-                    Link::build().span_id(vec![32; 8]).finish(),
+                    Link::build()
+                        .span_id(vec![32; 8])
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
                     Link::build().span_id(vec![33; 8]).finish(),
                 ])
                 .finish(),
@@ -1725,6 +1783,12 @@ mod test {
 
         let span_links = result.get(ArrowPayloadType::SpanLinks).unwrap();
         assert_eq!(span_links.num_rows(), 2);
+
+        let span_link_attrs = result.get(ArrowPayloadType::SpanLinkAttrs).unwrap();
+        assert_eq!(span_link_attrs.num_rows(), 3);
+
+        let span_event_attrs = result.get(ArrowPayloadType::SpanEventAttrs).unwrap();
+        assert_eq!(span_event_attrs.num_rows(), 3);
     }
 
     #[ignore]

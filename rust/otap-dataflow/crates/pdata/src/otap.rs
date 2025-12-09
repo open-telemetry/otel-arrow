@@ -891,7 +891,7 @@ pub const fn parent_payload_type(payload_type: ArrowPayloadType) -> Option<Paren
         | ArrowPayloadType::HistogramDataPoints
         | ArrowPayloadType::ExpHistogramDataPoints => Some(ParentPayloadType::Root),
         ArrowPayloadType::SpanEventAttrs => {
-            Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanEventAttrs))
+            Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanEvents))
         }
         ArrowPayloadType::SpanLinkAttrs => {
             Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanLinks))

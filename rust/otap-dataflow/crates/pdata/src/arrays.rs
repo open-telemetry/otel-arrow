@@ -5,7 +5,10 @@
 
 use crate::error::{Error, Result};
 use arrow::array::{
-    Array, ArrayAccessor, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, DurationNanosecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, PrimitiveArray, RecordBatch, StringArray, StructArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array
+    Array, ArrayAccessor, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
+    DurationNanosecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
+    Int16Array, Int32Array, Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray,
+    TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, Fields, TimeUnit, UInt8Type, UInt16Type,
@@ -13,7 +16,7 @@ use arrow::datatypes::{
 use paste::paste;
 
 /// A trait for accessing elements in arrays that may contain null values.
-/// 
+///
 /// This is implemented for many arrow types to provide convenience in accessing possibly null
 /// array elements as well as to adapt the arrays into more complex array accessor types
 pub trait NullableArrayAccessor {
@@ -595,7 +598,10 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
+    pub(crate) fn try_new_for_column(
+        record_batch: &'a RecordBatch,
+        column_name: &str,
+    ) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
@@ -620,34 +626,35 @@ pub(crate) type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
 pub(crate) type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
 pub(crate) type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
 pub(crate) type FixedSizeBinaryArrayAccessor<'a> = MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>;
-pub(crate) type DurationNanosArrayAccessor<'a> = MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
+pub(crate) type DurationNanosArrayAccessor<'a> =
+    MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
 
 /// Iterator over an array that may be dictionary encoded
 pub struct MaybeDictArrayIter<'a, V> {
     index: usize,
-    inner: &'a MaybeDictArrayAccessor<'a, V>
+    inner: &'a MaybeDictArrayAccessor<'a, V>,
 }
 
 impl<'a, V> MaybeDictArrayIter<'a, V> {
     fn new(inner: &'a MaybeDictArrayAccessor<'a, V>) -> Self {
-        Self {
-            index: 0,
-            inner,
-        }
+        Self { index: 0, inner }
     }
 }
 
-impl<'a, V> Iterator for MaybeDictArrayIter<'a, V> where V: Array + NullableArrayAccessor + 'static {
+impl<'a, V> Iterator for MaybeDictArrayIter<'a, V>
+where
+    V: Array + NullableArrayAccessor + 'static,
+{
     type Item = Option<<V as NullableArrayAccessor>::Native>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= self.inner.len() {
-            return None
+            return None;
         }
 
         let val = Some(self.inner.value_at(self.index));
         self.index += 1;
-        
+
         val
     }
 
@@ -658,16 +665,15 @@ impl<'a, V> Iterator for MaybeDictArrayIter<'a, V> where V: Array + NullableArra
     }
 }
 
-impl<'a, V> ExactSizeIterator for MaybeDictArrayIter<'a, V> 
-where 
-    V: Array + NullableArrayAccessor + 'static 
+impl<'a, V> ExactSizeIterator for MaybeDictArrayIter<'a, V>
+where
+    V: Array + NullableArrayAccessor + 'static,
 {
     #[inline]
     fn len(&self) -> usize {
         self.inner.len() - self.index
     }
 }
-
 
 /// generic adapter for accessing values of DictionaryArray
 pub struct DictionaryArrayAccessor<'a, K, V>
@@ -771,7 +777,6 @@ where
     }
 }
 
-
 /// Helper for accessing columns of a struct array
 ///
 /// Methods return various errors into this crate's Error type if
@@ -829,28 +834,40 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub(crate) fn string_column_op(&self, column_name: &str) -> Result<Option<StringArrayAccessor<'a>>> {
+    pub(crate) fn string_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<StringArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(StringArrayAccessor::try_new)
             .transpose()
     }
 
-    pub(crate) fn byte_array_column_op(&self, column_name: &str) -> Result<Option<ByteArrayAccessor<'a>>> {
+    pub(crate) fn byte_array_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<ByteArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(ByteArrayAccessor::try_new)
             .transpose()
     }
 
-    pub(crate) fn int32_column_op(&self, column_name: &str) -> Result<Option<Int32ArrayAccessor<'a>>> {
+    pub(crate) fn int32_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<Int32ArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(Int32ArrayAccessor::try_new)
             .transpose()
     }
 
-    pub(crate) fn int64_column_op(&self, column_name: &str) -> Result<Option<Int64ArrayAccessor<'a>>> {
+    pub(crate) fn int64_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<Int64ArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(Int64ArrayAccessor::try_new)
