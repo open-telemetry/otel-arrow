@@ -142,6 +142,26 @@ use super::{
 /// `max_rotated_files`.
 pub const DEFAULT_MAX_WAL_SIZE: u64 = u64::MAX;
 
+/// Minimum buffer capacity (bytes) below which we skip shrinking logic.
+///
+/// Shrinking tiny buffers isn't worth the bookkeeping overhead.
+const SHRINK_THRESHOLD: usize = 64 * 1024; // 64 KB
+
+/// Headroom added to high-water mark when shrinking the payload buffer.
+///
+/// Provides slack so minor fluctuations don't trigger immediate reallocation.
+const SHRINK_HEADROOM: usize = 4 * 1024; // 4 KB
+
+/// Default decay rate for the payload buffer high-water mark.
+///
+/// Expressed as a fraction (numerator, denominator). After each append,
+/// `high_water = high_water * numerator / denominator`. The default (15, 16)
+/// gives ~6% decay per append, meaning ~37 appends to decay to 10% of peak.
+///
+/// Slower decay (e.g., 31/32) holds memory longer but is safer against thrashing.
+/// Faster decay (e.g., 7/8) reclaims memory faster but may reallocate more often.
+pub const DEFAULT_BUFFER_DECAY_RATE: (usize, usize) = (15, 16);
+
 /// Default maximum number of rotated WAL files to retain.
 ///
 /// New rotations are blocked when this limit is reached; the writer returns
@@ -198,6 +218,11 @@ pub(crate) struct WalWriterOptions {
     pub max_rotated_files: usize,
     /// Rotate the active file when it exceeds this size (default: 64 MB).
     pub rotation_target_bytes: u64,
+    /// Decay rate for the payload buffer high-water mark (numerator, denominator).
+    ///
+    /// Controls how quickly the buffer shrinks after a spike in usage.
+    /// Default is (15, 16) for ~6% decay per append.
+    pub buffer_decay_rate: (usize, usize),
 }
 
 impl WalWriterOptions {
@@ -209,6 +234,7 @@ impl WalWriterOptions {
             max_wal_size: DEFAULT_MAX_WAL_SIZE,
             max_rotated_files: DEFAULT_MAX_ROTATED_FILES,
             rotation_target_bytes: DEFAULT_ROTATION_TARGET_BYTES,
+            buffer_decay_rate: DEFAULT_BUFFER_DECAY_RATE,
         }
     }
 
@@ -230,6 +256,42 @@ impl WalWriterOptions {
     pub fn with_rotation_target(mut self, target_bytes: u64) -> Self {
         self.rotation_target_bytes = target_bytes.clamp(1, MAX_ROTATION_TARGET_BYTES);
         self
+    }
+
+    /// Sets the decay rate for the payload buffer high-water mark.
+    ///
+    /// Expressed as a fraction (numerator, denominator). After each append,
+    /// `high_water = high_water * numerator / denominator`.
+    ///
+    /// - Slower decay (e.g., 31/32): holds memory longer, safer against thrashing
+    /// - Faster decay (e.g., 7/8): reclaims memory faster, may reallocate more
+    ///
+    /// Default is (15, 16) for ~6% decay per append.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidConfig` from `WalWriter::open()` if:
+    /// - `denominator` is zero
+    /// - `numerator >= denominator` (no decay would occur)
+    pub fn with_buffer_decay_rate(mut self, numerator: usize, denominator: usize) -> Self {
+        self.buffer_decay_rate = (numerator, denominator);
+        self
+    }
+
+    /// Validates the configuration, returning an error if any values are invalid.
+    fn validate(&self) -> WalResult<()> {
+        let (numerator, denominator) = self.buffer_decay_rate;
+        if denominator == 0 {
+            return Err(WalError::InvalidConfig(
+                "buffer_decay_rate denominator must be positive",
+            ));
+        }
+        if numerator >= denominator {
+            return Err(WalError::InvalidConfig(
+                "buffer_decay_rate numerator must be less than denominator for decay",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -257,6 +319,14 @@ struct ActiveWalFile {
     file: File,
     /// Scratch buffer used to serialize slot payloads before writing.
     payload_buffer: Vec<u8>,
+    /// Rolling high-water mark for payload buffer size (bytes).
+    ///
+    /// Tracks typical peak usage over recent appends. Used to decide when
+    /// shrinking is safe (capacity significantly exceeds high-water) without
+    /// thrashing after one-off large bundles. Decays slowly each append.
+    payload_high_water: usize,
+    /// Decay rate for the high-water mark (numerator, denominator).
+    buffer_decay_rate: (usize, usize),
     /// Timestamp of the most recent flush.
     last_flush: Instant,
     /// Bytes written since the last flush.
@@ -330,8 +400,11 @@ impl WalWriter {
             }
         }
 
+        options.validate()?;
+
         let sidecar_path = checkpoint_sidecar_path(&options.path);
         let checkpoint_state = load_checkpoint_state(&sidecar_path)?;
+        let buffer_decay_rate = options.buffer_decay_rate;
 
         // Create coordinator first to scan for valid entries
         let mut coordinator = WalCoordinator::new(
@@ -355,7 +428,7 @@ impl WalWriter {
         // Position at the end of valid data
         let _ = file.seek(SeekFrom::Start(valid_offset))?;
 
-        let active_file = ActiveWalFile::new(file, valid_offset);
+        let active_file = ActiveWalFile::new(file, valid_offset, buffer_decay_rate);
         coordinator.restore_checkpoint_offsets(active_file.len());
         coordinator.recalculate_aggregate_bytes(active_file.len());
 
@@ -421,11 +494,13 @@ impl WalWriter {
             .preflight_append(&self.active_file, entry_total_bytes)?;
 
         let mut payload_bytes = std::mem::take(&mut self.active_file.payload_buffer);
+        let payload_len = payload_bytes.len();
         let entry_start =
             self.active_file
                 .write_entry(entry_len, &entry_header, &payload_bytes, crc)?;
         payload_bytes.clear();
         self.active_file.payload_buffer = payload_bytes;
+        self.active_file.maybe_shrink_payload_buffer(payload_len);
 
         self.next_sequence = self.next_sequence.wrapping_add(1);
 
@@ -491,10 +566,12 @@ impl WalWriter {
 }
 
 impl ActiveWalFile {
-    fn new(file: File, current_len: u64) -> Self {
+    fn new(file: File, current_len: u64, buffer_decay_rate: (usize, usize)) -> Self {
         Self {
             file,
             payload_buffer: Vec::new(),
+            payload_high_water: 0,
+            buffer_decay_rate,
             last_flush: Instant::now(),
             unflushed_bytes: 0,
             current_len,
@@ -583,6 +660,35 @@ impl ActiveWalFile {
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
         Ok(())
+    }
+
+    /// Updates the high-water mark and potentially shrinks the payload buffer.
+    ///
+    /// Call this after writing an entry (when `payload_buffer` has been cleared).
+    /// The algorithm:
+    /// 1. Update high-water to max(high_water, used_len)
+    /// 2. Apply decay: high_water = high_water * numerator / denominator
+    /// 3. Shrink if capacity > 2 * high_water + SHRINK_HEADROOM and capacity > SHRINK_THRESHOLD
+    ///
+    /// The decay ensures we eventually reclaim memory if usage drops permanently.
+    /// The 2× threshold and headroom prevent thrashing on minor fluctuations.
+    fn maybe_shrink_payload_buffer(&mut self, used_len: usize) {
+        // Update high-water with current usage
+        self.payload_high_water = self.payload_high_water.max(used_len);
+
+        // Apply decay so high-water adapts to reduced usage
+        let (numerator, denominator) = self.buffer_decay_rate;
+        self.payload_high_water = self.payload_high_water.saturating_mul(numerator) / denominator;
+
+        let capacity = self.payload_buffer.capacity();
+        let target = self.payload_high_water.saturating_add(SHRINK_HEADROOM);
+
+        // Only shrink if:
+        // - Capacity significantly exceeds the target (2× headroom)
+        // - Buffer is large enough to bother (> SHRINK_THRESHOLD)
+        if capacity > target.saturating_mul(2) && capacity > SHRINK_THRESHOLD {
+            self.payload_buffer.shrink_to(target);
+        }
     }
 }
 
@@ -1183,5 +1289,12 @@ pub(super) mod test_support {
                 false
             }
         })
+    }
+
+    /// Returns the current capacity of the writer's payload buffer.
+    ///
+    /// Used to test shrinking behavior.
+    pub fn get_payload_buffer_capacity(writer: &super::WalWriter) -> usize {
+        writer.active_file.payload_buffer.capacity()
     }
 }
