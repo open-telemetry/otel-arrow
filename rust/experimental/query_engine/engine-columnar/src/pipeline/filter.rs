@@ -606,7 +606,7 @@ impl FilterExec {
                         // here instead of unreachable! for posterity in case we change the impl
                         // in future for some reason
                         return Err(Error::ExecutionError {
-                            cause: "invalid type for ID column on root batch",
+                            cause: "invalid type for ID column on root batch".into(),
                         });
                     }
                     None => {
@@ -1262,7 +1262,7 @@ impl ChildBatchFilterIdHelper for UInt16Type {
                         id_col.data_type()
                     ),
                 })
-                .map(|id_col| MaybeDictArrayAccessor::Native(id_col))
+                .map(MaybeDictArrayAccessor::Native)
         })
         .transpose()
     }
@@ -1339,7 +1339,7 @@ impl FilterPipelineStage {
             None => {
                 // shouldn't happen
                 return Err(Error::ExecutionError {
-                    cause: format!("filter_child_batch called with root payload type"),
+                    cause: "filter_child_batch called with root payload type".into(),
                 });
             }
             Some(ParentPayloadType::Root) => otap_batch.root_record_batch(),
