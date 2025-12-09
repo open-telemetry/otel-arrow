@@ -5,11 +5,12 @@ use std::ops::{BitAnd, BitOr};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray, RecordBatch, StructArray, UInt16Array
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray,
+    RecordBatch, StructArray, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
-use arrow::datatypes::{Schema, UInt16Type};
+use arrow::datatypes::{Schema, UInt16Type, UInt32Type};
 use async_trait::async_trait;
 use data_engine_expressions::{LogicalExpression, ScalarExpression};
 use datafusion::common::cast::as_boolean_array;
@@ -25,8 +26,9 @@ use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::arrays::MaybeDictArrayAccessor;
 use otap_df_pdata::otap::filter::build_uint16_id_filter;
-use otap_df_pdata::otap::{parent_payload_type, Logs, Metrics, ParentPayloadType, Traces};
+use otap_df_pdata::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use roaring::RoaringBitmap;
@@ -595,20 +597,25 @@ impl FilterExec {
 
         // also apply any attribute filters
         if let Some(attrs_filter) = &mut self.attributes_filter {
-            let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
-                Some(id_col) => id_col,
-                None => {
-                    // None of the records have any attributes
-                    return Ok(BooleanArray::new(
-                        if self.missing_attrs_pass {
-                            BooleanBuffer::new_set(root_rb.num_rows())
-                        } else {
-                            BooleanBuffer::new_unset(root_rb.num_rows())
-                        },
-                        None,
-                    ));
-                }
-            };
+            let id_col =
+                match UInt16Type::get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
+                    Some(MaybeDictArrayAccessor::Native(id_col)) => id_col,
+                    Some(_) => {
+                        // TODO handle unexpected column type
+                        todo!()
+                    }
+                    None => {
+                        // None of the records have any attributes
+                        return Ok(BooleanArray::new(
+                            if self.missing_attrs_pass {
+                                BooleanBuffer::new_set(root_rb.num_rows())
+                            } else {
+                                BooleanBuffer::new_unset(root_rb.num_rows())
+                            },
+                            None,
+                        ));
+                    }
+                };
 
             let id_mask = attrs_filter.execute(otap_batch, session_ctx, false)?;
             let mut attrs_selection_vec_builder = BooleanBufferBuilder::new(root_rb.num_rows());
@@ -1215,20 +1222,17 @@ trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
     fn get_id_col_from_parent(
         root_rb: &RecordBatch,
         child_payload_type: ArrowPayloadType,
-    ) -> Result<Option<&PrimitiveArray<Self>>>;
+    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>>;
 
-    fn build_selection_vec(
-        parent_ids: &ArrayRef,
-        id_mask: RoaringBitmap,
-    ) -> Result<BooleanArray>;
+    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray>;
 }
 
 impl ChildBatchFilterIdHelper for UInt16Type {
     fn get_id_col_from_parent(
         root_rb: &RecordBatch,
         child_payload_type: ArrowPayloadType,
-    ) -> Result<Option<&PrimitiveArray<Self>>> {
-            match child_payload_type {
+    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>> {
+        match child_payload_type {
             ArrowPayloadType::ResourceAttrs => root_rb
                 .column_by_name(consts::RESOURCE)
                 .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
@@ -1249,52 +1253,35 @@ impl ChildBatchFilterIdHelper for UInt16Type {
                         id_col.data_type()
                     ),
                 })
+                .map(|id_col| MaybeDictArrayAccessor::Native(id_col))
         })
         .transpose()
     }
 
-    fn build_selection_vec(
-        parent_ids: &ArrayRef,
-        id_mask: RoaringBitmap,
-    ) -> Result<BooleanArray> {
-        build_uint16_id_filter(parent_ids, &id_mask).map_err(|e| {
-            Error::ExecutionError {
-                cause: format!("error filtering child batch {:?}", e),
-            }
+    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
+        build_uint16_id_filter(parent_ids, &id_mask).map_err(|e| Error::ExecutionError {
+            cause: format!("error filtering child batch {:?}", e),
         })
     }
 }
 
-
-// TODO - this currently only supports the root record batch. When we support additional signal
-// types with more deeply nested tree of payload types, we'll need to correct the logic here
-fn get_id_col_from_parent(
-    root_rb: &RecordBatch,
-    child_payload_type: ArrowPayloadType,
-) -> Result<Option<&UInt16Array>> {
-    match child_payload_type {
-        ArrowPayloadType::ResourceAttrs => root_rb
-            .column_by_name(consts::RESOURCE)
-            .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
-            .and_then(|arr| arr.column_by_name(consts::ID)),
-        ArrowPayloadType::ScopeAttrs => root_rb
-            .column_by_name(consts::SCOPE)
-            .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
-            .and_then(|arr| arr.column_by_name(consts::ID)),
-        _ => root_rb.column_by_name(consts::ID),
-    }
-    .map(|id_col| {
-        id_col
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| Error::ExecutionError {
-                cause: format!(
-                    "unexpected type for ID column. Expected u16 found {}",
-                    id_col.data_type()
-                ),
+impl ChildBatchFilterIdHelper for UInt32Type {
+    fn get_id_col_from_parent(
+        root_rb: &RecordBatch,
+        _child_payload_type: ArrowPayloadType,
+    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>> {
+        root_rb
+            .column_by_name(consts::ID)
+            .map(MaybeDictArrayAccessor::try_new)
+            .transpose()
+            .map_err(|e| Error::ExecutionError {
+                cause: format!("error filtering child batch by id: {}", e),
             })
-    })
-    .transpose()
+    }
+
+    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
+        todo!()
+    }
 }
 
 fn get_parent_id_column(record_batch: &RecordBatch) -> Result<&UInt16Array> {
@@ -1327,91 +1314,31 @@ impl FilterPipelineStage {
         Self { filter_exec }
     }
 
-
-    // fn filter_child_batch(
-    //     &self,
-    //     otap_batch: &mut OtapArrowRecords,
-    //     payload_type: ArrowPayloadType,
-    // ) -> Result<()> {
-    //     let root_rb = match otap_batch.root_record_batch() {
-    //         Some(rb) => rb,
-    //         None => {
-    //             // if the root record batch is missing, it we must have an empty OTAP batch
-    //             // hence nothing to do
-    //             return Ok(());
-    //         }
-    //     };
-
-    //     let child_rb = match otap_batch.get(payload_type) {
-    //         Some(rb) => rb,
-    //         None => {
-    //             // if child batch doesn't exist, then there are no records to filter
-    //             return Ok(());
-    //         }
-    //     };
-
-    //     let id_col = get_id_col_from_parent(root_rb, payload_type)?.ok_or_else(||
-    //         // this would be considered an unexpected state for this batch. We have a child
-    //         // record batch that is supposed to have it's parent_id pointing to an ID column
-    //         // on the root batch which does not exist
-    //         Error::ExecutionError {
-    //             cause: format!(
-    //                 "Invalid batch - ID column not found on root batch {:?}",
-    //                 otap_batch.root_payload_type()
-    //             )
-    //         })?;
-
-    //     // build the selection vector for the child record batch. This uses common code shared
-    //     // with the filter processor
-    //     let id_mask = id_col.iter().flatten().map(|i| i as u32).collect();
-    //     let child_parent_ids =
-    //         child_rb
-    //             .column_by_name(consts::PARENT_ID)
-    //             .ok_or_else(|| Error::ExecutionError {
-    //                 cause: "parent_id column not found on child batch".into(),
-    //             })?;
-
-    //     let child_selection_vec =
-    //         build_uint16_id_filter(child_parent_ids, &id_mask).map_err(|e| {
-    //             Error::ExecutionError {
-    //                 cause: format!("error filtering child batch {:?}", e),
-    //             }
-    //         })?;
-
-    //     // create the new child record batch from rows that were selected and update the OTAP batch
-    //     let new_child_rb = filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
-    //         Error::ExecutionError {
-    //             cause: format!("error filtering child batch {:?}", e),
-    //         }
-    //     })?;
-    //     otap_batch.set(payload_type, new_child_rb);
-
-    //     Ok(())
-    // }
-
     /// After filtering has been applied to the parent record batch, go into the child record batch
     /// and remove rows with parent_id pointing to parents that were filtered out
     fn filter_child_batch<T: ChildBatchFilterIdHelper>(
         &self,
         otap_batch: &mut OtapArrowRecords,
-        child_payload_type: ArrowPayloadType
+        child_payload_type: ArrowPayloadType,
     ) -> Result<()>
     where
-    <T as ArrowPrimitiveType>::Native: Into<u32>
+        <T as ArrowPrimitiveType>::Native: Into<u32>,
     {
         let parent_rb = match parent_payload_type(child_payload_type) {
             None => {
                 todo!("return an error here cause it's an invalid argument")
-            },
+            }
             Some(ParentPayloadType::Root) => otap_batch.root_record_batch(),
-            Some(ParentPayloadType::NonRoot(parent_payload_type)) => otap_batch.get(parent_payload_type)
+            Some(ParentPayloadType::NonRoot(parent_payload_type)) => {
+                otap_batch.get(parent_payload_type)
+            }
         };
-        
+
         let parent_rb = match parent_rb {
             Some(rb) => rb,
             None => {
                 if otap_batch.get(child_payload_type).is_some() {
-                    // TODO -- here we might need to unset the child record batch ... 
+                    // TODO -- here we might need to unset the child record batch ...
                     todo!()
                 }
 
@@ -1427,7 +1354,8 @@ impl FilterPipelineStage {
             }
         };
 
-        let id_col = T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(||
+        let id_col =
+            T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(||
             // this would be considered an unexpected state for this batch. We have a child
             // record batch that is supposed to have it's parent_id pointing to an ID column
             // on the root batch which does not exist
@@ -1507,15 +1435,36 @@ impl PipelineStage for FilterPipelineStage {
         match otap_batch.root_payload_type() {
             ArrowPayloadType::Logs => {
                 self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::LogAttrs)?;
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
-            },
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                )?;
+            }
             ArrowPayloadType::Spans => {
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanAttrs)?;
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanEvents)?;
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanLinks)?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEvents,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinks,
+                )?;
             }
             signal_type => {
                 return Err(Error::NotYetSupportedError {
@@ -1542,8 +1491,6 @@ mod test {
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
     use otap_df_pdata::otap::Logs;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::Span;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -1552,6 +1499,8 @@ mod test {
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::Span;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
@@ -1728,49 +1677,29 @@ mod test {
         let input = to_otap_traces(vec![
             Span::build()
                 .name("span1")
-                .attributes(vec![
-                    KeyValue::new("key", AnyValue::new_string("val1"))
-                ])
-                .events(vec![
-                    Event::build()
-                        .name("event1.1")
-                        .finish()
-                ])
-                .links(vec![
-                    Link::build().span_id(vec![11; 8]).finish(),
-                ])
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .events(vec![Event::build().name("event1.1").finish()])
+                .links(vec![Link::build().span_id(vec![11; 8]).finish()])
                 .finish(),
-            Span::build().name("span2")
-                .attributes(vec![
-                    KeyValue::new("key", AnyValue::new_string("val2"))
-                ])
+            Span::build()
+                .name("span2")
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                 .events(vec![
-                    Event::build()
-                        .name("event2.1")
-                        .finish(),
-                    Event::build()
-                        .name("event2.2")
-                        .finish()
+                    Event::build().name("event2.1").finish(),
+                    Event::build().name("event2.2").finish(),
                 ])
                 .links(vec![
                     Link::build().span_id(vec![21; 8]).finish(),
                     Link::build().span_id(vec![22; 8]).finish(),
                 ])
                 .finish(),
-            Span::build().name("span3")
-                .attributes(vec![
-                    KeyValue::new("key", AnyValue::new_string("val3"))
-                ])
+            Span::build()
+                .name("span3")
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
                 .events(vec![
-                    Event::build()
-                        .name("event3.1")
-                        .finish(),
-                    Event::build()
-                        .name("event3.2")
-                        .finish(),
-                    Event::build()
-                        .name("event3.2")
-                        .finish()
+                    Event::build().name("event3.1").finish(),
+                    Event::build().name("event3.2").finish(),
+                    Event::build().name("event3.2").finish(),
                 ])
                 .links(vec![
                     Link::build().span_id(vec![31; 8]).finish(),
@@ -1779,7 +1708,6 @@ mod test {
                 ])
                 .finish(),
         ]);
-        
 
         let parser_result = KqlParser::parse("traces | where name == \"span2\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
@@ -1788,7 +1716,7 @@ mod test {
         // assert everything got filtered to the right size
         let spans = result.get(ArrowPayloadType::Spans).unwrap();
         assert_eq!(spans.num_rows(), 1);
-        
+
         let span_attrs = result.get(ArrowPayloadType::SpanAttrs).unwrap();
         assert_eq!(span_attrs.num_rows(), 1);
 
@@ -1801,21 +1729,15 @@ mod test {
 
     #[ignore]
     #[tokio::test]
-    async fn test_filter_traces_by_attrs() {
-
-    }
+    async fn test_filter_traces_by_attrs() {}
 
     #[ignore]
     #[tokio::test]
-    async fn test_simple_filter_metrics() {
-
-    }
+    async fn test_simple_filter_metrics() {}
 
     #[ignore]
     #[tokio::test]
-    async fn test_simple_filter_metrics_by_attrs() {
-
-    }
+    async fn test_simple_filter_metrics_by_attrs() {}
 
     #[tokio::test]
     async fn test_filter_by_scope() {

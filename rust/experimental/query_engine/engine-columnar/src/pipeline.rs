@@ -255,9 +255,11 @@ mod test {
 
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, TracesData,
+    };
 
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
@@ -281,14 +283,14 @@ mod test {
 
     /// helper function for converting [`Span`]s to [`TracesData`]
     pub fn to_traces_data(spans: Vec<Span>) -> TracesData {
-        TracesData { 
+        TracesData {
             resource_spans: vec![ResourceSpans {
                 scope_spans: vec![ScopeSpans {
                     spans,
                     ..Default::default()
                 }],
                 ..Default::default()
-            }] 
+            }],
         }
     }
 
