@@ -75,9 +75,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &pipeline.service().telemetry;
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config);
+        let has_metric_readers = telemetry_config.has_metric_readers();
+
+        // Only create the OpenTelemetry client and dispatcher if there are metric readers configured.
+        let opentelemetry_client = if has_metric_readers {
+            Some(OpentelemetryClient::new(telemetry_config))
+        } else {
+            None
+        };
+
         let metrics_system = MetricsSystem::new(telemetry_config);
-        let metrics_dispatcher = metrics_system.dispatcher();
+        let metrics_dispatcher = if has_metric_readers {
+            Some(metrics_system.dispatcher())
+        } else {
+            None
+        };
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
@@ -91,11 +103,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 metrics_system.run(cancellation_token)
             })?;
 
-        // Start the metrics dispatcher
-        let metrics_dispatcher_handle =
-            spawn_thread_local_task("metrics-dispatcher", move |cancellation_token| {
-                metrics_dispatcher.run_dispatch_loop(cancellation_token)
-            })?;
+        // Start the metrics dispatcher only if there are metric readers configured.
+        let metrics_dispatcher_handle = if let Some(dispatcher) = metrics_dispatcher {
+            Some(spawn_thread_local_task(
+                "metrics-dispatcher",
+                move |cancellation_token| dispatcher.run_dispatch_loop(cancellation_token),
+            )?)
+        } else {
+            None
+        };
 
         // Start the observed state store background task
         let obs_state_join_handle =
@@ -241,9 +257,18 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
-        metrics_dispatcher_handle.shutdown_and_join()?;
+
+        // Only shutdown the metrics dispatcher if it was created.
+        if let Some(handle) = metrics_dispatcher_handle {
+            handle.shutdown_and_join()?;
+        }
+
         obs_state_join_handle.shutdown_and_join()?;
-        opentelemetry_client.shutdown()?;
+
+        // Only shutdown the OpenTelemetry client if it was created.
+        if let Some(client) = opentelemetry_client {
+            client.shutdown()?;
+        }
 
         Ok(())
     }
