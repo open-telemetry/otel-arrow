@@ -1899,9 +1899,39 @@ mod test {
         )
     }
 
-    #[ignore]
     #[tokio::test]
-    async fn test_filter_traces_by_attrs() {}
+    async fn test_filter_traces_by_attrs() {
+        let spans = vec![
+            Span::build()
+                .name("span1")
+                .trace_id(vec![1; 16])
+                .span_id(vec![1; 8])
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .status(Status::default())
+                .finish(),
+            Span::build()
+                .name("span2")
+                .trace_id(vec![2; 16])
+                .span_id(vec![2; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let input = to_otap_traces(spans.clone());
+        let parser_result =
+            KqlParser::parse("traces | where attributes[\"key\"] == \"val1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let traces_data = otap_to_traces_data(result);
+        assert_eq!(traces_data.resource_spans.len(), 1);
+        assert_eq!(traces_data.resource_spans[0].scope_spans.len(), 1);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[0].clone()]
+        )
+    }
 
     #[tokio::test]
     async fn test_simple_filter_metrics() {
@@ -2132,9 +2162,39 @@ mod test {
         )
     }
 
-    #[ignore]
     #[tokio::test]
-    async fn test_filter_metrics_by_attrs() {}
+    async fn test_filter_metrics_by_attrs() {
+        let metrics = vec![
+            Metric::build()
+                .name("metric1")
+                .data_gauge(Gauge {
+                    data_points: Vec::default(),
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_gauge(Gauge {
+                    data_points: Vec::default(),
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let input = to_otap_metrics(metrics.clone());
+        let parser_result =
+            KqlParser::parse("metrics | where attributes[\"key\"] == \"val1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let metrics_data = otap_to_metrics_data(result);
+        assert_eq!(metrics_data.resource_metrics.len(), 1);
+        assert_eq!(metrics_data.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            &metrics_data.resource_metrics[0].scope_metrics[0].metrics,
+            &[metrics[0].clone(),]
+        )
+    }
 
     #[tokio::test]
     async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {
