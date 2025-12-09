@@ -1,6 +1,6 @@
-use bytes::Bytes;
 use crate::pdata::Context;
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
+use bytes::Bytes;
 
 /// Tracks relationships between batches ⇄ messages + their data.
 /// High-perf: uses AHashMap/AHashSet (fastest hashing for u64 keys).
@@ -28,19 +28,17 @@ impl AzureMonitorExporterState {
     /// Insert a message and associate it with a batch.
     /// If the msg already exists, its data will NOT be overwritten.
     #[inline]
-    pub fn add_batch_msg_relationship(
-        &mut self,
-        batch_id: u64,
-        msg_id: u64
-    ) {
+    pub fn add_batch_msg_relationship(&mut self, batch_id: u64, msg_id: u64) {
         // Batch → Msg
-        _ = self.batch_to_msg
+        _ = self
+            .batch_to_msg
             .entry(batch_id)
             .or_default()
             .insert(msg_id);
 
         // Msg → Batch
-        _ = self.msg_to_batch
+        _ = self
+            .msg_to_batch
             .entry(msg_id)
             .or_default()
             .insert(batch_id);
@@ -58,15 +56,8 @@ impl AzureMonitorExporterState {
     }
 
     #[inline]
-    pub fn add_msg_to_data(
-        &mut self,
-        msg_id: u64,
-        context: Context,
-        bytes: Bytes,
-    ) {
-        _ = self.msg_to_data
-            .entry(msg_id)
-            .or_insert((context, bytes));
+    pub fn add_msg_to_data(&mut self, msg_id: u64, context: Context, bytes: Bytes) {
+        _ = self.msg_to_data.entry(msg_id).or_insert((context, bytes));
     }
 
     /// Remove a batch on SUCCESS - only returns messages with no remaining batches.
@@ -103,7 +94,9 @@ impl AzureMonitorExporterState {
                 if let Some(other_batches) = self.msg_to_batch.remove(&msg_id) {
                     for other_batch_id in other_batches {
                         if other_batch_id != batch_id {
-                            if let Some(other_batch_msgs) = self.batch_to_msg.get_mut(&other_batch_id) {
+                            if let Some(other_batch_msgs) =
+                                self.batch_to_msg.get_mut(&other_batch_id)
+                            {
                                 _ = other_batch_msgs.remove(&msg_id);
                             }
                         }
@@ -126,7 +119,7 @@ impl AzureMonitorExporterState {
         // Clear batch relationships
         self.batch_to_msg.clear();
         self.msg_to_batch.clear();
-        
+
         // Drain and return all message data
         self.msg_to_data
             .drain()

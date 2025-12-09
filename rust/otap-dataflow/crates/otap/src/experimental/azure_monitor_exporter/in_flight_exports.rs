@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use bytes::Bytes;
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use tokio::time::Duration;
 
 use super::client::LogsIngestionClient;
@@ -46,7 +46,10 @@ impl InFlightExports {
 
     /// Push a future. If at capacity, waits for one completion and returns it.
     #[inline]
-    pub async fn push(&mut self, fut: BoxFuture<'static, CompletedExport>) -> Option<CompletedExport> {
+    pub async fn push(
+        &mut self,
+        fut: BoxFuture<'static, CompletedExport>,
+    ) -> Option<CompletedExport> {
         let completed = if self.futures.len() >= self.limit {
             self.futures.next().await
         } else {

@@ -255,7 +255,8 @@ mod tests {
                     total_uncompressed_sent += data_len;
 
                     // Get the pending batch
-                    let gzip_result = batcher.take_pending_batch()
+                    let gzip_result = batcher
+                        .take_pending_batch()
                         .expect("BatchReady should have pending batch");
 
                     // Verify we got compressed data back
@@ -266,7 +267,7 @@ mod tests {
 
                     // Verify batch_id is set
                     assert!(gzip_result.batch_id > 0, "Batch ID should be set");
-                    
+
                     // Verify the compressed data is valid gzip
                     // Try to decompress it
                     use flate2::read::GzDecoder;
@@ -295,12 +296,16 @@ mod tests {
                         "Total uncompressed data sent: {} bytes",
                         total_uncompressed_sent
                     );
-                    println!("Compressed data size: {} bytes", gzip_result.compressed_data.len());
+                    println!(
+                        "Compressed data size: {} bytes",
+                        gzip_result.compressed_data.len()
+                    );
                     println!("Batch ID: {}", gzip_result.batch_id);
                     println!("Row count: {}", gzip_result.row_count);
                     println!(
                         "Compression ratio: {:.2}%",
-                        (gzip_result.compressed_data.len() as f64 / total_uncompressed_sent as f64) * 100.0
+                        (gzip_result.compressed_data.len() as f64 / total_uncompressed_sent as f64)
+                            * 100.0
                     );
 
                     break;
@@ -341,7 +346,8 @@ mod tests {
                     total_push_count += 1;
                     full_count += 1;
 
-                    let gzip_result = batcher.take_pending_batch()
+                    let gzip_result = batcher
+                        .take_pending_batch()
                         .expect("BatchReady should have pending batch");
 
                     // Verify compressed data is valid
@@ -354,10 +360,7 @@ mod tests {
                     // Verify batch ID increments
                     batch_ids.push(gzip_result.batch_id);
                     if batch_ids.len() > 1 {
-                        assert!(
-                            batch_ids[1] > batch_ids[0],
-                            "Batch IDs should increment"
-                        );
+                        assert!(batch_ids[1] > batch_ids[0], "Batch IDs should increment");
                     }
 
                     // Verify row count
@@ -451,35 +454,38 @@ mod tests {
     #[test]
     fn test_bytes_cloning_is_cheap() {
         let mut batcher = GzipBatcher::new();
-        
+
         // Push until we get a full batch
         loop {
             let data = generate_1kb_data();
-            
+
             match batcher.push(&data) {
                 PushResult::Ok(_) => continue,
                 PushResult::BatchReady(batch_id) => {
                     let gzip_result = batcher.take_pending_batch().unwrap();
-                    
+
                     // Test that cloning Bytes is cheap
                     let start = std::time::Instant::now();
                     let _clone1 = gzip_result.compressed_data.clone();
                     let _clone2 = gzip_result.compressed_data.clone();
                     let _clone3 = gzip_result.compressed_data.clone();
                     let elapsed = start.elapsed();
-                    
+
                     // Cloning should be very fast (microseconds at most)
-                    assert!(elapsed.as_micros() < 100, "Cloning Bytes should be very fast");
-                    
+                    assert!(
+                        elapsed.as_micros() < 100,
+                        "Cloning Bytes should be very fast"
+                    );
+
                     // All clones point to the same data
                     assert_eq!(gzip_result.compressed_data.len(), _clone1.len());
                     assert_eq!(gzip_result.compressed_data.len(), _clone2.len());
                     assert_eq!(gzip_result.compressed_data.len(), _clone3.len());
-                    
+
                     // Verify the GzipResult fields are present
                     assert!(gzip_result.batch_id > 0, "Batch ID should be set");
                     assert!(gzip_result.row_count > 0.0, "Row count should be positive");
-                    
+
                     break;
                 }
                 PushResult::TooLarge => panic!("Unexpected TooLarge"),
@@ -490,7 +496,7 @@ mod tests {
     #[test]
     fn test_flush_empty() {
         let mut batcher = GzipBatcher::new();
-        
+
         // Flush without pushing anything
         match batcher.flush() {
             FlushResult::Empty => {
@@ -505,7 +511,7 @@ mod tests {
     #[test]
     fn test_flush_with_data() {
         let mut batcher = GzipBatcher::new();
-        
+
         // Push some data but not enough to trigger BatchReady
         for _ in 0..5 {
             let data = generate_1kb_data();
@@ -515,28 +521,31 @@ mod tests {
                 PushResult::TooLarge => panic!("Unexpected TooLarge"),
             }
         }
-        
+
         // Now flush
         match batcher.flush() {
             FlushResult::Empty => {
                 panic!("Flush with data should return Flush variant");
             }
             FlushResult::Flush => {
-                let gzip_result = batcher.take_pending_batch()
+                let gzip_result = batcher
+                    .take_pending_batch()
                     .expect("Flush should have pending batch");
-                
+
                 // Verify we got valid compressed data
                 assert!(!gzip_result.compressed_data.is_empty(), "Should have data");
                 assert!(gzip_result.batch_id > 0, "Batch ID should be set");
                 assert_eq!(gzip_result.row_count, 5.0, "Should have 5 rows");
-                
+
                 // Decompress and verify
                 use flate2::read::GzDecoder;
                 use std::io::Read;
                 let mut decoder = GzDecoder::new(&gzip_result.compressed_data[..]);
                 let mut decompressed = String::new();
-                _ = decoder.read_to_string(&mut decompressed).expect("Should decompress");
-                
+                _ = decoder
+                    .read_to_string(&mut decompressed)
+                    .expect("Should decompress");
+
                 assert!(decompressed.starts_with('['), "Should start with [");
                 assert!(decompressed.ends_with(']'), "Should end with ]");
             }

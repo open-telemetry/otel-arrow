@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use bytes::{BufMut, Bytes, BytesMut};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelAnyValueEnum;
 use serde::Serialize;
-use serde_json::{json, Value};
-use bytes::{Bytes, BytesMut, BufMut};
+use serde_json::{Value, json};
 
 use super::config::{Config, SchemaConfig};
 
@@ -44,10 +44,7 @@ impl Transformer {
 
     /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
     #[allow(clippy::print_stdout)]
-    pub fn convert_to_log_analytics(
-        &self,
-        request: &ExportLogsServiceRequest,
-    ) -> Vec<Bytes> {
+    pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Bytes> {
         let mut results = Vec::new();
 
         // Single-threaded reusable buffer

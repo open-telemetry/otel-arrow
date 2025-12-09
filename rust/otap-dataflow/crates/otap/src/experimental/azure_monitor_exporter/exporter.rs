@@ -8,12 +8,12 @@ use bytes::Bytes;
 use futures::FutureExt;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_channel::error::RecvError;
+use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::ConsumerEffectHandlerExtension;  // Add this import
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use prost::Message as _;
@@ -21,11 +21,11 @@ use prost::Message as _;
 use super::client::{LogsIngestionClient, LogsIngestionClientPool};
 use super::config::Config;
 use super::gzip_batcher::{self, GzipBatcher};
-use super::transformer::Transformer;
+use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::state::AzureMonitorExporterState;
+use super::transformer::Transformer;
 use crate::experimental::azure_monitor_exporter::gzip_batcher::FlushResult;
 use crate::pdata::{Context, OtapPdata};
-use super::in_flight_exports::{InFlightExports, CompletedExport};
 
 const MAX_IN_FLIGHT_EXPORTS: usize = 32;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
@@ -88,7 +88,8 @@ impl AzureMonitorExporterStats {
 
     fn update_idle(&mut self) {
         if let Some(last_message_received_at) = self.last_message_received_at {
-            let idle_duration = tokio::time::Instant::now().duration_since(last_message_received_at);
+            let idle_duration =
+                tokio::time::Instant::now().duration_since(last_message_received_at);
             if idle_duration.as_secs_f64() > IDLE_THRESHOLD_SECS {
                 self.idle_duration += idle_duration;
             }
@@ -96,7 +97,7 @@ impl AzureMonitorExporterStats {
 
         self.last_message_received_at = Some(tokio::time::Instant::now());
     }
-    
+
     fn get_active_duration_secs(&mut self) -> f64 {
         self.update_idle();
 
@@ -137,13 +138,14 @@ impl AzureMonitorExporterStats {
     fn add_client_latency(&mut self, latency_secs: f64) {
         let total_batches = self.successful_batch_count + self.failed_batch_count;
         if total_batches > 0.0 {
-            self.average_client_latency_secs = ((self.average_client_latency_secs * (total_batches - 1.0)) + latency_secs) / total_batches;        
+            self.average_client_latency_secs =
+                ((self.average_client_latency_secs * (total_batches - 1.0)) + latency_secs)
+                    / total_batches;
         }
     }
 }
 
-impl AzureMonitorExporter
-{
+impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
     pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
         // Validate configuration
@@ -169,7 +171,11 @@ impl AzureMonitorExporter
         })
     }
 
-    async fn finalize_export(&mut self, effect_handler: &EffectHandler<OtapPdata>, completed_export: CompletedExport) -> Result<(), Error> {
+    async fn finalize_export(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+        completed_export: CompletedExport,
+    ) -> Result<(), Error> {
         let CompletedExport {
             batch_id,
             client,
@@ -220,29 +226,41 @@ impl AzureMonitorExporter
         }
 
         Ok(())
-    }    
-
-    fn get_next_token_refresh(token_valid_until: tokio::time::Instant) -> tokio::time::Instant {
-        let token_lifetime = token_valid_until.saturating_duration_since(tokio::time::Instant::now());
-        let token_expiry_buffer = tokio::time::Duration::from_secs(token_lifetime.as_secs() / 5);
-        let next_token_refresh = token_valid_until - token_expiry_buffer;
-        max(next_token_refresh, tokio::time::Instant::now() + std::time::Duration::from_secs(30))
     }
 
-    async fn queue_pending_batch(&mut self, effect_handler: &EffectHandler<OtapPdata>) -> Result<(), Error> {
+    fn get_next_token_refresh(token_valid_until: tokio::time::Instant) -> tokio::time::Instant {
+        let token_lifetime =
+            token_valid_until.saturating_duration_since(tokio::time::Instant::now());
+        let token_expiry_buffer = tokio::time::Duration::from_secs(token_lifetime.as_secs() / 5);
+        let next_token_refresh = token_valid_until - token_expiry_buffer;
+        max(
+            next_token_refresh,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+    }
+
+    async fn queue_pending_batch(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let pending_batch = match self.gzip_batcher.take_pending_batch() {
             Some(batch) => batch,
             None => return Ok(()), // No pending batch - nothing to do
         };
-        
+
         let client = self.client_pool.take();
-        if let Some(completed_export) = self.in_flight_exports.push_export(
-            client,
-            pending_batch.batch_id,
-            pending_batch.row_count,
-            pending_batch.compressed_data,
-        ).await {
-            self.finalize_export(effect_handler, completed_export).await?;
+        if let Some(completed_export) = self
+            .in_flight_exports
+            .push_export(
+                client,
+                pending_batch.batch_id,
+                pending_batch.row_count,
+                pending_batch.compressed_data,
+            )
+            .await
+        {
+            self.finalize_export(effect_handler, completed_export)
+                .await?;
         }
 
         self.last_batch_queued_at = tokio::time::Instant::now();
@@ -250,17 +268,21 @@ impl AzureMonitorExporter
         Ok(())
     }
 
-    async fn handle_pdata(&mut self, effect_handler: &EffectHandler<OtapPdata>, request: ExportLogsServiceRequest, context: Context, bytes: Bytes, msg_id: u64) -> Result<(), Error>
-    {
+    async fn handle_pdata(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+        request: ExportLogsServiceRequest,
+        context: Context,
+        bytes: Bytes,
+        msg_id: u64,
+    ) -> Result<(), Error> {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, bytes.clone());
-        }
-        else {
+        } else {
             self.state.add_msg_to_data(msg_id, context, Bytes::new());
         }
 
-        let log_entries_iterator = self.transformer
-            .convert_to_log_analytics(&request);
+        let log_entries_iterator = self.transformer.convert_to_log_analytics(&request);
 
         for log_entry in log_entries_iterator {
             match self.gzip_batcher.push(&log_entry) {
@@ -275,7 +297,10 @@ impl AzureMonitorExporter
                 }
                 gzip_batcher::PushResult::TooLarge => {
                     // TODO: Log the error or take appropriate action
-                    print!("Log entry too large to be added to the batch: {:?}", log_entry);
+                    print!(
+                        "Log entry too large to be added to the batch: {:?}",
+                        log_entry
+                    );
                 }
             }
         }
@@ -295,15 +320,22 @@ impl AzureMonitorExporter
         Ok(())
     }
 
-    async fn drain_in_flight_exports(&mut self, effect_handler: &EffectHandler<OtapPdata>) -> Result<(), Error> {
+    async fn drain_in_flight_exports(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         let completed_exports = self.in_flight_exports.drain().await;
         for completed_export in completed_exports {
-            self.finalize_export(effect_handler, completed_export).await?;
+            self.finalize_export(effect_handler, completed_export)
+                .await?;
         }
         Ok(())
     }
 
-    async fn queue_current_batch(&mut self, effect_handler: &EffectHandler<OtapPdata>) -> Result<(), Error> {
+    async fn queue_current_batch(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         match self.gzip_batcher.flush() {
             FlushResult::Flush => {
                 return self.queue_pending_batch(effect_handler).await;
@@ -312,7 +344,10 @@ impl AzureMonitorExporter
         }
     }
 
-    async fn handle_shutdown(&mut self, effect_handler: &EffectHandler<OtapPdata>) -> Result<(), Error> {
+    async fn handle_shutdown(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
         self.queue_current_batch(effect_handler).await?;
         self.drain_in_flight_exports(effect_handler).await?;
 
@@ -360,12 +395,15 @@ impl AzureMonitorExporter
                                 });
                             };
 
-                            let request = ExportLogsServiceRequest::decode(&bytes[..])
-                                .map_err(|e| Error::InternalError {
-                                    message: format!("Failed to decode logs request: {}", e),
+                            let request =
+                                ExportLogsServiceRequest::decode(&bytes[..]).map_err(|e| {
+                                    Error::InternalError {
+                                        message: format!("Failed to decode logs request: {}", e),
+                                    }
                                 })?;
 
-                            self.handle_pdata(effect_handler, request, context, bytes, *msg_id).await?;
+                            self.handle_pdata(effect_handler, request, context, bytes, *msg_id)
+                                .await?;
                         }
                         OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
                             // Unsupported signal types - silently drop
@@ -379,7 +417,8 @@ impl AzureMonitorExporter
                                     message: format!("Failed to decode OTLP logs request: {e}"),
                                 })?;
 
-                            self.handle_pdata(effect_handler, request, context, bytes, *msg_id).await?;
+                            self.handle_pdata(effect_handler, request, context, bytes, *msg_id)
+                                .await?;
                         }
                         OtlpProtoBytes::ExportMetricsRequest(_)
                         | OtlpProtoBytes::ExportTracesRequest(_) => {
@@ -417,20 +456,31 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut original_client = LogsIngestionClient::new(&self.config)
-            .map_err(|e| Error::InternalError { message: format!("Failed to create client: {e}") })?;
+        let mut original_client =
+            LogsIngestionClient::new(&self.config).map_err(|e| Error::InternalError {
+                message: format!("Failed to create client: {e}"),
+            })?;
 
-        original_client.refresh_token()
+        original_client
+            .refresh_token()
             .await
-            .map_err(|e| Error::InternalError { message: format!("Failed to refresh token: {e}") })?;
+            .map_err(|e| Error::InternalError {
+                message: format!("Failed to refresh token: {e}"),
+            })?;
 
         self.client_pool.initialize(&original_client);
-        let mut next_token_refresh = Self::get_next_token_refresh(original_client.token_valid_until);
-        let mut next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
-        
+        let mut next_token_refresh =
+            Self::get_next_token_refresh(original_client.token_valid_until);
+        let mut next_stats_print =
+            tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
+
         loop {
-            let next_export = max(self.last_batch_queued_at + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL),
-                tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL));
+            let next_export = max(
+                self.last_batch_queued_at
+                    + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL),
+                tokio::time::Instant::now()
+                    + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL),
+            );
 
             if self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS {
                 if let Some(completed) = self.in_flight_exports.next_completion().await {
@@ -490,7 +540,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         } else {
                             0.0
                         };
-                        
+
                         println!(
                             "\n\
 ─────────────── AzureMonitorExporter ──────────────────────────

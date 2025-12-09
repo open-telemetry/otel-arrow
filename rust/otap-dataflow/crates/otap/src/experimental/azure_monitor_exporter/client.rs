@@ -55,9 +55,7 @@ impl LogsIngestionClientPool {
 
     #[inline(always)]
     pub fn take(&mut self) -> LogsIngestionClient {
-        self.clients
-            .pop()
-            .expect("client pool is empty")
+        self.clients.pop().expect("client pool is empty")
     }
 
     #[inline(always)]
@@ -116,8 +114,7 @@ impl LogsIngestionClient {
         );
 
         let auth =
-            Auth::new(&config.auth)
-                .map_err(|e| format!("Failed to create auth handler: {e}"))?;
+            Auth::new(&config.auth).map_err(|e| format!("Failed to create auth handler: {e}"))?;
 
         Ok(Self {
             http_client,
@@ -143,13 +140,15 @@ impl LogsIngestionClient {
 
         // Calculate validity using Instant for faster comparisons
         // Refresh 5 minutes before expiry
-        let valid_seconds = (token.expires_on - OffsetDateTime::now_utc())
-            .whole_seconds();
+        let valid_seconds = (token.expires_on - OffsetDateTime::now_utc()).whole_seconds();
 
         self.token_valid_until = Instant::now() + Duration::from_secs(valid_seconds.max(0) as u64);
         self.token_refresh_after = self.token_valid_until - Duration::from_secs(300);
 
-        println!("[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}", valid_seconds, self.token_valid_until);
+        println!(
+            "[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}",
+            valid_seconds, self.token_valid_until
+        );
 
         Ok(())
     }
@@ -224,8 +223,8 @@ impl LogsIngestionClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::config::{ApiConfig, AuthConfig, AuthMethod};
+    use super::*;
     use azure_core::Bytes;
     use azure_core::credentials::TokenRequestOptions;
     use azure_core::credentials::{AccessToken, TokenCredential};
