@@ -71,6 +71,7 @@ azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
+ahash = { workspace = true, optional = true }
 
 # OpenTelemetry proto with tonic feature enabled
 opentelemetry-proto = { workspace = true, optional = true }
