@@ -13,8 +13,9 @@ use std::{
 use crate::{
     otap::{
         DATA_POINTS_TYPES, Logs, Metrics, OtapArrowRecords, OtapBatchStore, POSITION_LOOKUP,
-        Traces, batch_length, child_payload_types,
+        Traces, child_payload_types,
         error::{Error, Result},
+        num_items,
         transform::sort_to_indices,
     },
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
@@ -40,7 +41,7 @@ use smallvec::SmallVec;
 /// Represents a sequence of OtapArrowRecords that all share exactly
 /// the same signal.  Invarients:
 ///
-/// - the data has batch_length() >= 1
+/// - the data has num_items() >= 1
 /// - the primary table (Spans, LogRecords, UnivariateMetrics) has >= 1 rows
 ///
 /// The higher-level component is expected to check for empty payloads.
@@ -293,7 +294,7 @@ fn generic_split<const N: usize>(
     let mut result = Vec::with_capacity(
         batches
             .iter()
-            .map(batch_length)
+            .map(num_items)
             .map(|l| l as u64)
             .sum::<u64>()
             .div_ceil(max_output_batch.get()) as usize,
@@ -658,7 +659,7 @@ fn split_non_metric_batches<const N: usize>(
 
     let mut total_records_seen: u64 = 0; // think of this like iter::single(0).chain(batch_sizes.iter()).cumsum()
     for (batch_index, batches) in batches.iter().enumerate() {
-        let num_records = batch_length(batches);
+        let num_records = num_items(batches);
 
         // SAFETY: % panics if the second arg is 0, but we're relying on NonZeroU64 to ensure
         // that can't happen.
@@ -757,7 +758,7 @@ fn split_metric_batches<const N: usize>(
         // Note that `max_metric_id` can differ from `metric_length` because the values in the ID
         // column can have gaps. TODO: Address a secondary safety issue: we're sizing a vector
         // to the max_metric_id below, what if the ID range is not contiguous?
-        let batch_len = batch_length(batch);
+        let batch_len = num_items(batch);
 
         // If the whole batch fits the available space, take a simple path.
         if batch_len <= batch_size_remaining {
@@ -957,17 +958,17 @@ fn generic_concatenate<const N: usize>(
     let mut result = Vec::new();
 
     let mut current = Vec::new();
-    let mut current_batch_length = 0;
+    let mut current_num_items = 0;
 
     for input in batches {
-        let blen = batch_length(&input);
+        let blen = num_items(&input);
 
-        if !current.is_empty() && size_over_limit(max_output_batch, current_batch_length + blen) {
+        if !current.is_empty() && size_over_limit(max_output_batch, current_num_items + blen) {
             concatenate_emitter(&mut current, allowed_payloads, &mut result)?;
-            current_batch_length = 0;
+            current_num_items = 0;
         }
 
-        current_batch_length += blen;
+        current_num_items += blen;
         current.push(input);
     }
 

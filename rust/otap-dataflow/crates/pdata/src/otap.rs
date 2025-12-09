@@ -121,11 +121,11 @@ impl OtapArrowRecords {
 
     /// Fetch the number of items as defined by the batching system
     #[must_use]
-    pub fn batch_length(&self) -> usize {
+    pub fn num_items(&self) -> usize {
         match self {
-            Self::Logs(logs) => logs.batch_length(),
-            Self::Metrics(metrics) => metrics.batch_length(),
-            Self::Traces(traces) => traces.batch_length(),
+            Self::Logs(logs) => logs.num_items(),
+            Self::Metrics(metrics) => metrics.num_items(),
+            Self::Traces(traces) => traces.num_items(),
         }
     }
 
@@ -237,7 +237,7 @@ pub trait OtapBatchStore: Default + Clone {
     /// Get the number of items in the batch. Counts using Otel semantics where logs/traces are
     /// the number log records and spans respectively, whereas for metrics it's the count of
     /// data points.
-    fn batch_length(&self) -> usize;
+    fn num_items(&self) -> usize;
 }
 
 /// Convert the list of decoded messages into an OtapBatchStore implementation
@@ -401,8 +401,8 @@ impl OtapBatchStore for Logs {
         Ok(())
     }
 
-    fn batch_length(&self) -> usize {
-        batch_length(&self.batches)
+    fn num_items(&self) -> usize {
+        num_items(&self.batches)
     }
 }
 
@@ -415,7 +415,7 @@ const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
 
 /// Fetch the number of items as defined by the batching system
 #[must_use]
-fn batch_length<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
+fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
     match N {
         Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
             .as_ref()
@@ -677,8 +677,8 @@ impl OtapBatchStore for Metrics {
         Ok(())
     }
 
-    fn batch_length(&self) -> usize {
-        batch_length(&self.batches)
+    fn num_items(&self) -> usize {
+        num_items(&self.batches)
     }
 }
 
@@ -824,8 +824,8 @@ impl OtapBatchStore for Traces {
         Ok(())
     }
 
-    fn batch_length(&self) -> usize {
-        batch_length(&self.batches)
+    fn num_items(&self) -> usize {
+        num_items(&self.batches)
     }
 }
 
@@ -1000,7 +1000,7 @@ mod test {
     }
 
     #[test]
-    fn test_logs_batch_length() {
+    fn test_logs_num_items() {
         let logs_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 consts::ID,
@@ -1012,11 +1012,11 @@ mod test {
         .unwrap();
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, logs_rb);
-        assert_eq!(otap_batch.batch_length(), 4);
+        assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
-    fn test_traces_batch_length() {
+    fn test_traces_num_items() {
         let spans_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 consts::ID,
@@ -1028,11 +1028,11 @@ mod test {
         .unwrap();
         let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
         otap_batch.set(ArrowPayloadType::Spans, spans_rb);
-        assert_eq!(otap_batch.batch_length(), 4);
+        assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
-    fn test_metrics_batch_length() {
+    fn test_metrics_num_items() {
         let metrics_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 consts::ID,
@@ -1089,7 +1089,7 @@ mod test {
         otap_batch.set(ArrowPayloadType::HistogramDataPoints, hist_dp_rb);
         otap_batch.set(ArrowPayloadType::ExpHistogramDataPoints, exp_hist_dp_rb);
 
-        assert_eq!(otap_batch.batch_length(), 13);
+        assert_eq!(otap_batch.num_items(), 13);
     }
 
     #[test]

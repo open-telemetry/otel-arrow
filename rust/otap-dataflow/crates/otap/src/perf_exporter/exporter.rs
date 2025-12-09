@@ -173,13 +173,13 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // Increment counters per type of OTLP signals
                     match signal_type {
                         SignalType::Metrics => {
-                            self.metrics.metrics.add(batch.batch_length() as u64);
+                            self.metrics.metrics.add(batch.num_items() as u64);
                         }
                         SignalType::Logs => {
-                            self.metrics.logs.add(batch.batch_length() as u64);
+                            self.metrics.logs.add(batch.num_items() as u64);
                         }
                         SignalType::Traces => {
-                            self.metrics.spans.add(batch.batch_length() as u64);
+                            self.metrics.spans.add(batch.num_items() as u64);
                         }
                     }
 

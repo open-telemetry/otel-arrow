@@ -1090,7 +1090,7 @@ mod test {
     /// they encode to an empty OTAP encoding.
     fn assert_empty_batch(msg: OtlpProtoMessage) {
         let encoded = otlp_to_otap(&msg);
-        assert_eq!(encoded.batch_length(), 0, "Expected an empty batch");
+        assert_eq!(encoded.num_items(), 0, "Expected an empty batch");
     }
 
     #[test]

@@ -30,10 +30,10 @@ fn test_batching(
         .map(otap_to_otlp)
         .collect();
 
-    // Assert batch_length <= max_output_batch
+    // Assert num_items <= max_output_batch
     if let Some(max_batch) = max_output_batch {
         for (i, output) in outputs_otlp.iter().enumerate() {
-            let batch_len = output.batch_length();
+            let batch_len = output.num_items();
 
             // Not empty.
             assert_ne!(batch_len, 0usize);
