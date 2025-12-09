@@ -91,11 +91,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 metrics_system.run(cancellation_token)
             })?;
 
-        // Start the metrics dispatcher
-        let metrics_dispatcher_handle =
-            spawn_thread_local_task("metrics-dispatcher", move |cancellation_token| {
-                metrics_dispatcher.run_dispatch_loop(cancellation_token)
-            })?;
+        // Start the metrics dispatcher only if there are metric readers configured.
+        let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
+            Some(spawn_thread_local_task(
+                "metrics-dispatcher",
+                move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
+            )?)
+        } else {
+            None
+        };
 
         // Start the observed state store background task
         let obs_state_join_handle =
@@ -241,7 +245,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
-        metrics_dispatcher_handle.shutdown_and_join()?;
+        if let Some(handle) = metrics_dispatcher_handle {
+            handle.shutdown_and_join()?;
+        }
         obs_state_join_handle.shutdown_and_join()?;
         opentelemetry_client.shutdown()?;
 

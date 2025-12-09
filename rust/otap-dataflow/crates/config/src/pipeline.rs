@@ -678,6 +678,14 @@ pub struct MetricsConfig {
     pub readers: Vec<MetricsReaderConfig>,
 }
 
+impl MetricsConfig {
+    /// Returns `true` if there are any metric readers configured.
+    #[must_use]
+    pub fn has_readers(&self) -> bool {
+        !self.readers.is_empty()
+    }
+}
+
 /// Opentelemetry Metrics Reader configuration.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
