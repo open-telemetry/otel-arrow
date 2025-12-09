@@ -75,17 +75,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &pipeline.service().telemetry;
-        let has_metric_readers = telemetry_config.has_metric_readers();
-
-        // Only create the OpenTelemetry client and dispatcher if there are metric readers configured.
-        let opentelemetry_client = if has_metric_readers {
-            Some(OpentelemetryClient::new(telemetry_config))
-        } else {
-            None
-        };
-
+        let opentelemetry_client = OpentelemetryClient::new(telemetry_config);
         let metrics_system = MetricsSystem::new(telemetry_config);
-        let metrics_dispatcher = if has_metric_readers {
+
+        // Only create the dispatcher if there are metric readers configured.
+        let metrics_dispatcher = if telemetry_config.has_metric_readers() {
             Some(metrics_system.dispatcher())
         } else {
             None
@@ -264,11 +258,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         obs_state_join_handle.shutdown_and_join()?;
-
-        // Only shutdown the OpenTelemetry client if it was created.
-        if let Some(client) = opentelemetry_client {
-            client.shutdown()?;
-        }
+        opentelemetry_client.shutdown()?;
 
         Ok(())
     }
