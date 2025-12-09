@@ -1480,9 +1480,12 @@ impl PipelineStage for FilterPipelineStage {
                     ArrowPayloadType::SpanLinkAttrs,
                 )?;
             }
+            ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+                // TODO
+            }
             signal_type => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!(
+                return Err(Error::ExecutionError {
+                    cause: format!(
                         "signal type {:?} not yet supported by FilterPipelineStage",
                         signal_type
                     ),
@@ -1512,6 +1515,9 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        ExponentialHistogram, Gauge, Histogram, Metric, Summary,
+    };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status, TracesData};
@@ -1519,7 +1525,7 @@ mod test {
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
 
-    use crate::pipeline::test::{to_logs_data, to_otap_logs, to_otap_traces};
+    use crate::pipeline::test::{to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces};
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
@@ -1818,9 +1824,72 @@ mod test {
     #[tokio::test]
     async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {}
 
-    #[ignore]
     #[tokio::test]
-    async fn test_simple_filter_metrics() {}
+    async fn test_simple_filter_metrics() {
+        let metrics = vec![
+            Metric::build()
+                .name("metric1")
+                .data_gauge(Gauge {
+                    data_points: vec![],
+                })
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_gauge(Gauge {
+                    data_points: vec![],
+                })
+                .finish(),
+            Metric::build()
+                .name("metric1")
+                .data_histogram(Histogram {
+                    data_points: vec![],
+                    aggregation_temporality: 0,
+                })
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_histogram(Histogram {
+                    data_points: vec![],
+                    aggregation_temporality: 0,
+                })
+                .finish(),
+            Metric::build()
+                .name("metric1")
+                .data_exponential_histogram(ExponentialHistogram {
+                    data_points: vec![],
+                    aggregation_temporality: 0,
+                })
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_exponential_histogram(ExponentialHistogram {
+                    data_points: vec![],
+                    aggregation_temporality: 0,
+                })
+                .finish(),
+            Metric::build()
+                .name("metric1")
+                .data_summary(Summary {
+                    data_points: vec![],
+                })
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_summary(Summary {
+                    data_points: vec![],
+                })
+                .finish(),
+        ];
+
+        let input = to_otap_metrics(metrics.clone());
+        let parser_result = KqlParser::parse("traces | where name == \"metric1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        // assert everything got filtered to the right size
+        let result_metrics = result.get(ArrowPayloadType::UnivariateMetrics).unwrap();
+        assert_eq!(result_metrics.num_rows(), 4);
+    }
 
     #[ignore]
     #[tokio::test]

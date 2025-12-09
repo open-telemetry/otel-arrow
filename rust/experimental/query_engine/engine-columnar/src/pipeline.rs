@@ -257,6 +257,9 @@ mod test {
     use datafusion::logical_expr::{col, lit};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+    };
     use otap_df_pdata::proto::opentelemetry::trace::v1::{
         ResourceSpans, ScopeSpans, Span, TracesData,
     };
@@ -274,6 +277,19 @@ mod test {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
                     log_records,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    /// helper function for converting [`Metric`]s to [`MetricsData`]
+    pub fn to_metrics_data(metrics: Vec<Metric>) -> MetricsData {
+        MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics,
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -302,6 +318,11 @@ mod test {
     /// helper function for converting OTLP spans to OTAP batch
     pub fn to_otap_traces(spans: Vec<Span>) -> OtapArrowRecords {
         otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(spans)))
+    }
+
+    /// helper function for converting OTLP metrics to OTAP batch
+    pub fn to_otap_metrics(metrics: Vec<Metric>) -> OtapArrowRecords {
+        otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)))
     }
 
     #[tokio::test]
