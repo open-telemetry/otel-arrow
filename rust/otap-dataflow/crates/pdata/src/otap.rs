@@ -53,6 +53,16 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Remove the record batch for the given payload type. If the payload type is not valid
+    /// for this type of telemetry signal, this method does nothing.
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+        match self {
+            Self::Logs(logs) => logs.remove(payload_type),
+            Self::Metrics(metrics) => metrics.remove(payload_type),
+            Self::Traces(spans) => spans.remove(payload_type),
+        }
+    }
+
     /// Get the record batch for the given payload type, if this payload type was included
     /// in the batch. If the payload type is not valid for this type of telemetry signal, this
     /// also method returns None.
@@ -205,6 +215,13 @@ pub trait OtapBatchStore: Default + Clone {
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
         if Self::is_valid_type(payload_type) {
             self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = Some(record_batch);
+        }
+    }
+
+    /// Remove the record batch for the given payload type
+    fn remove(&mut self, payload_type: ArrowPayloadType) {
+        if Self::is_valid_type(payload_type) {
+            self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = None;
         }
     }
 

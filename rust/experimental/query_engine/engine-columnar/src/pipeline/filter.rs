@@ -1344,8 +1344,9 @@ impl FilterPipelineStage {
             Some(rb) => rb,
             None => {
                 if otap_batch.get(child_payload_type).is_some() {
-                    // TODO -- here we might need to unset the child record batch ...
-                    todo!()
+                    // the parent record batch has been removed (completely filtered out), so
+                    // there is nothing to link to, this child batch, so we can remove it
+                    otap_batch.remove(child_payload_type);
                 }
 
                 return Ok(());
@@ -1384,13 +1385,19 @@ impl FilterPipelineStage {
 
         let child_selection_vec = T::build_selection_vec(child_parent_ids, id_mask)?;
 
-        // create the new child record batch from rows that were selected and update the OTAP batch
-        let new_child_rb = filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
-            Error::ExecutionError {
-                cause: format!("error filtering child batch {:?}", e),
-            }
-        })?;
-        otap_batch.set(child_payload_type, new_child_rb);
+        if child_selection_vec.true_count() == 0 {
+            // the child record batch has been completely filtered out
+            otap_batch.remove(child_payload_type);
+        } else {
+            // create the new child record batch from rows that were selected and update the OTAP batch
+            let new_child_rb =
+                filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
+                    Error::ExecutionError {
+                        cause: format!("error filtering child batch {:?}", e),
+                    }
+                })?;
+            otap_batch.set(child_payload_type, new_child_rb);
+        }
 
         Ok(())
     }
@@ -1527,11 +1534,11 @@ impl PipelineStage for FilterPipelineStage {
                 )?;
                 self.filter_child_batch::<UInt32Type>(
                     &mut otap_batch,
-                    ArrowPayloadType::HistogramDpExemplars
+                    ArrowPayloadType::HistogramDpExemplars,
                 )?;
                 self.filter_child_batch::<UInt32Type>(
                     &mut otap_batch,
-                    ArrowPayloadType::HistogramDpExemplarAttrs
+                    ArrowPayloadType::HistogramDpExemplarAttrs,
                 )?;
                 self.filter_child_batch::<UInt16Type>(
                     &mut otap_batch,
@@ -1548,7 +1555,7 @@ impl PipelineStage for FilterPipelineStage {
                 self.filter_child_batch::<UInt32Type>(
                     &mut otap_batch,
                     ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-                )?;                
+                )?;
             }
             signal_type => {
                 return Err(Error::ExecutionError {
@@ -1896,10 +1903,6 @@ mod test {
     #[tokio::test]
     async fn test_filter_traces_by_attrs() {}
 
-    #[ignore]
-    #[tokio::test]
-    async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {}
-
     #[tokio::test]
     async fn test_simple_filter_metrics() {
         let metrics = vec![
@@ -1909,7 +1912,15 @@ mod test {
                     data_points: vec![
                         NumberDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                            .exemplars(vec![Exemplar::build().trace_id(vec![1; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![1; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
                             .finish(),
                     ],
                 })
@@ -1921,7 +1932,15 @@ mod test {
                     data_points: vec![
                         NumberDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
-                            .exemplars(vec![Exemplar::build().trace_id(vec![2; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![2; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
                             .finish(),
                     ],
                 })
@@ -1933,7 +1952,15 @@ mod test {
                     data_points: vec![
                         HistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                            .exemplars(vec![Exemplar::build().trace_id(vec![1; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![1; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
                             .finish(),
                     ],
                     aggregation_temporality: 0,
@@ -1946,7 +1973,15 @@ mod test {
                     data_points: vec![
                         HistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
-                            .exemplars(vec![Exemplar::build().trace_id(vec![2; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))]).finish()])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![2; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
                             .finish(),
                     ],
                     aggregation_temporality: 0,
@@ -1959,7 +1994,15 @@ mod test {
                     data_points: vec![
                         ExponentialHistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
-                            .exemplars(vec![Exemplar::build().trace_id(vec![1; 16]).filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))]).finish()])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![1; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val1"),
+                                    )])
+                                    .finish(),
+                            ])
                             .positive(Buckets::default())
                             .negative(Buckets::default())
                             .finish(),
@@ -1975,9 +2018,13 @@ mod test {
                         ExponentialHistogramDataPoint::build()
                             .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                             .exemplars(vec![
-                                Exemplar::build().trace_id(vec![2; 16])
-                                .filtered_attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
-                                .finish()
+                                Exemplar::build()
+                                    .trace_id(vec![2; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
                             ])
                             .finish(),
                     ],
@@ -2030,7 +2077,7 @@ mod test {
         let number_dp_exemplars = result.get(ArrowPayloadType::NumberDpExemplars).unwrap();
         assert_eq!(number_dp_exemplars.num_rows(), 1);
 
-                let number_dp_exemplar_attrs = result.get(ArrowPayloadType::NumberDpExemplarAttrs).unwrap();
+        let number_dp_exemplar_attrs = result.get(ArrowPayloadType::NumberDpExemplarAttrs).unwrap();
         assert_eq!(number_dp_exemplar_attrs.num_rows(), 1);
 
         let hist_dps = result.get(ArrowPayloadType::HistogramDataPoints).unwrap();
@@ -2042,14 +2089,16 @@ mod test {
         let hist_dp_exemplars = result.get(ArrowPayloadType::HistogramDpExemplars).unwrap();
         assert_eq!(hist_dp_exemplars.num_rows(), 1);
 
-                let hist_dp_exemplar_attrs = result.get(ArrowPayloadType::HistogramDpExemplarAttrs).unwrap();
+        let hist_dp_exemplar_attrs = result
+            .get(ArrowPayloadType::HistogramDpExemplarAttrs)
+            .unwrap();
         assert_eq!(hist_dp_exemplar_attrs.num_rows(), 1);
 
         let exp_hist_dps = result
             .get(ArrowPayloadType::ExpHistogramDataPoints)
             .unwrap();
         assert_eq!(exp_hist_dps.num_rows(), 1);
-        
+
         let exp_hist_dp_attrs = result.get(ArrowPayloadType::ExpHistogramDpAttrs).unwrap();
         assert_eq!(exp_hist_dp_attrs.num_rows(), 1);
 
@@ -2057,7 +2106,6 @@ mod test {
             .get(ArrowPayloadType::ExpHistogramDpExemplars)
             .unwrap();
         assert_eq!(exp_hist_dp_exemplars.num_rows(), 1);
-
 
         let exp_hist_dp_exemplar_attrs = result
             .get(ArrowPayloadType::ExpHistogramDpExemplarAttrs)
@@ -2086,7 +2134,47 @@ mod test {
 
     #[ignore]
     #[tokio::test]
-    async fn test_simple_filter_metrics_by_attrs() {}
+    async fn test_filter_metrics_by_attrs() {}
+
+    #[tokio::test]
+    async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {
+        let spans = vec![
+            Span::build()
+                .name("span1")
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .finish(),
+            Span::build()
+                .name("span2")
+                .trace_id(vec![2; 16])
+                .span_id(vec![2; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .events(vec![
+                    Event::build()
+                        .name("event2.1")
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Event::build()
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .name("event2.2")
+                        .finish(),
+                ])
+                .finish(),
+        ];
+
+        let input = to_otap_traces(spans);
+        let parser_result = KqlParser::parse("traces | where name == \"span1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        // since we've filtered for span1, which has no events, the event and event attrs batches
+        // should no longer be present
+        assert!(result.get(ArrowPayloadType::SpanEvents).is_none());
+        assert!(result.get(ArrowPayloadType::SpanEventAttrs).is_none())
+    }
 
     #[tokio::test]
     async fn test_filter_by_scope() {
