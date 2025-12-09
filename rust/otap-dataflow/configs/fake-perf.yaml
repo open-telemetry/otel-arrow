@@ -14,6 +14,8 @@ nodes:
         dispatch_strategy: round_robin
     config:
       traffic_config:
+        # For testing with a finite stream, use max_signal_count. Otherwise
+        # this component outputs a continuous signal.
         # max_signal_count: 1000
         max_batch_size: 1000
         signals_per_second: 1000
