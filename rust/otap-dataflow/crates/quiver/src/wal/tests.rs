@@ -2482,7 +2482,12 @@ fn wal_memory_after_large_bundle_spike() {
 
     fn print_rss(label: &str) {
         if let Some(rss) = get_rss_kb() {
-            println!("  RSS {}: {} KB ({:.1} MB)", label, rss, rss as f64 / 1024.0);
+            println!(
+                "  RSS {}: {} KB ({:.1} MB)",
+                label,
+                rss,
+                rss as f64 / 1024.0
+            );
         }
     }
 
@@ -2524,7 +2529,9 @@ fn wal_memory_after_large_bundle_spike() {
     print_rss("after large bundle dropped");
 
     // Phase 3: Write many small bundles
-    println!("Phase 3: Writing 100 small bundles...should observe RSS shrinking back toward baseline.");
+    println!(
+        "Phase 3: Writing 100 small bundles...should observe RSS shrinking back toward baseline."
+    );
     for i in 0..100 {
         let small_slot = FixtureSlot::new(SlotId::new(0), 0x03, &[4, 5, 6]);
         let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
