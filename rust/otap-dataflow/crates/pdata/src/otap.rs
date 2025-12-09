@@ -53,6 +53,16 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Remove the record batch for the given payload type. If the payload type is not valid
+    /// for this type of telemetry signal, this method does nothing.
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+        match self {
+            Self::Logs(logs) => logs.remove(payload_type),
+            Self::Metrics(metrics) => metrics.remove(payload_type),
+            Self::Traces(spans) => spans.remove(payload_type),
+        }
+    }
+
     /// Get the record batch for the given payload type, if this payload type was included
     /// in the batch. If the payload type is not valid for this type of telemetry signal, this
     /// also method returns None.
@@ -205,6 +215,13 @@ pub trait OtapBatchStore: Default + Clone {
     fn set(&mut self, payload_type: ArrowPayloadType, record_batch: RecordBatch) {
         if Self::is_valid_type(payload_type) {
             self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = Some(record_batch);
+        }
+    }
+
+    /// Remove the record batch for the given payload type
+    fn remove(&mut self, payload_type: ArrowPayloadType) {
+        if Self::is_valid_type(payload_type) {
+            self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = None;
         }
     }
 
@@ -833,7 +850,7 @@ pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [Ar
         ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
-            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::MetricAttrs,
             ArrowPayloadType::NumberDataPoints,
             ArrowPayloadType::SummaryDataPoints,
             ArrowPayloadType::HistogramDataPoints,
@@ -859,6 +876,64 @@ pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [Ar
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
         }
         _ => &[],
+    }
+}
+
+/// Identifier of the parent of some child payload type
+pub enum ParentPayloadType {
+    /// The parent is the root payload. E.g. Logs, Spans, Metrics
+    Root,
+    /// The parent is not the root payload type, it is identified by the value in this variant
+    NonRoot(ArrowPayloadType),
+}
+
+/// Return the parent payload type for the given child type
+#[must_use]
+pub const fn parent_payload_type(payload_type: ArrowPayloadType) -> Option<ParentPayloadType> {
+    match payload_type {
+        ArrowPayloadType::Logs
+        | ArrowPayloadType::Spans
+        | ArrowPayloadType::UnivariateMetrics
+        | ArrowPayloadType::MultivariateMetrics
+        | ArrowPayloadType::Unknown => None,
+        ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::ScopeAttrs
+        | ArrowPayloadType::LogAttrs
+        | ArrowPayloadType::SpanAttrs
+        | ArrowPayloadType::MetricAttrs
+        | ArrowPayloadType::SpanEvents
+        | ArrowPayloadType::SpanLinks
+        | ArrowPayloadType::NumberDataPoints
+        | ArrowPayloadType::SummaryDataPoints
+        | ArrowPayloadType::HistogramDataPoints
+        | ArrowPayloadType::ExpHistogramDataPoints => Some(ParentPayloadType::Root),
+        ArrowPayloadType::SpanEventAttrs => {
+            Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanEvents))
+        }
+        ArrowPayloadType::SpanLinkAttrs => {
+            Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanLinks))
+        }
+        ArrowPayloadType::NumberDpAttrs | ArrowPayloadType::NumberDpExemplars => Some(
+            ParentPayloadType::NonRoot(ArrowPayloadType::NumberDataPoints),
+        ),
+        ArrowPayloadType::NumberDpExemplarAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::NumberDpExemplars,
+        )),
+        ArrowPayloadType::SummaryDpAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::SummaryDataPoints,
+        )),
+        ArrowPayloadType::HistogramDpAttrs | ArrowPayloadType::HistogramDpExemplars => Some(
+            ParentPayloadType::NonRoot(ArrowPayloadType::HistogramDataPoints),
+        ),
+        ArrowPayloadType::HistogramDpExemplarAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::HistogramDpExemplars,
+        )),
+        ArrowPayloadType::ExpHistogramDpAttrs | ArrowPayloadType::ExpHistogramDpExemplars => Some(
+            ParentPayloadType::NonRoot(ArrowPayloadType::ExpHistogramDataPoints),
+        ),
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        )),
     }
 }
 
