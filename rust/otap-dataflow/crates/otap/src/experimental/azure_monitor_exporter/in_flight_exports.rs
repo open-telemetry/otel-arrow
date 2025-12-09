@@ -5,13 +5,14 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use tokio::time::Duration;
 
 use super::client::LogsIngestionClient;
 
 pub struct CompletedExport {
     pub batch_id: u64,
     pub client: LogsIngestionClient,
-    pub result: Result<(), String>,
+    pub result: Result<Duration, String>,
     pub row_count: f64,
 }
 
@@ -31,11 +32,6 @@ impl InFlightExports {
     #[inline]
     pub fn len(&self) -> usize {
         self.futures.len()
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.futures.is_empty()
     }
 
     #[inline]

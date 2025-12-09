@@ -179,7 +179,7 @@ impl LogsIngestionClient {
     /// # Returns
     /// * `Ok(())` - If the request was successful
     /// * `Err(String)` - Error message if the request failed
-    pub async fn export(&mut self, body: Bytes) -> Result<(), String> {
+    pub async fn export(&mut self, body: Bytes) -> Result<Duration, String> {
         let start = Instant::now();
 
         // Send compressed body - avoid cloning headers by setting them individually
@@ -195,11 +195,10 @@ impl LogsIngestionClient {
             .map_err(|e| format!("Failed to send request: {e}"))?;
 
         let duration = start.elapsed();
-        println!("[AzureMonitorExporter] Sent batch in {:?}", duration);
 
         // Fast path for success
         if response.status().is_success() {
-            return Ok(());
+            return Ok(duration);
         }
 
         // Slow path: handle errors

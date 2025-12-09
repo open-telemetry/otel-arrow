@@ -57,6 +57,10 @@ impl GzipBatcher {
         GzEncoder::new(Vec::with_capacity(ONE_MB), Compression::default())
     }
 
+    pub fn has_pending_data(&self) -> bool {
+        !self.buf.get_ref().is_empty()
+    }
+
     pub fn push(&mut self, data: &[u8]) -> PushResult {
         if self.pending_batch.is_some() {
             // this is the new batch id that we are currently building
