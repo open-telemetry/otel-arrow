@@ -533,7 +533,6 @@ where
             Self::Native(d) => d.is_empty(),
             Self::Dictionary8(d) => d.is_empty(),
             Self::Dictionary16(d) => d.is_empty(),
-
         }
     }
 }
