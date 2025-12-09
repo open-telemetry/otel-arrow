@@ -13,6 +13,8 @@ use tokio::sync::RwLock;
 use crate::experimental::azure_monitor_exporter::config::{AuthConfig, AuthMethod};
 
 #[derive(Clone)]
+// TODO - Remove print statements
+#[allow(clippy::print_stdout)]
 pub struct Auth {
     credential: Arc<dyn TokenCredential>,
     scope: String,
@@ -20,6 +22,8 @@ pub struct Auth {
     cached_token: Arc<RwLock<Option<AccessToken>>>,
 }
 
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 impl Auth {
     pub fn new(auth_config: &AuthConfig) -> Result<Self, String> {
         let credential = Self::create_credential(auth_config)?;
@@ -82,7 +86,6 @@ impl Auth {
         *cached = None;
     }
 
-    #[allow(clippy::print_stdout)]
     fn create_credential(auth_config: &AuthConfig) -> Result<Arc<dyn TokenCredential>, String> {
         match auth_config.method {
             AuthMethod::ManagedIdentity => {

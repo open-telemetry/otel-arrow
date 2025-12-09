@@ -21,6 +21,8 @@ use crate::experimental::azure_monitor_exporter::config::Config;
 /// Handles authentication, compression, and HTTP communication with the
 /// Azure Monitor Logs Ingestion API.
 #[derive(Clone)]
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 pub struct LogsIngestionClient {
     http_client: Client,
     endpoint: String,
@@ -64,6 +66,8 @@ impl LogsIngestionClientPool {
     }
 }
 
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 impl LogsIngestionClient {
     /// Creates a new Azure Monitor logs ingestion client instance from provided components.
     ///

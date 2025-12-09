@@ -145,6 +145,8 @@ impl AzureMonitorExporterStats {
     }
 }
 
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
     pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
@@ -210,6 +212,11 @@ impl AzureMonitorExporter {
                 self.stats.add_failed_messages(failed_messages.len() as f64);
                 self.stats.add_failed_rows(row_count);
                 self.stats.add_failed_batch();
+
+                println!(
+                    "[AzureMonitorExporter] Export failed: {:?} - {:?}",
+                    batch_id, e
+                );
 
                 for (_, context, bytes) in failed_messages {
                     effect_handler
@@ -441,6 +448,8 @@ impl AzureMonitorExporter {
 }
 
 #[async_trait(?Send)]
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,

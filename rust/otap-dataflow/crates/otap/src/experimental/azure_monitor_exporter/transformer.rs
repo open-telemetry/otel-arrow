@@ -33,6 +33,8 @@ pub struct Transformer {
     schema: SchemaConfig,
 }
 
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 impl Transformer {
     #[must_use]
     /// Create a new Transformer instance
@@ -42,8 +44,8 @@ impl Transformer {
         }
     }
 
+    #[must_use]
     /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
-    #[allow(clippy::print_stdout)]
     pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Bytes> {
         let mut results = Vec::new();
 
@@ -128,6 +130,7 @@ impl Transformer {
     }
 
     /// Legacy transform → Map (wrapper so we can reuse logic)
+    #[inline]
     fn legacy_transform_to_map(
         log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
     ) -> serde_json::Map<String, Value> {
@@ -181,6 +184,7 @@ impl Transformer {
     }
 
     /// Transform log record fields into a Map (no resource/scope)
+    #[inline]
     fn transform_log_record_to_map(
         &self,
         log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
@@ -276,7 +280,35 @@ impl Transformer {
         }
     }
 
-    /// Convert AnyValue to JSON Value
+    /// Hot path - called for every byte in trace_id/span_id
+    #[inline]
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
+            hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
+        }
+        hex
+    }
+
+    /// Called for every log record timestamp
+    #[inline]
+    fn format_timestamp(time_unix_nano: u64) -> String {
+        if time_unix_nano > 0 {
+            let secs = (time_unix_nano / 1_000_000_000) as i64;
+            let nanos = (time_unix_nano % 1_000_000_000) as u32;
+            if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
+                dt.to_rfc3339()
+            } else {
+                chrono::Utc::now().to_rfc3339()
+            }
+        } else {
+            chrono::Utc::now().to_rfc3339()
+        }
+    }
+
+    /// Called recursively for every attribute value
+    #[inline]
     fn convert_any_value(value: &OtelAnyValueEnum) -> Value {
         match value {
             OtelAnyValueEnum::StringValue(s) => json!(s),
@@ -307,32 +339,8 @@ impl Transformer {
         }
     }
 
-    /// Convert bytes to hex string
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for &byte in bytes {
-            hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
-            hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
-        }
-        hex
-    }
-
-    /// Format timestamp from Unix nano to datetime string
-    fn format_timestamp(time_unix_nano: u64) -> String {
-        if time_unix_nano > 0 {
-            let secs = (time_unix_nano / 1_000_000_000) as i64;
-            let nanos = (time_unix_nano % 1_000_000_000) as u32;
-            if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
-                dt.to_rfc3339()
-            } else {
-                chrono::Utc::now().to_rfc3339()
-            }
-        } else {
-            chrono::Utc::now().to_rfc3339()
-        }
-    }
-
-    /// Extract string value from AnyValue (matches Go's AsString behavior)
+    /// Called for body extraction on every record
+    #[inline]
     fn extract_string_value(value: &OtelAnyValueEnum) -> String {
         match value {
             OtelAnyValueEnum::StringValue(s) => s.clone(),

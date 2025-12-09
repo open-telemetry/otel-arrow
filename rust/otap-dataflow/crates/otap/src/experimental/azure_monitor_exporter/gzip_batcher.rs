@@ -37,7 +37,7 @@ pub struct GzipResult {
     pub row_count: f64,
 }
 
-// TODO: actual logging instead of print statements
+// TODO: Remove print_stdout after logging is set up
 #[allow(clippy::print_stdout)]
 impl GzipBatcher {
     pub fn new() -> Self {
@@ -57,14 +57,14 @@ impl GzipBatcher {
         GzEncoder::new(Vec::with_capacity(ONE_MB), Compression::default())
     }
 
+    #[inline]
     pub fn has_pending_data(&self) -> bool {
         !self.buf.get_ref().is_empty()
     }
 
+    #[inline]
     pub fn push(&mut self, data: &[u8]) -> PushResult {
         if self.pending_batch.is_some() {
-            // this is the new batch id that we are currently building
-            // the pending batch id is available in the pending_batch field
             return PushResult::BatchReady(self.batch_id);
         }
 
@@ -145,28 +145,7 @@ impl GzipBatcher {
         let old_buf = std::mem::replace(&mut self.buf, Self::new_encoder());
 
         let compressed_data = old_buf.finish().expect("compression failed");
-        // let compressed_size = compressed_data.len();
-        // let uncompressed_size = self.total_uncompressed_size;
         let row_count = self.row_count;
-
-        // // Calculate compression ratio
-        // let compression_ratio = if uncompressed_size > 0 {
-        //     (compressed_size as f64 / uncompressed_size as f64) * 100.0
-        // } else {
-        //     0.0
-        // };
-
-        // Get human-readable timestamp
-        // let now = std::time::SystemTime::now();
-        // let datetime = chrono::DateTime::<chrono::Utc>::from(now);
-        // let timestamp = datetime.format("%Y-%m-%d %H:%M:%S UTC");
-
-        // let avg_row_size = uncompressed_size as f64 / row_count;
-
-        // println!(
-        //     "[{}] Flushed batch: flush count: {}, {} rows, {} bytes -> {} bytes (compression ratio: {:.2}%), avg row size: {:.2} bytes",
-        //     timestamp, self.flush_count, row_count, uncompressed_size, compressed_size, compression_ratio, avg_row_size
-        // );
 
         // Reset state
         self.remaining_size = ONE_MB;
@@ -185,6 +164,7 @@ impl GzipBatcher {
         FlushResult::Flush
     }
 
+    #[inline]
     pub fn take_pending_batch(&mut self) -> Option<GzipResult> {
         self.pending_batch.take()
     }
