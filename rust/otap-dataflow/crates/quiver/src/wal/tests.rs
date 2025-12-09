@@ -2464,3 +2464,192 @@ fn wal_recovery_scan_benchmark() {
     );
     println!("\n===============================\n");
 }
+
+/// Manual test to observe RSS behavior after a large bundle spike.
+///
+/// Run with: cargo test wal_memory_after_large_bundle -- --ignored --nocapture
+#[test]
+#[ignore]
+fn wal_memory_after_large_bundle_spike() {
+    fn get_rss_kb() -> Option<u64> {
+        // Read RSS from /proc/self/statm (Linux-specific)
+        // statm format: size resident shared text lib data dt (all in pages)
+        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+        let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+        let page_size = 4096u64; // Standard page size on Linux
+        Some(resident_pages * page_size / 1024)
+    }
+
+    fn print_rss(label: &str) {
+        if let Some(rss) = get_rss_kb() {
+            println!(
+                "  RSS {}: {} KB ({:.1} MB)",
+                label,
+                rss,
+                rss as f64 / 1024.0
+            );
+        }
+    }
+
+    let (_dir, wal_path) = temp_wal("memory_spike.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Data")]);
+
+    let mut writer = WalWriter::open(WalWriterOptions::new(
+        wal_path.clone(),
+        [0xEE; 16],
+        FlushPolicy::Immediate,
+    ))
+    .expect("writer");
+
+    println!("=== Memory Spike Test ===");
+    println!();
+
+    // Phase 1: Write a few small bundles as baseline
+    println!("Phase 1: Writing 100 small bundles (baseline)...");
+    for _ in 0..100 {
+        let small_slot = FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3]);
+        let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
+        let _ = writer.append_bundle(&small_bundle).expect("append small");
+    }
+    print_rss("after baseline");
+
+    // Phase 2: Write a very large bundle (~1000 MB)
+    println!("Phase 2: Writing 1 large bundle (~1000 MB)...");
+    {
+        let large_slot = FixtureSlot::with_batch(
+            SlotId::new(0),
+            0x02,
+            build_complex_batch(1_000_000, "large", 1024), // ~1000 MB
+        );
+        let large_bundle = FixtureBundle::new(descriptor.clone(), vec![large_slot]);
+        let _ = writer.append_bundle(&large_bundle).expect("append large");
+        // print_rss("after large bundle (before drop)");
+    }
+    // large_slot and large_bundle are now dropped
+    print_rss("after large bundle dropped");
+
+    // Phase 3: Write many small bundles
+    println!(
+        "Phase 3: Writing 100 small bundles...should observe RSS shrinking back toward baseline."
+    );
+    for i in 0..100 {
+        let small_slot = FixtureSlot::new(SlotId::new(0), 0x03, &[4, 5, 6]);
+        let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
+        let _ = writer.append_bundle(&small_bundle).expect("append small");
+        drop(small_bundle);
+        if (i + 1) % 10 == 0 {
+            print_rss(&format!("after {} small bundles", i + 1));
+        }
+    }
+}
+
+#[test]
+fn wal_buffer_decay_rate_rejects_zero_denominator() {
+    let (_dir, wal_path) = temp_wal("decay_rate_zero_denom.wal");
+    let options = WalWriterOptions::new(wal_path, [0xAA; 16], FlushPolicy::Immediate)
+        .with_buffer_decay_rate(15, 0); // Invalid: denominator is zero
+
+    let result = WalWriter::open(options);
+    let err = result.expect_err("should reject zero denominator");
+    assert!(
+        matches!(err, WalError::InvalidConfig(msg) if msg.contains("denominator")),
+        "unexpected error: {:?}",
+        err
+    );
+}
+
+#[test]
+fn wal_buffer_decay_rate_rejects_numerator_gte_denominator() {
+    let (_dir, wal_path) = temp_wal("decay_rate_bad_ratio.wal");
+    let options = WalWriterOptions::new(wal_path, [0xAA; 16], FlushPolicy::Immediate)
+        .with_buffer_decay_rate(16, 16); // Invalid: numerator >= denominator (no decay)
+
+    let result = WalWriter::open(options);
+    let err = result.expect_err("should reject numerator >= denominator");
+    assert!(
+        matches!(err, WalError::InvalidConfig(msg) if msg.contains("numerator")),
+        "unexpected error: {:?}",
+        err
+    );
+}
+
+#[test]
+fn wal_buffer_decay_rate_accepts_valid_values() {
+    let (_dir, wal_path) = temp_wal("decay_rate_valid.wal");
+    // These should all succeed - validation happens at open() time
+    let _ = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0xAA; 16], FlushPolicy::Immediate)
+            .with_buffer_decay_rate(0, 1), // Aggressive: decay to zero immediately
+    )
+    .expect("(0, 1) should be valid");
+
+    let _ = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0xAA; 16], FlushPolicy::Immediate)
+            .with_buffer_decay_rate(1, 2), // 50% decay per append
+    )
+    .expect("(1, 2) should be valid");
+
+    let _ = WalWriter::open(
+        WalWriterOptions::new(wal_path.clone(), [0xAA; 16], FlushPolicy::Immediate)
+            .with_buffer_decay_rate(31, 32), // ~3% decay per append (conservative)
+    )
+    .expect("(31, 32) should be valid");
+
+    let _ = WalWriter::open(
+        WalWriterOptions::new(wal_path, [0xAA; 16], FlushPolicy::Immediate)
+            .with_buffer_decay_rate(999, 1000), // ~0.1% decay per append (very conservative)
+    )
+    .expect("(999, 1000) should be valid");
+}
+
+#[test]
+fn wal_buffer_decay_rate_affects_shrinking_behavior() {
+    // Test that a faster decay rate causes faster shrinking.
+    // We use a small threshold and aggressive decay to observe the effect.
+    use super::writer::test_support::get_payload_buffer_capacity;
+
+    let (_dir, wal_path) = temp_wal("decay_rate_behavior.wal");
+    let descriptor = BundleDescriptor::new(vec![slot_descriptor(0, "Data")]);
+
+    // Use aggressive decay (1/2 = 50% per append) to see faster shrinking
+    let mut writer = WalWriter::open(
+        WalWriterOptions::new(wal_path, [0xEE; 16], FlushPolicy::Immediate)
+            .with_buffer_decay_rate(1, 2),
+    )
+    .expect("writer");
+
+    // Write a moderately large bundle to grow the buffer
+    let large_slot = FixtureSlot::with_batch(
+        SlotId::new(0),
+        0x01,
+        build_complex_batch(1000, "medium", 256), // ~256 KB payload
+    );
+    let bundle = FixtureBundle::new(descriptor.clone(), vec![large_slot]);
+    let _ = writer.append_bundle(&bundle).expect("append");
+    drop(bundle);
+
+    let capacity_after_large = get_payload_buffer_capacity(&writer);
+    assert!(
+        capacity_after_large >= 256 * 1024,
+        "buffer should have grown: {}",
+        capacity_after_large
+    );
+
+    // Write small bundles; with 50% decay the high-water mark drops fast
+    // After ~10 appends: high_water ≈ initial * (1/2)^10 ≈ 0.1% of initial
+    for _ in 0..20 {
+        let small_slot = FixtureSlot::new(SlotId::new(0), 0x02, &[1, 2, 3]);
+        let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
+        let _ = writer.append_bundle(&small_bundle).expect("append");
+    }
+
+    let capacity_after_small = get_payload_buffer_capacity(&writer);
+    // With aggressive decay, buffer should have shrunk significantly
+    // (exact threshold depends on SHRINK_THRESHOLD constant, but it should be smaller)
+    assert!(
+        capacity_after_small < capacity_after_large,
+        "buffer should have shrunk: before={}, after={}",
+        capacity_after_large,
+        capacity_after_small
+    );
+}
