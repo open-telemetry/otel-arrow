@@ -1513,8 +1513,8 @@ mod test {
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-    use otap_df_pdata::proto::opentelemetry::trace::v1::Span;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status, TracesData};
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
@@ -1526,6 +1526,13 @@ mod test {
         let otap_payload: OtapPayload = otap_batch.into();
         let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
         LogsData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
+    /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
+    pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        TracesData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
@@ -1688,7 +1695,7 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_filter_traces() {
-        let input = to_otap_traces(vec![
+        let spans = vec![
             Span::build()
                 .name("span1")
                 .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
@@ -1707,6 +1714,9 @@ mod test {
                 .finish(),
             Span::build()
                 .name("span2")
+                .trace_id(vec![2; 16])
+                .span_id(vec![2; 8])
+                .status(Status::default())
                 .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
                 .events(vec![
                     Event::build()
@@ -1765,15 +1775,16 @@ mod test {
                     Link::build().span_id(vec![33; 8]).finish(),
                 ])
                 .finish(),
-        ]);
+        ];
 
+        let input = to_otap_traces(spans.clone());
         let parser_result = KqlParser::parse("traces | where name == \"span2\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input).await.unwrap();
 
         // assert everything got filtered to the right size
-        let spans = result.get(ArrowPayloadType::Spans).unwrap();
-        assert_eq!(spans.num_rows(), 1);
+        let result_spans = result.get(ArrowPayloadType::Spans).unwrap();
+        assert_eq!(result_spans.num_rows(), 1);
 
         let span_attrs = result.get(ArrowPayloadType::SpanAttrs).unwrap();
         assert_eq!(span_attrs.num_rows(), 1);
@@ -1789,11 +1800,23 @@ mod test {
 
         let span_event_attrs = result.get(ArrowPayloadType::SpanEventAttrs).unwrap();
         assert_eq!(span_event_attrs.num_rows(), 3);
+
+        let traces_data = otap_to_traces_data(result);
+        assert_eq!(traces_data.resource_spans.len(), 1);
+        assert_eq!(traces_data.resource_spans[0].scope_spans.len(), 1);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[1].clone()]
+        )
     }
 
     #[ignore]
     #[tokio::test]
     async fn test_filter_traces_by_attrs() {}
+
+    #[ignore]
+    #[tokio::test]
+    async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {}
 
     #[ignore]
     #[tokio::test]
