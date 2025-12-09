@@ -558,6 +558,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
  fail    │ rows={:.0}  batches={:.0}  msgs={:.0}       
  time    │ elapsed={:.1}s  active={:.1}s  idle={:.1}s
  state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
+ exports | in_flight={}
 ───────────────────────────────────────────────────────────────\n",
                             throughput,
                             self.stats.average_client_latency_secs * 1000.0,
@@ -573,6 +574,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             self.state.batch_to_msg.len(),
                             self.state.msg_to_batch.len(),
                             self.state.msg_to_data.len(),
+                            self.in_flight_exports.len(),
                         );
                     }
                 }

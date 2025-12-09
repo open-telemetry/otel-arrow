@@ -16,6 +16,10 @@ use tokio::time::{Duration, Instant};
 use crate::experimental::azure_monitor_exporter::auth::Auth;
 use crate::experimental::azure_monitor_exporter::config::Config;
 
+const MAX_RETRIES: u32 = 5;
+const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 /// HTTP client for Azure Log Analytics Data Collection Rule (DCR) endpoint.
 ///
 /// Handles authentication, compression, and HTTP communication with the
@@ -174,18 +178,60 @@ impl LogsIngestionClient {
 
     // TODO: Remove print_stdout after logging is set up
     #[allow(clippy::print_stdout)]
-    /// Export compressed data to Log Analytics ingestion API.
+    /// Export compressed data to Log Analytics ingestion API with automatic retry.
+    ///
+    /// Retries on:
+    /// - Network errors
+    /// - 401 (after token refresh)
+    /// - 429 (rate limiting) - uses Retry-After header if present
+    /// - 5xx (server errors)
     ///
     /// # Arguments
-    /// * `body` - The data to send (must be serializable to JSON)
+    /// * `body` - The gzip-compressed JSON data to send
     ///
     /// # Returns
-    /// * `Ok(())` - If the request was successful
-    /// * `Err(String)` - Error message if the request failed
+    /// * `Ok(Duration)` - Total time spent (including retries) if successful
+    /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
     pub async fn export(&mut self, body: Bytes) -> Result<Duration, String> {
         let start = Instant::now();
+        let mut attempt = 0u32;
+        let mut last_error = String::new();
 
-        // Send compressed body - avoid cloning headers by setting them individually
+        loop {
+            match self.try_export(body.clone()).await {
+                Ok(()) => return Ok(start.elapsed()),
+                Err(ExportAttemptError::Terminal(e)) => return Err(e),
+                Err(ExportAttemptError::Retryable { message, retry_after }) => {
+                    last_error = message;
+
+                    let delay = if let Some(server_delay) = retry_after {
+                        // Server specified delay - always retry (no max)
+                        server_delay
+                    } else {
+                        // No server hint - use exponential backoff with max retries
+                        attempt += 1;
+                        if attempt >= MAX_RETRIES {
+                            return Err(format!(
+                                "Export failed after {attempt} attempts: {last_error}"
+                            ));
+                        }
+                        let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
+                        backoff.min(MAX_BACKOFF)
+                    };
+
+                    println!(
+                        "[AzureMonitorExporter] Retry after {}ms: {last_error}",
+                        delay.as_millis()
+                    );
+
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    /// Single export attempt without retry logic.
+    async fn try_export(&mut self, body: Bytes) -> Result<(), ExportAttemptError> {
         let response = self
             .http_client
             .post(&self.endpoint)
@@ -195,34 +241,71 @@ impl LogsIngestionClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| format!("Failed to send request: {e}"))?;
-
-        let duration = start.elapsed();
+            .map_err(|e| ExportAttemptError::Retryable {
+                message: format!("Network error: {e}"),
+                retry_after: None,
+            })?;
 
         // Fast path for success
         if response.status().is_success() {
-            return Ok(duration);
+            return Ok(());
         }
 
-        // Slow path: handle errors
+        // Extract Retry-After header before consuming response
+        let retry_after = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_secs);
+
         let status = response.status();
         let error = response.text().await.unwrap_or_default();
 
         match status.as_u16() {
             401 => {
-                // Invalidate token and force refresh on next call
+                // Invalidate token and refresh for next attempt
                 self.token_valid_until = Instant::now();
                 self.auth.invalidate_token().await;
-                self.ensure_valid_token().await?;
+                self.ensure_valid_token()
+                    .await
+                    .map_err(|e| ExportAttemptError::Terminal(e))?;
 
-                Err(format!("Authentication failed: {error}"))
+                Err(ExportAttemptError::Retryable {
+                    message: format!("Authentication failed: {error}"),
+                    retry_after: None,
+                })
             }
-            403 => Err(format!("Authorization failed: {error}")),
-            413 => Err("Payload too large - reduce batch size".to_string()),
-            429 => Err(format!("Rate limited: {error}")),
-            _ => Err(format!("Request failed ({status}): {error}")),
+            403 => Err(ExportAttemptError::Terminal(format!(
+                "Authorization failed: {error}"
+            ))),
+            413 => Err(ExportAttemptError::Terminal(
+                "Payload too large - reduce batch size".to_string(),
+            )),
+            429 => Err(ExportAttemptError::Retryable {
+                message: format!("Rate limited: {error}"),
+                retry_after,
+            }),
+            500..=599 => Err(ExportAttemptError::Retryable {
+                message: format!("Server error ({status}): {error}"),
+                retry_after,
+            }),
+            _ => Err(ExportAttemptError::Terminal(format!(
+                "Request failed ({status}): {error}"
+            ))),
         }
     }
+}
+
+/// Internal error type for single export attempt
+enum ExportAttemptError {
+    /// Retryable error with optional server-specified delay
+    Retryable {
+        message: String,
+        retry_after: Option<Duration>,
+    },
+    /// Non-retryable error
+    Terminal(String),
 }
 
 #[cfg(test)]
@@ -358,32 +441,72 @@ mod tests {
             "scope".to_string(),
         );
 
-        // This should fail with 401, but invalidate the token
-        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Authentication failed"));
-
-        // Token should have been fetched once initially
-        assert_eq!(*call_count.lock().unwrap(), 1);
-
-        // Next call should fetch token again because it was invalidated
+        // Reset and add success response for retry
         mock_server.reset().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(204))
             .mount(&mock_server)
             .await;
 
+        // Should succeed after retry with refreshed token
         let result = client.export(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_ok());
-        assert_eq!(*call_count.lock().unwrap(), 2); // Token fetched again
+        assert_eq!(*call_count.lock().unwrap(), 2); // Token fetched twice (initial + refresh)
     }
 
     #[tokio::test]
-    async fn test_export_rate_limited() {
+    async fn test_export_rate_limited_with_retry_after() {
+        let mock_server = MockServer::start().await;
+
+        // First request returns 429 with Retry-After, second succeeds
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&mock_server)
+            .await;
+
+        let call_count = Arc::new(Mutex::new(0));
+        let credential = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
+
+        let mut client = LogsIngestionClient::from_parts(
+            Client::new(),
+            format!(
+                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
+                mock_server.uri()
+            ),
+            credential,
+            "scope".to_string(),
+        );
+
+        let start = Instant::now();
+        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_ok());
+        // Should have waited at least 1 second for retry
+        assert!(elapsed >= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn test_export_terminal_error_no_retry() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(429))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1) // Should only be called once - no retry
             .mount(&mock_server)
             .await;
 
@@ -406,6 +529,6 @@ mod tests {
 
         let result = client.export(Bytes::from(vec![1, 2, 3])).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Rate limited"));
+        assert!(result.unwrap_err().contains("Authorization failed"));
     }
 }
