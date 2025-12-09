@@ -680,6 +680,7 @@ pub struct MetricsConfig {
 
 impl MetricsConfig {
     /// Returns `true` if there are any metric readers configured.
+    #[must_use]
     pub fn has_readers(&self) -> bool {
         !self.readers.is_empty()
     }
