@@ -601,8 +601,13 @@ impl FilterExec {
                 match UInt16Type::get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
                     Some(MaybeDictArrayAccessor::Native(id_col)) => id_col,
                     Some(_) => {
-                        // TODO handle unexpected column type
-                        todo!()
+                        // currently based on how `UInt16Type::get_id_col_from_parent` is
+                        // implemented, this is actually unreachable, but putting the error
+                        // here instead of unreachable! for posterity in case we change the impl
+                        // in future for some reason
+                        return Err(Error::ExecutionError {
+                            cause: "invalid type for ID column on root batch",
+                        });
                     }
                     None => {
                         // None of the records have any attributes
@@ -1332,7 +1337,10 @@ impl FilterPipelineStage {
     {
         let parent_rb = match parent_payload_type(child_payload_type) {
             None => {
-                todo!("return an error here cause it's an invalid argument")
+                // shouldn't happen
+                return Err(Error::ExecutionError {
+                    cause: format!("filter_child_batch called with root payload type"),
+                });
             }
             Some(ParentPayloadType::Root) => otap_batch.root_record_batch(),
             Some(ParentPayloadType::NonRoot(parent_payload_type)) => {
