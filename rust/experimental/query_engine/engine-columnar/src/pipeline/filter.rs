@@ -1481,7 +1481,50 @@ impl PipelineStage for FilterPipelineStage {
                 )?;
             }
             ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-                // TODO
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::MetricAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpAttrs,
+                )?;
             }
             signal_type => {
                 return Err(Error::ExecutionError {
@@ -1515,8 +1558,10 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-        ExponentialHistogram, Gauge, Histogram, Metric, Summary,
+        ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint,
+        Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
@@ -1539,6 +1584,13 @@ mod test {
         let otap_payload: OtapPayload = otap_batch.into();
         let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
         TracesData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
+    /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
+    pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
@@ -1830,54 +1882,96 @@ mod test {
             Metric::build()
                 .name("metric1")
                 .data_gauge(Gauge {
-                    data_points: vec![],
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .finish(),
+                    ],
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric2")
                 .data_gauge(Gauge {
-                    data_points: vec![],
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .finish(),
+                    ],
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric1")
                 .data_histogram(Histogram {
-                    data_points: vec![],
+                    data_points: vec![
+                        HistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .finish(),
+                    ],
                     aggregation_temporality: 0,
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric2")
                 .data_histogram(Histogram {
-                    data_points: vec![],
+                    data_points: vec![
+                        HistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .finish(),
+                    ],
                     aggregation_temporality: 0,
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric1")
                 .data_exponential_histogram(ExponentialHistogram {
-                    data_points: vec![],
+                    data_points: vec![
+                        ExponentialHistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .positive(Buckets::default())
+                            .negative(Buckets::default())
+                            .finish(),
+                    ],
                     aggregation_temporality: 0,
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric2")
                 .data_exponential_histogram(ExponentialHistogram {
-                    data_points: vec![],
+                    data_points: vec![
+                        ExponentialHistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .finish(),
+                    ],
                     aggregation_temporality: 0,
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric1")
                 .data_summary(Summary {
-                    data_points: vec![],
+                    data_points: vec![
+                        SummaryDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .finish(),
+                    ],
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
             Metric::build()
                 .name("metric2")
                 .data_summary(Summary {
-                    data_points: vec![],
+                    data_points: vec![
+                        SummaryDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .finish(),
+                    ],
                 })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
                 .finish(),
         ];
 
@@ -1889,6 +1983,46 @@ mod test {
         // assert everything got filtered to the right size
         let result_metrics = result.get(ArrowPayloadType::UnivariateMetrics).unwrap();
         assert_eq!(result_metrics.num_rows(), 4);
+
+        let attrs = result.get(ArrowPayloadType::MetricAttrs).unwrap();
+        assert_eq!(attrs.num_rows(), 4);
+
+        let number_dps = result.get(ArrowPayloadType::NumberDataPoints).unwrap();
+        assert_eq!(number_dps.num_rows(), 1);
+
+        let number_dp_attrs = result.get(ArrowPayloadType::NumberDpAttrs).unwrap();
+        assert_eq!(number_dp_attrs.num_rows(), 1);
+
+        let hist_dps = result.get(ArrowPayloadType::HistogramDataPoints).unwrap();
+        assert_eq!(hist_dps.num_rows(), 1);
+        let hist_dp_attrs = result.get(ArrowPayloadType::HistogramDpAttrs).unwrap();
+        assert_eq!(hist_dp_attrs.num_rows(), 1);
+
+        let exp_hist_dps = result
+            .get(ArrowPayloadType::ExpHistogramDataPoints)
+            .unwrap();
+        assert_eq!(exp_hist_dps.num_rows(), 1);
+        let exp_hist_dp_attrs = result.get(ArrowPayloadType::ExpHistogramDpAttrs).unwrap();
+        assert_eq!(exp_hist_dp_attrs.num_rows(), 1);
+
+        let summary_dps = result.get(ArrowPayloadType::SummaryDataPoints).unwrap();
+        assert_eq!(summary_dps.num_rows(), 1);
+
+        let summary_dp_attrs = result.get(ArrowPayloadType::SummaryDpAttrs).unwrap();
+        assert_eq!(summary_dp_attrs.num_rows(), 1);
+
+        let metrics_data = otap_to_metrics_data(result);
+        assert_eq!(metrics_data.resource_metrics.len(), 1);
+        assert_eq!(metrics_data.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            &metrics_data.resource_metrics[0].scope_metrics[0].metrics,
+            &[
+                metrics[0].clone(),
+                metrics[2].clone(),
+                metrics[4].clone(),
+                metrics[6].clone()
+            ]
+        )
     }
 
     #[ignore]
