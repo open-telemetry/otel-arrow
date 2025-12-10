@@ -488,6 +488,54 @@ graph TD
     F --> |mmap| G[Segment Reader]
 ```
 
+#### Segment File Layout
+
+A segment file uses a variable-size footer with a fixed-size trailer, enabling
+future versions to extend the footer without breaking backwards compatibility:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Stream Data Region                              │
+│  Stream 0: Arrow IPC File bytes                                         │
+│  Stream 1: Arrow IPC File bytes                                         │
+│  ...                                                                    │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         Stream Directory                                │
+│  Encoded as Arrow IPC (self-describing schema)                          │
+│  Columns: stream_id, slot_id, schema_fingerprint, byte_offset,          │
+│           byte_length, row_count, chunk_count                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         Batch Manifest                                  │
+│  Encoded as Arrow IPC (self-describing schema)                          │
+│  Columns: bundle_index, slot_bitmap, slot_refs                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         Footer (variable size, version-dependent)       │
+│  Version 1 (34 bytes):                                                  │
+│    - version: u16                                                       │
+│    - stream_count: u32                                                  │
+│    - bundle_count: u32                                                  │
+│    - directory_offset: u64                                              │
+│    - directory_length: u32                                              │
+│    - manifest_offset: u64                                               │
+│    - manifest_length: u32                                               │
+│  (Future versions may add fields here)                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                         Trailer (fixed 16 bytes)                        │
+│    - footer_size: u32 (size of footer, not including trailer)           │
+│    - magic: b"QUIVER\0S" (8 bytes)                                      │
+│    - crc32: u32 (covers footer + trailer except CRC itself)             │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Reading a segment file:**
+
+1. Seek to end of file, read the fixed 16-byte trailer
+2. Validate magic bytes (`QUIVER\0S`)
+3. Read `footer_size` to determine footer location
+4. Seek back `footer_size` bytes, read the variable-size footer
+5. Parse version from footer to determine how to interpret remaining fields
+6. Use directory/manifest offsets to locate metadata sections
+
 #### Arrow IPC Encoding
 
 - While a segment is open, Quiver appends messages to each stream using the

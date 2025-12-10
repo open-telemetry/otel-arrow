@@ -18,6 +18,13 @@ impl SlotId {
     pub const fn new(raw: u16) -> Self {
         Self(raw)
     }
+
+    /// Returns the raw numeric value.
+    #[inline]
+    #[must_use]
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
 }
 
 /// Metadata describing a slot that may appear inside a [`RecordBundle`].

@@ -262,8 +262,13 @@ impl ManifestEntry {
     }
 
     /// Returns an iterator over populated slot IDs.
-    pub fn slots(&self) -> impl Iterator<Item = SlotId> + '_ {
+    pub fn slot_ids(&self) -> impl Iterator<Item = SlotId> + '_ {
         self.slot_refs.keys().copied()
+    }
+
+    /// Returns an iterator over (slot_id, chunk_ref) pairs.
+    pub fn slots(&self) -> impl Iterator<Item = (SlotId, &SlotChunkRef)> + '_ {
+        self.slot_refs.iter().map(|(k, v)| (*k, v))
     }
 }
 
@@ -504,9 +509,13 @@ mod tests {
         entry.add_slot(SlotId::new(2), StreamId::new(0), ChunkIndex::new(0));
         entry.add_slot(SlotId::new(5), StreamId::new(1), ChunkIndex::new(0));
 
-        let mut slots: Vec<_> = entry.slots().collect();
-        slots.sort();
-        assert_eq!(slots, vec![SlotId::new(2), SlotId::new(5)]);
+        let mut slot_ids: Vec<_> = entry.slot_ids().collect();
+        slot_ids.sort();
+        assert_eq!(slot_ids, vec![SlotId::new(2), SlotId::new(5)]);
+
+        // Also test the slots() method that returns (SlotId, &SlotChunkRef) pairs
+        let slots: Vec<_> = entry.slots().collect();
+        assert_eq!(slots.len(), 2);
     }
 
     #[test]
