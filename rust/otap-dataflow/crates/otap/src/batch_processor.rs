@@ -64,7 +64,7 @@ use std::time::{Duration, Instant};
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
 
 /// Default configuration values (parity-aligned as we confirm Go defaults)
-pub const DEFAULT_MIN_SIZE: usize = 8192;
+pub const DEFAULT_MIN_SIZE_ITEMS: usize = 8192;
 
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
@@ -75,13 +75,18 @@ const LOG_MSG_DROP_CONVERSION_FAILED: &str =
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
-/// How to size a batch; these are not always supported.
+/// How to size a batch.
+///
+/// Note: these are not always supported. In the present code, the only
+/// supported Sizer value is Items. We expect future support for bytes and
+/// requests sizers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Sizer {
-    /// Count requests.
+    /// Count requests. This metric counts one per OtapPdata message.
     Requests,
-    /// Count items.
+    /// Count items.  The number of log records, trace spans, or
+    /// metric data points.
     Items,
     /// Count bytes.
     Bytes,
@@ -91,19 +96,21 @@ pub enum Sizer {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Flush current batch when this count is reached, as a
-    /// minimum. Measures the number of items (logs: records, traces:
-    /// spans, metrics: data points). When pending data reaches this
-    /// threshold a new batch will form and be sent.
-    #[serde(default = "default_min_size")]
+    /// minimum. Measures the quantity indicated by `sizer`. When
+    /// pending data reaches this threshold a new batch will form and
+    /// be sent.
+    #[serde(default = "default_min_size_items")]
     pub min_size: Option<NonZeroUsize>,
 
     /// Optionally limit batch sizes to an upper bound. Measured in
-    /// items, as described for min_size.
-    #[serde(default = "default_max_size")]
+    /// the quantity indicated by `sizer`, as described for min_size.
+    /// This limit is passed to the lower-level batching logic as a
+    /// not-to-exceed maximum.
+    #[serde(default = "default_max_size_items")]
     pub max_size: Option<NonZeroUsize>,
 
-    /// The sizer. Must be "items", presently.
-    #[serde(default = "default_sizer")]
+    /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
+    #[serde(default = "default_sizer_items")]
     pub sizer: Sizer,
 
     /// Flush non-empty batches on this interval, which may be 0 for
@@ -120,15 +127,15 @@ pub struct Config {
     pub outbound_request_limit: NonZeroUsize,
 }
 
-const fn default_min_size() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(DEFAULT_MIN_SIZE)
+const fn default_min_size_items() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(DEFAULT_MIN_SIZE_ITEMS)
 }
 
-const fn default_sizer() -> Sizer {
+const fn default_sizer_items() -> Sizer {
     Sizer::Items
 }
 
-const fn default_max_size() -> Option<NonZeroUsize> {
+const fn default_max_size_items() -> Option<NonZeroUsize> {
     // No upper-bound
     None
 }
@@ -148,9 +155,9 @@ const fn default_outbound_request_limit() -> NonZeroUsize {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            min_size: default_min_size(),
-            max_size: default_max_size(),
-            sizer: default_sizer(),
+            min_size: default_min_size_items(),
+            max_size: default_max_size_items(),
+            sizer: default_sizer_items(),
             timeout: default_timeout_duration(),
             inbound_request_limit: default_inbound_request_limit(),
             outbound_request_limit: default_outbound_request_limit(),
