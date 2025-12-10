@@ -22,7 +22,6 @@ pub struct OpentelemetryClient {
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
-    #[must_use]
     pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 

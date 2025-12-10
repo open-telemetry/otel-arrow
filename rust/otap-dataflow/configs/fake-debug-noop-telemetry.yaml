@@ -40,21 +40,8 @@ service:
       readers:
         - periodic:
             exporter:
-              console:
-        - periodic:
-            exporter:
               otlp:
                 protocol: "grpc/protobuf"
                 endpoint: "http://127.0.0.1:43480"
-        - periodic:
-            exporter:
-              otlp:
-                protocol: "http/protobuf"
-                endpoint: "http://localhost:43481/v1/metrics"
-        - periodic:
-            exporter:
-              otlp:
-                protocol: "http/json"
-                endpoint: "http://localhost:43482"
     resource:
       service.name: "fake-debug-noop-service"

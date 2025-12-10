@@ -24,7 +24,6 @@ pub struct MeterProvider {
 
 impl MeterProvider {
     /// Configures the OpenTelemetry meter provider based on the provided configuration.
-    #[must_use]
     pub fn configure(
         sdk_resource: Resource,
         metric_readers: &[MetricsReaderConfig],
@@ -46,7 +45,7 @@ impl MeterProvider {
 
         Ok(MeterProvider {
             sdk_meter_provider,
-            runtime: runtime,
+            runtime,
         })
     }
 

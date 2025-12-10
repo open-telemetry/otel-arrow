@@ -793,11 +793,11 @@ pub enum OtlpProtocol {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Temporality {
-    /// Delta temporality means that the metric values are the difference between the current and previous values.
-    #[default]
-    Delta,
     /// Cumulative temporality means that the metric values are the sum of all values since the start of the process.
+    #[default]
     Cumulative,
+    /// Delta temporality means that the metric values are the difference between the current and previous values.
+    Delta,
 }
 
 impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
