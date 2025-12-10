@@ -317,9 +317,7 @@ where
                 }
             }
         }
-        ScalarExpression::Argument(a) => {
-            execute_argument_scalar_expression(execution_context, a)?
-        }
+        ScalarExpression::Argument(a) => execute_argument_scalar_expression(execution_context, a)?,
         ScalarExpression::InvokeFunction(_) => todo!(),
     };
 
@@ -427,7 +425,9 @@ where
         .expect("Arguments were not found")
         .get_argument(argument_scalar_expression.get_argument_id())?;
 
-    let selectors = argument_scalar_expression.get_value_accessor().get_selectors();
+    let selectors = argument_scalar_expression
+        .get_value_accessor()
+        .get_selectors();
     if !selectors.is_empty() {
         for selector in selectors {
             match value.select(

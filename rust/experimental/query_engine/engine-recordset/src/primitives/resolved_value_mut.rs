@@ -10,6 +10,7 @@ use data_engine_expressions::*;
 
 use crate::{execution_context::ExecutionContext, *};
 
+#[derive(Debug)]
 pub(crate) enum ResolvedValueMut<'a, 'b> {
     Map(RefMut<'a, dyn MapValueMut + 'static>),
     MapKey {
@@ -20,13 +21,12 @@ pub(crate) enum ResolvedValueMut<'a, 'b> {
         array: RefMut<'a, dyn ArrayValueMut + 'static>,
         index: usize,
     },
-    Argument(ResolvedMutableArgument<'b, 'a>)
 }
 
 #[derive(Debug)]
 pub struct ResolvedMutableArgument<'a, 'b> {
     pub(crate) source: &'a MutableValueExpression,
-    pub(crate) value: ResolvedMutableArgumentValue<'b>,
+    pub(crate) value: Option<ResolvedValueMut<'b, 'a>>,
 }
 
 impl<'a, 'b> ResolvedMutableArgument<'a, 'b> {
@@ -38,8 +38,16 @@ impl<'a, 'b> ResolvedMutableArgument<'a, 'b> {
 impl<'a, 'b> AsStaticValueMut for ResolvedMutableArgument<'a, 'b> {
     fn to_static_value_mut(&mut self) -> Option<StaticValueMut<'_>> {
         match &mut self.value {
-            ResolvedMutableArgumentValue::Map(map) => Some(StaticValueMut::Map(map.deref_mut())),
-            ResolvedMutableArgumentValue::Any(any) => any.to_static_value_mut(),
+            Some(ResolvedValueMut::Map(m)) => Some(StaticValueMut::Map(m.deref_mut())),
+            Some(ResolvedValueMut::MapKey { map, key }) => match map.get_mut(key.get_value()) {
+                ValueMutGetResult::Found(v) => v.to_static_value_mut(),
+                _ => None,
+            },
+            Some(ResolvedValueMut::ArrayIndex { array, index }) => match array.get_mut(*index) {
+                ValueMutGetResult::Found(v) => v.to_static_value_mut(),
+                _ => None,
+            },
+            None => None,
         }
     }
 }
@@ -47,16 +55,18 @@ impl<'a, 'b> AsStaticValueMut for ResolvedMutableArgument<'a, 'b> {
 impl<'a, 'b> AsStaticValue for ResolvedMutableArgument<'a, 'b> {
     fn to_static_value(&self) -> StaticValue<'_> {
         match &self.value {
-            ResolvedMutableArgumentValue::Map(map) => StaticValue::Map(map.deref()),
-            ResolvedMutableArgumentValue::Any(any) => any.to_static_value(),
+            Some(ResolvedValueMut::Map(m)) => StaticValue::Map(m.deref()),
+            Some(ResolvedValueMut::MapKey { map, key }) => match map.get_static(key.get_value()) {
+                Ok(Some(v)) => v.to_static_value(),
+                _ => StaticValue::Null,
+            },
+            Some(ResolvedValueMut::ArrayIndex { array, index }) => match array.get_static(*index) {
+                Ok(Some(v)) => v.to_static_value(),
+                _ => StaticValue::Null,
+            },
+            None => StaticValue::Null,
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum ResolvedMutableArgumentValue<'a> {
-    Map(RefMut<'a, dyn MapValueMut + 'static>),
-    Any(RefMut<'a, dyn AsStaticValueMut + 'static>),
 }
 
 pub(crate) fn resolve_map_key_mut<'a, 'b, TRecord: Record>(

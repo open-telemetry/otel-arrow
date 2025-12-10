@@ -10,12 +10,12 @@ use data_engine_expressions::*;
 #[cfg(test)]
 use crate::TestRecord;
 #[cfg(test)]
-use std::ops::Deref;
-#[cfg(test)]
-use crate::{scalars::{
-    execute_scalar_expression, execute_argument_scalar_expression, execute_source_scalar_expression, execute_variable_scalar_expression,
-},
-value_expressions::{execute_mutable_value_expression, validate_array_index},
+use crate::{
+    scalars::{
+        execute_argument_scalar_expression, execute_scalar_expression,
+        execute_source_scalar_expression, execute_variable_scalar_expression,
+    },
+    value_expressions::execute_mutable_value_expression,
 };
 
 pub(crate) struct ExecutionContext<'a, 'b, TRecord>
@@ -188,12 +188,14 @@ impl<'a> ExecutionContextVariables<'a> {
 }
 
 pub trait ExecutionContextArguments {
+    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource>;
+
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError>;
 
     fn get_argument_mut(
         &self,
         id: usize,
-    ) -> Result<Option<ResolvedMutableArgument<'_, '_>>, ExpressionError>;
+    ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError>;
 }
 
 #[cfg(test)]
@@ -211,6 +213,35 @@ impl<'a, 'b, 'c, TRecord> ExecutionContextArguments
 where
     TRecord: Record + 'static,
 {
+    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource> {
+        let argument = self
+            .arguments
+            .get(id)
+            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
+
+        match argument {
+            InvokeFunctionArgument::Scalar(s) => match s {
+                ScalarExpression::Source(_) => Some(BorrowSource::Source),
+                ScalarExpression::Variable(_) => Some(BorrowSource::Variable),
+                ScalarExpression::Argument(a) => self
+                    .parent_execution_context
+                    .get_arguments()
+                    .expect("Arguments were not found")
+                    .get_argument_borrow_source(a.get_argument_id()),
+                _ => None,
+            },
+            InvokeFunctionArgument::MutableValue(m) => match m {
+                MutableValueExpression::Source(_) => Some(BorrowSource::Source),
+                MutableValueExpression::Variable(_) => Some(BorrowSource::Variable),
+                MutableValueExpression::Argument(a) => self
+                    .parent_execution_context
+                    .get_arguments()
+                    .expect("Arguments were not found")
+                    .get_argument_borrow_source(a.get_argument_id()),
+            },
+        }
+    }
+
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError> {
         let argument = self
             .arguments
@@ -241,7 +272,7 @@ where
     fn get_argument_mut(
         &self,
         id: usize,
-    ) -> Result<Option<ResolvedMutableArgument<'_, '_>>, ExpressionError> {
+    ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError> {
         let argument = self
             .arguments
             .get(id)
@@ -250,36 +281,12 @@ where
         match argument {
             InvokeFunctionArgument::Scalar(s) => Err(ExpressionError::NotSupported(
                 s.get_query_location().clone(),
-                format!("Argument for id '{id}' cannot be mutated").into(),
+                format!("Argument for id '{id}' cannot be mutated"),
             )),
             InvokeFunctionArgument::MutableValue(m) => {
-                Ok(match execute_mutable_value_expression(self.parent_execution_context, m)? {
-                    Some(ResolvedValueMut::Map(map)) => Some(ResolvedMutableArgument {
-                        source: m,
-                        value: ResolvedMutableArgumentValue::Map(map)
-                    }),
-                    Some(ResolvedValueMut::MapKey { map, key }) => {
-                        resolve_map_key_mut(self.parent_execution_context, m, map, key.get_value()).map(|v| {
-                            ResolvedMutableArgument {
-                                source: m,
-                                value: ResolvedMutableArgumentValue::Any(v),
-                            }
-                        })
-                    }
-                    Some(ResolvedValueMut::ArrayIndex { array, index }) => {
-                        match validate_array_index(self.parent_execution_context, m, index as i64, array.deref()) {
-                            Some(i) => resolve_array_index_mut(self.parent_execution_context, m, array, i).map(|v| {
-                                ResolvedMutableArgument {
-                                    source: m,
-                                    value: ResolvedMutableArgumentValue::Any(v),
-                                }
-                            }),
-                            None => None,
-                        }
-                    }
-                    Some(ResolvedValueMut::Argument(a)) => Some(a),
-                    None => None,
-                })
+                let value = execute_mutable_value_expression(self.parent_execution_context, m)?;
+
+                Ok(ResolvedMutableArgument { source: m, value })
             }
         }
     }

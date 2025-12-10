@@ -127,11 +127,51 @@ where
                 .expect("Arguments were not found")
                 .get_argument_mut(a.get_argument_id())?;
 
-            if !selectors.is_empty() {
-                todo!();
-            }
+            let value = if !selectors.is_empty() {
+                let mut selectors = selectors.drain(..);
 
-            let value = value.map(|v| ResolvedValueMut::Argument(v));
+                value.value.and_then(|v| match v {
+                    ResolvedValueMut::Map(root) => {
+                        select_from_borrowed_root_map(execution_context, a, root, selectors)
+                    }
+                    ResolvedValueMut::MapKey { map, key } => {
+                        match resolve_map_key_mut(execution_context, a, map, key.get_value()) {
+                            Some(v) => select_from_as_value_mut(
+                                execution_context,
+                                a,
+                                v,
+                                selectors.next().unwrap(),
+                                selectors,
+                            ),
+                            None => None,
+                        }
+                    }
+                    ResolvedValueMut::ArrayIndex { array, index } => {
+                        match validate_array_index(
+                            execution_context,
+                            a,
+                            index as i64,
+                            array.deref(),
+                        ) {
+                            Some(i) => {
+                                match resolve_array_index_mut(execution_context, a, array, i) {
+                                    None => None,
+                                    Some(v) => select_from_as_value_mut(
+                                        execution_context,
+                                        a,
+                                        v,
+                                        selectors.next().unwrap(),
+                                        selectors,
+                                    ),
+                                }
+                            }
+                            None => None,
+                        }
+                    }
+                })
+            } else {
+                value.value
+            };
 
             log_mutable_value_expression_evaluated(
                 execution_context,
@@ -158,7 +198,7 @@ where
     for selector in selectors {
         let mut value = execute_scalar_expression(execution_context, selector)?;
 
-        if value.copy_if_borrowed_from_target(mutable_value_expression) {
+        if value.copy_if_borrowed_from_target(execution_context, mutable_value_expression) {
             execution_context.add_diagnostic_if_enabled(
                 RecordSetEngineDiagnosticLevel::Verbose,
                 mutable_value_expression,
@@ -191,8 +231,6 @@ fn log_mutable_value_expression_evaluated<'a, TRecord: Record>(
                         }
                         ResolvedValueMut::ArrayIndex { array: _, index } =>
                             format!("Array write for '{index}' index"),
-                        ResolvedValueMut::Argument(_) =>
-                            "Argument write".into()
                     },
                 }
             )
@@ -252,7 +290,7 @@ where
                         next_selector,
                         remaining_selectors,
                     ),
-                    None => Ok(None),
+                    None => None,
                 }
             } else {
                 Some(ResolvedValueMut::MapKey {
@@ -301,16 +339,16 @@ where
                             next_selector,
                             remaining_selectors,
                         ),
-                        None => Ok(None),
+                        None => None,
                     }
                 } else {
-                    Ok(Some(ResolvedValueMut::ArrayIndex {
+                    Some(ResolvedValueMut::ArrayIndex {
                         array: current_borrow,
                         index: i,
-                    }))
+                    })
                 }
             }
-            None => Ok(None),
+            None => None,
         }
     } else {
         execution_context.add_diagnostic_if_enabled(
@@ -663,6 +701,250 @@ mod tests {
                     panic!()
                 }
             },
+        );
+    }
+
+    #[allow(clippy::type_complexity)]
+    #[test]
+    fn test_execute_argument_mutable_value_expression() {
+        let run_test = |expression,
+                        validate: Option<&dyn Fn(Option<ResolvedValueMut>)>,
+                        error_message: Option<&str>| {
+            let record = TestRecord::new().with_key_value(
+                "key1".into(),
+                OwnedValue::String(StringValueStorage::new("value1".into())),
+            );
+
+            let mut test = TestExecutionContext::new().with_record(record);
+
+            let execution_context = test.create_execution_context();
+
+            {
+                let mut variables = execution_context.get_variables().get_local_variables_mut();
+
+                variables.set(
+                    "var1",
+                    ResolvedValue::Computed(OwnedValue::Array(ArrayValueStorage::new(vec![
+                        OwnedValue::Integer(IntegerValueStorage::new(1)),
+                        OwnedValue::Integer(IntegerValueStorage::new(2)),
+                        OwnedValue::Integer(IntegerValueStorage::new(3)),
+                    ]))),
+                );
+            }
+
+            let arguments = vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                )),
+                InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "key1",
+                            )),
+                        )]),
+                    ),
+                )),
+                InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                    SourceScalarExpression::new(QueryLocation::new_fake(), ValueAccessor::new()),
+                )),
+                InvokeFunctionArgument::MutableValue(MutableValueExpression::Variable(
+                    VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
+                        ValueAccessor::new(),
+                    ),
+                )),
+            ];
+
+            let execution_context_arguments = ExecutionContextArgumentContainer {
+                parent_execution_context: &execution_context,
+                arguments: &arguments,
+            };
+
+            let scope = execution_context.create_scope(Some(&execution_context_arguments));
+
+            if let Some(expected_msg) = error_message {
+                let error = execute_mutable_value_expression(&scope, &expression).unwrap_err();
+
+                if let ExpressionError::NotSupported(_, msg) = error {
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!()
+                }
+            } else {
+                let value = execute_mutable_value_expression(&scope, &expression).unwrap();
+
+                (validate.unwrap())(value);
+            }
+        };
+
+        // Test selecting a scalar value. Scalar values cannot be mutated so this leads to an error.
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                0,
+                ValueAccessor::new(),
+            )),
+            None,
+            Some("Argument for id '0' cannot be mutated"),
+        );
+
+        // Test selecting a source value (source.key1)
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                1,
+                ValueAccessor::new(),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
+                    assert_eq!(
+                        Value::String(&StringValueStorage::new("key1".into())),
+                        key.to_value()
+                    );
+                } else {
+                    panic!()
+                }
+            }),
+            None,
+        );
+
+        // Test selecting source value
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Map),
+                2,
+                ValueAccessor::new(),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::Map(m)) = v {
+                    assert_eq!(1, m.len());
+                } else {
+                    panic!()
+                }
+            }),
+            None,
+        );
+
+        // Test selecting source value with a selector (key1) to a string
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                2,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                )]),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
+                    assert_eq!(
+                        Value::String(&StringValueStorage::new("key1".into())),
+                        key.to_value()
+                    );
+                } else {
+                    panic!()
+                }
+            }),
+            None,
+        );
+
+        // Test selecting a variable value (var1)
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                3,
+                ValueAccessor::new(),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
+                    assert_eq!(
+                        Value::String(&StringValueStorage::new("var1".into())),
+                        key.to_value()
+                    );
+                } else {
+                    panic!()
+                }
+            }),
+            None,
+        );
+
+        // Test selecting a variable value (var1) to an array index (0)
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                3,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        0,
+                    )),
+                )]),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::ArrayIndex { array: _, index }) = v {
+                    assert_eq!(0, index);
+                } else {
+                    panic!()
+                }
+            }),
+            None,
+        );
+
+        // Test selecting a variable value (var1) to an array index (-1)
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                3,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        -1,
+                    )),
+                )]),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::ArrayIndex { array: _, index }) = v {
+                    assert_eq!(2, index);
+                } else {
+                    panic!()
+                }
+            }),
+            None,
+        );
+
+        // Test selecting a variable value (var1) to an invalid array index (10) which returns None/Null
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                3,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        10,
+                    )),
+                )]),
+            )),
+            Some(&|v| {
+                assert!(v.is_none());
+            }),
+            None,
         );
     }
 }
