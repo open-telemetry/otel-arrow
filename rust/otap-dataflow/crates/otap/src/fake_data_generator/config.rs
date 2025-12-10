@@ -143,12 +143,23 @@ impl TrafficConfig {
 
             (metric_count, trace_count, log_count)
         } else {
-            // if no rate limit is set than the weights will be used as the signal count (batch size)
-            (
-                self.metric_weight as usize,
-                self.trace_weight as usize,
-                self.log_weight as usize,
-            )
+            // if no rate limit is set, use max_batch_size distributed by weights
+            let total_weight: f32 =
+                (self.trace_weight + self.metric_weight + self.log_weight) as f32;
+
+            if total_weight == 0.0 {
+                return (0, 0, 0);
+            }
+
+            let metric_percent: f32 = self.metric_weight as f32 / total_weight;
+            let trace_percent: f32 = self.trace_weight as f32 / total_weight;
+            let log_percent: f32 = self.log_weight as f32 / total_weight;
+
+            let metric_count: usize = (metric_percent * self.max_batch_size as f32) as usize;
+            let trace_count: usize = (trace_percent * self.max_batch_size as f32) as usize;
+            let log_count: usize = (log_percent * self.max_batch_size as f32) as usize;
+
+            (metric_count, trace_count, log_count)
         }
     }
 
