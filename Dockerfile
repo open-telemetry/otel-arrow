@@ -14,14 +14,14 @@ COPY . .
 ENV CGO_ENABLED=0
 
 # Note the version MUST MATCH otelarrowcol-build.yaml
-RUN go install go.opentelemetry.io/collector/cmd/builder@v0.89.0
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.140.0
 
 # This command generates main.go, go.mod but does not update deps.
 RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowcol-build.yaml
 
-# This build will update the go.mod, using the checked-in go.work file
-# in the repository.
-RUN go build -o otelarrowcol ./collector/cmd/otelarrowcol
+# Build from within the collector module directory where go.mod exists.
+WORKDIR /otel-arrow/collector/cmd/otelarrowcol
+RUN go mod tidy && go build -o /otel-arrow/otelarrowcol .
 
 # This build uses an Alpine Linux container.
 FROM alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 AS release
