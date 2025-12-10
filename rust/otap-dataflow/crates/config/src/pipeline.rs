@@ -691,19 +691,11 @@ impl MetricsConfig {
 }
 
 /// Internal logs configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct LogsConfig {
     /// The log level for internal engine logs.
     #[serde(default)]
     pub level: LogLevel,
-}
-
-impl Default for LogsConfig {
-    fn default() -> Self {
-        Self {
-            level: LogLevel::default(),
-        }
-    }
 }
 
 /// Log level for internal engine logs.
