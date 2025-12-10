@@ -50,7 +50,7 @@ impl MeterProvider {
     }
 
     /// Consume the MeterProvider and return its components.
-    pub fn deconstruct(self) -> (SdkMeterProvider, Option<tokio::runtime::Runtime>) {
+    pub fn into_parts(self) -> (SdkMeterProvider, Option<tokio::runtime::Runtime>) {
         (self.sdk_meter_provider, self.runtime)
     }
 
@@ -206,7 +206,7 @@ mod tests {
             }),
         ];
         let meter_provider = MeterProvider::configure(resource, &metric_readers, None)?;
-        let (_sdk_meter_provider, runtime) = meter_provider.deconstruct();
+        let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
         assert!(runtime.is_none());
         Ok(())
     }
@@ -229,7 +229,7 @@ mod tests {
             }),
         ];
         let meter_provider = MeterProvider::configure(resource, &metric_readers, None)?;
-        let (_sdk_meter_provider, runtime) = meter_provider.deconstruct();
+        let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
         assert!(runtime.is_some());
         Ok(())
     }
@@ -239,7 +239,7 @@ mod tests {
         let resource = Resource::builder().build();
         let metric_readers = vec![];
         let meter_provider = MeterProvider::configure(resource, &metric_readers, None)?;
-        let (_sdk_meter_provider, runtime) = meter_provider.deconstruct();
+        let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
         assert!(runtime.is_none());
         Ok(())
     }

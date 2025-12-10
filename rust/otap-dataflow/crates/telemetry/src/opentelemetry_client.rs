@@ -31,7 +31,7 @@ impl OpentelemetryClient {
             MeterProvider::configure(sdk_resource, &config.metrics.readers, runtime)?;
 
         // Extract the meter provider and runtime by consuming the MeterProvider
-        let (meter_provider, runtime) = meter_provider.deconstruct();
+        let (meter_provider, runtime) = meter_provider.into_parts();
 
         //TODO: Configure traces and logs providers.
 
