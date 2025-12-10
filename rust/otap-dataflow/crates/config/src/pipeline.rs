@@ -9,6 +9,7 @@ use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::observed_state::ObservedStateSettings;
 use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -728,39 +729,75 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
         }
 
         let reader_options_result = ReaderOptions::deserialize(deserializer);
-        if let Ok(options) = reader_options_result {
-            if let Some(config) = options.periodic {
-                Ok(MetricsReaderConfig::Periodic(config))
-            } else if options.pull.is_some() {
-                Ok(MetricsReaderConfig::Pull {})
-            } else {
-                Err(serde::de::Error::custom(
-                    "Expected either 'periodic' or 'pull' reader",
-                ))
+        match reader_options_result {
+            Ok(options) => {
+                if let Some(config) = options.periodic {
+                    Ok(MetricsReaderConfig::Periodic(config))
+                } else if options.pull.is_some() {
+                    Ok(MetricsReaderConfig::Pull {})
+                } else {
+                    Err(serde::de::Error::custom(
+                        "Expected either 'periodic' or 'pull' reader",
+                    ))
+                }
             }
-        } else {
-            Err(serde::de::Error::custom(
-                "Invalid configuration of a metrics reader",
-            ))
+            Err(err) => Err(serde::de::Error::custom(format!(
+                "Expected a map with either 'periodic' or 'pull' reader: {}",
+                err
+            ))),
         }
     }
 }
 
 /// Opentelemetry Metrics Perioidc Exporter configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub enum MetricsPeriodicExporterConfig {
     /// Console exporter that writes metrics to the console.
-    Console(ConsoleExporterConfig),
+    Console,
     /// OTLP exporter that sends metrics using the OpenTelemetry Protocol.
-    Otlp,
+    Otlp(OtlpExporterConfig),
 }
 
-/// Opentelemetry Console Exporter configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ConsoleExporterConfig {
-    /// The temporality preference for the console exporter.
-    #[serde(rename = "temporality")]
-    pub temporality: Option<String>,
+/// Opentelemetry OTLP Exporter configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct OtlpExporterConfig {
+    /// The Otlp communication protocol to use when exporting data.
+    #[serde(default)]
+    pub protocol: OtlpProtocol,
+    /// The endpoint to which the Otlp exporter will send data.
+    pub endpoint: String,
+
+    /// The temporality of the metrics to be exported.
+    #[serde(default)]
+    pub temporality: Temporality,
+}
+
+/// The Otlp communication protocol to use when exporting data.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+pub enum OtlpProtocol {
+    /// Use gRPC for communication.
+    #[default]
+    #[serde(rename = "grpc/protobuf")]
+    Grpc,
+
+    #[serde(rename = "http/protobuf")]
+    /// Use HTTP with binary encoding for communication.
+    HttpBinary,
+
+    #[serde(rename = "http/json")]
+    /// Use HTTP with JSON encoding for communication.
+    HttpJson,
+}
+
+/// The temporality of the metrics to be exported.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Temporality {
+    /// Delta temporality means that the metric values are the difference between the current and previous values.
+    #[default]
+    Delta,
+    /// Cumulative temporality means that the metric values are the sum of all values since the start of the process.
+    Cumulative,
 }
 
 impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
@@ -787,12 +824,12 @@ impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
                 if let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "console" => {
-                            let console_config: ConsoleExporterConfig = map.next_value()?;
-                            Ok(MetricsPeriodicExporterConfig::Console(console_config))
+                            let _: IgnoredAny = map.next_value()?; // consume the value. Console does not have any attributes.
+                            Ok(MetricsPeriodicExporterConfig::Console)
                         }
                         "otlp" => {
-                            let _: () = map.next_value()?;
-                            Ok(MetricsPeriodicExporterConfig::Otlp)
+                            let otlp_config: OtlpExporterConfig = map.next_value()?;
+                            Ok(MetricsPeriodicExporterConfig::Otlp(otlp_config))
                         }
                         _ => Err(serde::de::Error::unknown_field(&key, &["console", "otlp"])),
                     }
@@ -1153,10 +1190,7 @@ mod tests {
         );
 
         if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if let MetricsPeriodicExporterConfig::Console(exporter_config) = &reader_config.exporter
-            {
-                assert_eq!(exporter_config.temporality.as_deref(), None);
-            } else {
+            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
                 panic!("Expected MetricsPeriodicExporterConfig");
             }
         } else {
@@ -1200,10 +1234,7 @@ mod tests {
         );
 
         if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if let MetricsPeriodicExporterConfig::Console(exporter_config) = &reader_config.exporter
-            {
-                assert_eq!(exporter_config.temporality.as_deref(), None);
-            } else {
+            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
                 panic!("Expected MetricsPeriodicExporterConfig");
             }
         } else {
@@ -1369,9 +1400,7 @@ mod tests {
         assert_eq!(readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 15);
-            if let MetricsPeriodicExporterConfig::Console(_) = &periodic_config.exporter {
-                // OK
-            } else {
+            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1386,17 +1415,13 @@ mod tests {
               - periodic:
                   interval: "10s"
                   exporter:
-                    console: {}
+                    console:
             "#;
         let config: super::MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 10);
-            if let MetricsPeriodicExporterConfig::Console(console_config) =
-                &periodic_config.exporter
-            {
-                assert!(console_config.temporality.is_none());
-            } else {
+            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1409,15 +1434,12 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              console: {}
+              console:
             "#;
         let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
             serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
-        if let MetricsPeriodicExporterConfig::Console(_) = &metrics_reader_periodic_config.exporter
-        {
-            // OK
-        } else {
+        if MetricsPeriodicExporterConfig::Console != metrics_reader_periodic_config.exporter {
             panic!("Expected Console exporter config");
         }
     }
