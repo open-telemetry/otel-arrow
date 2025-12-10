@@ -231,8 +231,7 @@ impl StreamAccumulator {
         let options = IpcWriteOptions::default();
 
         {
-            let mut writer =
-                FileWriter::try_new_with_options(&mut buffer, &self.schema, options)?;
+            let mut writer = FileWriter::try_new_with_options(&mut buffer, &self.schema, options)?;
 
             for batch in &self.batches {
                 writer.write(batch)?;
@@ -294,12 +293,8 @@ mod tests {
     #[test]
     fn new_accumulator_is_empty() {
         let schema = test_schema();
-        let acc = StreamAccumulator::new(
-            StreamId::new(0),
-            SlotId::new(0),
-            test_fingerprint(),
-            schema,
-        );
+        let acc =
+            StreamAccumulator::new(StreamId::new(0), SlotId::new(0), test_fingerprint(), schema);
 
         assert!(acc.is_empty());
         assert_eq!(acc.chunk_count(), 0);
@@ -428,10 +423,10 @@ mod tests {
         let schema = test_schema();
         let fp = [0x42u8; 32];
         const SLOT_ID: u16 = 3;
-        let acc = StreamAccumulator::new(StreamId::new(7), SlotId::new(slot_id), fp, schema);
+        let acc = StreamAccumulator::new(StreamId::new(7), SlotId::new(SLOT_ID), fp, schema);
 
         let key = acc.stream_key();
-        assert_eq!(key.slot_id, SlotId::new(slot_id));
+        assert_eq!(key.slot_id, SlotId::new(SLOT_ID));
         assert_eq!(key.schema_fingerprint, fp);
     }
 
@@ -439,12 +434,8 @@ mod tests {
     fn accessors_return_expected_values() {
         let schema = test_schema();
         let fp = [0x99u8; 32];
-        let acc = StreamAccumulator::new(
-            StreamId::new(10),
-            SlotId::new(5),
-            fp,
-            Arc::clone(&schema),
-        );
+        let acc =
+            StreamAccumulator::new(StreamId::new(10), SlotId::new(5), fp, Arc::clone(&schema));
 
         assert_eq!(acc.stream_id(), StreamId::new(10));
         assert_eq!(acc.slot_id(), SlotId::new(5));
@@ -455,12 +446,8 @@ mod tests {
     #[test]
     fn debug_impl_does_not_panic() {
         let schema = test_schema();
-        let acc = StreamAccumulator::new(
-            StreamId::new(0),
-            SlotId::new(0),
-            test_fingerprint(),
-            schema,
-        );
+        let acc =
+            StreamAccumulator::new(StreamId::new(0), SlotId::new(0), test_fingerprint(), schema);
         let debug_str = format!("{:?}", acc);
         assert!(debug_str.contains("StreamAccumulator"));
         assert!(debug_str.contains("stream_id"));
