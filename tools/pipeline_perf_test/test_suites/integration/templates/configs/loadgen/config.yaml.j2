@@ -15,7 +15,7 @@ nodes:
     config:
       traffic_config:
         max_batch_size: {{ max_batch_size | default(1000) }}
-        signals_per_second: {{ signals_per_second | default(100000) }}
+        signals_per_second: {% if signals_per_second is none %}null{% else %}{{ signals_per_second | default(100000) }}{% endif %}
         metric_weight: {{ metric_weight | default(0) }}
         trace_weight: {{ trace_weight | default(0) }}
         log_weight: {{ log_weight | default(100) }}
