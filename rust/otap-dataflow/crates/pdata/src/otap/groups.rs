@@ -1073,7 +1073,7 @@ fn reindex<const N: usize>(
 
                     let (parent, next_starting_id) =
                         reindex_record_batch(parent, consts::ID, parent_starting_offset)?;
-                    starting_ids[parent_offset] += next_starting_id;
+                    starting_ids[parent_offset] = next_starting_id;
                     // return parent to batches since we took it!
                     let _ = batches[parent_offset].replace(parent);
 
@@ -1085,7 +1085,7 @@ fn reindex<const N: usize>(
                                 consts::PARENT_ID,
                                 parent_starting_offset,
                             )?;
-                            starting_ids[child_offset] += next_starting_id;
+                            starting_ids[child_offset] = next_starting_id;
                             // return child to batches since we took it!
                             let _ = batches[child_offset].replace(child);
                             // We don't have to reindex child's id column since we'll get to it in a
@@ -1416,17 +1416,19 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             // All the present columns should have the same Field definition, so just pick the first
             // one arbitrarily; we know there has to be at least one because if there were none, we
             // wouldn't have a mismatch to begin with.
-            let field = Arc::new(
-                schemas[*present_batch_indices
-                    .iter()
-                    .next()
-                    .expect("there should be at least one schema")]
-                .field_with_name(missing_field_name)
-                .map_err(|e| Error::Batching { source: e })?
-                .clone(),
-            );
-            // TODO: This is where the metrics batching tests fail.
-            assert!(field.is_nullable(), "{field:?} should be nullable");
+            let mut field = schemas[*present_batch_indices
+                .iter()
+                .next()
+                .expect("there should be at least one schema")]
+            .field_with_name(missing_field_name)
+            .map_err(|e| Error::Batching { source: e })?
+            .clone();
+            // If the field is not nullable, we need to make it nullable since we're adding null
+            // values for batches where this column is missing.
+            if !field.is_nullable() {
+                field = field.with_nullable(true);
+            }
+            let field = Arc::new(field);
             for missing_batch_index in all_batch_indices.difference(present_batch_indices).copied()
             {
                 if let Some(batch) = batches[missing_batch_index][payload_type_index].take() {

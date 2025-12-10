@@ -98,14 +98,10 @@ fn test_simple_batch_traces() {
     }
 }
 
-/// TODO(#1334): This test is currently broken. Unify() has some issues.
 #[test]
-#[ignore]
 fn test_simple_batch_metrics() {
     for input_count in 1..=20 {
-        // TODO: Note that changing 3..=5 to 3..=15 breaks the test
-        for max_output_batch in 3..=5 {
-            eprintln!("in/max {input_count}, {max_output_batch}");
+        for max_output_batch in 3..=15 {
             for point_count in 1..=10 {
                 let mut datagen = DataGenerator::new(point_count);
                 test_batching(
