@@ -20,22 +20,17 @@ struct MetricsBatchingTestCase {
     input_count: usize,
 }
 
-/// Generate deterministic test cases for comprehensive batching testing
-fn generate_metrics_batching_test_cases(target_count: usize) -> Vec<MetricsBatchingTestCase> {
-    let mut cases = Vec::with_capacity(target_count);
-    let mut case_num = 0;
+/// Generate deterministic test cases
+fn generate_metrics_batching_test_cases() -> Vec<MetricsBatchingTestCase> {
+    let mut cases = Vec::new();
 
-    // Helper to add a test case
     let mut add_case = |name: &str, config: MetricsConfig, max_batch: u64, inputs: usize| {
-        if cases.len() < target_count {
-            cases.push(MetricsBatchingTestCase {
-                name: format!("{:04}_{}", case_num, name),
-                config,
-                max_output_batch: max_batch,
-                input_count: inputs,
-            });
-            case_num += 1;
-        }
+        cases.push(MetricsBatchingTestCase {
+            name: format!("{:04}_{}", cases.len(), name),
+            config,
+            max_output_batch: max_batch,
+            input_count: inputs,
+        });
     };
 
     // Basic single-type metrics with varying point counts
@@ -168,20 +163,20 @@ fn generate_metrics_batching_test_cases(target_count: usize) -> Vec<MetricsBatch
         add_case(
             &format!("stress_gauges_limit_{}", limit),
             MetricsConfig::new().with_gauges(gauge_counts.clone()),
-            limit as u64,
+            limit,
             10,
         );
         let sum_counts: Vec<usize> = (2..=8).step_by(2).collect();
         add_case(
             &format!("stress_sums_limit_{}", limit),
             MetricsConfig::new().with_sums(sum_counts),
-            limit as u64,
+            limit,
             10,
         );
         add_case(
             &format!("stress_histograms_limit_{}", limit),
             MetricsConfig::new().with_histograms(vec![3, 7, 12, 5, 9]),
-            limit as u64,
+            limit,
             8,
         );
     }
@@ -192,14 +187,14 @@ fn generate_metrics_batching_test_cases(target_count: usize) -> Vec<MetricsBatch
         add_case(
             &format!("sum_to_limit_{}", limit),
             MetricsConfig::new().with_gauges(vec![3, 3, 4]),
-            limit as u64,
+            limit,
             3,
         );
         // Metrics that sum to limit + 1
         add_case(
             &format!("sum_to_limit_plus_1_{}", limit),
             MetricsConfig::new().with_gauges(vec![3, 3, 5]),
-            limit as u64,
+            limit,
             2,
         );
     }
@@ -209,7 +204,7 @@ fn generate_metrics_batching_test_cases(target_count: usize) -> Vec<MetricsBatch
         add_case(
             &format!("single_input_multi_metrics_limit_{}", limit),
             MetricsConfig::new().with_gauges(vec![2, 4, 6, 3, 7]),
-            limit as u64,
+            limit,
             1,
         );
     }
@@ -219,7 +214,7 @@ fn generate_metrics_batching_test_cases(target_count: usize) -> Vec<MetricsBatch
         add_case(
             &format!("multi_inputs_single_metric_limit_{}", limit),
             MetricsConfig::new().with_gauges(vec![5]),
-            limit as u64,
+            limit,
             8,
         );
     }
@@ -245,21 +240,19 @@ fn generate_metrics_batching_test_cases(target_count: usize) -> Vec<MetricsBatch
     //     );
     // }
 
-    // Pad with more diverse cases if we haven't reached target_count
-    let initial_len = cases.len();
-    for i in initial_len..target_count {
+    //
+    // A bunch of gauges!
+    for i in 0..1000 {
         let limit = 10 + (i % 10) as u64 * 10;
         let points = vec![(i % 7) + 1, (i % 5) + 2];
-        cases.push(MetricsBatchingTestCase {
-            name: format!("{:04}_filler_{}", case_num, i),
-            config: MetricsConfig::new().with_gauges(points),
-            max_output_batch: limit,
-            input_count: 3,
-        });
-        case_num += 1;
+        add_case(
+            &format!("{:04}_filler", i),
+            MetricsConfig::new().with_gauges(points),
+            limit,
+            3usize + (i % 11),
+        );
     }
 
-    cases.truncate(target_count);
     cases
 }
 
@@ -376,7 +369,7 @@ fn test_simple_batch_metrics() {
 
 #[test]
 fn test_comprehensive_batch_metrics() {
-    let test_cases = generate_metrics_batching_test_cases(1000);
+    let test_cases = generate_metrics_batching_test_cases();
 
     for (idx, test_case) in test_cases.iter().enumerate() {
         let mut datagen = DataGenerator::with_metrics_config(test_case.config.clone());
