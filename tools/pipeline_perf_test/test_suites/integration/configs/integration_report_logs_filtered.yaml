@@ -175,6 +175,30 @@ queries:
         SUM(average_rate) AS average_rate
       FROM send_receive_rates_by_core
       GROUP BY component_name, metric_name;
+  - name: Calculate component core counts
+    sql: |
+      CREATE TABLE component_core_counts AS
+        WITH allocated AS (
+          SELECT
+            "metric_attributes.component_name" AS component_name,
+            MAX(value) AS core_count
+          FROM metrics
+          WHERE metric_name = 'container.cpu.allocated'
+          GROUP BY "metric_attributes.component_name"
+        ),
+        system_cores AS (
+          SELECT DISTINCT
+            "metric_attributes.component_name" AS component_name,
+            (SELECT MAX(value) FROM metrics WHERE metric_name = 'container.cpu.usage') AS system_cpu_count
+          FROM metrics
+          WHERE metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+        )
+        SELECT
+          s.component_name,
+          COALESCE(a.core_count, s.system_cpu_count) AS core_count
+        FROM system_cores s
+        LEFT JOIN allocated a ON s.component_name = a.component_name;
+
   - name: Create component metric aggregates
     sql: |
       CREATE TABLE component_resource_metrics AS
@@ -253,6 +277,26 @@ queries:
 
           UNION ALL
 
+          SELECT 'cpu_percentage_normalized_avg' AS name, '%' AS unit,
+                (crm.avg_value / COALESCE(ccc.core_count, 1)) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU % (Normalized)' AS extra
+          FROM component_resource_metrics crm
+          CROSS JOIN metadata_row
+          LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
+          WHERE crm.component_name IN ('go-collector', 'df-engine') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+
+          UNION ALL
+
+          SELECT 'cpu_percentage_normalized_max' AS name, '%' AS unit,
+                (crm.max_value / COALESCE(ccc.core_count, 1)) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU % (Normalized)' AS extra
+          FROM component_resource_metrics crm
+          CROSS JOIN metadata_row
+          LEFT JOIN component_core_counts ccc ON crm.component_name = ccc.component_name
+          WHERE crm.component_name IN ('go-collector', 'df-engine') AND crm.metric_name IN ('container.cpu.usage', 'process.cpu.usage')
+
+          UNION ALL
+
           SELECT 'ram_mib_avg' AS name, 'MiB' AS unit, avg_value / 1024 / 1024 AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - RAM (MiB)' AS extra
           FROM component_resource_metrics
@@ -293,7 +337,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_tx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+          SELECT 'network_tx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -301,7 +345,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_rx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+          SELECT 'network_rx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row

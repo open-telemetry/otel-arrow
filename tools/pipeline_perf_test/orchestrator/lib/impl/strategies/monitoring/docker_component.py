@@ -107,9 +107,13 @@ class DockerComponentMonitoringConfig(MonitoringStrategyConfig):
     Attributes:
         interval (Optional[float]): Time in seconds between each polling interval
                                     for metrics collection. Defaults to 1.0 second.
+        allocated_cores (Optional[int]): Number of CPU cores allocated to the component.
+                                         This is used for calculating normalized CPU utilization.
+                                         If not specified, defaults to 1.
     """
 
     interval: Optional[float] = 1.0
+    allocated_cores: Optional[int] = None  # Application-level CPU allocation (e.g., via --core-id-range), not Docker container limits
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)
@@ -186,6 +190,7 @@ components:
             "logger": logger,
             "test_suite_context": test_suite_context,
             "interval": self.config.interval,
+            "allocated_cores": self.config.allocated_cores,
         }
         monitoring_runtime.thread = threading.Thread(
             target=monitor, kwargs=monitor_args, daemon=True
@@ -239,6 +244,7 @@ def monitor(
     logger: LoggerAdapter,
     test_suite_context: ScenarioContext,
     interval: float = 1.0,
+    allocated_cores: Optional[int] = None,
 ):
     """
     Periodically monitors a Docker container's CPU and memory usage, updating
@@ -271,6 +277,11 @@ def monitor(
         "container.cpu.usage",
         "{cpu}",
         "Container's CPU usage, measured in cpus. Range from 0 to the number of allocatable CPUs",
+    )
+    cpu_allocated_gauge = meter.create_gauge(
+        "container.cpu.allocated",
+        "{cpu}",
+        "Number of CPU cores allocated to the application running in the container",
     )
     memory_usage_gauge = meter.create_gauge(
         "container.memory.usage", "By", "Memory usage of the container."
@@ -340,6 +351,10 @@ def monitor(
                 mem_usage = stat_data["memory_stats"]["usage"]
                 cpu_usage_gauge.set(cpu_usage, labels)
                 memory_usage_gauge.set(mem_usage, labels)
+
+                # Record allocated cores if specified
+                if allocated_cores is not None:
+                    cpu_allocated_gauge.set(allocated_cores, labels)
                 # stats.add_sample(cpu_usage, mem_usage)
                 poll_duration = time.time() - start
                 logger.debug(

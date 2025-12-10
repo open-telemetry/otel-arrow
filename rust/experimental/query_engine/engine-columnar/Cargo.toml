@@ -14,11 +14,27 @@ async-trait = { workspace = true }
 datafusion = { workspace = true }
 futures-core = { workspace = true }
 parking_lot = { workspace = true }
+roaring = { workspace = true }
 thiserror = { workspace = true }
 
 otap-df-pdata = { path = "../../../otap-dataflow/crates/pdata" }
 data_engine_expressions = { path = "../expressions" }
-
+data_engine_kql_parser = { path = "../kql-parser" }
 
 [dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+pretty_assertions = { workspace = true }
+prost = { workspace = true }
 tokio = { workspace = true }
+
+[[bench]]
+name = "filter"
+harness = false
+
+[profile.bench]
+opt-level = 3
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"

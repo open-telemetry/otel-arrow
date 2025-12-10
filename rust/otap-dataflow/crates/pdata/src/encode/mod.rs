@@ -3885,7 +3885,7 @@ mod test {
     }
 
     #[test]
-    fn test_encode_logs_batch_length_counts_rows() {
+    fn test_encode_logs_num_items_counts_rows() {
         use crate::otap::OtapArrowRecords;
         use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
         use crate::proto::opentelemetry::logs::v1::{
@@ -3915,7 +3915,7 @@ mod test {
 
         let rec = encode_logs_otap_batch(&logs_data).expect("encode logs");
         assert!(matches!(rec, OtapArrowRecords::Logs(_)));
-        let n = rec.batch_length();
+        let n = rec.num_items();
         assert!(n >= 3, "expected at least 3 log rows, got {n}");
     }
 

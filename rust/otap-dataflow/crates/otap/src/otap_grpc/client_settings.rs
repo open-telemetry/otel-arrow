@@ -18,7 +18,7 @@ pub struct GrpcClientSettings {
     pub grpc_endpoint: String,
 
     /// Compression method to use for outbound requests. Defaults to no compression.
-    #[serde(default)]
+    #[serde(default, alias = "compression_method")]
     pub compression: Option<CompressionMethod>,
 
     /// Maximum number of concurrent in-flight requests allowed by the transport stack.
@@ -162,7 +162,7 @@ const fn default_concurrency_limit() -> usize {
     256
 }
 
-fn default_connect_timeout() -> Duration {
+const fn default_connect_timeout() -> Duration {
     Duration::from_secs(3)
 }
 
@@ -170,15 +170,15 @@ const fn default_tcp_nodelay() -> bool {
     true
 }
 
-fn default_tcp_keepalive() -> Option<Duration> {
+const fn default_tcp_keepalive() -> Option<Duration> {
     Some(Duration::from_secs(45))
 }
 
-fn default_initial_stream_window_size() -> Option<u32> {
+const fn default_initial_stream_window_size() -> Option<u32> {
     Some(8 * 1024 * 1024)
 }
 
-fn default_initial_connection_window_size() -> Option<u32> {
+const fn default_initial_connection_window_size() -> Option<u32> {
     Some(32 * 1024 * 1024)
 }
 
@@ -186,11 +186,11 @@ const fn default_http2_adaptive_window() -> bool {
     false
 }
 
-fn default_http2_keepalive_interval() -> Option<Duration> {
+const fn default_http2_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(30))
 }
 
-fn default_http2_keepalive_timeout() -> Option<Duration> {
+const fn default_http2_keepalive_timeout() -> Option<Duration> {
     Some(Duration::from_secs(10))
 }
 

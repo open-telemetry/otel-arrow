@@ -25,9 +25,11 @@
 //!
 //! ## Supported Backends Roadmap
 //! - **OTLP Bytes Backend**: serialized otlp bytes representation
+//! - **OTAP Arrow Backend**: Zero-copy abstraction over OTAP Arrow RecordBatches
 //! - **JSON Backend**: serde_json::Value for dynamic JSON processing
 //! - **SYSLOG Backend**: Zero-allocation parsing of syslog/CEF strings
 
+pub mod otap;
 pub mod otlp;
 
 pub mod common;

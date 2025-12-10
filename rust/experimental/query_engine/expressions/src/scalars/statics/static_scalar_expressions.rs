@@ -71,6 +71,22 @@ impl StaticScalarExpression {
         }
     }
 
+    pub(crate) fn set_query_location(&mut self, query_location: QueryLocation) {
+        match self {
+            StaticScalarExpression::Array(a) => a.query_location = query_location,
+            StaticScalarExpression::Boolean(b) => b.query_location = query_location,
+            StaticScalarExpression::Constant(c) => c.query_location = query_location,
+            StaticScalarExpression::DateTime(d) => d.query_location = query_location,
+            StaticScalarExpression::Double(d) => d.query_location = query_location,
+            StaticScalarExpression::Integer(i) => i.query_location = query_location,
+            StaticScalarExpression::Map(m) => m.query_location = query_location,
+            StaticScalarExpression::Null(n) => n.query_location = query_location,
+            StaticScalarExpression::Regex(r) => r.query_location = query_location,
+            StaticScalarExpression::String(s) => s.query_location = query_location,
+            StaticScalarExpression::TimeSpan(t) => t.query_location = query_location,
+        }
+    }
+
     pub fn from_json(
         query_location: QueryLocation,
         input: &str,

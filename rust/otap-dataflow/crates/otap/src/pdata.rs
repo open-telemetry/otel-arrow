@@ -29,6 +29,15 @@ pub struct Context {
 }
 
 impl Context {
+    /// Create a context with reserved frame capacity to avoid reallocating
+    /// when the first subscriber is pushed.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            stack: Vec::with_capacity(capacity),
+        }
+    }
+
     /// Subscribe to a set of interests.
     pub(crate) fn subscribe_to(
         &mut self,
@@ -101,6 +110,12 @@ impl Context {
     #[must_use]
     pub fn current_calldata(&self) -> Option<CallData> {
         self.stack.last().map(|f| f.calldata.clone())
+    }
+
+    /// Are there any subscribers?
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        !self.stack.is_empty()
     }
 }
 
@@ -205,6 +220,13 @@ impl OtapPdata {
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
         self
+    }
+
+    /// Returns Context::has_subscribers()
+    #[cfg(test)]
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        self.context.has_subscribers()
     }
 
     /// Return the current calldata.

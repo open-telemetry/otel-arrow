@@ -10,6 +10,12 @@ ci-repo:
 query-engine:
 - changed-files:
   - any-glob-to-any-file: 'rust/experimental/query_engine/**/*'
+query-engine-columnar:
+- changed-files:
+  - any-glob-to-any-file: 'rust/experimental/query_engine/engine-columnar*/**/*'
+query-engine-recordset:
+- changed-files:
+  - any-glob-to-any-file: 'rust/experimental/query_engine/engine-recordset*/**/*'
 query-engine-kql:
 - changed-files:
   - any-glob-to-any-file: 'rust/experimental/query_engine/kql-parser/**/*'

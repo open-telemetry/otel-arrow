@@ -17,7 +17,7 @@ use std::ops::Add;
 use std::time::Instant;
 
 /// TestCallData helps test the CallData type.
-#[derive(Eq, PartialEq, Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
 pub struct TestCallData {
     id0: u64,
     id1: usize,

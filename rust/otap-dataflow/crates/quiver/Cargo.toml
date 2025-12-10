@@ -1,0 +1,45 @@
+[package]
+name = "otap-df-quiver"
+description = "Embeddable Arrow-based segment store"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+keywords = ["opentelemetry", "arrow", "persistence", "quiver"]
+categories = ["database", "data-structures"]
+
+[lib]
+name = "quiver"
+path = "src/lib.rs"
+
+[features]
+default = ["otap-dataflow-integrations"]
+otap-dataflow-integrations = []
+serde = ["dep:serde"]
+
+[dependencies]
+arrow-array.workspace = true
+arrow-schema.workspace = true
+arrow-ipc.workspace = true
+crc32fast.workspace = true
+blake3.workspace = true
+parking_lot.workspace = true
+serde = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "ingest"
+harness = false

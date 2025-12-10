@@ -8,6 +8,9 @@ pub type ScalarStaticResolutionResult<'a> =
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
+    /// Resolve a value from a function argument. Values may be mutable or immutable.
+    Argument(ArgumentScalarExpression),
+
     /// Resolve a value from an immutable record attached to a query.
     ///
     /// Attached data is related to the query source but not necessarily owned.
@@ -39,6 +42,9 @@ pub enum ScalarExpression {
 
     /// Returns the type string for the inner expression.
     GetType(GetTypeScalarExpression),
+
+    /// Invoke a user-defined function.
+    InvokeFunction(InvokeFunctionScalarExpression),
 
     /// Returns the number of characters in an inner string value, the number of
     /// items in an inner array/map values, or null for invalid input.
@@ -107,6 +113,8 @@ impl ScalarExpression {
             ScalarExpression::Text(r) => r.try_resolve_value_type(scope),
             ScalarExpression::Math(m) => m.try_resolve_value_type(scope),
             ScalarExpression::Select(s) => s.try_resolve_value_type(scope),
+            ScalarExpression::Argument(a) => Ok(a.get_value_type()),
+            ScalarExpression::InvokeFunction(i) => Ok(i.get_value_type()),
         }
     }
 
@@ -137,7 +145,11 @@ impl ScalarExpression {
             match scalar.try_resolve_static_inner(scope)? {
                 None => return Ok(None),
                 Some(ResolvedStaticScalarExpression::Computed(c)) => c,
-                Some(ResolvedStaticScalarExpression::FoldEligibleReference(r)) => r.clone(),
+                Some(ResolvedStaticScalarExpression::FoldEligibleReference(r)) => {
+                    let mut copy = r.clone();
+                    copy.set_query_location(self.get_query_location().clone());
+                    copy
+                }
                 Some(r) => return Ok(Some(r)),
             }
         };
@@ -200,6 +212,11 @@ impl ScalarExpression {
             ScalarExpression::Text(r) => r.try_resolve_static(scope),
             ScalarExpression::Math(m) => m.try_resolve_static(scope),
             ScalarExpression::Select(s) => s.try_resolve_static(scope),
+            ScalarExpression::Argument(a) => {
+                a.try_fold(scope)?;
+                Ok(None)
+            }
+            ScalarExpression::InvokeFunction(i) => i.try_resolve_static(scope),
         }
     }
 }
@@ -226,6 +243,8 @@ impl Expression for ScalarExpression {
             ScalarExpression::Text(r) => r.get_query_location(),
             ScalarExpression::Math(m) => m.get_query_location(),
             ScalarExpression::Select(s) => s.get_query_location(),
+            ScalarExpression::Argument(a) => a.get_query_location(),
+            ScalarExpression::InvokeFunction(i) => i.get_query_location(),
         }
     }
 
@@ -250,6 +269,8 @@ impl Expression for ScalarExpression {
             ScalarExpression::Text(r) => r.get_name(),
             ScalarExpression::Math(m) => m.get_name(),
             ScalarExpression::Select(_) => "ScalarExpression(Select)",
+            ScalarExpression::Argument(_) => "ScalarExpression(Argument)",
+            ScalarExpression::InvokeFunction(_) => "ScalarExpression(InvokeFunction)",
         }
     }
 
@@ -274,6 +295,8 @@ impl Expression for ScalarExpression {
             ScalarExpression::Text(t) => t.fmt_with_indent(f, indent),
             ScalarExpression::Variable(v) => v.fmt_with_indent(f, indent),
             ScalarExpression::Select(s) => s.fmt_with_indent(f, indent),
+            ScalarExpression::Argument(a) => a.fmt_with_indent(f, indent),
+            ScalarExpression::InvokeFunction(i) => i.fmt_with_indent(f, indent),
         }
     }
 }
@@ -1390,6 +1413,239 @@ impl Expression for SelectScalarExpression {
             .fmt_with_indent(f, format!("{indent}│                   ").as_str())?;
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArgumentScalarExpression {
+    query_location: QueryLocation,
+    value_type: Option<ValueType>,
+    argument_id: usize,
+    accessor: ValueAccessor,
+}
+
+impl ArgumentScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        value_type: Option<ValueType>,
+        argument_id: usize,
+        accessor: ValueAccessor,
+    ) -> ArgumentScalarExpression {
+        Self {
+            query_location,
+            value_type,
+            argument_id,
+            accessor,
+        }
+    }
+
+    pub fn get_value_type(&self) -> Option<ValueType> {
+        self.value_type.clone()
+    }
+
+    pub fn get_argument_id(&self) -> usize {
+        self.argument_id
+    }
+
+    pub fn get_value_accessor(&self) -> &ValueAccessor {
+        &self.accessor
+    }
+
+    pub fn get_value_accessor_mut(&mut self) -> &mut ValueAccessor {
+        &mut self.accessor
+    }
+
+    pub(crate) fn try_fold(
+        &mut self,
+        scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        self.accessor.try_fold(scope)
+    }
+}
+
+impl Expression for ArgumentScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "ArgumentScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Argument")?;
+        writeln!(f, "{indent}├── ValueType: {:?}", self.value_type)?;
+        writeln!(f, "{indent}└── Id: {}", self.argument_id)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvokeFunctionScalarExpression {
+    query_location: QueryLocation,
+    value_type: Option<ValueType>,
+    function_id: usize,
+    arguments: Vec<InvokeFunctionArgument>,
+}
+
+impl InvokeFunctionScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        value_type: Option<ValueType>,
+        function_id: usize,
+        arguments: Vec<InvokeFunctionArgument>,
+    ) -> InvokeFunctionScalarExpression {
+        Self {
+            query_location,
+            value_type,
+            function_id,
+            arguments,
+        }
+    }
+
+    pub fn get_value_type(&self) -> Option<ValueType> {
+        self.value_type.clone()
+    }
+
+    pub fn get_function_id(&self) -> usize {
+        self.function_id
+    }
+
+    pub fn get_arguments(&self) -> &[InvokeFunctionArgument] {
+        &self.arguments
+    }
+
+    pub(crate) fn try_resolve_static<'a>(
+        &'a mut self,
+        scope: &PipelineResolutionScope<'a>,
+    ) -> ScalarStaticResolutionResult<'a> {
+        let function_id = self.function_id;
+
+        let function = scope
+            .get_function(function_id)
+            .unwrap_or_else(|| panic!("Function for id '{function_id}' was not found on pipeline"));
+
+        if function.get_parameters().len() != self.get_arguments().len() {
+            return Err(ExpressionError::ValidationFailure(
+                self.query_location.clone(),
+                "Invalid number of arguments specified for function invocation".into(),
+            ));
+        }
+
+        /*
+        Note:
+
+        If a function...
+          * Has an implementation supplied by expressions
+          * Has only immutable arguments
+          * Has a single return statement
+          * Has a static return value
+        ...then we can elide the invocation of the function completely.
+
+        The immutable argument rule is there to make sure side-effects are preserved. Consider a function like...
+
+        my_func(m: Mutable(Map)) {
+            m['some_attr'] = 1;
+            return 1;
+        }
+
+        ...in that case the return is a constant (Long(1)) but we can't elide the function because the map
+        argument "m" still needs to be mutated.
+        */
+        if let PipelineFunctionImplementation::Expressions(expressions) =
+            function.get_implementation()
+            && !function.get_parameters().iter().any(|v| {
+                matches!(
+                    v.get_parameter_type(),
+                    PipelineFunctionParameterType::MutableValue(_)
+                )
+            })
+        {
+            let mut return_statement = None;
+            let mut return_count = 0;
+
+            for e in expressions {
+                if let PipelineFunctionExpression::Return(r) = e {
+                    return_count += 1;
+                    return_statement = Some(r);
+                }
+            }
+
+            if return_count == 1
+                && let ScalarExpression::Static(s) = return_statement.unwrap()
+            {
+                return Ok(Some(if s.foldable() {
+                    ResolvedStaticScalarExpression::FoldEligibleReference(s)
+                } else {
+                    ResolvedStaticScalarExpression::Reference(s)
+                }));
+            }
+        }
+
+        // Otherwise make sure all arguments are resolved/folded
+        for a in &mut self.arguments {
+            if let InvokeFunctionArgument::Scalar(s) = a {
+                s.try_resolve_static(scope)?;
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl Expression for InvokeFunctionScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "InvokeFunctionScalarExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "InvokeFunction")?;
+        writeln!(f, "{indent}├── ValueType: {:?}", self.value_type)?;
+        writeln!(f, "{indent}├── Id: {}", self.function_id)?;
+        if self.arguments.is_empty() {
+            writeln!(f, "{indent}└── Arguments: None")?;
+        } else {
+            writeln!(f, "{indent}└── Arguments: ")?;
+            let last_idx = self.arguments.len() - 1;
+            for (i, a) in self.arguments.iter().enumerate() {
+                if i == last_idx {
+                    write!(f, "{indent}    └── ")?;
+                    a.fmt_with_indent(f, format!("{indent}        ").as_str())?;
+                } else {
+                    write!(f, "{indent}    ├── ")?;
+                    a.fmt_with_indent(f, format!("{indent}    │   ").as_str())?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InvokeFunctionArgument {
+    Scalar(ScalarExpression),
+    MutableValue(MutableValueExpression),
+}
+
+impl InvokeFunctionArgument {
+    pub(crate) fn fmt_with_indent(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        indent: &str,
+    ) -> std::fmt::Result {
+        match self {
+            InvokeFunctionArgument::Scalar(s) => {
+                write!(f, "Scalar: ")?;
+                s.fmt_with_indent(f, indent)
+            }
+            InvokeFunctionArgument::MutableValue(m) => {
+                write!(f, "Mutable: ")?;
+                m.fmt_with_indent(f, indent)
+            }
+        }
     }
 }
 
@@ -3142,6 +3398,111 @@ mod tests {
                 )),
             ),
             "Could not search for map key 'key1' specified in accessor expression because current node is a 'Array' value",
+        );
+    }
+
+    #[test]
+    pub fn test_invoke_function_scalar_expression_try_resolve_static() {
+        fn run_test_success(
+            function: PipelineFunction,
+            parameters: Vec<InvokeFunctionArgument>,
+            expected_value: Option<String>,
+        ) {
+            let mut pipeline: PipelineExpression = PipelineExpression::new("");
+
+            pipeline.push_function(function);
+
+            let mut scalar =
+                InvokeFunctionScalarExpression::new(QueryLocation::new_fake(), None, 0, parameters);
+
+            let actual_value = scalar
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap();
+            assert_eq!(
+                expected_value,
+                actual_value.as_ref().map(|v| v.to_value().to_string())
+            );
+        }
+
+        fn run_test_failure(
+            function: PipelineFunction,
+            parameters: Vec<InvokeFunctionArgument>,
+            expected_msg: &str,
+        ) {
+            let mut pipeline: PipelineExpression = PipelineExpression::new("");
+
+            pipeline.push_function(function);
+
+            let mut scalar =
+                InvokeFunctionScalarExpression::new(QueryLocation::new_fake(), None, 0, parameters);
+
+            let actual_value = scalar
+                .try_resolve_static(&pipeline.get_resolution_scope())
+                .unwrap_err();
+            if let ExpressionError::ValidationFailure(_, a) = actual_value {
+                assert_eq!(expected_msg, a);
+            } else {
+                panic!("Unexpected ExpressionError")
+            }
+        }
+
+        run_test_success(
+            PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![],
+                None,
+                vec![PipelineFunctionExpression::Return(
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                )],
+            ),
+            vec![],
+            Some("hello world".into()),
+        );
+
+        // Note: If a mutable parameter is present return value won't be folded
+        run_test_success(
+            PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![PipelineFunctionParameter::new(
+                    QueryLocation::new_fake(),
+                    "a",
+                    PipelineFunctionParameterType::MutableValue(None),
+                )],
+                None,
+                vec![PipelineFunctionExpression::Return(
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                )],
+            ),
+            vec![InvokeFunctionArgument::MutableValue(
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+            )],
+            None,
+        );
+
+        run_test_failure(
+            PipelineFunction::new_with_expressions(
+                QueryLocation::new_fake(),
+                vec![PipelineFunctionParameter::new(
+                    QueryLocation::new_fake(),
+                    "a",
+                    PipelineFunctionParameterType::Scalar(None),
+                )],
+                None,
+                vec![PipelineFunctionExpression::Return(
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                    )),
+                )],
+            ),
+            vec![],
+            "Invalid number of arguments specified for function invocation",
         );
     }
 }

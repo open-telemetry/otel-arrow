@@ -4,7 +4,7 @@
 //! Shared configuration for gRPC-based receivers.
 
 use crate::compression::{self, CompressionMethod};
-use crate::otap_grpc::otlp::server::Settings;
+use crate::otap_grpc::otlp::server_new::OtlpServerSettings;
 use otap_df_config::byte_units;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -44,6 +44,14 @@ pub struct GrpcServerSettings {
     /// capacity at runtime.
     #[serde(default = "default_max_concurrent_requests")]
     pub max_concurrent_requests: usize,
+
+    /// Upper bound on concurrently active HTTP/2 streams per connection.
+    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
+    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
+    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
+    /// default.
+    #[serde(default)]
+    pub max_concurrent_streams: Option<u32>,
 
     /// Whether newly accepted sockets should have `TCP_NODELAY` enabled.
     /// Keeping this `true` (the default) avoids Nagle's algorithm and minimizes per-export latency.
@@ -148,14 +156,6 @@ pub struct GrpcServerSettings {
     #[serde(default = "default_http2_keepalive_timeout", with = "humantime_serde")]
     pub http2_keepalive_timeout: Option<Duration>,
 
-    /// Upper bound on concurrently active HTTP/2 streams per connection.
-    /// By default this tracks the effective `max_concurrent_requests`, keeping logical and transport
-    /// concurrency aligned. Lower values improve fairness between chatty clients. Higher values
-    /// matter only if you also raise `max_concurrent_requests`. Set to `0` to inherit the derived
-    /// default.
-    #[serde(default)]
-    pub max_concurrent_streams: Option<u32>,
-
     /// Whether to wait for the result (default: false)
     ///
     /// When enabled, the receiver will not send a response until the
@@ -231,11 +231,11 @@ impl GrpcServerSettings {
 
     /// Builds the gRPC server settings from this configuration.
     #[must_use]
-    pub fn build_settings(&self) -> Settings {
+    pub fn build_settings(&self) -> OtlpServerSettings {
         let (request_compression_encodings, response_compression_encodings) =
             self.compression_encodings();
 
-        Settings {
+        OtlpServerSettings {
             max_concurrent_requests: self.max_concurrent_requests,
             wait_for_result: self.wait_for_result,
             max_decoding_message_size: self.max_decoding_message_size.map(|value| value as usize),
@@ -253,15 +253,15 @@ const fn default_tcp_nodelay() -> bool {
     true
 }
 
-fn default_tcp_keepalive() -> Option<Duration> {
+const fn default_tcp_keepalive() -> Option<Duration> {
     Some(Duration::from_secs(45))
 }
 
-fn default_tcp_keepalive_interval() -> Option<Duration> {
+const fn default_tcp_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(15))
 }
 
-fn default_tcp_keepalive_retries() -> Option<u32> {
+const fn default_tcp_keepalive_retries() -> Option<u32> {
     Some(5)
 }
 
@@ -269,27 +269,27 @@ const fn default_load_shed() -> bool {
     true
 }
 
-fn default_initial_stream_window_size() -> Option<u32> {
+const fn default_initial_stream_window_size() -> Option<u32> {
     Some(8 * 1024 * 1024)
 }
 
-fn default_initial_connection_window_size() -> Option<u32> {
+const fn default_initial_connection_window_size() -> Option<u32> {
     Some(24 * 1024 * 1024)
 }
 
-fn default_max_frame_size() -> Option<u32> {
+const fn default_max_frame_size() -> Option<u32> {
     Some(16 * 1024)
 }
 
-fn default_max_decoding_message_size() -> Option<u32> {
+const fn default_max_decoding_message_size() -> Option<u32> {
     Some(4 * 1024 * 1024)
 }
 
-fn default_http2_keepalive_interval() -> Option<Duration> {
+const fn default_http2_keepalive_interval() -> Option<Duration> {
     Some(Duration::from_secs(30))
 }
 
-fn default_http2_keepalive_timeout() -> Option<Duration> {
+const fn default_http2_keepalive_timeout() -> Option<Duration> {
     Some(Duration::from_secs(10))
 }
 

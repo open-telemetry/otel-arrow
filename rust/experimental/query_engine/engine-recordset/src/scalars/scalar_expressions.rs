@@ -35,24 +35,7 @@ where
 {
     let value = match scalar_expression {
         ScalarExpression::Source(s) => {
-            if let Some(record) = execution_context.get_record() {
-                let mut selectors = s.get_value_accessor().get_selectors().iter();
-
-                select_from_borrowed_value(
-                    execution_context,
-                    BorrowSource::Source,
-                    record.borrow(),
-                    scalar_expression,
-                    &mut selectors,
-                )?
-            } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
-                    scalar_expression,
-                    || "Source could not be found".into(),
-                );
-                ResolvedValue::Computed(OwnedValue::Null)
-            }
+            execute_source_scalar_expression(execution_context, scalar_expression, s)?
         }
         ScalarExpression::Attached(a) => {
             let name = a.get_name().get_value();
@@ -85,40 +68,7 @@ where
             }
         }
         ScalarExpression::Variable(v) => {
-            let variable_name = v.get_name().get_value();
-
-            if let Some(variable) = execution_context
-                .get_variables()
-                .get_global_or_local_variable(variable_name)
-            {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    scalar_expression,
-                    || {
-                        format!(
-                            "Resolved '{}' variable with name '{variable_name}'",
-                            variable.get_value_type()
-                        )
-                    },
-                );
-
-                let mut selectors = v.get_value_accessor().get_selectors().iter();
-
-                select_from_borrowed_value(
-                    execution_context,
-                    BorrowSource::Variable,
-                    variable,
-                    scalar_expression,
-                    &mut selectors,
-                )?
-            } else {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
-                    scalar_expression,
-                    || format!("Variable matching name '{variable_name}' could not be found"),
-                );
-                ResolvedValue::Computed(OwnedValue::Null)
-            }
+            execute_variable_scalar_expression(execution_context, scalar_expression, v)?
         }
         ScalarExpression::Static(s) => ResolvedValue::Value(s.to_value()),
         ScalarExpression::Constant(c) => {
@@ -327,123 +277,30 @@ where
             ResolvedValue::Value(Value::String(value_type_name))
         }
         ScalarExpression::Select(s) => {
-            match execute_scalar_expression(execution_context, s.get_selectors())?.to_value() {
+            let selectors_expression = s.get_selectors();
+
+            match execute_scalar_expression(execution_context, selectors_expression)?.to_value() {
                 Value::Array(selectors) => {
                     let mut value = execute_scalar_expression(execution_context, s.get_value())?;
 
-                    if selectors.is_empty() {
-                        value
-                    } else {
+                    if !selectors.is_empty() {
                         for i in 0..selectors.len() {
-                            match selectors
+                            let selector = selectors
                                 .get(i)
                                 .expect("Selector could not be found")
-                                .to_value()
-                            {
-                                Value::Integer(index) => {
-                                    match value.try_resolve_array() {
-                                        Ok(array_value) => {
-                                            let mut index = index.get_value();
-                                            let length = array_value.len() as i64;
-                                            if index < 0 {
-                                                index += length;
-                                            }
-                                            if index < 0 || index >= length {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Warn,
-                                                    s,
-                                                    || format!("Array index '{index}' specified in accessor expression is invalid"),
-                                                );
-                                                return Ok(ResolvedValue::Computed(
-                                                    OwnedValue::Null,
-                                                ));
-                                            }
+                                .to_value();
 
-                                            let mut item = None;
-
-                                            array_value.take(
-                                                (index as usize).into(),
-                                                |_, v| Ok(v),
-                                                &mut |v| item = Some(v),
-                                            )?;
-
-                                            if let Some(v) = item {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Verbose,
-                                                    s.get_selectors(),
-                                                    || format!("Resolved {} value for index '{index}' specified in accessor expression", ResolvedValue::Value(v.to_value())),
-                                                );
-                                                value = v;
-                                            } else {
-                                                unreachable!() // Closure not executed
-                                            }
-                                        }
-                                        Err(orig) => {
-                                            execution_context.add_diagnostic_if_enabled(
-                                                RecordSetEngineDiagnosticLevel::Warn,
-                                                s.get_selectors(),
-                                                || format!("Could not search for array index '{}' specified in select expression because current node is a '{}' value", index.get_value(), orig.get_value_type()),
-                                            );
-                                            return Ok(ResolvedValue::Computed(OwnedValue::Null));
-                                        }
-                                    }
-                                }
-                                Value::String(key) => {
-                                    match value.try_resolve_map() {
-                                        Ok(map_value) => {
-                                            let key = key.get_value();
-
-                                            if !map_value.contains_key(key) {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Warn,
-                                                    s,
-                                                    || format!("Map key '{key}' specified in accessor expression could not be found"),
-                                                );
-                                                return Ok(ResolvedValue::Computed(
-                                                    OwnedValue::Null,
-                                                ));
-                                            }
-
-                                            let mut item = None;
-
-                                            map_value.take(&[key], |_, v| Ok(v), &mut |v| {
-                                                item = Some(v)
-                                            })?;
-
-                                            if let Some(v) = item {
-                                                execution_context.add_diagnostic_if_enabled(
-                                                    RecordSetEngineDiagnosticLevel::Verbose,
-                                                    s.get_selectors(),
-                                                    || format!("Resolved {} value for key '{key}' specified in accessor expression", ResolvedValue::Value(v.to_value())),
-                                                );
-                                                value = v;
-                                            } else {
-                                                unreachable!() // Closure not executed
-                                            }
-                                        }
-                                        Err(orig) => {
-                                            execution_context.add_diagnostic_if_enabled(
-                                                RecordSetEngineDiagnosticLevel::Warn,
-                                                s.get_selectors(),
-                                                || format!("Could not search for map key '{}' specified in select expression because current node is a '{}' value", key.get_value(), orig.get_value_type()),
-                                            );
-                                            return Ok(ResolvedValue::Computed(OwnedValue::Null));
-                                        }
-                                    }
-                                }
-                                v => {
-                                    execution_context.add_diagnostic_if_enabled(
-                                        RecordSetEngineDiagnosticLevel::Warn,
-                                        s.get_selectors(),
-                                        || format!("Unexpected scalar expression with '{}' value type encountered in select expression", v.get_value_type()),
-                                    );
-                                    return Ok(ResolvedValue::Computed(OwnedValue::Null));
+                            match value.select(execution_context, selectors_expression, selector)? {
+                                Some(v) => value = v,
+                                None => {
+                                    value = ResolvedValue::Computed(OwnedValue::Null);
+                                    break;
                                 }
                             }
                         }
-
-                        value
                     }
+
+                    value
                 }
                 v => {
                     execution_context.add_diagnostic_if_enabled(
@@ -460,6 +317,32 @@ where
                 }
             }
         }
+        ScalarExpression::Argument(a) => {
+            let mut value = execution_context
+                .get_arguments()
+                .expect("Arguments were not found")
+                .get_argument(a.get_argument_id())?;
+
+            let selectors = a.get_value_accessor().get_selectors();
+            if !selectors.is_empty() {
+                for selector in selectors {
+                    match value.select(
+                        execution_context,
+                        selector,
+                        execute_scalar_expression(execution_context, selector)?.to_value(),
+                    )? {
+                        Some(v) => value = v,
+                        None => {
+                            value = ResolvedValue::Computed(OwnedValue::Null);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            value
+        }
+        ScalarExpression::InvokeFunction(_) => todo!(),
     };
 
     execution_context.add_diagnostic_if_enabled(
@@ -471,11 +354,93 @@ where
     Ok(value)
 }
 
+pub(crate) fn execute_source_scalar_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    expression: &'a dyn Expression,
+    source_scalar_expression: &'a SourceScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    Ok(if let Some(record) = execution_context.get_record() {
+        let mut selectors = source_scalar_expression
+            .get_value_accessor()
+            .get_selectors()
+            .iter();
+
+        select_from_borrowed_value(
+            execution_context,
+            BorrowSource::Source,
+            record.borrow(),
+            expression,
+            &mut selectors,
+        )?
+    } else {
+        execution_context.add_diagnostic_if_enabled(
+            RecordSetEngineDiagnosticLevel::Warn,
+            expression,
+            || "Source could not be found".into(),
+        );
+        ResolvedValue::Computed(OwnedValue::Null)
+    })
+}
+
+pub(crate) fn execute_variable_scalar_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    expression: &'a dyn Expression,
+    variable_scalar_expression: &'a VariableScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    let variable_name = variable_scalar_expression.get_name().get_value();
+
+    Ok(
+        if let Some(variable) = execution_context
+            .get_variables()
+            .get_global_or_local_variable(variable_name)
+        {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Verbose,
+                expression,
+                || {
+                    format!(
+                        "Resolved '{}' variable with name '{variable_name}'",
+                        variable.get_value_type()
+                    )
+                },
+            );
+
+            let mut selectors = variable_scalar_expression
+                .get_value_accessor()
+                .get_selectors()
+                .iter();
+
+            select_from_borrowed_value(
+                execution_context,
+                BorrowSource::Variable,
+                variable,
+                expression,
+                &mut selectors,
+            )?
+        } else {
+            execution_context.add_diagnostic_if_enabled(
+                RecordSetEngineDiagnosticLevel::Warn,
+                expression,
+                || format!("Variable matching name '{variable_name}' could not be found"),
+            );
+            ResolvedValue::Computed(OwnedValue::Null)
+        },
+    )
+}
+
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     borrow_source: BorrowSource,
     borrow: Ref<'b, dyn AsStaticValue + 'static>,
-    expression: &'a ScalarExpression,
+    expression: &'a dyn Expression,
     selectors: &mut Iter<'a, ScalarExpression>,
 ) -> Result<ResolvedValue<'c>, ExpressionError>
 where
@@ -2186,5 +2151,82 @@ mod tests {
                 )],
             ))),
         ));
+    }
+
+    #[test]
+    fn test_execute_argument_scalar_expression() {
+        fn run_test_success(input: ArgumentScalarExpression, expected: &str) {
+            let mut test =
+                TestExecutionContext::new().with_record(TestRecord::new().with_key_value(
+                    "Attributes".into(),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([(
+                        "key1".into(),
+                        OwnedValue::String(StringValueStorage::new("value1".into())),
+                    )]))),
+                ));
+
+            let execution_context = test.create_execution_context();
+
+            let arguments = vec![
+                InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "hello world",
+                    )),
+                )),
+                InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
+                    ),
+                )),
+            ];
+
+            let execution_context_arguments = ExecutionContextArgumentContainer {
+                parent_execution_context: &execution_context,
+                arguments: &arguments,
+            };
+
+            let scope = execution_context.create_scope(Some(&execution_context_arguments));
+
+            let expression = ScalarExpression::Argument(input);
+
+            let actual = execute_scalar_expression(&scope, &expression).unwrap();
+
+            assert_eq!(
+                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                actual.to_value()
+            );
+        }
+
+        run_test_success(
+            ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                0,
+                ValueAccessor::new(),
+            ),
+            "hello world",
+        );
+
+        run_test_success(
+            ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::String),
+                1,
+                ValueAccessor::new(),
+            ),
+            "value1",
+        );
     }
 }

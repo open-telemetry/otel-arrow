@@ -53,6 +53,16 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Remove the record batch for the given payload type. If the payload type is not valid
+    /// for this type of telemetry signal, this method does nothing.
+    pub fn remove(&mut self, payload_type: ArrowPayloadType) {
+        match self {
+            Self::Logs(logs) => logs.remove(payload_type),
+            Self::Metrics(metrics) => metrics.remove(payload_type),
+            Self::Traces(spans) => spans.remove(payload_type),
+        }
+    }
+
     /// Get the record batch for the given payload type, if this payload type was included
     /// in the batch. If the payload type is not valid for this type of telemetry signal, this
     /// also method returns None.
@@ -77,6 +87,28 @@ impl OtapArrowRecords {
         }
     }
 
+    /// Get the root payload type for the signal type represented by this OTAP batch
+    #[must_use]
+    pub fn root_payload_type(&self) -> ArrowPayloadType {
+        match self {
+            Self::Logs(_) => ArrowPayloadType::Logs,
+            Self::Traces(_) => ArrowPayloadType::Spans,
+            Self::Metrics(metrics) => {
+                if metrics.get(ArrowPayloadType::MultivariateMetrics).is_some() {
+                    ArrowPayloadType::MultivariateMetrics
+                } else {
+                    ArrowPayloadType::UnivariateMetrics
+                }
+            }
+        }
+    }
+
+    /// Get the record batch for the signal type represented by this OTAP batch
+    #[must_use]
+    pub fn root_record_batch(&self) -> Option<&RecordBatch> {
+        self.get(self.root_payload_type())
+    }
+
     /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs
     /// on each Arrow Record Batch contained in this Otap Batch.
     pub fn decode_transport_optimized_ids(&mut self) -> Result<()> {
@@ -89,11 +121,11 @@ impl OtapArrowRecords {
 
     /// Fetch the number of items as defined by the batching system
     #[must_use]
-    pub fn batch_length(&self) -> usize {
+    pub fn num_items(&self) -> usize {
         match self {
-            Self::Logs(logs) => logs.batch_length(),
-            Self::Metrics(metrics) => metrics.batch_length(),
-            Self::Traces(traces) => traces.batch_length(),
+            Self::Logs(logs) => logs.num_items(),
+            Self::Metrics(metrics) => metrics.num_items(),
+            Self::Traces(traces) => traces.num_items(),
         }
     }
 
@@ -186,6 +218,13 @@ pub trait OtapBatchStore: Default + Clone {
         }
     }
 
+    /// Remove the record batch for the given payload type
+    fn remove(&mut self, payload_type: ArrowPayloadType) {
+        if Self::is_valid_type(payload_type) {
+            self.batches_mut()[POSITION_LOOKUP[payload_type as usize]] = None;
+        }
+    }
+
     /// Get the record batch for the given payload type
     fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
         if !Self::is_valid_type(payload_type) {
@@ -198,7 +237,7 @@ pub trait OtapBatchStore: Default + Clone {
     /// Get the number of items in the batch. Counts using Otel semantics where logs/traces are
     /// the number log records and spans respectively, whereas for metrics it's the count of
     /// data points.
-    fn batch_length(&self) -> usize;
+    fn num_items(&self) -> usize;
 }
 
 /// Convert the list of decoded messages into an OtapBatchStore implementation
@@ -362,8 +401,8 @@ impl OtapBatchStore for Logs {
         Ok(())
     }
 
-    fn batch_length(&self) -> usize {
-        batch_length(&self.batches)
+    fn num_items(&self) -> usize {
+        num_items(&self.batches)
     }
 }
 
@@ -376,7 +415,7 @@ const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
 
 /// Fetch the number of items as defined by the batching system
 #[must_use]
-fn batch_length<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
+fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
     match N {
         Logs::COUNT => batches[POSITION_LOOKUP[ArrowPayloadType::Logs as usize]]
             .as_ref()
@@ -638,8 +677,8 @@ impl OtapBatchStore for Metrics {
         Ok(())
     }
 
-    fn batch_length(&self) -> usize {
-        batch_length(&self.batches)
+    fn num_items(&self) -> usize {
+        num_items(&self.batches)
     }
 }
 
@@ -785,8 +824,8 @@ impl OtapBatchStore for Traces {
         Ok(())
     }
 
-    fn batch_length(&self) -> usize {
-        batch_length(&self.batches)
+    fn num_items(&self) -> usize {
+        num_items(&self.batches)
     }
 }
 
@@ -811,7 +850,7 @@ pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [Ar
         ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
-            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::MetricAttrs,
             ArrowPayloadType::NumberDataPoints,
             ArrowPayloadType::SummaryDataPoints,
             ArrowPayloadType::HistogramDataPoints,
@@ -837,6 +876,64 @@ pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [Ar
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
         }
         _ => &[],
+    }
+}
+
+/// Identifier of the parent of some child payload type
+pub enum ParentPayloadType {
+    /// The parent is the root payload. E.g. Logs, Spans, Metrics
+    Root,
+    /// The parent is not the root payload type, it is identified by the value in this variant
+    NonRoot(ArrowPayloadType),
+}
+
+/// Return the parent payload type for the given child type
+#[must_use]
+pub const fn parent_payload_type(payload_type: ArrowPayloadType) -> Option<ParentPayloadType> {
+    match payload_type {
+        ArrowPayloadType::Logs
+        | ArrowPayloadType::Spans
+        | ArrowPayloadType::UnivariateMetrics
+        | ArrowPayloadType::MultivariateMetrics
+        | ArrowPayloadType::Unknown => None,
+        ArrowPayloadType::ResourceAttrs
+        | ArrowPayloadType::ScopeAttrs
+        | ArrowPayloadType::LogAttrs
+        | ArrowPayloadType::SpanAttrs
+        | ArrowPayloadType::MetricAttrs
+        | ArrowPayloadType::SpanEvents
+        | ArrowPayloadType::SpanLinks
+        | ArrowPayloadType::NumberDataPoints
+        | ArrowPayloadType::SummaryDataPoints
+        | ArrowPayloadType::HistogramDataPoints
+        | ArrowPayloadType::ExpHistogramDataPoints => Some(ParentPayloadType::Root),
+        ArrowPayloadType::SpanEventAttrs => {
+            Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanEvents))
+        }
+        ArrowPayloadType::SpanLinkAttrs => {
+            Some(ParentPayloadType::NonRoot(ArrowPayloadType::SpanLinks))
+        }
+        ArrowPayloadType::NumberDpAttrs | ArrowPayloadType::NumberDpExemplars => Some(
+            ParentPayloadType::NonRoot(ArrowPayloadType::NumberDataPoints),
+        ),
+        ArrowPayloadType::NumberDpExemplarAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::NumberDpExemplars,
+        )),
+        ArrowPayloadType::SummaryDpAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::SummaryDataPoints,
+        )),
+        ArrowPayloadType::HistogramDpAttrs | ArrowPayloadType::HistogramDpExemplars => Some(
+            ParentPayloadType::NonRoot(ArrowPayloadType::HistogramDataPoints),
+        ),
+        ArrowPayloadType::HistogramDpExemplarAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::HistogramDpExemplars,
+        )),
+        ArrowPayloadType::ExpHistogramDpAttrs | ArrowPayloadType::ExpHistogramDpExemplars => Some(
+            ParentPayloadType::NonRoot(ArrowPayloadType::ExpHistogramDataPoints),
+        ),
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs => Some(ParentPayloadType::NonRoot(
+            ArrowPayloadType::ExpHistogramDpExemplars,
+        )),
     }
 }
 
@@ -903,7 +1000,7 @@ mod test {
     }
 
     #[test]
-    fn test_logs_batch_length() {
+    fn test_logs_num_items() {
         let logs_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 consts::ID,
@@ -915,11 +1012,11 @@ mod test {
         .unwrap();
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, logs_rb);
-        assert_eq!(otap_batch.batch_length(), 4);
+        assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
-    fn test_traces_batch_length() {
+    fn test_traces_num_items() {
         let spans_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 consts::ID,
@@ -931,11 +1028,11 @@ mod test {
         .unwrap();
         let mut otap_batch = OtapArrowRecords::Traces(Traces::default());
         otap_batch.set(ArrowPayloadType::Spans, spans_rb);
-        assert_eq!(otap_batch.batch_length(), 4);
+        assert_eq!(otap_batch.num_items(), 4);
     }
 
     #[test]
-    fn test_metrics_batch_length() {
+    fn test_metrics_num_items() {
         let metrics_rb = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 consts::ID,
@@ -992,7 +1089,7 @@ mod test {
         otap_batch.set(ArrowPayloadType::HistogramDataPoints, hist_dp_rb);
         otap_batch.set(ArrowPayloadType::ExpHistogramDataPoints, exp_hist_dp_rb);
 
-        assert_eq!(otap_batch.batch_length(), 13);
+        assert_eq!(otap_batch.num_items(), 13);
     }
 
     #[test]
