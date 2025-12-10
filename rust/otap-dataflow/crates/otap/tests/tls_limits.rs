@@ -38,6 +38,7 @@ mod tests {
             client_ca_file: None,
             client_ca_pem: None,
             include_system_ca_certs_pool: None,
+            watch_client_ca: false,
             handshake_timeout: None,
         };
 
