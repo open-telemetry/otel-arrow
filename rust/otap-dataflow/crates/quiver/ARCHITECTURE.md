@@ -517,18 +517,23 @@ sequenceDiagram
 
 #### Dictionary Handling
 
-- Each `(slot, schema)` stream keeps dictionary encoding intact. While bundles
-  accumulate we capture the union of dictionary values per column. When
-  finalizing the segment we rebuild those columns against a deterministic
-  vocabulary and emit the Arrow IPC **file** with the canonical dictionary in
-  the header. Readers reopen the slice via `arrow_ipc::FileReader`, which
-  replays the seeded dictionaries before yielding the chunk referenced by the
-  manifest.
-- Dictionaries stay deterministic for the lifetime of a stream because the
-  final vocabulary is chosen from the accumulated batches. If a stream would
-  exceed configured cardinality limits we rotate to a fresh stream (resetting
-  dictionary ids) rather than serializing delta messages. That mirrors the
-  in-memory lifecycle in `otap-dataflow` and keeps chunks self-contained.
+- Each `(slot, schema)` stream preserves dictionary encoding exactly as received.
+  Quiver uses Arrow IPC's `DictionaryHandling::Resend` mode, where each batch
+  includes its full dictionary. This ensures **schema fidelity**: readers receive
+  the exact same dictionary key types (e.g., `UInt8` vs `UInt16`) that writers sent.
+- **Design rationale**: Dictionary unification (merging vocabularies across batches)
+  could widen key types when cardinality exceeds the original type's capacity.
+  For example, if batches arrive with `DictionaryArray<UInt8>` but the unified
+  vocabulary exceeds 255 values, unification would produce `DictionaryArray<UInt16>`.
+  This breaks round-trip schema guarantees, which is unacceptable for a persistence
+  layer whose job is faithful reproduction.
+- **Trade-offs**:
+  - *Pro*: Exact schema preservation - readers get back what writers sent
+  - *Pro*: Each batch is self-contained and independently readable
+  - *Con*: Larger file sizes due to duplicate dictionary values, which also
+    increases memory consumption when segments are memory-mapped for reading
+- This design decision may be revisited if future performance measurements
+  indicate that the size/memory overhead is a significant concern.
 
 #### DataFusion Integration
 

@@ -41,9 +41,11 @@
 //! | `error.rs` | Segment-specific error types                         |
 
 mod error;
+mod stream_accumulator;
 mod types;
 
 pub use error::SegmentError;
+pub use stream_accumulator::StreamAccumulator;
 pub use types::{
     ChunkIndex, ManifestEntry, SegmentSeq, SlotChunkRef, StreamId, StreamKey, StreamMetadata,
 };
