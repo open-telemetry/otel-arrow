@@ -13,7 +13,7 @@ use std::num::NonZeroU64;
 /// Returns error if not the same signal type.
 pub fn make_output_batches(
     signal: SignalType,
-    max_output_batch: Option<NonZeroU64>,
+    max_items: Option<NonZeroU64>,
     records: Vec<OtapArrowRecords>,
 ) -> Result<Vec<OtapArrowRecords>> {
     // Separate by signal type.
@@ -25,12 +25,12 @@ pub fn make_output_batches(
 
     // Split large batches so they can be reassembled into
     // limited-size batches.
-    if let Some(limit) = max_output_batch {
+    if let Some(limit) = max_items {
         records = records.split(limit)?;
     }
 
     // Join batches in sequence.
-    records = records.concatenate(max_output_batch)?;
+    records = records.concatenate(max_items)?;
 
     Ok(records.into_otap_arrow_records())
 }

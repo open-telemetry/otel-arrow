@@ -236,7 +236,7 @@ struct Inputs {
     /// Waiter context
     context: Vec<BatchPortion>,
 
-    /// A count defined by batch_length(), number of spans, log records, or metric data points.
+    /// A count defined by num_items(), number of spans, log records, or metric data points.
     items: usize,
 }
 
@@ -423,7 +423,7 @@ impl BatchProcessor {
         ctx: Context,
         rec: OtapArrowRecords,
     ) -> Result<(), EngineError> {
-        let items = rec.batch_length();
+        let items = rec.num_items();
 
         if items == 0 {
             self.metrics.dropped_empty_records.inc();
@@ -570,9 +570,9 @@ impl BatchProcessor {
             && upper_limit.is_some()
             && output_batches.len() > 1
         {
-            debug_assert!(output_batches[0].batch_length() >= self.lower_limit.get());
+            debug_assert!(output_batches[0].num_items() >= self.lower_limit.get());
 
-            if let Some(last_items) = output_batches.last().map(|last| last.batch_length()) {
+            if let Some(last_items) = output_batches.last().map(|last| last.num_items()) {
                 if last_items < self.lower_limit.get() {
                     buffer.take_remaining(&mut inputs, &mut output_batches, last_items);
 
@@ -587,7 +587,7 @@ impl BatchProcessor {
         let mut input_context = inputs.take_context();
 
         for records in output_batches {
-            let items = records.batch_length();
+            let items = records.num_items();
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
             // Increment produced_items for the appropriate signal
@@ -1246,7 +1246,7 @@ mod tests {
             .collect();
 
         let signal = inputs_otlp[0].signal_type();
-        let input_item_count: usize = inputs_otlp.iter().map(|m| m.batch_length()).sum();
+        let input_item_count: usize = inputs_otlp.iter().map(|m| m.num_items()).sum();
         let num_inputs = inputs_otlp.len();
         let total_events = events.len();
 
@@ -1427,7 +1427,7 @@ mod tests {
                     })
                     .collect();
 
-                let output_item_count: usize = outputs.iter().map(|m| m.batch_length()).sum();
+                let output_item_count: usize = outputs.iter().map(|m| m.num_items()).sum();
 
                 // First item counts, then data values.
                 assert_eq!(output_item_count, input_item_count);
@@ -1470,7 +1470,7 @@ mod tests {
                 // Verify first batch had at least threshold items (size-triggered)
                 let first_batch_rec = first_output_event.message(0);
                 assert!(
-                    first_batch_rec.batch_length() >= 4,
+                    first_batch_rec.num_items() >= 4,
                     "first batch has at least threshold items (size-triggered)"
                 );
             },
@@ -1529,7 +1529,7 @@ mod tests {
                 );
 
                 let output_rec = event_outputs[1].message(0);
-                assert_eq!(output_rec.batch_length(), 3, "should flush all 3 items");
+                assert_eq!(output_rec.num_items(), 3, "should flush all 3 items");
             },
         );
     }
@@ -1580,7 +1580,7 @@ mod tests {
                 assert_eq!(all_outputs.len(), 3, "should emit 3 full batches");
 
                 for batch in all_outputs {
-                    assert_eq!(batch.batch_length(), 3, "each batch should have 3 items");
+                    assert_eq!(batch.num_items(), 3, "each batch should have 3 items");
                 }
             },
         );
@@ -1637,7 +1637,7 @@ mod tests {
                 assert_eq!(all_outputs.len(), 2, "should emit 2 batches at threshold");
 
                 for batch in all_outputs.iter() {
-                    assert_eq!(batch.batch_length(), 6, "each batch should have 6 items");
+                    assert_eq!(batch.num_items(), 6, "each batch should have 6 items");
                 }
             },
         );
@@ -1691,7 +1691,7 @@ mod tests {
                 // With max_size=2, each 3-item input splits to [2, 1]
                 assert_eq!(all_outputs.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
 
-                let batch_sizes: Vec<_> = all_outputs.iter().map(|p| p.batch_length()).collect();
+                let batch_sizes: Vec<_> = all_outputs.iter().map(|p| p.num_items()).collect();
                 assert_eq!(
                     batch_sizes,
                     vec![2, 1, 2, 1],
