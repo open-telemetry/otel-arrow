@@ -60,7 +60,7 @@ impl OpentelemetryClient {
 
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
-        let meter_shutdown_result = self.meter_provider.shutdown();
+        let meter_shutdown_result = self.meter_provider().shutdown();
         meter_shutdown_result.map_err(|e| Error::ShutdownError(e.to_string()))
     }
 }
@@ -79,14 +79,14 @@ mod tests {
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config);
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
         counter.add(1, &[]);
         //There is nothing to assert here. The test validates that nothing panics/crashes
 
-        client?.shutdown()?;
+        client.shutdown()?;
         Ok(())
     }
 
@@ -108,14 +108,14 @@ mod tests {
             metrics: metrics_config,
             resource,
         };
-        let client = OpentelemetryClient::new(&config);
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
         counter.add(1, &[]);
         //There is nothing to assert here. The test validates that nothing panics/crashes
 
-        client?.shutdown()?;
+        client.shutdown()?;
         Ok(())
     }
 }
