@@ -1048,18 +1048,36 @@ fn select<const N: usize>(
 // Reindexing code
 // *************************************************************************************************
 
+/// Reindex ID columns across multiple batches to ensure uniqueness when concatenating.
+///
+/// When concatenating record batches, ID columns must be offset to prevent collisions between
+/// batches. This function processes both parent tables (with ID columns) and their child tables
+/// (with PARENT_ID columns that reference the parent IDs).
+///
+/// # Arguments
+///
+/// * `batches` - Mutable slice of batch arrays to reindex in place
+/// * `allowed_payloads` - Parent payload types to process (e.g., Logs, Metrics, Spans)
 fn reindex<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
     allowed_payloads: &[ArrowPayloadType],
 ) -> Result<()> {
+    // Track the absolute ending ID position for each payload type.
+    // This is the starting offset for the next batch of that type.
     let mut starting_ids: [u32; N] = [0; N];
+
+    // Process each parent payload type
     for payload in allowed_payloads {
         let child_payloads = child_payload_types(*payload);
+
+        // Only process payloads that have children
         if !child_payloads.is_empty() {
             for batches in batches.iter_mut() {
                 let parent_offset = POSITION_LOOKUP[*payload as usize];
                 let parent = batches[parent_offset].take();
+
                 if let Some(mut parent) = parent {
+                    // Get the current offset for this parent payload type
                     let parent_starting_offset = starting_ids[parent_offset];
 
                     // When `parent` has both ID and PARENT_ID columns, resort by ID. Why? Because
@@ -1071,22 +1089,34 @@ fn reindex<const N: usize>(
                         parent = sort_record_batch(parent, HowToSort::SortById)?;
                     }
 
+                    // Reindex the parent's ID column with the accumulated offset.
+                    // Returns the updated batch and the absolute ending ID position.
                     let (parent, next_starting_id) =
                         reindex_record_batch(parent, consts::ID, parent_starting_offset)?;
+
+                    // Set the absolute ending position, where the next batch should start.
                     starting_ids[parent_offset] = next_starting_id;
-                    // return parent to batches since we took it!
+
+                    // Return parent to batches since we took it earlier
                     let _ = batches[parent_offset].replace(parent);
 
+                    // Process child tables that reference this parent via PARENT_ID
                     for child in child_payloads {
                         let child_offset = POSITION_LOOKUP[*child as usize];
                         if let Some(child) = batches[child_offset].take() {
+                            // Reindex child's PARENT_ID column to match the parent's offset.
                             let (child, next_starting_id) = reindex_record_batch(
                                 child,
                                 consts::PARENT_ID,
                                 parent_starting_offset,
                             )?;
+
+                            // Track the absolute ending position for this child type too.
+                            // If the child also has its own ID column, it will be reindexed
+                            // in a later iteration when this child is processed as a parent.
                             starting_ids[child_offset] = next_starting_id;
-                            // return child to batches since we took it!
+
+                            // Return child to batches since we took it earlier
                             let _ = batches[child_offset].replace(child);
                             // We don't have to reindex child's id column since we'll get to it in a
                             // later iteration of the loop if it exists.
