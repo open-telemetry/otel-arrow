@@ -201,9 +201,9 @@ impl OtapPayloadHelpers for OtapArrowRecords {
 
     fn num_items(&self) -> usize {
         match self {
-            Self::Logs(records) => records.batch_length(),
-            Self::Traces(records) => records.batch_length(),
-            Self::Metrics(records) => records.batch_length(),
+            Self::Logs(records) => records.num_items(),
+            Self::Traces(records) => records.num_items(),
+            Self::Metrics(records) => records.num_items(),
         }
     }
 }
