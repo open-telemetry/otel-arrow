@@ -274,7 +274,6 @@ fn generic_split<const N: usize>(
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
     assert_eq!(N, allowed_payloads.len());
     assert!(allowed_payloads.contains(&primary_payload));
-    assert!(!batches.is_empty());
 
     // First, ensure that all RecordBatches are sorted by parent_id & id so that we can efficiently
     // pluck ranges from them.
