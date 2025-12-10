@@ -3036,7 +3036,7 @@ mod test {
         let parser_result = KqlParser::parse("logs | where severity_text != string(null)").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         // assert it's equal to empty batch because there were no matches
@@ -3046,7 +3046,7 @@ mod test {
         let parser_result = KqlParser::parse("logs | where string(null) != severity_text").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
@@ -3405,7 +3405,7 @@ mod test {
             KqlParser::parse("logs | where attributes[\"x\"] != string(null)").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         // assert it's equal to empty batch because there were no matches
@@ -3416,7 +3416,7 @@ mod test {
             KqlParser::parse("logs | where string(null) != attributes[\"x\"]").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
