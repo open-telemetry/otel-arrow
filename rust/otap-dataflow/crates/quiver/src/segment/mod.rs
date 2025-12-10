@@ -35,16 +35,20 @@
 //!
 //! # Module Organization
 //!
-//! | File       | Purpose                                              |
-//! |------------|------------------------------------------------------|
-//! | `types.rs` | Core type definitions (StreamId, StreamKey, etc.)   |
-//! | `error.rs` | Segment-specific error types                         |
+//! | File                    | Purpose                                             |
+//! |-------------------------|-----------------------------------------------------|
+//! | `types.rs`              | Core type definitions (StreamId, StreamKey, etc.)   |
+//! | `error.rs`              | Segment-specific error types                        |
+//! | `stream_accumulator.rs` | Per-stream batch accumulation                       |
+//! | `open_segment.rs`       | Open segment buffer routing payloads to streams     |
 
 mod error;
+mod open_segment;
 mod stream_accumulator;
 mod types;
 
 pub use error::SegmentError;
+pub use open_segment::OpenSegment;
 pub use stream_accumulator::StreamAccumulator;
 pub use types::{
     ChunkIndex, ManifestEntry, SegmentSeq, SlotChunkRef, StreamId, StreamKey, StreamMetadata,
