@@ -31,3 +31,5 @@ serde = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-stdout = { workspace = true }
 opentelemetry = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt"] }

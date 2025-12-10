@@ -27,6 +27,7 @@ use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use prost::Message;
 use serde_json::Value;
 use std::sync::Arc;
@@ -123,6 +124,14 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         let max_signal_count = traffic_config.get_max_signal_count();
         let signals_per_second = traffic_config.get_signal_rate();
         let max_batch_size = traffic_config.get_max_batch_size();
+
+        otel_info!(
+            name: "fake_data_generator_receiver_start",
+            signals_per_second = signals_per_second.unwrap_or(0),
+            max_batch_size = max_batch_size,
+            message = "Fake data generator receiver started"
+        );
+
         let mut signal_count: u64 = 0;
         let one_second_duration = Duration::from_secs(1);
 

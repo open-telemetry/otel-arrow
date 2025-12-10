@@ -39,6 +39,25 @@ pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
 pub mod semconv;
+/// Internal logs/events module for engine.
+pub mod internal_events;
+
+// Re-export _private module from internal_events for macro usage.
+// This allows the otel_info!, otel_warn!, etc. macros to work in other crates
+// without requiring them to add tracing as a direct dependency.
+#[doc(hidden)]
+pub use internal_events::_private;
+
+/// Initializes internal logging for the OTAP engine.
+///
+/// This should be called once at application startup before any logging occurs.
+///
+/// TODO: The engine uses a thread-per-core model. Revisit whether logging should
+/// be initialized globally (as currently done) or per-thread for better isolation
+/// and performance in multi-core scenarios.
+pub fn init_logging() {
+    tracing_subscriber::fmt::init();
+}
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
