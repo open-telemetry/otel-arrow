@@ -6,6 +6,7 @@ use azure_core::time::OffsetDateTime;
 
 use bytes::Bytes;
 
+use rand::{Rng, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderValue},
@@ -17,7 +18,7 @@ use crate::experimental::azure_monitor_exporter::auth::Auth;
 use crate::experimental::azure_monitor_exporter::config::Config;
 
 const MAX_RETRIES: u32 = 5;
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// HTTP client for Azure Log Analytics Data Collection Rule (DCR) endpoint.
@@ -110,8 +111,9 @@ impl LogsIngestionClient {
     pub fn new(config: &Config) -> Result<Self, String> {
         let http_client = Client::builder()
             .timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(10)
-            .pool_idle_timeout(Duration::from_secs(90))
+            .http2_prior_knowledge()  // Use HTTP/2 directly (faster, no upgrade negotiation)
+            .pool_max_idle_per_host(4)
+            .pool_idle_timeout(Duration::from_secs(30))
             .tcp_nodelay(true)
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
@@ -195,33 +197,40 @@ impl LogsIngestionClient {
     pub async fn export(&mut self, body: Bytes) -> Result<Duration, String> {
         let start = Instant::now();
         let mut attempt = 0u32;
-        let mut last_error = String::new();
+        let mut rng = SmallRng::seed_from_u64(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+            ^ (self as *const _ as u64));  // Mix in object address
 
         loop {
             match self.try_export(body.clone()).await {
                 Ok(()) => return Ok(start.elapsed()),
                 Err(ExportAttemptError::Terminal(e)) => return Err(e),
                 Err(ExportAttemptError::Retryable { message, retry_after }) => {
-                    last_error = message;
-
                     let delay = if let Some(server_delay) = retry_after {
-                        // Server specified delay - always retry (no max)
-                        server_delay
+                        // Server specified delay - add 3-6 seconds jitter on top, minimum 5 seconds base
+                        let base_delay = server_delay.max(Duration::from_secs(5));
+                        let jitter = Duration::from_secs(3) + Duration::from_secs_f64(rng.random::<f64>() * 7.0);
+                        base_delay + jitter
                     } else {
                         // No server hint - use exponential backoff with max retries
                         attempt += 1;
                         if attempt >= MAX_RETRIES {
                             return Err(format!(
-                                "Export failed after {attempt} attempts: {last_error}"
+                                "Export failed after {attempt} attempts: {message}"
                             ));
                         }
                         let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
-                        backoff.min(MAX_BACKOFF)
+                        let base_delay = backoff.min(MAX_BACKOFF);
+                        // Add ±15% jitter (0.85 to 1.15)
+                        let jitter_factor = 0.85 + rng.random::<f64>() * 0.30;
+                        base_delay.mul_f64(jitter_factor)
                     };
 
                     println!(
-                        "[AzureMonitorExporter] Retry after {}ms: {last_error}",
-                        delay.as_millis()
+                        "[AzureMonitorExporter] Retry after {}ms: {message}",
+                        delay.as_secs_f64()
                     );
 
                     tokio::time::sleep(delay).await;
@@ -241,9 +250,37 @@ impl LogsIngestionClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| ExportAttemptError::Retryable {
-                message: format!("Network error: {e}"),
-                retry_after: None,
+            .map_err(|e| {
+                let detail = if e.is_timeout() {
+                    "timeout"
+                } else if e.is_connect() {
+                    "connect"
+                } else if e.is_request() {
+                    "request"
+                } else if e.is_body() {
+                    "body"
+                } else {
+                    "unknown"
+                };
+                
+                // Walk the error chain for full context
+                let mut sources = Vec::new();
+                let mut current: &dyn std::error::Error = &e;
+                while let Some(source) = current.source() {
+                    sources.push(format!("{}", source));
+                    current = source;
+                }
+                
+                let source_chain = if sources.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [causes: {}]", sources.join(" -> "))
+                };
+                
+                ExportAttemptError::Retryable {
+                    message: format!("Network error ({}): {}{}", detail, e, source_chain),
+                    retry_after: None,
+                }
             })?;
 
         // Fast path for success

@@ -5,7 +5,6 @@ use std::cmp::max;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::FutureExt;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_channel::error::RecvError;
 use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
@@ -491,15 +490,13 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL),
             );
 
-            if self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS {
-                if let Some(completed) = self.in_flight_exports.next_completion().await {
-                    self.finalize_export(&effect_handler, completed).await?;
-                }
-                continue;
-            }
+            // Determine if we should accept new messages
+            let at_capacity = self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS;
 
-            futures::select_biased! {
-                _ = tokio::time::sleep_until(next_token_refresh).fuse() => {
+            tokio::select! {
+                biased;
+
+                _ = tokio::time::sleep_until(next_token_refresh) => {
                     original_client.refresh_token()
                         .await
                         .map_err(|e| Error::InternalError { message: format!("Failed to refresh token: {e}") })?;
@@ -507,13 +504,13 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     next_token_refresh = Self::get_next_token_refresh(original_client.token_valid_until);
                 }
 
-                completed = self.in_flight_exports.next_completion().fuse() => {
+                completed = self.in_flight_exports.next_completion() => {
                     if let Some(completed_export) = completed {
                         self.finalize_export(&effect_handler, completed_export).await?;
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_export).fuse() => {
+                _ = tokio::time::sleep_until(next_export), if !at_capacity => {
                     if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL)
                         && self.gzip_batcher.has_pending_data() {
                         println!("[AzureMonitorExporter] Periodic export pending data");
@@ -521,7 +518,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                msg = msg_chan.recv().fuse() => {
+                msg = msg_chan.recv(), if !at_capacity => {
                     self.stats.message_received();
 
                     match msg {
@@ -538,7 +535,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_stats_print).fuse() => {
+                _ = tokio::time::sleep_until(next_stats_print) => {
                     next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
 
                     if let Some(started_at) = self.stats.started_at() {
