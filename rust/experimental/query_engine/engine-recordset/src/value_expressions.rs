@@ -730,6 +730,16 @@ mod tests {
                         OwnedValue::Integer(IntegerValueStorage::new(3)),
                     ]))),
                 );
+
+                variables.set(
+                    "var2",
+                    ResolvedValue::Computed(OwnedValue::Array(ArrayValueStorage::new(vec![
+                        OwnedValue::Map(MapValueStorage::new(HashMap::from([(
+                            "key1".into(),
+                            OwnedValue::String(StringValueStorage::new("value1".into())),
+                        )]))),
+                    ]))),
+                );
             }
 
             let arguments = vec![
@@ -758,6 +768,18 @@ mod tests {
                         QueryLocation::new_fake(),
                         StringScalarExpression::new(QueryLocation::new_fake(), "var1"),
                         ValueAccessor::new(),
+                    ),
+                )),
+                InvokeFunctionArgument::MutableValue(MutableValueExpression::Variable(
+                    VariableScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        StringScalarExpression::new(QueryLocation::new_fake(), "var2"),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                0,
+                            )),
+                        )]),
                     ),
                 )),
             ];
@@ -943,6 +965,32 @@ mod tests {
             )),
             Some(&|v| {
                 assert!(v.is_none());
+            }),
+            None,
+        );
+
+        // Test selecting a variable value (var2[0]) with a string selector (key1)
+        run_test(
+            MutableValueExpression::Argument(ArgumentScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                4,
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "key1",
+                    )),
+                )]),
+            )),
+            Some(&|v| {
+                if let Some(ResolvedValueMut::MapKey { map: _, key }) = v {
+                    assert_eq!(
+                        Value::String(&StringValueStorage::new("key1".into())),
+                        key.to_value()
+                    );
+                } else {
+                    panic!()
+                }
             }),
             None,
         );
