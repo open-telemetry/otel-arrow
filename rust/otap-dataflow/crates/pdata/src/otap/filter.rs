@@ -15,7 +15,7 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::buffer::BooleanBuffer;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 pub mod logs;
 pub mod traces;
@@ -90,7 +90,7 @@ fn nulls_to_false(a: &BooleanArray) -> BooleanArray {
 
 enum IdSet {
     U16(RoaringBitmap),
-    U32(HashSet<u32>),
+    U32(RoaringBitmap),
 }
 
 /// regex_match_column() takes a string column and a regex expression. The function
@@ -268,9 +268,9 @@ pub fn build_uint16_id_filter(
 /// that contain those ids
 /// This will return an error if the column is not DataType::UInt32, DataType::Dictionary(UInt8, UInt32)
 /// or DataType::Dictionary(UInt16, UInt32)
-fn build_uint32_id_filter(
+pub fn build_uint32_id_filter(
     id_column: &Arc<dyn Array>,
-    id_set: HashSet<u32>,
+    id_set: &RoaringBitmap,
 ) -> Result<BooleanArray> {
     if (id_column.len() >= ID_COLUMN_LENGTH_MIN_THRESHOLD)
         && ((id_set.len() as f64 / id_column.len() as f64) <= IDS_PERCENTAGE_MAX_THRESHOLD)
@@ -313,7 +313,7 @@ fn build_uint32_id_filter(
                 for uint32_id in uint32_id_array {
                     match uint32_id {
                         Some(uint32) => {
-                            id_filter.append_value(id_set.contains(&uint32));
+                            id_filter.append_value(id_set.contains(uint32));
                         }
                         None => {
                             id_filter.append_value(false);
@@ -351,7 +351,7 @@ fn build_uint32_id_filter(
                     for key in uint32_id_dict_array.keys() {
                         if let Some(k) = key {
                             id_filter
-                                .append_value(id_set.contains(&uint32_id_array.value(k as usize)));
+                                .append_value(id_set.contains(uint32_id_array.value(k as usize)));
                         } else {
                             id_filter.append_value(false);
                         }
@@ -386,7 +386,7 @@ fn build_uint32_id_filter(
                     for key in uint32_id_dict_array.keys() {
                         if let Some(k) = key {
                             id_filter
-                                .append_value(id_set.contains(&uint32_id_array.value(k as usize)));
+                                .append_value(id_set.contains(uint32_id_array.value(k as usize)));
                         } else {
                             id_filter.append_value(false);
                         }
@@ -423,7 +423,7 @@ fn build_uint32_id_filter(
 fn build_id_filter(id_column: &Arc<dyn Array>, id_set: IdSet) -> Result<BooleanArray> {
     match id_set {
         IdSet::U16(u16_ids) => build_uint16_id_filter(id_column, &u16_ids),
-        IdSet::U32(u32_ids) => build_uint32_id_filter(id_column, u32_ids),
+        IdSet::U32(u32_ids) => build_uint32_id_filter(id_column, &u32_ids),
     }
 }
 

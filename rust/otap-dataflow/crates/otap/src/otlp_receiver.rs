@@ -330,6 +330,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     source_detail: format_error_sources(&e),
                 })?;
 
+        #[cfg(feature = "experimental-tls")]
+        let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+
         let mut telemetry_cancel_handle = Some(
             effect_handler
                 .start_periodic_telemetry(TELEMETRY_INTERVAL)
@@ -343,7 +346,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             {
                 match maybe_tls_acceptor {
                     Some(tls_acceptor) => {
-                        let tls_stream = create_tls_stream(incoming, tls_acceptor);
+                        let tls_stream =
+                            create_tls_stream(incoming, tls_acceptor, handshake_timeout);
                         Box::pin(server.serve_with_incoming(tls_stream))
                     }
                     None => Box::pin(server.serve_with_incoming(incoming)),
