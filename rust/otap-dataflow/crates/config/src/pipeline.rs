@@ -3,19 +3,20 @@
 
 //! Pipeline configuration specification.
 
+pub mod service;
+
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::observed_state::ObservedStateSettings;
+use crate::pipeline::service::ServiceConfig;
 use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
-use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -625,234 +626,17 @@ impl Default for PipelineConfigBuilder {
     }
 }
 
-/// Service-level telemetry configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct ServiceConfig {
-    /// The telemetry backend to which to report metrics.
-    #[serde(default)]
-    pub telemetry: TelemetryConfig,
-}
-
-/// Telemetry backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TelemetryConfig {
-    /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
-    #[serde(default = "default_reporting_channel_size")]
-    pub reporting_channel_size: usize,
-    /// The interval at which metrics are flushed and aggregated by the collector.
-    #[serde(with = "humantime_serde", default = "default_reporting_interval")]
-    #[schemars(with = "String")]
-    pub reporting_interval: Duration,
-    /// Metrics system configuration.
-    #[serde(default)]
-    pub metrics: MetricsConfig,
-    /// Resource attributes to associate with telemetry data.
-    /// TODO: Support different types of attribute values.
-    #[serde(default)]
-    pub resource: HashMap<String, String>,
-}
-
-impl Default for TelemetryConfig {
-    fn default() -> Self {
-        Self {
-            metrics: MetricsConfig::default(),
-            resource: HashMap::default(),
-            reporting_channel_size: default_reporting_channel_size(),
-            reporting_interval: default_reporting_interval(),
-        }
-    }
-}
-
-fn default_reporting_channel_size() -> usize {
-    100
-}
-
-fn default_reporting_interval() -> Duration {
-    Duration::from_secs(1)
-}
-
-/// Opentelemetry Metrics configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct MetricsConfig {
-    /// The list of metrics readers to configure.
-    #[serde(default)]
-    pub readers: Vec<MetricsReaderConfig>,
-}
-
-impl MetricsConfig {
-    /// Returns `true` if there are any metric readers configured.
-    #[must_use]
-    pub fn has_readers(&self) -> bool {
-        !self.readers.is_empty()
-    }
-}
-
-/// Opentelemetry Metrics Reader configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum MetricsReaderConfig {
-    /// Periodic reader that exports metrics at regular intervals.
-    Periodic(MetricsReaderPeriodicConfig),
-    /// Pull reader that allows on-demand metric collection.
-    Pull {
-        //TODO: Add specific configuration for supported pull readers.
-    },
-}
-
-/// Opentelemetry Metrics Periodic Reader configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MetricsReaderPeriodicConfig {
-    /// The metrics exporter to use.
-    pub exporter: MetricsPeriodicExporterConfig,
-    /// The interval at which metrics are periodically exported.
-    #[serde(with = "humantime_serde", default = "default_periodic_interval")]
-    #[schemars(with = "String")]
-    pub interval: Duration,
-}
-
-fn default_periodic_interval() -> Duration {
-    Duration::from_secs(6)
-}
-
-impl<'de> Deserialize<'de> for MetricsReaderConfig {
-    /// Custom deserialization to handle different reader types.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct ReaderOptions {
-            #[serde(rename = "periodic")]
-            periodic: Option<MetricsReaderPeriodicConfig>,
-            #[serde(rename = "pull")]
-            pull: Option<()>,
-        }
-
-        let reader_options_result = ReaderOptions::deserialize(deserializer);
-        match reader_options_result {
-            Ok(options) => {
-                if let Some(config) = options.periodic {
-                    Ok(MetricsReaderConfig::Periodic(config))
-                } else if options.pull.is_some() {
-                    Ok(MetricsReaderConfig::Pull {})
-                } else {
-                    Err(serde::de::Error::custom(
-                        "Expected either 'periodic' or 'pull' reader",
-                    ))
-                }
-            }
-            Err(err) => Err(serde::de::Error::custom(format!(
-                "Expected a map with either 'periodic' or 'pull' reader: {}",
-                err
-            ))),
-        }
-    }
-}
-
-/// Opentelemetry Metrics Perioidc Exporter configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
-pub enum MetricsPeriodicExporterConfig {
-    /// Console exporter that writes metrics to the console.
-    Console,
-    /// OTLP exporter that sends metrics using the OpenTelemetry Protocol.
-    Otlp(OtlpExporterConfig),
-}
-
-/// Opentelemetry OTLP Exporter configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct OtlpExporterConfig {
-    /// The Otlp communication protocol to use when exporting data.
-    #[serde(default)]
-    pub protocol: OtlpProtocol,
-    /// The endpoint to which the Otlp exporter will send data.
-    pub endpoint: String,
-
-    /// The temporality of the metrics to be exported.
-    #[serde(default)]
-    pub temporality: Temporality,
-}
-
-/// The Otlp communication protocol to use when exporting data.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
-pub enum OtlpProtocol {
-    /// Use gRPC for communication.
-    #[default]
-    #[serde(rename = "grpc/protobuf")]
-    Grpc,
-
-    #[serde(rename = "http/protobuf")]
-    /// Use HTTP with binary encoding for communication.
-    HttpBinary,
-
-    #[serde(rename = "http/json")]
-    /// Use HTTP with JSON encoding for communication.
-    HttpJson,
-}
-
-/// The temporality of the metrics to be exported.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum Temporality {
-    /// Cumulative temporality means that the metric values are the sum of all values since the start of the process.
-    #[default]
-    Cumulative,
-    /// Delta temporality means that the metric values are the difference between the current and previous values.
-    Delta,
-}
-
-impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
-    /// Custom deserialization to handle different exporter types.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{MapAccess, Visitor};
-        use std::fmt;
-        struct MetricsPeriodicExporterConfigVisitor;
-
-        impl<'de> Visitor<'de> for MetricsPeriodicExporterConfigVisitor {
-            type Value = MetricsPeriodicExporterConfig;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a map with either 'console' or 'otlp' key")
-            }
-
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                if let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "console" => {
-                            let _: IgnoredAny = map.next_value()?; // consume the value. Console does not have any attributes.
-                            Ok(MetricsPeriodicExporterConfig::Console)
-                        }
-                        "otlp" => {
-                            let otlp_config: OtlpExporterConfig = map.next_value()?;
-                            Ok(MetricsPeriodicExporterConfig::Otlp(otlp_config))
-                        }
-                        _ => Err(serde::de::Error::unknown_field(&key, &["console", "otlp"])),
-                    }
-                } else {
-                    Err(serde::de::Error::custom(
-                        "Expected either 'console' or 'otlp' exporter",
-                    ))
-                }
-            }
-        }
-
-        deserializer.deserialize_map(MetricsPeriodicExporterConfigVisitor)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
     use crate::node::DispatchStrategy;
-    use crate::pipeline::{
-        MetricsPeriodicExporterConfig, MetricsReaderConfig, MetricsReaderPeriodicConfig,
-        PipelineConfigBuilder, PipelineType,
+    use crate::pipeline::service::telemetry::TelemetryConfig;
+    use crate::pipeline::service::telemetry::metrics::MetricsConfig;
+    use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::service::telemetry::metrics::readers::{
+        MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
+    use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
 
     #[test]
@@ -1391,7 +1175,7 @@ mod tests {
                     exporter:
                       console: {}
             "#;
-        let config: super::TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
+        let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
         assert_eq!(config.reporting_interval.as_secs(), 5);
         assert_eq!(config.resource.get("service.name").unwrap(), "my_service");
@@ -1417,7 +1201,7 @@ mod tests {
                   exporter:
                     console:
             "#;
-        let config: super::MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
+        let config: MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 10);

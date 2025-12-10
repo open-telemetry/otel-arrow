@@ -7,7 +7,7 @@ pub mod meter_provider;
 
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
-use otap_df_config::pipeline::TelemetryConfig;
+use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 
 use crate::{error::Error, opentelemetry_client::meter_provider::MeterProvider};
 
@@ -68,9 +68,12 @@ impl OpentelemetryClient {
 #[cfg(test)]
 mod tests {
     use opentelemetry::global;
-    use otap_df_config::pipeline::{
-        MetricsConfig, MetricsPeriodicExporterConfig, MetricsReaderConfig,
-        MetricsReaderPeriodicConfig,
+    use otap_df_config::pipeline::service::telemetry::metrics::{
+        MetricsConfig,
+        readers::{
+            MetricsReaderConfig, MetricsReaderPeriodicConfig,
+            periodic::MetricsPeriodicExporterConfig,
+        },
     };
 
     use super::*;

@@ -9,9 +9,12 @@ use opentelemetry_sdk::{
     Resource,
     metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider},
 };
-use otap_df_config::pipeline::{
-    MetricsPeriodicExporterConfig, MetricsReaderConfig, OtlpExporterConfig, OtlpProtocol,
-    Temporality,
+use otap_df_config::pipeline::service::telemetry::metrics::readers::{
+    MetricsReaderConfig, Temporality,
+    periodic::{
+        MetricsPeriodicExporterConfig,
+        otlp::{OtlpExporterConfig, OtlpProtocol},
+    },
 };
 
 use crate::error::Error;
@@ -176,7 +179,7 @@ impl MeterProvider {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::MetricsReaderPeriodicConfig;
+    use otap_df_config::pipeline::service::telemetry::metrics::readers::MetricsReaderPeriodicConfig;
 
     use super::*;
 
