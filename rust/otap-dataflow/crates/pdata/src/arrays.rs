@@ -1,9 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Utilities and adapters for working with arrow arrays containing OTAP data
+
 use crate::error::{Error, Result};
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
+    Array, ArrayAccessor, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
     DurationNanosecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
     Int16Array, Int32Array, Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray,
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
@@ -13,11 +15,19 @@ use arrow::datatypes::{
 };
 use paste::paste;
 
+/// A trait for accessing elements in arrays that may contain null values.
+///
+/// This is implemented for many arrow types to provide convenience in accessing possibly null
+/// array elements as well as to adapt the arrays into more complex array accessor types
 pub trait NullableArrayAccessor {
+    /// the native type of the array implementing this trait
     type Native;
 
+    /// get the value at the index. returns None if the array is null at this index
     fn value_at(&self, idx: usize) -> Option<Self::Native>;
 
+    /// get the value at the index, or the default value for the native type if the array is null
+    /// at the passed index.
     fn value_at_or_default(&self, idx: usize) -> Self::Native
     where
         Self::Native: Default,
@@ -115,7 +125,7 @@ macro_rules! impl_downcast {
     ($suffix:ident, $data_type:expr, $array_type:ident) => {
         paste!{
             #[allow(dead_code)]
-            pub fn [<get_ $suffix _array_opt> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<Option<&'a $array_type>> {
+            pub(crate) fn [<get_ $suffix _array_opt> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<Option<&'a $array_type>> {
                 use arrow::datatypes::DataType::*;
                 rb.column_by_name(name)
                     .map(|arr|{
@@ -130,7 +140,7 @@ macro_rules! impl_downcast {
             }
 
             #[allow(dead_code)]
-              pub fn [<get_ $suffix _array> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<&'a $array_type> {
+            pub(crate) fn [<get_ $suffix _array> ]<'a>(rb: &'a RecordBatch, name: &str) -> Result<&'a $array_type> {
                 use arrow::datatypes::DataType::*;
                 let arr = get_required_array(rb, name)?;
 
@@ -323,7 +333,7 @@ where
 /// Wrapper around various arrays that may return a byte slice. Note that
 /// this delegates to the underlying NullableArrayAccessor implementation
 /// for the Arrow array which copies the bytes when value_at is called
-pub enum ByteArrayAccessor<'a> {
+pub(crate) enum ByteArrayAccessor<'a> {
     Binary(MaybeDictArrayAccessor<'a, BinaryArray>),
     FixedSizeBinary(MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>),
 }
@@ -400,9 +410,20 @@ impl<'a> ByteArrayAccessor<'a> {
 /// Wrapper around an array that might be a dictionary or it might just be an unencoded
 /// array of the base type
 pub enum MaybeDictArrayAccessor<'a, V> {
+    /// the underlying array is the native (non dictionary encoded type)
     Native(&'a V),
+    /// the underlying type is a dict with u8 keys
     Dictionary8(DictionaryArrayAccessor<'a, UInt8Type, V>),
+    /// the underlying type is a dict with u16 keys
     Dictionary16(DictionaryArrayAccessor<'a, UInt16Type, V>),
+}
+
+impl<'a, V> MaybeDictArrayAccessor<'a, V> {
+    /// returns an iterator over the values in the array
+    #[must_use]
+    pub fn iter(&'a self) -> MaybeDictArrayIter<'a, V> {
+        MaybeDictArrayIter::new(self)
+    }
 }
 
 impl<'a, T> NullableArrayAccessor for MaybeDictArrayAccessor<'a, T>
@@ -485,11 +506,33 @@ where
         })
     }
 
+    /// returns wether the array is valid (not null) at the given index
+    #[must_use]
     pub fn is_valid(&self, index: usize) -> bool {
         match self {
             Self::Dictionary16(d) => d.is_valid(index),
             Self::Dictionary8(d) => d.is_valid(index),
             Self::Native(d) => d.is_valid(index),
+        }
+    }
+
+    /// returns the length of the array
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Native(d) => d.len(),
+            Self::Dictionary8(d) => d.len(),
+            Self::Dictionary16(d) => d.len(),
+        }
+    }
+
+    /// returns whether the contained array is empty
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Native(d) => d.is_empty(),
+            Self::Dictionary8(d) => d.is_empty(),
+            Self::Dictionary16(d) => d.is_empty(),
         }
     }
 }
@@ -498,14 +541,22 @@ impl<'a, V> MaybeDictArrayAccessor<'a, PrimitiveArray<V>>
 where
     V: ArrowPrimitiveType,
 {
+    /// try to create a new instance from a primitive array
+    ///
+    /// returns an error if the column is an invalid type
     pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(V::DATA_TYPE, arr)
     }
 
+    /// try to create a new instance from the column in the record batch.
+    ///
+    /// returns an error if the column does not exist or if the column is an invalid type
     pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
+    /// returns the number of nulls in the contained array
+    #[must_use]
     pub fn null_count(&self) -> usize {
         match self {
             Self::Dictionary16(d) => d.null_count(),
@@ -516,11 +567,11 @@ where
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
-    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
+    pub(crate) fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(BinaryArray::DATA_TYPE, arr)
     }
 
-    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
         match self {
             Self::Dictionary16(dict) => dict.slice_at(idx),
             Self::Dictionary8(dict) => dict.slice_at(idx),
@@ -536,11 +587,11 @@ impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
-    pub fn try_new(arr: &'a ArrayRef, dims: i32) -> Result<Self> {
+    pub(crate) fn try_new(arr: &'a ArrayRef, dims: i32) -> Result<Self> {
         Self::try_new_with_datatype(DataType::FixedSizeBinary(dims), arr)
     }
 
-    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
         match self {
             Self::Dictionary16(dict) => dict.slice_at(idx),
             Self::Dictionary8(dict) => dict.slice_at(idx),
@@ -556,15 +607,19 @@ impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
-    pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
+    pub(crate) fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         Self::try_new_with_datatype(StringArray::DATA_TYPE, arr)
     }
 
-    pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
+    #[allow(dead_code)]
+    pub(crate) fn try_new_for_column(
+        record_batch: &'a RecordBatch,
+        column_name: &str,
+    ) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
-    pub fn str_at(&self, idx: usize) -> Option<&str> {
+    pub(crate) fn str_at(&self, idx: usize) -> Option<&str> {
         match self {
             Self::Dictionary16(dict) => dict.str_at(idx),
             Self::Dictionary8(dict) => dict.str_at(idx),
@@ -580,13 +635,61 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
 }
 
 #[allow(dead_code)]
-pub type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
-pub type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
-pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
-pub type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
-pub type FixedSizeBinaryArrayAccessor<'a> = MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>;
-pub type DurationNanosArrayAccessor<'a> = MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
+pub(crate) type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
+pub(crate) type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
+pub(crate) type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
+pub(crate) type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
+pub(crate) type FixedSizeBinaryArrayAccessor<'a> = MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>;
+pub(crate) type DurationNanosArrayAccessor<'a> =
+    MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
 
+/// Iterator over an array that may be dictionary encoded
+pub struct MaybeDictArrayIter<'a, V> {
+    index: usize,
+    inner: &'a MaybeDictArrayAccessor<'a, V>,
+}
+
+impl<'a, V> MaybeDictArrayIter<'a, V> {
+    fn new(inner: &'a MaybeDictArrayAccessor<'a, V>) -> Self {
+        Self { index: 0, inner }
+    }
+}
+
+impl<'a, V> Iterator for MaybeDictArrayIter<'a, V>
+where
+    V: Array + NullableArrayAccessor + 'static,
+{
+    type Item = Option<<V as NullableArrayAccessor>::Native>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.inner.len() {
+            return None;
+        }
+
+        let val = Some(self.inner.value_at(self.index));
+        self.index += 1;
+
+        val
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.inner.len() - self.index;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, V> ExactSizeIterator for MaybeDictArrayIter<'a, V>
+where
+    V: Array + NullableArrayAccessor + 'static,
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.inner.len() - self.index
+    }
+}
+
+/// generic adapter for accessing values of DictionaryArray
 pub struct DictionaryArrayAccessor<'a, K, V>
 where
     K: ArrowDictionaryKeyType,
@@ -600,7 +703,7 @@ where
     K: ArrowDictionaryKeyType,
     V: Array + NullableArrayAccessor + 'static,
 {
-    pub fn new(dict: &'a DictionaryArray<K>) -> Result<Self> {
+    pub(crate) fn new(dict: &'a DictionaryArray<K>) -> Result<Self> {
         let value =
             dict.values()
                 .as_any()
@@ -612,7 +715,7 @@ where
         Ok(Self { inner: dict, value })
     }
 
-    pub fn value_at(&self, idx: usize) -> Option<V::Native> {
+    pub(crate) fn value_at(&self, idx: usize) -> Option<V::Native> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
@@ -624,15 +727,19 @@ where
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.inner.len()
     }
 
-    pub fn null_count(&self) -> usize {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub(crate) fn null_count(&self) -> usize {
         self.inner.null_count()
     }
 
-    pub fn is_valid(&self, index: usize) -> bool {
+    pub(crate) fn is_valid(&self, index: usize) -> bool {
         self.inner.is_valid(index)
     }
 }
@@ -641,7 +748,7 @@ impl<'a, K> DictionaryArrayAccessor<'a, K, BinaryArray>
 where
     K: ArrowDictionaryKeyType,
 {
-    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
@@ -658,7 +765,7 @@ impl<'a, K> DictionaryArrayAccessor<'a, K, FixedSizeBinaryArray>
 where
     K: ArrowDictionaryKeyType,
 {
-    pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
+    pub(crate) fn slice_at(&self, idx: usize) -> Option<&[u8]> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
@@ -675,7 +782,7 @@ impl<'a, K> DictionaryArrayAccessor<'a, K, StringArray>
 where
     K: ArrowDictionaryKeyType,
 {
-    pub fn str_at(&self, idx: usize) -> Option<&str> {
+    pub(crate) fn str_at(&self, idx: usize) -> Option<&str> {
         if self.inner.is_valid(idx) {
             let offset = self
                 .inner
@@ -698,11 +805,11 @@ pub struct StructColumnAccessor<'a> {
 }
 
 impl<'a> StructColumnAccessor<'a> {
-    pub fn new(arr: &'a StructArray) -> Self {
+    pub(crate) fn new(arr: &'a StructArray) -> Self {
         Self { inner: arr }
     }
 
-    pub fn primitive_column<T: ArrowPrimitiveType + 'static>(
+    pub(crate) fn primitive_column<T: ArrowPrimitiveType + 'static>(
         &self,
         column_name: &str,
     ) -> Result<&'a PrimitiveArray<T>> {
@@ -712,7 +819,7 @@ impl<'a> StructColumnAccessor<'a> {
             })
     }
 
-    pub fn primitive_column_op<T: ArrowPrimitiveType + 'static>(
+    pub(crate) fn primitive_column_op<T: ArrowPrimitiveType + 'static>(
         &self,
         column_name: &str,
     ) -> Result<Option<&'a PrimitiveArray<T>>> {
@@ -730,7 +837,7 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn bool_column_op(&self, column_name: &str) -> Result<Option<&'a BooleanArray>> {
+    pub(crate) fn bool_column_op(&self, column_name: &str) -> Result<Option<&'a BooleanArray>> {
         self.inner
             .column_by_name(column_name)
             .map(|arr| {
@@ -745,28 +852,40 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn string_column_op(&self, column_name: &str) -> Result<Option<StringArrayAccessor<'a>>> {
+    pub(crate) fn string_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<StringArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(StringArrayAccessor::try_new)
             .transpose()
     }
 
-    pub fn byte_array_column_op(&self, column_name: &str) -> Result<Option<ByteArrayAccessor<'a>>> {
+    pub(crate) fn byte_array_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<ByteArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(ByteArrayAccessor::try_new)
             .transpose()
     }
 
-    pub fn int32_column_op(&self, column_name: &str) -> Result<Option<Int32ArrayAccessor<'a>>> {
+    pub(crate) fn int32_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<Int32ArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(Int32ArrayAccessor::try_new)
             .transpose()
     }
 
-    pub fn int64_column_op(&self, column_name: &str) -> Result<Option<Int64ArrayAccessor<'a>>> {
+    pub(crate) fn int64_column_op(
+        &self,
+        column_name: &str,
+    ) -> Result<Option<Int64ArrayAccessor<'a>>> {
         self.inner
             .column_by_name(column_name)
             .map(Int64ArrayAccessor::try_new)

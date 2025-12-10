@@ -17,7 +17,7 @@ pub mod error;
 pub mod otap;
 pub mod schema;
 
-pub(crate) mod arrays;
+pub mod arrays;
 pub(crate) mod decode;
 pub mod encode;
 pub(crate) mod payload;
