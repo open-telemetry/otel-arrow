@@ -66,8 +66,19 @@ pub use internal_events::_private;
 /// flushes them periodically.
 /// The TODO here is to evaluate these options and implement one of them.
 /// As of now, this causes contention, and we just need to accept temporarily.
-pub fn init_logging() {
-    tracing_subscriber::fmt::init();
+pub fn init_logging(config: &otap_df_config::pipeline::LogsConfig) {
+    use otap_df_config::pipeline::LogLevel;
+    use tracing_subscriber::filter::LevelFilter;
+
+    let level = match config.level {
+        LogLevel::Off => LevelFilter::OFF,
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Info => LevelFilter::INFO,
+        LogLevel::Warn => LevelFilter::WARN,
+        LogLevel::Error => LevelFilter::ERROR,
+    };
+
+    tracing_subscriber::fmt().with_max_level(level).init();
 }
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.

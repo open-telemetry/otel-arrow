@@ -20,6 +20,7 @@ use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_engine::control::PipelineAdminSender;
 use otap_df_state::store::ObservedStateHandle;
+use otap_df_telemetry::otel_info;
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 
 /// Shared state for the HTTP admin server.
@@ -74,6 +75,12 @@ pub async fn run(
             addr: addr.to_string(),
             details: format!("{e}"),
         })?;
+
+    otel_info!(
+        name: "admin_server_listening",
+        endpoint = addr.to_string(),
+        message = "Admin HTTP server listening"
+    );
 
     // Start serving requests, with graceful shutdown on signal.
     axum::serve(listener, app)

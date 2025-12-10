@@ -63,7 +63,7 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::MetricsConfig;
+    use otap_df_config::pipeline::{LogsConfig, MetricsConfig};
 
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
@@ -175,6 +175,7 @@ mod tests {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(reporting_interval_ms),
             metrics: MetricsConfig::default(),
+            logs: LogsConfig::default(),
             resource: HashMap::new(),
         }
     }

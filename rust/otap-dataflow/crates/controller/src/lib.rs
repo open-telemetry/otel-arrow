@@ -72,17 +72,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         quota: Quota,
         admin_settings: HttpAdminSettings,
     ) -> Result<(), Error> {
+        // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
+        let telemetry_config = &pipeline.service().telemetry;
+
         // Initialize internal logging.
-        init_logging();
+        init_logging(&telemetry_config.logs);
         otel_info!(
             name: "controller_start",
             num_nodes = pipeline.node_iter().count(),
             pdata_channel_size = pipeline.pipeline_settings().default_pdata_channel_size
         );
 
-        // Initialize metrics system and observed event store.
-        // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let telemetry_config = &pipeline.service().telemetry;
         let opentelemetry_client = OpentelemetryClient::new(telemetry_config);
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();

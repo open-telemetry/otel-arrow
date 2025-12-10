@@ -27,7 +27,7 @@ use otap_df_engine::{ReceiverFactory, control::NodeControlMsg};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_debug, otel_info};
 use prost::Message;
 use serde_json::Value;
 use std::sync::Arc;
@@ -174,6 +174,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 // check if need to sleep
                                 let remaining_time = wait_till - Instant::now();
                                 if remaining_time.as_secs_f64() > 0.0 {
+                                    otel_debug!(
+                                        name: "rate_limit_sleep",
+                                        sleep_duration_ms = remaining_time.as_millis() as u64,
+                                        message = "Sleeping to maintain configured signal rate"
+                                    );
                                     sleep(remaining_time).await;
                                 }
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
