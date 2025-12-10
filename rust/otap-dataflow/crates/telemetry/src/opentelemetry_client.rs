@@ -13,7 +13,7 @@ use crate::{error::Error, opentelemetry_client::meter_provider::MeterProvider};
 
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
-    /// The tokio runtime used to run the OpenTelemetry SDK.
+    /// The tokio runtime used to run the OpenTelemetry SDK OTLP exporter.
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
