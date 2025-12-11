@@ -37,17 +37,21 @@ pub enum ResolvedValue<'a> {
 }
 
 impl<'a> ResolvedValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         let v = match self {
             ResolvedValue::Borrowed(b, v) => Some((b, v.to_value())),
             ResolvedValue::Slice(s) => {
-                return s.copy_if_borrowed_from_target(target);
+                return s.copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedValue::List(l) => {
-                return l.copy_if_borrowed_from_target(target);
+                return l.copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedValue::Sequence(s) => {
-                return s.copy_if_borrowed_from_target(target);
+                return s.copy_if_borrowed_from_target(execution_context, target);
             }
             _ => None,
         };
@@ -59,6 +63,16 @@ impl<'a> ResolvedValue<'a> {
                 }
                 MutableValueExpression::Variable(_) => {
                     matches!(s, BorrowSource::Variable)
+                }
+                MutableValueExpression::Argument(a) => {
+                    match execution_context
+                        .get_arguments()
+                        .expect("Arguments were not found")
+                        .get_argument_borrow_source(a.get_argument_id())
+                    {
+                        Some(target_source) => *s == target_source,
+                        None => false,
+                    }
                 }
             };
 
@@ -432,11 +446,15 @@ impl<'a> List<'a> {
         Self { values }
     }
 
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         let mut copied = false;
 
         for value in &mut self.values {
-            if value.copy_if_borrowed_from_target(target) {
+            if value.copy_if_borrowed_from_target(execution_context, target) {
                 copied = true;
             }
         }
@@ -484,10 +502,18 @@ pub enum Slice<'a> {
 }
 
 impl Slice<'_> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         match self {
-            Slice::Array(a) => a.inner_value.copy_if_borrowed_from_target(target),
-            Slice::String(s) => s.inner_value.copy_if_borrowed_from_target(target),
+            Slice::Array(a) => a
+                .inner_value
+                .copy_if_borrowed_from_target(execution_context, target),
+            Slice::String(s) => s
+                .inner_value
+                .copy_if_borrowed_from_target(execution_context, target),
         }
     }
 }
@@ -641,11 +667,15 @@ impl<'a> Sequence<'a> {
         Self { values }
     }
 
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         let mut copied = false;
 
         for value in &mut self.values {
-            if value.copy_if_borrowed_from_target(target) {
+            if value.copy_if_borrowed_from_target(execution_context, target) {
                 copied = true;
             }
         }
@@ -752,11 +782,17 @@ pub enum ResolvedStringValue<'a> {
 }
 
 impl ResolvedStringValue<'_> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         let v = match self {
             ResolvedStringValue::Borrowed(b, v) => Some((b, v)),
             ResolvedStringValue::Slice(s) => {
-                return s.inner_value.copy_if_borrowed_from_target(target);
+                return s
+                    .inner_value
+                    .copy_if_borrowed_from_target(execution_context, target);
             }
             _ => None,
         };
@@ -768,6 +804,16 @@ impl ResolvedStringValue<'_> {
                 }
                 MutableValueExpression::Variable(_) => {
                     matches!(s, BorrowSource::Variable)
+                }
+                MutableValueExpression::Argument(a) => {
+                    match execution_context
+                        .get_arguments()
+                        .expect("Arguments were not found")
+                        .get_argument_borrow_source(a.get_argument_id())
+                    {
+                        Some(target_source) => *s == target_source,
+                        None => false,
+                    }
                 }
             };
 
@@ -885,17 +931,23 @@ pub struct BorrowedArrayValue<'a> {
 }
 
 impl<'a> ResolvedArrayValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         let v = match self {
             ResolvedArrayValue::Borrowed(b) => Some((&b.source, &b.value)),
             ResolvedArrayValue::Slice(s) => {
-                return s.inner_value.copy_if_borrowed_from_target(target);
+                return s
+                    .inner_value
+                    .copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedArrayValue::List(l) => {
-                return l.copy_if_borrowed_from_target(target);
+                return l.copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedArrayValue::Sequence(s) => {
-                return s.copy_if_borrowed_from_target(target);
+                return s.copy_if_borrowed_from_target(execution_context, target);
             }
             _ => None,
         };
@@ -907,6 +959,16 @@ impl<'a> ResolvedArrayValue<'a> {
                 }
                 MutableValueExpression::Variable(_) => {
                     matches!(s, BorrowSource::Variable)
+                }
+                MutableValueExpression::Argument(a) => {
+                    match execution_context
+                        .get_arguments()
+                        .expect("Arguments were not found")
+                        .get_argument_borrow_source(a.get_argument_id())
+                    {
+                        Some(target_source) => *s == target_source,
+                        None => false,
+                    }
                 }
             };
 
@@ -1093,7 +1155,12 @@ pub struct BorrowedMapValue<'a> {
 }
 
 impl<'a> ResolvedMapValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn copy_if_borrowed_from_target<T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'_, '_, T>,
+        target: &MutableValueExpression,
+    ) -> bool {
         let v = match self {
             ResolvedMapValue::Borrowed(b) => Some((&b.source, &b.value)),
             _ => None,
@@ -1106,6 +1173,16 @@ impl<'a> ResolvedMapValue<'a> {
                 }
                 MutableValueExpression::Variable(_) => {
                     matches!(s, BorrowSource::Variable)
+                }
+                MutableValueExpression::Argument(a) => {
+                    match execution_context
+                        .get_arguments()
+                        .expect("Arguments were not found")
+                        .get_argument_borrow_source(a.get_argument_id())
+                    {
+                        Some(target_source) => *s == target_source,
+                        None => false,
+                    }
                 }
             };
 
