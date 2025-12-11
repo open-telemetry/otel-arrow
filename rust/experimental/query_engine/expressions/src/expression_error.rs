@@ -15,6 +15,9 @@ pub enum ExpressionError {
 
     #[error("{1}")]
     ParseError(QueryLocation, String),
+
+    #[error("{1}")]
+    NotSupported(QueryLocation, String),
 }
 
 impl ExpressionError {
@@ -23,6 +26,7 @@ impl ExpressionError {
             ExpressionError::TypeMismatch(l, _) => l,
             ExpressionError::ValidationFailure(l, _) => l,
             ExpressionError::ParseError(l, _) => l,
+            ExpressionError::NotSupported(l, _) => l,
         }
     }
 }

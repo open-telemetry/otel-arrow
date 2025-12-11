@@ -10,8 +10,12 @@ use data_engine_expressions::*;
 #[cfg(test)]
 use crate::TestRecord;
 #[cfg(test)]
-use crate::scalars::{
-    execute_scalar_expression, execute_source_scalar_expression, execute_variable_scalar_expression,
+use crate::{
+    scalars::{
+        execute_argument_scalar_expression, execute_scalar_expression,
+        execute_source_scalar_expression, execute_variable_scalar_expression,
+    },
+    value_expressions::execute_mutable_value_expression,
 };
 
 pub(crate) struct ExecutionContext<'a, 'b, TRecord>
@@ -25,7 +29,7 @@ where
     summaries: &'b Summaries<'a>,
     attached_records: Option<&'b dyn AttachedRecords>,
     record: Option<RefCell<TRecord>>,
-    arguments: Option<&'b dyn ExecutionContextArguments<'a>>,
+    arguments: Option<&'b dyn ExecutionContextArguments>,
 }
 
 impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
@@ -36,7 +40,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         summaries: &'b Summaries<'a>,
         attached_records: Option<&'b dyn AttachedRecords>,
         record: Option<TRecord>,
-        arguments: Option<&'b dyn ExecutionContextArguments<'a>>,
+        arguments: Option<&'b dyn ExecutionContextArguments>,
     ) -> ExecutionContext<'a, 'b, TRecord> {
         Self {
             diagnostic_level,
@@ -53,7 +57,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
     #[cfg(test)]
     pub fn create_scope(
         &self,
-        arguments: Option<&'b dyn ExecutionContextArguments<'a>>,
+        arguments: Option<&'b dyn ExecutionContextArguments>,
     ) -> ExecutionContext<'a, 'b, MapValueStorage<OwnedValue>> {
         ExecutionContext::<MapValueStorage<OwnedValue>>::new(
             self.diagnostic_level.clone(),
@@ -116,7 +120,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         self.summaries
     }
 
-    pub fn get_arguments(&self) -> Option<&dyn ExecutionContextArguments<'a>> {
+    pub fn get_arguments(&self) -> Option<&dyn ExecutionContextArguments> {
         self.arguments
     }
 
@@ -183,8 +187,15 @@ impl<'a> ExecutionContextVariables<'a> {
     }
 }
 
-pub trait ExecutionContextArguments<'a> {
+pub trait ExecutionContextArguments {
+    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource>;
+
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError>;
+
+    fn get_argument_mut(
+        &self,
+        id: usize,
+    ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError>;
 }
 
 #[cfg(test)]
@@ -197,11 +208,40 @@ where
 }
 
 #[cfg(test)]
-impl<'a, 'b, 'c, TRecord> ExecutionContextArguments<'a>
+impl<'a, 'b, 'c, TRecord> ExecutionContextArguments
     for ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
 where
     TRecord: Record + 'static,
 {
+    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource> {
+        let argument = self
+            .arguments
+            .get(id)
+            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
+
+        match argument {
+            InvokeFunctionArgument::Scalar(s) => match s {
+                ScalarExpression::Source(_) => Some(BorrowSource::Source),
+                ScalarExpression::Variable(_) => Some(BorrowSource::Variable),
+                ScalarExpression::Argument(a) => self
+                    .parent_execution_context
+                    .get_arguments()
+                    .expect("Arguments were not found")
+                    .get_argument_borrow_source(a.get_argument_id()),
+                _ => None,
+            },
+            InvokeFunctionArgument::MutableValue(m) => match m {
+                MutableValueExpression::Source(_) => Some(BorrowSource::Source),
+                MutableValueExpression::Variable(_) => Some(BorrowSource::Variable),
+                MutableValueExpression::Argument(a) => self
+                    .parent_execution_context
+                    .get_arguments()
+                    .expect("Arguments were not found")
+                    .get_argument_borrow_source(a.get_argument_id()),
+            },
+        }
+    }
+
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError> {
         let argument = self
             .arguments
@@ -215,6 +255,9 @@ where
             InvokeFunctionArgument::MutableValue(m) => {
                 // Note: In this branch mutable values are retured as immutables which is totally fine
                 match m {
+                    MutableValueExpression::Argument(a) => {
+                        execute_argument_scalar_expression(self.parent_execution_context, a)
+                    }
                     MutableValueExpression::Source(s) => {
                         execute_source_scalar_expression(self.parent_execution_context, m, s)
                     }
@@ -222,6 +265,28 @@ where
                         execute_variable_scalar_expression(self.parent_execution_context, m, v)
                     }
                 }
+            }
+        }
+    }
+
+    fn get_argument_mut(
+        &self,
+        id: usize,
+    ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError> {
+        let argument = self
+            .arguments
+            .get(id)
+            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
+
+        match argument {
+            InvokeFunctionArgument::Scalar(s) => Err(ExpressionError::NotSupported(
+                s.get_query_location().clone(),
+                format!("Argument for id '{id}' cannot be mutated"),
+            )),
+            InvokeFunctionArgument::MutableValue(m) => {
+                let value = execute_mutable_value_expression(self.parent_execution_context, m)?;
+
+                Ok(ResolvedMutableArgument { source: m, value })
             }
         }
     }

@@ -53,7 +53,7 @@ use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
@@ -64,7 +64,7 @@ use std::time::{Duration, Instant};
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
 
 /// Default configuration values (parity-aligned as we confirm Go defaults)
-pub const DEFAULT_SEND_BATCH_SIZE: usize = 8192;
+pub const DEFAULT_MIN_SIZE_ITEMS: usize = 8192;
 
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
@@ -75,32 +75,67 @@ const LOG_MSG_DROP_CONVERSION_FAILED: &str =
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
+/// How to size a batch.
+///
+/// Note: these are not always supported. In the present code, the only
+/// supported Sizer value is Items. We expect future support for bytes and
+/// requests sizers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Sizer {
+    /// Count requests. This metric counts one per OtapPdata message.
+    Requests,
+    /// Count items.  The number of log records, trace spans, or
+    /// metric data points.
+    Items,
+    /// Count bytes.
+    Bytes,
+}
+
 /// Batch processor configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Flush current batch when this count is reached, as a
-    /// minimum. Measures the number of items (logs: records, traces:
-    /// spans, metrics: data points). When pending data reaches this
-    /// threshold a new batch will form and be sent.
-    #[serde(default = "default_send_batch_size")]
-    pub send_batch_size: Option<NonZeroUsize>,
+    /// minimum. Measures the quantity indicated by `sizer`. When
+    /// pending data reaches this threshold a new batch will form and
+    /// be sent.
+    #[serde(default = "default_min_size_items")]
+    pub min_size: Option<NonZeroUsize>,
 
     /// Optionally limit batch sizes to an upper bound. Measured in
-    /// items, as described for send_batch_size.
-    #[serde(default = "default_send_batch_max_size")]
-    pub send_batch_max_size: Option<NonZeroUsize>,
+    /// the quantity indicated by `sizer`, as described for min_size.
+    /// This limit is passed to the lower-level batching logic as a
+    /// not-to-exceed maximum.
+    #[serde(default = "default_max_size_items")]
+    pub max_size: Option<NonZeroUsize>,
+
+    /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
+    #[serde(default = "default_sizer_items")]
+    pub sizer: Sizer,
 
     /// Flush non-empty batches on this interval, which may be 0 for
     /// immediate flush or None for no timeout.
     #[serde(with = "humantime_serde", default = "default_timeout_duration")]
     pub timeout: Duration,
+
+    /// Limits the number of pending requests for ack/nack tracking.
+    #[serde(default = "default_inbound_request_limit")]
+    pub inbound_request_limit: NonZeroUsize,
+
+    /// Limits the number of outbound requests for ack/nack tracking.
+    #[serde(default = "default_outbound_request_limit")]
+    pub outbound_request_limit: NonZeroUsize,
 }
 
-const fn default_send_batch_size() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(DEFAULT_SEND_BATCH_SIZE)
+const fn default_min_size_items() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(DEFAULT_MIN_SIZE_ITEMS)
 }
 
-const fn default_send_batch_max_size() -> Option<NonZeroUsize> {
+const fn default_sizer_items() -> Sizer {
+    Sizer::Items
+}
+
+const fn default_max_size_items() -> Option<NonZeroUsize> {
     // No upper-bound
     None
 }
@@ -109,12 +144,23 @@ const fn default_timeout_duration() -> Duration {
     Duration::from_millis(DEFAULT_TIMEOUT_MS)
 }
 
+const fn default_inbound_request_limit() -> NonZeroUsize {
+    NonZeroUsize::new(1024).expect("ok") // default_min_size/8
+}
+
+const fn default_outbound_request_limit() -> NonZeroUsize {
+    NonZeroUsize::new(512).expect("ok") // default_min_size/16
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            send_batch_size: default_send_batch_size(),
-            send_batch_max_size: default_send_batch_max_size(),
+            min_size: default_min_size_items(),
+            max_size: default_max_size_items(),
+            sizer: default_sizer_items(),
             timeout: default_timeout_duration(),
+            inbound_request_limit: default_inbound_request_limit(),
+            outbound_request_limit: default_outbound_request_limit(),
         }
     }
 }
@@ -123,19 +169,25 @@ impl Config {
     /// Validates the configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
         // At least one size is set.
-        if self.send_batch_size.or(self.send_batch_max_size).is_none() {
+        if self.min_size.or(self.max_size).is_none() {
             return Err(ConfigError::InvalidUserConfig {
-                error: "send_batch_max_size or send_batch_size must be set".into(),
+                error: "max_size or min_size must be set".into(),
+            });
+        }
+
+        // Presently we have only the OTAP mode of batching, which supports only Items.
+        if self.sizer != Sizer::Items {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "sizer: must be items".into(),
             });
         }
 
         // If both sizes are set, check max_size is >= the batch_size.
-        if let (Some(max_size), Some(batch_size)) = (self.send_batch_max_size, self.send_batch_size)
-        {
+        if let (Some(max_size), Some(batch_size)) = (self.max_size, self.min_size) {
             if max_size < batch_size {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!(
-                        "send_batch_max_size ({}) must be >= send_batch_size ({}) or unset",
+                        "max_size ({}) must be >= min_size ({}) or unset",
                         max_size, batch_size,
                     ),
                 });
@@ -144,15 +196,14 @@ impl Config {
 
         // Zero-timeout is a valid split-only configuration.
         if self.timeout == Duration::ZERO {
-            if let Some(batch_size) = self.send_batch_size {
+            if let Some(batch_size) = self.min_size {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!("send_batch_size ({}) requires a timeout", batch_size),
+                    error: format!("min_size ({}) requires a timeout", batch_size),
                 });
             }
-            if self.send_batch_max_size.is_none() {
+            if self.max_size.is_none() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: "send_batch_max_size required for split-only (no timeout) configuration"
-                        .into(),
+                    error: "max_size required for split-only (no timeout) configuration".into(),
                 });
             }
         }
@@ -162,10 +213,10 @@ impl Config {
 }
 
 /// Per-signal state
-struct SignalBatches {
-    logs: SignalBuffer,
-    metrics: SignalBuffer,
-    traces: SignalBuffer,
+struct SignalBatches<T> {
+    logs: SignalBuffer<T>,
+    metrics: SignalBuffer<T>,
+    traces: SignalBuffer<T>,
 }
 
 /// Per-input wait context, including the arriving request's context.
@@ -196,21 +247,15 @@ struct Inputs<T> {
     items: usize,
 }
 
-#[derive(Default)]
-struct InputsPair {
-    otlp: Inputs<OtlpProtoBytes>,
-    otap: Inputs<OtapArrowRecords>,
-}
-
 struct MultiContext {
     inputs: Vec<BatchPortion>,
     pos: usize,
 }
 
 /// Per-signal buffer state
-struct SignalBuffer {
+struct SignalBuffer<T> {
     /// Pending input state.
-    inputs: InputsPair,
+    inputs: Inputs<T>,
 
     /// Map of inbound requests.  This contains a limited number of pending request
     /// contexts with details for the impl to notify after an outcome is available.
@@ -228,7 +273,8 @@ struct SignalBuffer {
 /// Local (!Send) batch processor
 pub struct BatchProcessor {
     config: Config,
-    signals: SignalBatches,
+    otap_signals: SignalBatches<OtapArrowRecords>,
+    otlp_signals: SignalBatches<OtlpProtoBytes>,
     lower_limit: NonZeroUsize,
     metrics: MetricSet<BatchProcessorMetrics>,
 }
@@ -337,10 +383,7 @@ impl BatchProcessor {
         config.validate()?;
 
         let signals = SignalBatches::new(&config);
-        let lower_limit = config
-            .send_batch_size
-            .or(config.send_batch_max_size)
-            .expect("valid");
+        let lower_limit = config.min_size.or(config.max_size).expect("valid");
 
         Ok(BatchProcessor {
             config,
@@ -511,7 +554,7 @@ impl BatchProcessor {
         }
 
         let count = inputs.requests();
-        let upper_limit = self.config.send_batch_max_size;
+        let upper_limit = self.config.max_size;
         let pending = inputs.take_pending();
         let mut output_batches =
             match make_output_batches(signal, nzu_to_nz64(upper_limit), pending) {
@@ -695,7 +738,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
     }
 }
 
-impl SignalBatches {
+impl<T> SignalBatches<T> {
     fn new(config: &Config) -> Self {
         Self {
             logs: SignalBuffer::new(config),
@@ -749,13 +792,12 @@ impl<T> Inputs<T> {
     }
 }
 
-impl SignalBuffer {
-    fn new(_config: &Config) -> Self {
-        // TODO configure limits
+impl<T> SignalBuffer<T> {
+    fn new(cfg: &Config) -> Self {
         Self {
             inputs: InputsPair::default(),
-            inbound: SlotState::new(1000),
-            outbound: SlotState::new(1000),
+            inbound: SlotState::new(cfg.inbound_request_limit.get()),
+            outbound: SlotState::new(cfg.outbound_request_limit.get()),
             arrival: None,
         }
     }
@@ -763,7 +805,7 @@ impl SignalBuffer {
     /// Takes the residual batch, used in case the final output is less than
     /// the lower bound. This removes the last output btach, the corresponding
     /// context, and places it back in the pending buffer as the first in line.
-    fn take_remaining<T>(
+    fn take_remaining(
         &mut self,
         from_inputs: &mut Inputs<T>,
         output_batches: &mut Vec<T>,
@@ -1073,57 +1115,64 @@ mod tests {
     fn test_config_validation() {
         // Both sizes set, max >= batch: OK
         let cfg = Config {
-            send_batch_size: NonZeroUsize::new(100),
-            send_batch_max_size: NonZeroUsize::new(200),
+            min_size: NonZeroUsize::new(100),
+            max_size: NonZeroUsize::new(200),
             timeout: Duration::from_millis(100),
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
         // Only batch size: OK
         let cfg = Config {
-            send_batch_size: NonZeroUsize::new(100),
-            send_batch_max_size: None,
+            min_size: NonZeroUsize::new(100),
+            max_size: None,
             timeout: Duration::from_millis(100),
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
         // Only max size: OK
         let cfg = Config {
-            send_batch_size: None,
-            send_batch_max_size: NonZeroUsize::new(200),
+            min_size: None,
+            max_size: NonZeroUsize::new(200),
             timeout: Duration::from_millis(100),
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
         // Split-only: OK
         let cfg = Config {
-            send_batch_size: None,
-            send_batch_max_size: NonZeroUsize::new(100),
+            min_size: None,
+            max_size: NonZeroUsize::new(100),
             timeout: Duration::ZERO,
+            ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
         // Both None: ERROR
         let cfg = Config {
-            send_batch_size: None,
-            send_batch_max_size: None,
+            min_size: None,
+            max_size: None,
             timeout: Duration::from_millis(100),
+            ..Default::default()
         };
         assert!(cfg.validate().is_err());
 
         // Max < batch: ERROR
         let cfg = Config {
-            send_batch_size: NonZeroUsize::new(200),
-            send_batch_max_size: NonZeroUsize::new(100),
+            min_size: NonZeroUsize::new(200),
+            max_size: NonZeroUsize::new(100),
             timeout: Duration::from_millis(100),
+            ..Default::default()
         };
         assert!(cfg.validate().is_err());
 
         // lower-bound without timeout: ERROR
         let cfg = Config {
-            send_batch_size: NonZeroUsize::new(200),
-            send_batch_max_size: NonZeroUsize::new(100),
+            min_size: NonZeroUsize::new(200),
+            max_size: NonZeroUsize::new(100),
             timeout: Duration::ZERO,
+            ..Default::default()
         };
         assert!(cfg.validate().is_err());
     }
@@ -1395,8 +1444,8 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "send_batch_size": 4,
-                "send_batch_max_size": 5,
+                "min_size": 4,
+                "max_size": 5,
                 "timeout": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
@@ -1449,8 +1498,8 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "send_batch_size": 10,  // Higher than input (3 items), so won't trigger size flush
-                "send_batch_max_size": 10,
+                "min_size": 10,  // Higher than input (3 items), so won't trigger size flush
+                "max_size": 10,
                 "timeout": "50ms"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
@@ -1507,8 +1556,8 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "send_batch_size": 3,
-                "send_batch_max_size": 3,
+                "min_size": 3,
+                "max_size": 3,
                 "timeout": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
@@ -1558,8 +1607,8 @@ mod tests {
         events.push(TestEvent::Elapsed);
 
         let cfg = json!({
-            "send_batch_size": 5,
-            "send_batch_max_size": 10,
+            "min_size": 5,
+            "max_size": 10,
             "timeout": "1s"
         });
 
@@ -1572,7 +1621,7 @@ mod tests {
                 // Collect all outputs across events
                 let all_outputs: Vec<_> = event_outputs.iter().flat_map(|e| e.messages()).collect();
 
-                // With send_batch_size=5, send_batch_max_size=10, 4 inputs of 3 items each = 12 items
+                // With min_size=5, max_size=10, 4 inputs of 3 items each = 12 items
                 // Should emit 2 batches of 6 items each (concatenation/rebuffering)
                 assert_eq!(all_outputs.len(), 2, "should emit 2 batches at threshold");
 
@@ -1607,14 +1656,14 @@ mod tests {
         test_concatenate((0..4).map(|_| datagen.generate_logs().into()), true);
     }
 
-    /// Generic test for split-only mode (no timeout, no send_batch_size)
+    /// Generic test for split-only mode (no timeout, no min_size)
     fn test_split_only(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>, subscribe: bool) {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
 
         let cfg = json!({
-            "send_batch_size": null,
-            "send_batch_max_size": 2,
+            "min_size": null,
+            "max_size": 2,
             "timeout": "0s",
         });
 
@@ -1627,8 +1676,8 @@ mod tests {
                 // Collect all outputs across events
                 let all_outputs: Vec<_> = event_outputs.iter().flat_map(|e| e.messages()).collect();
 
-                // With no send_batch_size and no timeout, flushes immediately on every input
-                // With send_batch_max_size=2, each 3-item input splits to [2, 1]
+                // With no min_size and no timeout, flushes immediately on every input
+                // With max_size=2, each 3-item input splits to [2, 1]
                 assert_eq!(all_outputs.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
 
                 let batch_sizes: Vec<_> = all_outputs.iter().map(|p| p.num_items()).collect();
@@ -1672,8 +1721,8 @@ mod tests {
         nack_position: usize,
     ) {
         let cfg = json!({
-            "send_batch_size": 4,
-            "send_batch_max_size": 5,
+            "min_size": 4,
+            "max_size": 5,
             "timeout": "1s",
         });
 

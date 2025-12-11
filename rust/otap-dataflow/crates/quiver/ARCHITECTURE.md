@@ -347,6 +347,10 @@ Protects processed data; smaller footprint, buffers during downstream outages
   provide its own slot table.
 - **Stream**: The ordered sequence of Arrow IPC messages Quiver writes for a
   `(slot, schema_fingerprint)` pairing inside a segment.
+- **Chunk**: A single Arrow `RecordBatch` within a stream. Each `RecordBundle`
+  payload slot that matches the stream's `(slot, schema)` key contributes one
+  chunk. Chunks share the stream's unified dictionary vocabulary and are
+  individually addressable via the batch manifest.
 - **Stream Directory**: The header table that records every stream's id, slot,
   schema fingerprint, byte offset, byte length, and statistics.
 - **Batch Manifest**: The ordered list of `RecordBundle` arrivals. Each entry
