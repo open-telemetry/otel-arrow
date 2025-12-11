@@ -1043,7 +1043,7 @@ impl FilterProjection {
     /// there is some form of [`Expr`] tree which is not recognized
     fn try_new(logical_expr: &Expr) -> Result<Self> {
         let mut visitor = ProjectedSchemaExprVisitor::default();
-        logical_expr.visit(&mut visitor)?;
+        _ = logical_expr.visit(&mut visitor)?;
         Ok(Self {
             schema: visitor.into(),
         })
@@ -1149,7 +1149,7 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
 
     fn f_down(&mut self, node: &'a Self::Node) -> datafusion::error::Result<TreeNodeRecursion> {
         if let Expr::Column(col) = node {
-            self.root_columns.insert(col.name.clone());
+            _ = self.root_columns.insert(col.name.clone());
         }
 
         // here we're checking if the expression we're visiting references a field within a struct
@@ -1175,7 +1175,7 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
                             .struct_columns
                             .entry(col.name.clone())
                             .or_insert(HashSet::new());
-                        struct_fields.insert(nested_col.clone());
+                        _ = struct_fields.insert(nested_col.clone());
 
                         // don't continue as we've found a column. Otherwise this will continue
                         // down the expression tree and we'll visit the Column expression twice.
@@ -1206,11 +1206,11 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
                 .sum::<usize>();
         let mut schema = Vec::with_capacity(num_cols);
 
-        for col in visitor.root_columns.into_iter() {
+        for col in visitor.root_columns {
             schema.push(ProjectedSchemaColumn::Root(col))
         }
 
-        for (struct_name, cols) in visitor.struct_columns.into_iter() {
+        for (struct_name, cols) in visitor.struct_columns {
             schema.push(ProjectedSchemaColumn::Struct(
                 struct_name,
                 cols.into_iter().collect(),

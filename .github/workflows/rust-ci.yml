@@ -39,6 +39,39 @@ jobs:
       - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
         with:
           toolchain: stable
+
+        # running llvm codecov and building the collector etc. tend to create a lot of artifacts
+        # that will cause the job to run out of disk space. Here we delete some pre-installed
+        # packages from the runner that are not needed to free up space
+      - name: Free disk space
+        run: |
+          echo "disk usage before"
+          df -h
+
+          # Remove Java (JDKs)
+          sudo rm -rf /usr/lib/jvm
+          # Remove .NET SDKs
+          sudo rm -rf /usr/share/dotnet
+          # Remove Swift toolchain
+          sudo rm -rf /usr/share/swift
+          # Remove Haskell (GHC)
+          sudo rm -rf /usr/local/.ghcup
+          # Remove Julia
+          sudo rm -rf /usr/local/julia*
+          # Remove Android SDKs
+          sudo rm -rf /usr/local/lib/android
+          # Remove Chromium (optional if not using for browser tests)
+          sudo rm -rf /usr/local/share/chromium
+          # Remove Microsoft/Edge and Google Chrome builds
+          sudo rm -rf /opt/microsoft /opt/google
+          # Remove Azure CLI
+          sudo rm -rf /opt/az
+          # Remove PowerShell
+          sudo rm -rf /usr/local/share/powershell
+
+          echo "disk usage after"
+          df -h
+
       - name: install cargo-llvm-cov and nextest
         uses: taiki-e/install-action@3575e532701a5fc614b0c842e4119af4cc5fd16d # v2.62.60
         with:
