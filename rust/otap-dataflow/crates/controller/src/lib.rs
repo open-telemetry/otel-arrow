@@ -315,7 +315,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
-        pipeline_handle: PipelineContext,
+        pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
@@ -335,7 +335,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
-            .build(pipeline_handle, pipeline_config.clone())
+            .build(pipeline_context.clone(), pipeline_config.clone())
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
@@ -349,6 +349,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         runtime_pipeline
             .run_forever(
                 pipeline_key,
+                pipeline_context,
                 obs_evt_reporter,
                 metrics_reporter,
                 pipeline_ctrl_msg_tx,

@@ -19,6 +19,7 @@ use otap_df_state::reporter::ObservedEventReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
+use crate::context::PipelineContext;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///
@@ -94,6 +95,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     pub fn run_forever(
         self,
         pipeline_key: DeployedPipelineKey,
+        pipeline_context: PipelineContext,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
@@ -168,6 +170,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
                 pipeline_key,
+                pipeline_context,
                 pipeline_ctrl_msg_rx,
                 control_senders,
                 event_reporter,

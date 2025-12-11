@@ -12,7 +12,7 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-mimalloc-rust.workspace = true
+mimalloc.workspace = true
 otap-df-otap = { path = "../crates/otap" }
 
 [dev-dependencies]

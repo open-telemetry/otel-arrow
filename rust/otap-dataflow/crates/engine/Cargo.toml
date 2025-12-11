@@ -40,3 +40,7 @@ uuid = { workspace = true }
 once_cell = { workspace = true }
 data-encoding = { workspace = true }
 prost = { workspace = true }
+libmimalloc-sys = { workspace = true }
+tikv-jemalloc-ctl = { workspace = true }
+byte-unit = { workspace = true }
+cpu-time = { workspace = true }

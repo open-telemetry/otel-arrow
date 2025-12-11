@@ -20,6 +20,8 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
+use crate::context::PipelineContext;
+use crate::pipeline_metrics::PipelineMetricsMonitor;
 
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
@@ -162,6 +164,8 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 pub struct PipelineCtrlMsgManager<PData> {
     /// The key identifying the deployed pipeline this manager is responsible for.
     pipeline_key: DeployedPipelineKey,
+    /// Context information about the pipeline.
+    pipeline_context: PipelineContext,
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
@@ -183,6 +187,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     #[must_use]
     pub fn new(
         pipeline_key: DeployedPipelineKey,
+        pipeline_context: PipelineContext,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
@@ -190,6 +195,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     ) -> Self {
         Self {
             pipeline_key,
+            pipeline_context,
             pipeline_ctrl_msg_receiver,
             control_senders,
             tick_timers: TimerSet::new(),
@@ -214,6 +220,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             let next_tel_expiry = self.telemetry_timers.next_expiry();
             let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
             let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
+            let mut pipeline_metrics_monitor = PipelineMetricsMonitor::new(self.pipeline_context.clone());
+
             tokio::select! {
                 biased;
                 // Handle incoming control messages from nodes.
@@ -293,6 +301,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         to_send.push((delayed.node_id, NodeControlMsg::DelayedData { when: delayed.when, data: delayed.data }));
                     }
 
+                    // Update and report pipeline metrics
+                    pipeline_metrics_monitor.update_metrics();
+                    // ToDo remove unwrap
+                    self.metrics_reporter.report(pipeline_metrics_monitor.metrics_mut()).unwrap();
+
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
                         self.send(node_id, msg).await;
@@ -369,6 +382,8 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::task::LocalSet;
     use tokio::time::timeout;
+    use otap_df_config::{PipelineGroupId, PipelineId};
+    use crate::context::ControllerContext;
 
     fn create_mock_control_sender<PData>() -> (
         Sender<NodeControlMsg<PData>>,
@@ -404,14 +419,26 @@ mod tests {
         let metrics_reporter = metrics_system.reporter();
         let pipeline_settings = PipelineSettings::default();
         let observed_state_store = ObservedStateStore::new(&pipeline_settings);
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: Default::default(),
-            pipeline_id: Default::default(),
-            core_id: 0,
-        };
+        let pipeline_group_id: PipelineGroupId = Default::default();
+        let pipeline_id: PipelineId = Default::default();
+        let core_id = 0;
+        let thread_id = 0;
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context = PipelineContext::new(
+            controller_context,
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            core_id,
+            thread_id
+        );
 
         let manager = PipelineCtrlMsgManager::new(
-            pipeline_key,
+            DeployedPipelineKey {
+                pipeline_group_id,
+                pipeline_id,
+                core_id,
+            },
+            pipeline_context,
             pipeline_rx,
             control_senders,
             observed_state_store.reporter(),
@@ -798,8 +825,8 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let (metrics_tx, _metrics_rx) = flume::unbounded();
-                let metrics_reporter = MetricsReporter::new(metrics_tx);
+                let metrics_system = otap_df_telemetry::MetricsSystem::default();
+                let metrics_reporter = metrics_system.reporter();
                 let pipeline_settings = PipelineSettings::default();
                 let observed_state_store = ObservedStateStore::new(&pipeline_settings);
                 let pipeline_key = DeployedPipelineKey {
@@ -807,10 +834,23 @@ mod tests {
                     pipeline_id: Default::default(),
                     core_id: 0,
                 };
+                let pipeline_group_id: PipelineGroupId = Default::default();
+                let pipeline_id: PipelineId = Default::default();
+                let core_id = 0;
+                let thread_id = 0;
+                let controller_context = ControllerContext::new(metrics_system.registry());
+                let pipeline_context = PipelineContext::new(
+                    controller_context,
+                    pipeline_group_id.clone(),
+                    pipeline_id.clone(),
+                    core_id,
+                    thread_id
+                );
 
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
                     pipeline_key,
+                    pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
                     observed_state_store.reporter(),
