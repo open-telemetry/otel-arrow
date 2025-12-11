@@ -523,7 +523,8 @@ future versions to extend the footer without breaking backwards compatibility:
 │                         Trailer (fixed 16 bytes)                        │
 │    - footer_size: u32 (size of footer, not including trailer)           │
 │    - magic: b"QUIVER\0S" (8 bytes)                                      │
-│    - crc32: u32 (covers footer + trailer except CRC itself)             │
+│    - crc32: u32 (covers entire file from start through trailer,         │
+│                  except the CRC field itself)                           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 

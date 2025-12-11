@@ -42,15 +42,18 @@
 //! | `stream_accumulator.rs` | Per-stream batch accumulation                       |
 //! | `open_segment.rs`       | Open segment buffer routing payloads to streams     |
 //! | `writer.rs`             | Segment file writer                                  |
+//! | `reader.rs`             | Segment file reader with CRC validation              |
 
 mod error;
 mod open_segment;
+mod reader;
 mod stream_accumulator;
 mod types;
 mod writer;
 
 pub use error::SegmentError;
 pub use open_segment::OpenSegment;
+pub use reader::{ReconstructedBundle, SegmentReader};
 pub use stream_accumulator::StreamAccumulator;
 pub use types::{
     ChunkIndex, ManifestEntry, SegmentSeq, SlotChunkRef, StreamId, StreamKey, StreamMetadata,
