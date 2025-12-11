@@ -388,7 +388,8 @@ impl ResolvesServerCert for LazyReloadableCertResolver {
 /// Alternative: A channel-based bridge to a tokio worker task would eliminate blocking
 /// entirely, but adds complexity for minimal benefit in this use case.
 struct CaWatcherState {
-    /// The verifier to update on reload
+    /// The verifier to update on reload (shared with ReloadableClientCaVerifier).
+    /// Arc allows sharing between watcher and verifier, ArcSwap enables atomic updates.
     inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
     /// Canonical path to match against events
     watched_path: PathBuf,
@@ -595,7 +596,21 @@ impl CaWatcherState {
 /// )?;
 /// ```
 pub struct ReloadableClientCaVerifier {
-    /// The current client certificate verifier (atomically swappable)
+    /// The current client certificate verifier (atomically swappable).
+    ///
+    /// Architecture: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>
+    ///
+    /// Why three layers of Arc?
+    /// 1. **Outer Arc**: Shared ownership between the verifier and watcher callback.
+    ///    Multiple threads need access to the same ArcSwap (hot path + reload path).
+    ///
+    /// 2. **ArcSwap**: Atomic pointer swap for lock-free reads during TLS handshakes.
+    ///    Allows updating the verifier without blocking concurrent connections.
+    ///
+    /// 3. **Inner Arc**: rustls requires ClientCertVerifier to be in an Arc for trait
+    ///    object lifetime management. The WebPkiClientVerifier we swap is Arc<dyn ...>.
+    ///
+    /// Performance: Hot path is just `inner.load()` - a single atomic pointer load.
     inner: Arc<ArcSwap<Arc<dyn ClientCertVerifier>>>,
 
     /// Path to the CA file being watched (if file-based)
@@ -851,13 +866,19 @@ impl ReloadableClientCaVerifier {
 /// chain validation.
 impl ClientCertVerifier for ReloadableClientCaVerifier {
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
-        // This is called during handshake to send CertificateRequest.
-        // We need to return a static slice, but our verifier can change.
-        // The safest approach is to not send hints (empty slice), which
-        // is valid per TLS spec and is what Envoy does for dynamic CAs.
+        // Root hints are CA Distinguished Names sent in CertificateRequest to help
+        // clients choose which certificate to send (e.g., if client has multiple certs).
         //
-        // Note: Some clients may not like this. If needed, we can cache
-        // hints and accept that they may be slightly stale.
+        // Problem: This method requires returning a &'static slice, but our CA verifier
+        // can change at any time due to hot-reload. We can't safely return a reference
+        // to the current CA's DNs because they might be swapped out mid-handshake.
+        //
+        // Solution: Return empty slice. Clients will send their certificate anyway (they
+        // just won't have the hint about which CA we trust). This is TLS-spec compliant
+        // and what Envoy does for dynamic CAs.
+        //
+        // Impact: Clients with multiple certificates might send the wrong one first,
+        // causing a retry. In practice, most clients have only one cert, so no issue.
         &[]
     }
 
