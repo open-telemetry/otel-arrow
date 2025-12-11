@@ -9,7 +9,7 @@
 use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::descriptor::MetricsField;
-use crate::metrics::{MetricSet, MetricSetHandler};
+use crate::metrics::{MetricSet, MetricSetHandler, MetricValue};
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
 use slotmap::{SlotMap, new_key_type};
@@ -30,7 +30,7 @@ pub struct MetricsEntry {
     pub attributes_descriptor: &'static crate::descriptor::AttributesDescriptor,
 
     /// Current metric values stored as a vector
-    pub metric_values: Vec<u64>,
+    pub metric_values: Vec<MetricValue>,
 
     /// Handler for the associated attribute set
     pub attribute_values: Box<dyn AttributeSetHandler + Send + Sync>,
@@ -53,7 +53,7 @@ impl MetricsEntry {
     pub fn new(
         metrics_descriptor: &'static MetricsDescriptor,
         attributes_descriptor: &'static crate::descriptor::AttributesDescriptor,
-        metric_values: Vec<u64>,
+        metric_values: Vec<MetricValue>,
         attribute_values: Box<dyn AttributeSetHandler + Send + Sync>,
     ) -> Self {
         Self {
@@ -68,14 +68,14 @@ impl MetricsEntry {
 /// Lightweight iterator over metrics (no heap allocs).
 pub struct MetricsIterator<'a> {
     fields: &'static [MetricsField],
-    values: &'a [u64],
+    values: &'a [MetricValue],
     idx: usize,
     len: usize,
 }
 
 impl<'a> MetricsIterator<'a> {
     #[inline]
-    fn new(fields: &'static [MetricsField], values: &'a [u64]) -> Self {
+    fn new(fields: &'static [MetricsField], values: &'a [MetricValue]) -> Self {
         let len = values.len();
         debug_assert_eq!(
             fields.len(),
@@ -92,7 +92,7 @@ impl<'a> MetricsIterator<'a> {
 }
 
 impl<'a> Iterator for MetricsIterator<'a> {
-    type Item = (&'static MetricsField, u64);
+    type Item = (&'static MetricsField, MetricValue);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -202,24 +202,14 @@ impl MetricsRegistry {
     }
 
     /// Merges a metrics snapshot (delta) into the registered instance keyed by `metrics_key`.
-    fn accumulate_snapshot(&mut self, metrics_key: MetricsKey, metrics_values: &[u64]) {
+    fn accumulate_snapshot(&mut self, metrics_key: MetricsKey, metrics_values: &[MetricValue]) {
         if let Some(entry) = self.metrics.get_mut(metrics_key) {
             entry
                 .metric_values
                 .iter_mut()
                 .zip(metrics_values)
                 .for_each(|(e, v)| {
-                    #[cfg(feature = "unchecked-arithmetic")]
-                    {
-                        // SAFETY: Metric values are expected to be well-behaved and not overflow
-                        // in typical telemetry scenarios. This is a performance optimization for
-                        // hot path metric accumulation.
-                        *e = e.wrapping_add(*v);
-                    }
-                    #[cfg(not(feature = "unchecked-arithmetic"))]
-                    {
-                        *e += v;
-                    }
+                    e.add_in_place(*v);
                 });
         } else {
             // TODO: consider logging missing key
@@ -240,14 +230,14 @@ impl MetricsRegistry {
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
-            if values.iter().any(|&v| v != 0) {
+            if values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
                 f(desc, attrs, MetricsIterator::new(desc.metrics, values));
 
                 // Zero after reporting.
-                values.iter_mut().for_each(|v| *v = 0);
+                values.iter_mut().for_each(MetricValue::reset);
             }
         }
     }
@@ -311,7 +301,7 @@ impl MetricsRegistryHandle {
     }
 
     /// Adds a new metrics snapshot to the aggregator for the given key.
-    pub fn accumulate_snapshot(&self, metrics_key: MetricsKey, metrics: &[u64]) {
+    pub fn accumulate_snapshot(&self, metrics_key: MetricsKey, metrics: &[MetricValue]) {
         self.metric_registry
             .lock()
             .accumulate_snapshot(metrics_key, metrics);
@@ -357,7 +347,7 @@ impl MetricsRegistryHandle {
         let reg = self.metric_registry.lock();
         for entry in reg.metrics.values() {
             let values = &entry.metric_values;
-            if values.iter().any(|&v| v != 0) {
+            if values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
@@ -371,19 +361,21 @@ impl MetricsRegistryHandle {
 mod tests {
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
-    use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor, Instrument};
+    use crate::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
+    };
     use std::fmt::Debug;
 
     // Mock implementations for testing
     #[derive(Debug)]
     struct MockMetricSet {
-        values: Vec<u64>,
+        values: Vec<MetricValue>,
     }
 
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![0, 0], // Initialize with 2 values to match MOCK_METRICS_DESCRIPTOR
+                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
             }
         }
     }
@@ -402,12 +394,14 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 1",
                 instrument: Instrument::Counter,
+                value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "counter2",
                 unit: "1",
                 brief: "Test counter 2",
                 instrument: Instrument::Counter,
+                value_type: MetricValueType::U64,
             },
         ],
     };
@@ -426,16 +420,16 @@ mod tests {
             &MOCK_METRICS_DESCRIPTOR
         }
 
-        fn snapshot_values(&self) -> Vec<u64> {
+        fn snapshot_values(&self) -> Vec<MetricValue> {
             self.values.clone()
         }
 
         fn clear_values(&mut self) {
-            self.values.iter_mut().for_each(|v| *v = 0);
+            self.values.iter_mut().for_each(MetricValue::reset);
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| v != 0)
+            self.values.iter().any(|&v| !v.is_zero())
         }
     }
 
@@ -506,8 +500,8 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // Accumulate some values
-        handle.accumulate_snapshot(metrics_key, &[10, 20]);
-        handle.accumulate_snapshot(metrics_key, &[5, 15]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(15)]);
 
         // Values should be accumulated
         let mut accumulated_values = Vec::new();
@@ -517,7 +511,10 @@ mod tests {
             }
         });
 
-        assert_eq!(accumulated_values, vec![15, 35]);
+        assert_eq!(
+            accumulated_values,
+            vec![MetricValue::U64(15), MetricValue::U64(35)]
+        );
     }
 
     #[test]
@@ -526,7 +523,7 @@ mod tests {
         let invalid_key = MetricsKey::default();
 
         // This should not panic, just ignore the invalid key
-        handle.accumulate_snapshot(invalid_key, &[10, 20]);
+        handle.accumulate_snapshot(invalid_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
         assert_eq!(handle.len(), 0);
     }
 
@@ -540,8 +537,11 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // Test wrapping behavior with overflow
-        handle.accumulate_snapshot(metrics_key, &[u64::MAX, u64::MAX - 5]);
-        handle.accumulate_snapshot(metrics_key, &[10, 10]);
+        handle.accumulate_snapshot(
+            metrics_key,
+            &[MetricValue::U64(u64::MAX), MetricValue::U64(u64::MAX - 5)],
+        );
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(10)]);
 
         let mut accumulated_values = Vec::new();
         handle.visit_metrics_and_reset(|_desc, _attrs, iter| {
@@ -551,7 +551,10 @@ mod tests {
         });
 
         // Should wrap around: u64::MAX + 10 = 9, (u64::MAX - 5) + 10 = 4
-        assert_eq!(accumulated_values, vec![9, 4]);
+        assert_eq!(
+            accumulated_values,
+            vec![MetricValue::U64(9), MetricValue::U64(4)]
+        );
     }
 
     #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -565,8 +568,8 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // This should panic on overflow when unchecked-arithmetic is disabled
-        handle.accumulate_snapshot(metrics_key, &[u64::MAX]);
-        handle.accumulate_snapshot(metrics_key, &[1]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(u64::MAX)]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(1)]);
     }
 
     #[test]
@@ -578,7 +581,7 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // Add some metrics
-        handle.accumulate_snapshot(metrics_key, &[100, 0]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(100), MetricValue::U64(0)]);
 
         let mut visit_count = 0;
         let mut collected_values = Vec::new();
@@ -593,7 +596,13 @@ mod tests {
         });
 
         assert_eq!(visit_count, 1);
-        assert_eq!(collected_values, vec![("counter1", 100), ("counter2", 0)]);
+        assert_eq!(
+            collected_values,
+            vec![
+                ("counter1", MetricValue::U64(100)),
+                ("counter2", MetricValue::U64(0))
+            ]
+        );
 
         // After reset, should not visit again
         visit_count = 0;
@@ -614,25 +623,33 @@ mod tests {
                 unit: "1",
                 brief: "Test metric 1",
                 instrument: Instrument::Counter,
+                value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "metric2",
                 unit: "1",
                 brief: "Test metric 2",
                 instrument: Instrument::Counter,
+                value_type: MetricValueType::U64,
             },
         ];
 
-        let values = [0, 5, 0, 10, 0];
+        let values = [
+            MetricValue::U64(0),
+            MetricValue::U64(5),
+            MetricValue::U64(0),
+            MetricValue::U64(10),
+            MetricValue::U64(0),
+        ];
         let mut iter = MetricsIterator::new(fields, &values[..2]);
 
         let item1 = iter.next().unwrap();
         assert_eq!(item1.0.name, "metric1");
-        assert_eq!(item1.1, 0);
+        assert_eq!(item1.1, MetricValue::U64(0));
 
         let item2 = iter.next().unwrap();
         assert_eq!(item2.0.name, "metric2");
-        assert_eq!(item2.1, 5);
+        assert_eq!(item2.1, MetricValue::U64(5));
 
         assert!(iter.next().is_none());
     }
@@ -644,9 +661,10 @@ mod tests {
             unit: "1",
             brief: "Test metric 1",
             instrument: Instrument::Counter,
+            value_type: MetricValueType::U64,
         }];
 
-        let values = [10];
+        let values = [MetricValue::U64(10)];
         let iter = MetricsIterator::new(fields, &values);
 
         let (lower, upper) = iter.size_hint();
@@ -661,9 +679,10 @@ mod tests {
             unit: "1",
             brief: "Test metric 1",
             instrument: Instrument::Counter,
+            value_type: MetricValueType::U64,
         }];
 
-        let values = [10];
+        let values = [MetricValue::U64(10)];
         let mut iter = MetricsIterator::new(fields, &values);
 
         // Consume the iterator
@@ -703,7 +722,10 @@ mod tests {
                 let metrics_key = metric_set.key;
 
                 // Accumulate some values
-                handle_clone.accumulate_snapshot(metrics_key, &[i * 10, i * 20]);
+                handle_clone.accumulate_snapshot(
+                    metrics_key,
+                    &[MetricValue::U64(i * 10), MetricValue::U64(i * 20)],
+                );
             });
             handles.push(thread_handle);
         }

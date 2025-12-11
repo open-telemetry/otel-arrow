@@ -878,9 +878,9 @@ mod tests {
                 .await
                 .unwrap();
             let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
             assert_eq!(logs_exported_count, 1);
-            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 1);
 
             control_sender

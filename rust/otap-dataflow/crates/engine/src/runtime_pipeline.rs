@@ -14,12 +14,12 @@ use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::Re
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
 
+use crate::context::PipelineContext;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
-use crate::context::PipelineContext;
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
 ///

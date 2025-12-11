@@ -43,11 +43,11 @@ pub mod effect_handler;
 pub mod local;
 pub mod node;
 pub mod pipeline_ctrl;
+mod pipeline_metrics;
 pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
 pub mod testing;
-mod pipeline_metrics;
 
 /// Trait for factory types that expose a name.
 ///

@@ -70,11 +70,6 @@ use std::sync::Arc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
-use mimalloc_rust::GlobalMiMalloc;
-
-#[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
-
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;
 const METRICS_BATCH_ID: i64 = 2;

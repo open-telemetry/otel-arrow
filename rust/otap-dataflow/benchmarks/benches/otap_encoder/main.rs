@@ -20,11 +20,6 @@ use otap_df_pdata::views::bench_helpers::visit_logs_data;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
 
-use mimalloc_rust::GlobalMiMalloc;
-
-#[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
-
 struct LogsDataGenParams {
     num_resources: usize,
     /// number of scopes for each resource

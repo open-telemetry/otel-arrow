@@ -3,14 +3,14 @@
 
 //! Set of metrics collected from the OTAP engine pipelines.
 
-use std::time::Instant;
+use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
-use tikv_jemalloc_ctl::thread;
-use tikv_jemalloc_ctl::thread::ThreadLocal;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
-use crate::context::PipelineContext;
+use std::time::Instant;
+use tikv_jemalloc_ctl::thread;
+use tikv_jemalloc_ctl::thread::ThreadLocal;
 
 /// Per-pipeline instance general metrics.
 #[metric_set(name = "pipeline.metrics")]
@@ -42,12 +42,11 @@ pub struct PipelineMetrics {
 
     /// Total CPU seconds used by the pipeline since start.
     #[metric(unit = "{s}")]
-    pub cpu_time: Counter<u64>,
+    pub cpu_time: Counter<f64>,
 
     /// Difference in pipeline cpu time since the last measurement, divided by the elapsed time.
     #[metric(unit = "{1}")]
     pub cpu_utilization: Gauge<u64>,
-
     // ToDo Add pipeline_network_io_received
     // ToDo Add pipeline_network_io_sent
 }
@@ -71,15 +70,16 @@ pub(crate) struct PipelineMetricsMonitor {
 impl PipelineMetricsMonitor {
     pub(crate) fn new(pipeline_ctx: PipelineContext) -> Self {
         // Resolve the MIBs once ...
-        let alloc_mib = thread::allocatedp::mib()
-            .expect("no jemalloc mib, should never happen");
-        let dealloc_mib = thread::deallocatedp::mib()
-            .expect("no jemalloc mib, should never happen");
+        let alloc_mib = thread::allocatedp::mib().expect("no jemalloc mib, should never happen");
+        let dealloc_mib =
+            thread::deallocatedp::mib().expect("no jemalloc mib, should never happen");
 
         // ... then get the thread-local pointers for this thread.
-        let allocated = alloc_mib.read()
+        let allocated = alloc_mib
+            .read()
             .expect("no jemalloc allocatedp mib, should never happen");
-        let deallocated = dealloc_mib.read()
+        let deallocated = dealloc_mib
+            .read()
             .expect("no jemalloc deallocatedp mib, should never happen");
 
         // Initialize baselines so the first recompute() returns zero deltas.
@@ -128,14 +128,16 @@ impl PipelineMetricsMonitor {
         let now_wall = Instant::now();
         let now_cpu = ThreadTime::now();
 
-        self.metrics.uptime.set(now_wall.duration_since(self.start_time).as_secs());
+        self.metrics
+            .uptime
+            .set(now_wall.duration_since(self.start_time).as_secs());
 
         let wall_duration = now_wall.duration_since(self.wall_start);
         let cpu_duration = now_cpu.duration_since(self.cpu_start);
 
         let wall_micros = wall_duration.as_micros();
 
-        self.metrics.cpu_time.add(cpu_duration.as_secs());
+        self.metrics.cpu_time.add(cpu_duration.as_secs_f64());
 
         // Prevent division by zero if updates happen too fast
         if wall_micros > 0 {

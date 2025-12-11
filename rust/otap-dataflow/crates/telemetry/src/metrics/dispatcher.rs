@@ -11,8 +11,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     attributes::{AttributeSetHandler, AttributeValue},
-    descriptor::{Instrument, MetricsField},
+    descriptor::{Instrument, MetricValueType, MetricsField},
     error::Error,
+    metrics::MetricValue,
     registry::MetricsRegistryHandle,
 };
 
@@ -95,7 +96,7 @@ impl MetricsDispatcher {
     fn add_opentelemetry_metric(
         &self,
         field: &MetricsField,
-        value: u64,
+        value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
@@ -114,61 +115,125 @@ impl MetricsDispatcher {
     fn add_opentelemetry_counter(
         &self,
         field: &MetricsField,
-        value: u64,
+        value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        let counter = meter
-            .u64_counter(field.name)
-            .with_description(field.brief)
-            .with_unit(field.unit)
-            .build();
-        counter.add(value, attributes);
+        match field.value_type {
+            MetricValueType::U64 => {
+                let counter = meter
+                    .u64_counter(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                let v = match value {
+                    MetricValue::U64(v) => v,
+                    MetricValue::F64(v) => v as u64,
+                };
+                counter.add(v, attributes);
+            }
+            MetricValueType::F64 => {
+                let counter = meter
+                    .f64_counter(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                counter.add(value.to_f64(), attributes);
+            }
+        }
     }
 
     fn add_opentelemetry_gauge(
         &self,
         field: &MetricsField,
-        value: u64,
+        value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        let gauge = meter
-            .u64_gauge(field.name)
-            .with_description(field.brief)
-            .with_unit(field.unit)
-            .build();
-        gauge.record(value, attributes);
+        match field.value_type {
+            MetricValueType::U64 => {
+                let gauge = meter
+                    .u64_gauge(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                let v = match value {
+                    MetricValue::U64(v) => v,
+                    MetricValue::F64(v) => v as u64,
+                };
+                gauge.record(v, attributes);
+            }
+            MetricValueType::F64 => {
+                let gauge = meter
+                    .f64_gauge(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                gauge.record(value.to_f64(), attributes);
+            }
+        }
     }
 
     fn add_opentelemetry_histogram(
         &self,
         field: &MetricsField,
-        value: u64,
+        value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        let histogram = meter
-            .u64_histogram(field.name)
-            .with_description(field.brief)
-            .with_unit(field.unit)
-            .build();
-        histogram.record(value, attributes);
+        match field.value_type {
+            MetricValueType::U64 => {
+                let histogram = meter
+                    .u64_histogram(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                let v = match value {
+                    MetricValue::U64(v) => v,
+                    MetricValue::F64(v) => v as u64,
+                };
+                histogram.record(v, attributes);
+            }
+            MetricValueType::F64 => {
+                let histogram = meter
+                    .f64_histogram(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                histogram.record(value.to_f64(), attributes);
+            }
+        }
     }
 
     fn add_opentelemetry_up_down_counter(
         &self,
         field: &MetricsField,
-        value: u64,
+        value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        let up_down_counter = meter
-            .i64_up_down_counter(field.name)
-            .with_description(field.brief)
-            .with_unit(field.unit)
-            .build();
-        up_down_counter.add(value as i64, attributes);
+        match field.value_type {
+            MetricValueType::U64 => {
+                let up_down_counter = meter
+                    .i64_up_down_counter(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                let v = match value {
+                    MetricValue::U64(v) => v as i64,
+                    MetricValue::F64(v) => v as i64,
+                };
+                up_down_counter.add(v, attributes);
+            }
+            MetricValueType::F64 => {
+                let up_down_counter = meter
+                    .f64_up_down_counter(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .build();
+                up_down_counter.add(value.to_f64(), attributes);
+            }
+        }
     }
 }
 
@@ -300,8 +365,9 @@ mod tests {
             brief: "A test counter",
             unit: "1",
             instrument: Instrument::Counter,
+            value_type: MetricValueType::U64,
         };
-        let value = 42;
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             MetricsRegistryHandle::new(),
@@ -319,8 +385,9 @@ mod tests {
             brief: "A test gauge",
             unit: "1",
             instrument: Instrument::Gauge,
+            value_type: MetricValueType::U64,
         };
-        let value = 42;
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             MetricsRegistryHandle::new(),
@@ -338,8 +405,9 @@ mod tests {
             brief: "A test histogram",
             unit: "1",
             instrument: Instrument::Histogram,
+            value_type: MetricValueType::U64,
         };
-        let value = 42;
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             MetricsRegistryHandle::new(),
@@ -357,8 +425,9 @@ mod tests {
             brief: "A test up_down_counter",
             unit: "1",
             instrument: Instrument::UpDownCounter,
+            value_type: MetricValueType::U64,
         };
-        let value = 42;
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             MetricsRegistryHandle::new(),

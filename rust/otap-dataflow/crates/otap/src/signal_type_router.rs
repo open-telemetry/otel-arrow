@@ -385,7 +385,7 @@ mod tests {
             let mut out = HashMap::new();
             registry.visit_current_metrics(|_desc, _attrs, iter| {
                 for (field, value) in iter {
-                    let _ = out.insert(field.name.to_string(), value);
+                    let _ = out.insert(field.name.to_string(), value.to_u64_lossy());
                 }
             });
             out

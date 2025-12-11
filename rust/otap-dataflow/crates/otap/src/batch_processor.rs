@@ -1015,14 +1015,30 @@ mod tests {
             if desc.name == "otap.processor.batch" {
                 for (field, value) in iter {
                     match (signal, field.name) {
-                        (SignalType::Logs, "consumed.items.logs") => consumed_items = value,
-                        (SignalType::Logs, "produced.items.logs") => produced_items = value,
-                        (SignalType::Traces, "consumed.items.traces") => consumed_items = value,
-                        (SignalType::Traces, "produced.items.traces") => produced_items = value,
-                        (SignalType::Logs, "consumed.batches.logs") => consumed_batches = value,
-                        (SignalType::Logs, "produced.batches.logs") => produced_batches = value,
-                        (SignalType::Traces, "consumed.batches.traces") => consumed_batches = value,
-                        (SignalType::Traces, "produced.batches.traces") => produced_batches = value,
+                        (SignalType::Logs, "consumed.items.logs") => {
+                            consumed_items = value.to_u64_lossy()
+                        }
+                        (SignalType::Logs, "produced.items.logs") => {
+                            produced_items = value.to_u64_lossy()
+                        }
+                        (SignalType::Traces, "consumed.items.traces") => {
+                            consumed_items = value.to_u64_lossy()
+                        }
+                        (SignalType::Traces, "produced.items.traces") => {
+                            produced_items = value.to_u64_lossy()
+                        }
+                        (SignalType::Logs, "consumed.batches.logs") => {
+                            consumed_batches = value.to_u64_lossy()
+                        }
+                        (SignalType::Logs, "produced.batches.logs") => {
+                            produced_batches = value.to_u64_lossy()
+                        }
+                        (SignalType::Traces, "consumed.batches.traces") => {
+                            consumed_batches = value.to_u64_lossy()
+                        }
+                        (SignalType::Traces, "produced.batches.traces") => {
+                            produced_batches = value.to_u64_lossy()
+                        }
                         _ => {}
                     }
                 }

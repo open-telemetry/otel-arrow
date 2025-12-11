@@ -4,7 +4,6 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
-use mimalloc::MiMalloc;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
@@ -14,7 +13,6 @@ use std::path::PathBuf;
 use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
-//static GLOBAL: MiMalloc = MiMalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser)]
