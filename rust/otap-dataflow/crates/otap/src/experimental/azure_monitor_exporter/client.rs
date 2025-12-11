@@ -77,8 +77,7 @@ impl LogsIngestionClientPool {
         let capacity = self.clients.capacity();
         let http_clients = self.create_http_clients(capacity)?;
 
-        for i in 0..capacity {
-            let http_client = http_clients[i].clone();
+        for http_client in http_clients {
             let mut client = LogsIngestionClient::new(config, http_client, auth.clone())?;
             client.ensure_valid_token().await?;
             self.clients.push(client);
@@ -210,7 +209,7 @@ impl LogsIngestionClient {
         let mut rng = SmallRng::seed_from_u64(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("system time before UNIX epoch")
                 .as_nanos() as u64
                 ^ (self as *const _ as u64),
         ); // Mix in object address
@@ -324,7 +323,7 @@ impl LogsIngestionClient {
                 self.auth.invalidate_token().await;
                 self.ensure_valid_token()
                     .await
-                    .map_err(|e| ExportAttemptError::Terminal(e))?;
+                    .map_err(ExportAttemptError::Terminal)?;
 
                 Err(ExportAttemptError::Retryable {
                     message: format!("Authentication failed: {error}"),
