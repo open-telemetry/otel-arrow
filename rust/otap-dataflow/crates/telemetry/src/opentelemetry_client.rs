@@ -98,8 +98,7 @@ impl OpentelemetryClient {
 mod tests {
     use opentelemetry::global;
     use otap_df_config::pipeline::service::telemetry::{
-        LogsConfig,
-        AttributeValue,
+        AttributeValue, LogsConfig,
         metrics::{
             MetricsConfig,
             readers::{
