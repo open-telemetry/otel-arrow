@@ -241,25 +241,64 @@ mod tests {
     async fn test_idle_tracking() {
         let mut stats = AzureMonitorExporterStats::new();
 
-        // Simulate processing
+        // 1. Initial state
         stats.message_received(0);
 
-        // Wait a bit (simulated)
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // 2. Simulate 1.1s passing (exceeds IDLE_THRESHOLD_SECS = 1.0)
+        // We manually backdate the last_message_received_at to simulate time passing
+        stats.last_message_received_at = tokio::time::Instant::now() - Duration::from_millis(1100);
 
         // Update idle with 0 in-flight (should count as idle)
         stats.update_idle(0);
 
-        // Update idle with 1 in-flight (should NOT count as idle)
+        let idle_1 = stats.get_idle_duration_secs();
+        assert!(
+            idle_1 >= 1.1,
+            "Should have accumulated at least 1.1s of idle time. Got: {}",
+            idle_1
+        );
+
+        // 3. Simulate 0.1s passing
+        // Should NOT count as idle because duration (0.1) < threshold (1.0)
+        stats.last_message_received_at = tokio::time::Instant::now() - Duration::from_millis(100);
+        let previous_idle = stats.get_idle_duration_secs();
+        stats.update_idle(0);
+
+        let idle_2 = stats.get_idle_duration_secs();
+        assert_eq!(
+            idle_2, previous_idle,
+            "Should not accumulate idle time < threshold"
+        );
+
+        // 4. Simulate 2.0s passing with in-flight exports
+        // Should NOT count as idle because in_flight_exports > 0
+        stats.last_message_received_at = tokio::time::Instant::now() - Duration::from_secs(2);
         stats.update_idle(1);
 
-        // Verify getters work
-        assert!(stats.started_at().elapsed().as_secs_f64() < 2.0);
-        assert!(stats.last_message_received_at().elapsed().as_secs_f64() < 2.0);
+        let idle_3 = stats.get_idle_duration_secs();
         assert_eq!(
-            stats.get_active_duration_secs(0),
-            stats.processing_started_at.elapsed().as_secs_f64() - stats.get_idle_duration_secs()
+            idle_3, previous_idle,
+            "Should not accumulate idle time when exports are in flight"
         );
+
+        // 5. Verify active duration calculation
+        // We backdate the start time to 10s ago so we have a large enough window
+        stats.processing_started_at = tokio::time::Instant::now() - Duration::from_secs(10);
+
+        let active = stats.get_active_duration_secs(0);
+        let total_elapsed = stats.started_at().elapsed().as_secs_f64();
+        let current_idle = stats.get_idle_duration_secs();
+
+        // Active = Total - Idle
+        // We use a small epsilon for floating point comparison
+        let expected_active = total_elapsed - current_idle;
+        assert!(
+            (active - expected_active).abs() < 0.001,
+            "Active duration mismatch. Got: {}, Expected approx: {}",
+            active,
+            expected_active
+        );
+
         assert_eq!(
             stats.get_idle_duration_secs(),
             stats.idle_duration().as_secs_f64()
