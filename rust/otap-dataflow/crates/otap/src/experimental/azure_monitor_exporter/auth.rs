@@ -7,6 +7,7 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
+use tokio::time::Instant;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -20,6 +21,7 @@ pub struct Auth {
     scope: String,
     // Thread-safe shared token cache
     cached_token: Arc<RwLock<Option<AccessToken>>>,
+    pub token_valid_until: Instant,
 }
 
 // TODO: Remove print_stdout after logging is set up
@@ -32,6 +34,7 @@ impl Auth {
             credential,
             scope: auth_config.scope.clone(),
             cached_token: Arc::new(RwLock::new(None)),
+            token_valid_until: Instant::now(),
         })
     }
 
@@ -40,12 +43,11 @@ impl Auth {
             credential,
             scope,
             cached_token: Arc::new(RwLock::new(None)),
+            token_valid_until: Instant::now(),
         }
     }
 
     pub async fn get_token(&self) -> Result<AccessToken, String> {
-        println!("[AzureMonitorExporter][Auth] Acquiring token");
-
         // Try to use cached token
         {
             let cached = self.cached_token.read().await;

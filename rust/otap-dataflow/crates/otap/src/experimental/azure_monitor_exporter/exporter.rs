@@ -4,6 +4,7 @@
 use std::cmp::max;
 
 use async_trait::async_trait;
+use azure_core::credentials::AccessToken;
 use bytes::Bytes;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_channel::error::RecvError;
@@ -17,19 +18,20 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use prost::Message as _;
 
-use super::client::{LogsIngestionClient, LogsIngestionClientPool};
+use super::client::LogsIngestionClientPool;
 use super::config::Config;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
-use crate::experimental::azure_monitor_exporter::gzip_batcher::FlushResult;
+use super::gzip_batcher::FlushResult;
+use super::auth::Auth;
 use crate::pdata::{Context, OtapPdata};
 
-const MAX_IN_FLIGHT_EXPORTS: usize = 32;
+const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const STATS_PRINT_INTERVAL: u64 = 3;
-const IDLE_THRESHOLD_SECS: f64 = 0.1;
+const IDLE_THRESHOLD_SECS: f64 = 1.0;
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
@@ -45,8 +47,8 @@ pub struct AzureMonitorExporter {
 }
 
 pub struct AzureMonitorExporterStats {
-    processing_started_at: Option<tokio::time::Instant>,
-    last_message_received_at: Option<tokio::time::Instant>,
+    processing_started_at: tokio::time::Instant,
+    last_message_received_at: tokio::time::Instant,
     idle_duration: tokio::time::Duration,
     successful_row_count: f64,
     successful_batch_count: f64,
@@ -55,13 +57,14 @@ pub struct AzureMonitorExporterStats {
     failed_batch_count: f64,
     failed_msg_count: f64,
     average_client_latency_secs: f64,
+    latency_request_count: f64,
 }
 
 impl AzureMonitorExporterStats {
     fn new() -> Self {
         Self {
-            processing_started_at: None,
-            last_message_received_at: None,
+            processing_started_at: tokio::time::Instant::now(),
+            last_message_received_at: tokio::time::Instant::now(),
             idle_duration: tokio::time::Duration::ZERO,
             successful_row_count: 0.0,
             successful_batch_count: 0.0,
@@ -70,40 +73,31 @@ impl AzureMonitorExporterStats {
             failed_batch_count: 0.0,
             failed_msg_count: 0.0,
             average_client_latency_secs: 0.0,
+            latency_request_count: 0.0,
         }
     }
 
-    fn started_at(&mut self) -> Option<tokio::time::Instant> {
+    fn started_at(&mut self) -> tokio::time::Instant {
         self.processing_started_at
     }
 
-    fn message_received(&mut self) {
-        if self.processing_started_at.is_none() {
-            self.processing_started_at = Some(tokio::time::Instant::now());
-        }
-
-        self.update_idle()
+    fn message_received(&mut self, in_flight_exports: usize) {
+        self.update_idle(in_flight_exports)
     }
 
-    fn update_idle(&mut self) {
-        if let Some(last_message_received_at) = self.last_message_received_at {
-            let idle_duration =
-                tokio::time::Instant::now().duration_since(last_message_received_at);
-            if idle_duration.as_secs_f64() > IDLE_THRESHOLD_SECS {
-                self.idle_duration += idle_duration;
-            }
+    fn update_idle(&mut self, in_flight_exports: usize) {
+        let idle_duration =
+            tokio::time::Instant::now().duration_since(self.last_message_received_at);
+        if idle_duration.as_secs_f64() > IDLE_THRESHOLD_SECS && in_flight_exports == 0 {
+            self.idle_duration += idle_duration;
         }
 
-        self.last_message_received_at = Some(tokio::time::Instant::now());
+        self.last_message_received_at = tokio::time::Instant::now();
     }
 
-    fn get_active_duration_secs(&mut self) -> f64 {
-        self.update_idle();
-
-        if let Some(started_at) = self.processing_started_at {
-            return started_at.elapsed().as_secs_f64() - self.idle_duration.as_secs_f64();
-        }
-        0.0
+    fn get_active_duration_secs(&mut self, in_flight_exports: usize) -> f64 {
+        self.update_idle(in_flight_exports);
+        return self.processing_started_at.elapsed().as_secs_f64() - self.idle_duration.as_secs_f64();
     }
 
     fn get_idle_duration_secs(&self) -> f64 {
@@ -135,12 +129,10 @@ impl AzureMonitorExporterStats {
     }
 
     fn add_client_latency(&mut self, latency_secs: f64) {
-        let total_batches = self.successful_batch_count + self.failed_batch_count;
-        if total_batches > 0.0 {
-            self.average_client_latency_secs =
-                ((self.average_client_latency_secs * (total_batches - 1.0)) + latency_secs)
-                    / total_batches;
-        }
+        self.latency_request_count += 1.0;
+        self.average_client_latency_secs =
+            ((self.average_client_latency_secs * (self.latency_request_count - 1.0)) + latency_secs)
+                / self.latency_request_count;
     }
 }
 
@@ -165,7 +157,7 @@ impl AzureMonitorExporter {
             transformer,
             gzip_batcher,
             state: AzureMonitorExporterState::new(),
-            client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS),
+            client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1),
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
             last_batch_queued_at: tokio::time::Instant::now(),
             stats: AzureMonitorExporterStats::new(),
@@ -234,7 +226,8 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    fn get_next_token_refresh(token_valid_until: tokio::time::Instant) -> tokio::time::Instant {
+    fn get_next_token_refresh(token: AccessToken) -> tokio::time::Instant {
+        let token_valid_until = tokio::time::Instant::now() + std::time::Duration::from_secs(token.expires_on.unix_timestamp() as u64);
         let token_lifetime =
             token_valid_until.saturating_duration_since(tokio::time::Instant::now());
         let token_expiry_buffer = tokio::time::Duration::from_secs(token_lifetime.as_secs() / 5);
@@ -464,32 +457,30 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut original_client =
-            LogsIngestionClient::new(&self.config).map_err(|e| Error::InternalError {
-                message: format!("Failed to create client: {e}"),
+        let auth = Auth::new(&self.config.auth)
+            .map_err(|e| Error::InternalError {
+                message: format!("Failed to create auth handler: {e}"),
             })?;
 
-        original_client
-            .refresh_token()
+        let token = auth
+            .get_token()
             .await
             .map_err(|e| Error::InternalError {
                 message: format!("Failed to refresh token: {e}"),
             })?;
 
-        self.client_pool.initialize(&original_client);
+        self.client_pool.initialize(&self.config.api, &auth)
+            .await
+            .expect("Failed to initialize client pool");
         let mut next_token_refresh =
-            Self::get_next_token_refresh(original_client.token_valid_until);
+            Self::get_next_token_refresh(token);
         let mut next_stats_print =
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
+        let mut next_periodic_export =
+            tokio::time::Instant::now()
+                + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
         loop {
-            let next_export = max(
-                self.last_batch_queued_at
-                    + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL),
-                tokio::time::Instant::now()
-                    + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL),
-            );
-
             // Determine if we should accept new messages
             let at_capacity = self.in_flight_exports.len() >= MAX_IN_FLIGHT_EXPORTS;
 
@@ -497,11 +488,11 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 biased;
 
                 _ = tokio::time::sleep_until(next_token_refresh) => {
-                    original_client.refresh_token()
+                    let token = auth.get_token()
                         .await
                         .map_err(|e| Error::InternalError { message: format!("Failed to refresh token: {e}") })?;
 
-                    next_token_refresh = Self::get_next_token_refresh(original_client.token_valid_until);
+                    next_token_refresh = Self::get_next_token_refresh(token);
                 }
 
                 completed = self.in_flight_exports.next_completion() => {
@@ -510,16 +501,17 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                _ = tokio::time::sleep_until(next_export), if !at_capacity => {
-                    if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL)
-                        && self.gzip_batcher.has_pending_data() {
+                _ = tokio::time::sleep_until(next_periodic_export), if !at_capacity => {
+                    next_periodic_export = tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
+
+                    if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {              
                         println!("[AzureMonitorExporter] Periodic export pending data");
                         self.queue_current_batch(&effect_handler).await?;
                     }
                 }
 
                 msg = msg_chan.recv(), if !at_capacity => {
-                    self.stats.message_received();
+                    self.stats.message_received(self.in_flight_exports.len());
 
                     match msg {
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
@@ -538,42 +530,72 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_stats_print) => {
                     next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
 
-                    if let Some(started_at) = self.stats.started_at() {
-                        let elapsed = started_at.elapsed().as_secs_f64();
-                        let active = self.stats.get_active_duration_secs();
-                        let throughput = if active > 0.0 {
-                            self.stats.successful_row_count / active
-                        } else {
-                            0.0
-                        };
+                    let stats_start = std::time::Instant::now();
 
-                        println!(
-                            "\n\
+                    // Get memory stats (this is the slow part - file I/O)
+                    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+                    let get_kb = |name: &str| -> u64 {
+                        status.lines()
+                            .find(|line| line.starts_with(name))
+                            .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+                            .unwrap_or(0)
+                    };
+                    
+                    let smaps = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
+                    let get_smaps_kb = |name: &str| -> u64 {
+                        smaps.lines()
+                            .find(|line| line.starts_with(name))
+                            .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+                            .unwrap_or(0)
+                    };
+
+                    let rss_mb = get_kb("VmRSS:") / 1024;
+                    let anon_mb = get_smaps_kb("Anonymous:") / 1024;
+                    let file_mb = get_smaps_kb("Private_Clean:") / 1024;
+                    let data_mb = get_kb("VmData:") / 1024;
+
+                    let stats_duration = stats_start.elapsed();
+
+                    let elapsed = self.stats.started_at().elapsed().as_secs_f64();
+                    let active = self.stats.get_active_duration_secs(self.in_flight_exports.len());
+                    let throughput = if active > 0.0 {
+                        self.stats.successful_row_count / active
+                    } else {
+                        0.0
+                    };
+
+                    println!(
+                        "\n\
 ─────────────── AzureMonitorExporter ──────────────────────────
- perf    │ th/s={:.2}  avg_lat={:.2}ms
- success │ rows={:.0}  batches={:.0}  msgs={:.0}         
- fail    │ rows={:.0}  batches={:.0}  msgs={:.0}       
- time    │ elapsed={:.1}s  active={:.1}s  idle={:.1}s
- state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
- exports | in_flight={}
+memory  │ rss={}MB  anon={}MB  file={}MB  data={}MB
+perf    │ th/s={:.2}  avg_lat={:.2}ms
+success │ rows={:.0}  batches={:.0}  msgs={:.0}         
+fail    │ rows={:.0}  batches={:.0}  msgs={:.0}       
+time    │ elapsed={:.1}s  active={:.1}s  idle={:.1}s
+state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
+exports | in_flight={} stats_time={:?}
 ───────────────────────────────────────────────────────────────\n",
-                            throughput,
-                            self.stats.average_client_latency_secs * 1000.0,
-                            self.stats.successful_row_count,
-                            self.stats.successful_batch_count,
-                            self.stats.successful_msg_count,
-                            self.stats.failed_row_count,
-                            self.stats.failed_batch_count,
-                            self.stats.failed_msg_count,
-                            elapsed,
-                            active,
-                            self.stats.get_idle_duration_secs(),
-                            self.state.batch_to_msg.len(),
-                            self.state.msg_to_batch.len(),
-                            self.state.msg_to_data.len(),
-                            self.in_flight_exports.len(),
-                        );
-                    }
+                        rss_mb,
+                        anon_mb,
+                        file_mb,
+                        data_mb,
+                        throughput,
+                        self.stats.average_client_latency_secs * 1000.0,
+                        self.stats.successful_row_count,
+                        self.stats.successful_batch_count,
+                        self.stats.successful_msg_count,
+                        self.stats.failed_row_count,
+                        self.stats.failed_batch_count,
+                        self.stats.failed_msg_count,
+                        elapsed,
+                        active,
+                        self.stats.get_idle_duration_secs(),
+                        self.state.batch_to_msg.len(),
+                        self.state.msg_to_batch.len(),
+                        self.state.msg_to_data.len(),
+                        self.in_flight_exports.len(),
+                        stats_duration,
+                    );
                 }
             }
         }

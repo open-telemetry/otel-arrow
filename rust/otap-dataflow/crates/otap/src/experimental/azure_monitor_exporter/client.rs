@@ -14,8 +14,8 @@ use reqwest::{
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
-use crate::experimental::azure_monitor_exporter::auth::Auth;
-use crate::experimental::azure_monitor_exporter::config::Config;
+use super::auth::Auth;
+use super::config::ApiConfig;
 
 const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
@@ -53,11 +53,38 @@ impl LogsIngestionClientPool {
         }
     }
 
-    pub fn initialize(&mut self, client: &LogsIngestionClient) {
+    fn create_http_clients(&self, count: usize) -> Result<Vec<Client>, String> {
         let capacity = self.clients.capacity();
-        for _ in 0..capacity {
-            self.clients.push(client.clone());
+        let mut clients = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let http_client = Client::builder()
+                .http1_only()
+                .timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(capacity)  // e.g., 32/4 = 8 connections per pool
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_nodelay(true)
+                .build()
+                .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+            clients.push(http_client);
         }
+
+        Ok(clients)
+    }
+
+    pub async fn initialize(&mut self, config: &ApiConfig, auth: &Auth) -> Result<(), String> {
+        let capacity = self.clients.capacity();
+        let http_clients = self.create_http_clients(capacity)?;
+
+        for i in 0..capacity {
+            let http_client = http_clients[i].clone();
+            let mut client = LogsIngestionClient::new(config, http_client, auth.clone())?;
+            client.ensure_valid_token().await?;
+            self.clients.push(client);
+        }
+
+        Ok(())
     }
 
     #[inline(always)]
@@ -104,27 +131,16 @@ impl LogsIngestionClient {
     ///
     /// # Arguments
     /// * `config` - The Azure Monitor Exporter configuration
+    /// * `http_client` - The HTTP client to use for requests
     ///
     /// # Returns
     /// * `Ok(LogsIngestionClient)` - A configured client instance
     /// * `Err(String)` - Error message if initialization fails
-    pub fn new(config: &Config) -> Result<Self, String> {
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .http2_prior_knowledge()  // Use HTTP/2 directly (faster, no upgrade negotiation)
-            .pool_max_idle_per_host(4)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_nodelay(true)
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
-
+    pub fn new(config: &ApiConfig, http_client: Client, auth: Auth) -> Result<Self, String> {
         let endpoint = format!(
             "{}/dataCollectionRules/{}/streams/{}?api-version=2021-11-01-preview",
-            config.api.dcr_endpoint, config.api.dcr, config.api.stream_name
+            config.dcr_endpoint, config.dcr, config.stream_name
         );
-
-        let auth =
-            Auth::new(&config.auth).map_err(|e| format!("Failed to create auth handler: {e}"))?;
 
         Ok(Self {
             http_client,
@@ -154,11 +170,6 @@ impl LogsIngestionClient {
 
         self.token_valid_until = Instant::now() + Duration::from_secs(valid_seconds.max(0) as u64);
         self.token_refresh_after = self.token_valid_until - Duration::from_secs(300);
-
-        println!(
-            "[AzureMonitorExporter] Acquired new token, valid for {} seconds, valid until {:?}",
-            valid_seconds, self.token_valid_until
-        );
 
         Ok(())
     }
@@ -195,7 +206,6 @@ impl LogsIngestionClient {
     /// * `Ok(Duration)` - Total time spent (including retries) if successful
     /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
     pub async fn export(&mut self, body: Bytes) -> Result<Duration, String> {
-        let start = Instant::now();
         let mut attempt = 0u32;
         let mut rng = SmallRng::seed_from_u64(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -205,7 +215,7 @@ impl LogsIngestionClient {
 
         loop {
             match self.try_export(body.clone()).await {
-                Ok(()) => return Ok(start.elapsed()),
+                Ok(duration) => return Ok(duration),
                 Err(ExportAttemptError::Terminal(e)) => return Err(e),
                 Err(ExportAttemptError::Retryable { message, retry_after }) => {
                     let delay = if let Some(server_delay) = retry_after {
@@ -240,7 +250,9 @@ impl LogsIngestionClient {
     }
 
     /// Single export attempt without retry logic.
-    async fn try_export(&mut self, body: Bytes) -> Result<(), ExportAttemptError> {
+    async fn try_export(&mut self, body: Bytes) -> Result<Duration, ExportAttemptError> {
+        let start = Instant::now();
+
         let response = self
             .http_client
             .post(&self.endpoint)
@@ -285,7 +297,7 @@ impl LogsIngestionClient {
 
         // Fast path for success
         if response.status().is_success() {
-            return Ok(());
+            return Ok(start.elapsed());
         }
 
         // Extract Retry-After header before consuming response
@@ -347,7 +359,6 @@ enum ExportAttemptError {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, AuthMethod};
     use super::*;
     use azure_core::Bytes;
     use azure_core::credentials::TokenRequestOptions;
@@ -382,36 +393,37 @@ mod tests {
 
     #[test]
     fn test_new_builds_correct_endpoint() {
-        let config = Config {
-            api: ApiConfig {
-                dcr_endpoint: "https://test.azure.com".to_string(),
-                dcr: "test-dcr-id".to_string(),
-                stream_name: "test-stream".to_string(),
-                schema: Default::default(),
-            },
-            auth: AuthConfig {
-                method: AuthMethod::ManagedIdentity,
-                client_id: Some("test-client-id".to_string()),
-                scope: "https://monitor.azure.com/.default".to_string(),
-            },
+        let api_config = ApiConfig {
+            dcr_endpoint: "https://test.azure.com".to_string(),
+            dcr: "test-dcr-id".to_string(),
+            stream_name: "test-stream".to_string(),
+            schema: Default::default(),
         };
 
-        // We can at least test that new() doesn't panic and builds the correct endpoint
-        match LogsIngestionClient::new(&config) {
-            Ok(client) => {
-                assert_eq!(
-                    client.endpoint,
-                    "https://test.azure.com/dataCollectionRules/test-dcr-id/streams/test-stream?api-version=2021-11-01-preview"
-                );
-                // REMOVED: assert_eq!(client.headers.len(), 2);
-                // We no longer have a headers field - check auth_header instead
-                assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
-            }
-            Err(e) => {
-                // This is acceptable if running in an environment without proper Azure setup
-                assert!(e.contains("Failed to create auth handler"));
-            }
-        }
+        let call_count = Arc::new(Mutex::new(0));
+        let credential: Arc<dyn TokenCredential> = Arc::new(MockCredential {
+            token: "test_token".to_string(),
+            expires_in: azure_core::time::Duration::minutes(60),
+            call_count: call_count.clone(),
+        });
+        let auth = Auth::from_credential(credential, "https://monitor.azure.com/.default".to_string());
+
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .http2_prior_knowledge()  // Use HTTP/2 directly (faster, no upgrade negotiation)
+            .pool_max_idle_per_host(4)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .tcp_nodelay(true)
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {e}"))
+            .expect("failed to create HTTP client");
+        let client = LogsIngestionClient::new(&api_config, http_client, auth).expect("failed to create client");
+        
+        assert_eq!(
+            client.endpoint,
+            "https://test.azure.com/dataCollectionRules/test-dcr-id/streams/test-stream?api-version=2021-11-01-preview"
+        );
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
     }
 
     #[tokio::test]
