@@ -223,7 +223,7 @@ pub struct ManifestEntry {
     /// Zero-based index of this bundle within the segment.
     pub bundle_index: u32,
     /// Mapping from slot to the stream/chunk containing that slot's data.
-    pub slot_refs: HashMap<SlotId, SlotChunkRef>,
+    slot_refs: HashMap<SlotId, SlotChunkRef>,
 }
 
 impl ManifestEntry {
