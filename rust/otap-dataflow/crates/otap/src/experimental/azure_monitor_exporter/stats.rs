@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 const IDLE_THRESHOLD_SECS: f64 = 1.0;
 
 /// Statistics for the Azure Monitor exporter.

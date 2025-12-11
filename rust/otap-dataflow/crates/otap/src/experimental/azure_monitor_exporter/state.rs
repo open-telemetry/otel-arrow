@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::pdata::Context;
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 use bytes::Bytes;
