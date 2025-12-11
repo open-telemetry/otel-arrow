@@ -1,15 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Benchmark for query engine filter pipeline stage
+
 use std::time::Instant;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use data_engine_columnar::pipeline::Pipeline;
 use data_engine_kql_parser::{KqlParser, Parser};
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
+use otap_df_query_engine::pipeline::Pipeline;
 use tokio::runtime::Runtime;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
@@ -35,12 +37,12 @@ fn bench_log_pipeline(
                 let mut pipeline = Pipeline::new(parser_result.pipeline);
                 rt.block_on(async move {
                     // execute the query once to initiate planning
-                    pipeline.execute(batch.clone()).await.unwrap();
+                    _ = pipeline.execute(batch.clone()).await.expect("doesn't fail");
 
                     let start = Instant::now();
                     for _ in 0..iters {
-                        let result = pipeline.execute(batch.clone()).await.unwrap();
-                        std::hint::black_box(result);
+                        let result = pipeline.execute(batch.clone()).await.expect("doesn't fail");
+                        _ = std::hint::black_box(result);
                     }
                     start.elapsed()
                 })
