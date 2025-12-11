@@ -1,27 +1,25 @@
-# This action runs the pipeline perf continuous benchmarking suite if a specific label
-# exits on the PR ("pipelineperf"). It performs the same tests as the continuous benchmarks
-# but doesn't update the charts since it's intended to run prior to merge.
+# This action runs the pipeline perf continuous benchmarking suite on every PR.
+# - With 'pipelineperf' label: runs on dedicated Oracle bare-metal hardware for accurate benchmarks
+# - Without label: runs on ubuntu-latest for basic validation
 name: Pipeline Perf Pre-Merge
 
 on:
   pull_request:
     branches:
       - main
-    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
 
-# Cancel in-progress runs for the same PR if a new manual run is started
+# Cancel in-progress runs for the same PR if a new commit is pushed
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Check for a label and skip gracefully if it's not found.
-  # If the label is found, set an output that the perf test job will use to know it needs to run.
+  # Check for the pipelineperf label to determine which runner to use
   label-check:
-    name: Preflight Check for Label
+    name: Check for pipelineperf label
     runs-on: ubuntu-latest
     outputs:
       has_label: ${{ steps.check_label.outputs.has_label }}
@@ -29,18 +27,17 @@ jobs:
       - name: Check if PR has 'pipelineperf' label
         id: check_label
         run: |
-          echo "Checking for 'pipelineperf' label..."
           labels=$(echo '${{ toJson(github.event.pull_request.labels) }}' | jq -r '.[].name')
-          echo "Found labels: $labels"
           if echo "$labels" | grep -q "pipelineperf"; then
-            echo "Label pipelineperf found - perf tests will run"
+            echo "Label pipelineperf found - will use dedicated hardware"
             echo "has_label=true" >> $GITHUB_OUTPUT
           else
-            echo "Label 'pipelineperf' not found - skipping perf tests"
+            echo "Label 'pipelineperf' not found - will use ubuntu-latest"
             echo "has_label=false" >> $GITHUB_OUTPUT
           fi
 
-  pipeline-perf-test:
+  # Run on dedicated Oracle hardware when 'pipelineperf' label is present
+  pipeline-perf-test-dedicated:
     needs: label-check
     if: needs.label-check.outputs.has_label == 'true'
     runs-on: oracle-bare-metal-64cpu-512gb-x86-64
@@ -101,3 +98,41 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+
+  # Run on ubuntu-latest for basic validation when no label is present
+  pipeline-perf-test-basic:
+    needs: label-check
+    if: needs.label-check.outputs.has_label == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build dataflow_engine
+        run: |
+          git submodule init
+          git submodule update
+          cd rust/otap-dataflow
+          docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          cd ../..
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --user --upgrade pip
+          pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
+          pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
+
+      - name: Run pipeline performance test suite
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+
