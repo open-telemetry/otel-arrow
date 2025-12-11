@@ -335,7 +335,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             "pipeline_thread",
             pipeline_group = %pipeline_key.pipeline_group_id,
             pipeline = %pipeline_key.pipeline_id,
-            core_id = core_id.id,
         );
         let _guard = span.enter();
 
