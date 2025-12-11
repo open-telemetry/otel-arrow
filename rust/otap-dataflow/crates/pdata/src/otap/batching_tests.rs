@@ -259,7 +259,7 @@ fn generate_metrics_batching_test_cases() -> Vec<MetricsBatchingTestCase> {
 /// Generic test function for batching across all signal types.
 fn test_batching(
     inputs_otlp: impl Iterator<Item = OtlpProtoMessage>,
-    max_output_batch: Option<NonZeroU64>,
+    max_items: Option<NonZeroU64>,
 ) {
     // Clone the inputs for later equivalence checking.
     let inputs_otlp: Vec<_> = inputs_otlp.collect();
@@ -269,16 +269,16 @@ fn test_batching(
         .expect("at least one input")
         .signal_type();
 
-    let outputs_otlp: Vec<_> = make_output_batches(signal_type, max_output_batch, inputs_otap)
+    let outputs_otlp: Vec<_> = make_output_batches(signal_type, max_items, inputs_otap)
         .expect("batching should succeed")
         .iter()
         .map(otap_to_otlp)
         .collect();
 
-    // Assert batch_length <= max_output_batch
-    if let Some(max_batch) = max_output_batch {
+    // Assert num_items <= max_items
+    if let Some(max_batch) = max_items {
         for (i, output) in outputs_otlp.iter().enumerate() {
-            let batch_len = output.batch_length();
+            let batch_len = output.num_items();
 
             assert_ne!(batch_len, 0usize);
 
@@ -327,12 +327,12 @@ fn count_metrics_in_batch(
 #[test]
 fn test_simple_batch_logs() {
     for input_count in 1..=20 {
-        for max_output_batch in 3..=5 {
+        for max_items in 3..=5 {
             // TODO: This 1 (limit) is not used for logs, fix.
             let mut datagen = DataGenerator::new(1);
             test_batching(
                 (0..input_count).map(|_| datagen.generate_logs().into()),
-                Some(NonZeroU64::new(max_output_batch).unwrap()),
+                Some(NonZeroU64::new(max_items).unwrap()),
             );
         }
     }
@@ -341,12 +341,12 @@ fn test_simple_batch_logs() {
 #[test]
 fn test_simple_batch_traces() {
     for input_count in 1..=20 {
-        for max_output_batch in 3..=5 {
+        for max_items in 3..=5 {
             // TODO: This 1 (limit) is not used for metrics, fix.
             let mut datagen = DataGenerator::new(1);
             test_batching(
                 (0..input_count).map(|_| datagen.generate_traces().into()),
-                Some(NonZeroU64::new(max_output_batch).unwrap()),
+                Some(NonZeroU64::new(max_items).unwrap()),
             );
         }
     }
@@ -360,7 +360,7 @@ fn test_simple_batch_metrics() {
                 let mut datagen = DataGenerator::new(point_count);
                 test_batching(
                     (0..input_count).map(|_| datagen.generate_metrics().into()),
-                    Some(NonZeroU64::new(max_output_batch).unwrap()),
+                    Some(NonZeroU64::new(max_items).unwrap()),
                 );
             }
         }
