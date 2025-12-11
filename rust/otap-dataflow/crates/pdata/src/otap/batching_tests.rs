@@ -355,7 +355,7 @@ fn test_simple_batch_traces() {
 #[test]
 fn test_simple_batch_metrics() {
     for input_count in 1..=20 {
-        for max_output_batch in 3..=15 {
+        for max_items in 3..=15 {
             for point_count in 1..=10 {
                 let mut datagen = DataGenerator::new(point_count);
                 test_batching(
