@@ -7,7 +7,9 @@ pub mod meter_provider;
 
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
-use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::service::telemetry::{
+    AttributeValue, AttributeValueArray, TelemetryConfig,
+};
 
 use crate::{error::Error, opentelemetry_client::meter_provider::MeterProvider};
 
@@ -42,14 +44,41 @@ impl OpentelemetryClient {
     }
 
     fn configure_resource(
-        resource_attributes: &std::collections::HashMap<String, String>,
+        resource_attributes: &std::collections::HashMap<String, AttributeValue>,
     ) -> Resource {
-        let mut sdk_resource_builder = Resource::builder();
+        let mut sdk_resource_builder = Resource::builder_empty();
         for (k, v) in resource_attributes.iter() {
-            sdk_resource_builder =
-                sdk_resource_builder.with_attribute(KeyValue::new(k.clone(), v.clone()));
+            sdk_resource_builder = sdk_resource_builder
+                .with_attribute(KeyValue::new(k.clone(), Self::to_sdk_value(v)));
         }
         sdk_resource_builder.build()
+    }
+
+    fn to_sdk_value(attr_value: &AttributeValue) -> opentelemetry::Value {
+        match attr_value {
+            AttributeValue::String(s) => opentelemetry::Value::String(s.clone().into()),
+            AttributeValue::Bool(b) => opentelemetry::Value::Bool(*b),
+            AttributeValue::I64(i) => opentelemetry::Value::I64(*i),
+            AttributeValue::F64(f) => opentelemetry::Value::F64(*f),
+            AttributeValue::Array(arr) => match arr {
+                AttributeValueArray::String(array_s) => {
+                    let sdk_values = array_s.iter().map(|s| s.clone().into()).collect();
+                    opentelemetry::Value::Array(opentelemetry::Array::String(sdk_values))
+                }
+                AttributeValueArray::Bool(array_b) => {
+                    let sdk_values = array_b.iter().map(|b| *b).collect();
+                    opentelemetry::Value::Array(opentelemetry::Array::Bool(sdk_values))
+                }
+                AttributeValueArray::I64(array_i) => {
+                    let sdk_values = array_i.iter().map(|i| *i).collect();
+                    opentelemetry::Value::Array(opentelemetry::Array::I64(sdk_values))
+                }
+                AttributeValueArray::F64(array_f) => {
+                    let sdk_values = array_f.iter().map(|f| *f).collect();
+                    opentelemetry::Value::Array(opentelemetry::Array::F64(sdk_values))
+                }
+            },
+        }
     }
 
     /// Get a reference to the meter provider.
@@ -70,6 +99,7 @@ mod tests {
     use opentelemetry::global;
     use otap_df_config::pipeline::service::telemetry::{
         LogsConfig,
+        AttributeValue,
         metrics::{
             MetricsConfig,
             readers::{
@@ -99,7 +129,10 @@ mod tests {
     #[test]
     fn test_configure_opentelemetry_client() -> Result<(), Error> {
         let mut resource = std::collections::HashMap::new();
-        _ = resource.insert("service.name".to_string(), "test-service".to_string());
+        _ = resource.insert(
+            "service.name".to_string(),
+            AttributeValue::String("test-service".to_string()),
+        );
 
         let metrics_config = MetricsConfig {
             readers: vec![MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
