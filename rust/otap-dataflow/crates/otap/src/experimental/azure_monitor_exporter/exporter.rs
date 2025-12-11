@@ -19,6 +19,7 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use prost::Message as _;
 
 use super::client::LogsIngestionClientPool;
+use super::stats::AzureMonitorExporterStats;
 use super::config::Config;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::in_flight_exports::{CompletedExport, InFlightExports};
@@ -31,7 +32,6 @@ use crate::pdata::{Context, OtapPdata};
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const STATS_PRINT_INTERVAL: u64 = 3;
-const IDLE_THRESHOLD_SECS: f64 = 1.0;
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
@@ -44,96 +44,6 @@ pub struct AzureMonitorExporter {
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
     stats: AzureMonitorExporterStats,
-}
-
-pub struct AzureMonitorExporterStats {
-    processing_started_at: tokio::time::Instant,
-    last_message_received_at: tokio::time::Instant,
-    idle_duration: tokio::time::Duration,
-    successful_row_count: f64,
-    successful_batch_count: f64,
-    successful_msg_count: f64,
-    failed_row_count: f64,
-    failed_batch_count: f64,
-    failed_msg_count: f64,
-    average_client_latency_secs: f64,
-    latency_request_count: f64,
-}
-
-impl AzureMonitorExporterStats {
-    fn new() -> Self {
-        Self {
-            processing_started_at: tokio::time::Instant::now(),
-            last_message_received_at: tokio::time::Instant::now(),
-            idle_duration: tokio::time::Duration::ZERO,
-            successful_row_count: 0.0,
-            successful_batch_count: 0.0,
-            successful_msg_count: 0.0,
-            failed_row_count: 0.0,
-            failed_batch_count: 0.0,
-            failed_msg_count: 0.0,
-            average_client_latency_secs: 0.0,
-            latency_request_count: 0.0,
-        }
-    }
-
-    fn started_at(&mut self) -> tokio::time::Instant {
-        self.processing_started_at
-    }
-
-    fn message_received(&mut self, in_flight_exports: usize) {
-        self.update_idle(in_flight_exports)
-    }
-
-    fn update_idle(&mut self, in_flight_exports: usize) {
-        let idle_duration =
-            tokio::time::Instant::now().duration_since(self.last_message_received_at);
-        if idle_duration.as_secs_f64() > IDLE_THRESHOLD_SECS && in_flight_exports == 0 {
-            self.idle_duration += idle_duration;
-        }
-
-        self.last_message_received_at = tokio::time::Instant::now();
-    }
-
-    fn get_active_duration_secs(&mut self, in_flight_exports: usize) -> f64 {
-        self.update_idle(in_flight_exports);
-        return self.processing_started_at.elapsed().as_secs_f64() - self.idle_duration.as_secs_f64();
-    }
-
-    fn get_idle_duration_secs(&self) -> f64 {
-        self.idle_duration.as_secs_f64()
-    }
-
-    fn add_rows(&mut self, row_count: f64) {
-        self.successful_row_count += row_count;
-    }
-
-    fn add_batch(&mut self) {
-        self.successful_batch_count += 1.0;
-    }
-
-    fn add_messages(&mut self, msg_count: f64) {
-        self.successful_msg_count += msg_count;
-    }
-
-    fn add_failed_rows(&mut self, row_count: f64) {
-        self.failed_row_count += row_count;
-    }
-
-    fn add_failed_batch(&mut self) {
-        self.failed_batch_count += 1.0;
-    }
-
-    fn add_failed_messages(&mut self, msg_count: f64) {
-        self.failed_msg_count += msg_count;
-    }
-
-    fn add_client_latency(&mut self, latency_secs: f64) {
-        self.latency_request_count += 1.0;
-        self.average_client_latency_secs =
-            ((self.average_client_latency_secs * (self.latency_request_count - 1.0)) + latency_secs)
-                / self.latency_request_count;
-    }
 }
 
 // TODO: Remove print_stdout after logging is set up
@@ -227,7 +137,14 @@ impl AzureMonitorExporter {
     }
 
     fn get_next_token_refresh(token: AccessToken) -> tokio::time::Instant {
-        let token_valid_until = tokio::time::Instant::now() + std::time::Duration::from_secs(token.expires_on.unix_timestamp() as u64);
+        let now = azure_core::time::OffsetDateTime::now_utc();
+        let duration_remaining = if token.expires_on > now {
+            (token.expires_on - now).unsigned_abs()
+        } else {
+            std::time::Duration::ZERO
+        };
+
+        let token_valid_until = tokio::time::Instant::now() + duration_remaining;
         let token_lifetime =
             token_valid_until.saturating_duration_since(tokio::time::Instant::now());
         let token_expiry_buffer = tokio::time::Duration::from_secs(token_lifetime.as_secs() / 5);
@@ -559,7 +476,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     let elapsed = self.stats.started_at().elapsed().as_secs_f64();
                     let active = self.stats.get_active_duration_secs(self.in_flight_exports.len());
                     let throughput = if active > 0.0 {
-                        self.stats.successful_row_count / active
+                        self.stats.successful_row_count() / active
                     } else {
                         0.0
                     };
@@ -580,13 +497,13 @@ exports | in_flight={} stats_time={:?}
                         file_mb,
                         data_mb,
                         throughput,
-                        self.stats.average_client_latency_secs * 1000.0,
-                        self.stats.successful_row_count,
-                        self.stats.successful_batch_count,
-                        self.stats.successful_msg_count,
-                        self.stats.failed_row_count,
-                        self.stats.failed_batch_count,
-                        self.stats.failed_msg_count,
+                        self.stats.average_client_latency_secs() * 1000.0,
+                        self.stats.successful_row_count(),
+                        self.stats.successful_batch_count(),
+                        self.stats.successful_msg_count(),
+                        self.stats.failed_row_count(),
+                        self.stats.failed_batch_count(),
+                        self.stats.failed_msg_count(),
                         elapsed,
                         active,
                         self.stats.get_idle_duration_secs(),
@@ -599,5 +516,74 @@ exports | in_flight={} stats_time={:?}
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use azure_core::time::OffsetDateTime;
+    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+    use std::collections::HashMap;
+
+    fn create_test_config() -> Config {
+        Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "stream".to_string(),
+                dcr: "dcr-id".to_string(),
+                schema: SchemaConfig {
+                    disable_schema_mapping: false,
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::new(),
+                },
+            },
+            auth: AuthConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_new_validates_config() {
+        let config = create_test_config();
+        let exporter = AzureMonitorExporter::new(config);
+        assert!(exporter.is_ok());
+    }
+
+    #[test]
+    fn test_get_next_token_refresh_logic() {
+        let now = OffsetDateTime::now_utc();
+        let expires_on = now + azure_core::time::Duration::seconds(3600);
+        
+        let token = AccessToken {
+            token: "secret".into(),
+            expires_on,
+        };
+
+        let refresh_at = AzureMonitorExporter::get_next_token_refresh(token);
+        let duration_until_refresh = refresh_at.duration_since(tokio::time::Instant::now());
+
+        // Should be around 80% of 3600 = 2880 seconds
+        // Allow some delta for execution time
+        let expected = 2880.0;
+        let actual = duration_until_refresh.as_secs_f64();
+        assert!((actual - expected).abs() < 5.0, "Expected ~{}, got {}", expected, actual);
+    }
+
+    #[test]
+    fn test_get_next_token_refresh_minimum_interval() {
+        let now = OffsetDateTime::now_utc();
+        let expires_on = now + azure_core::time::Duration::seconds(10);
+        
+        let token = AccessToken {
+            token: "secret".into(),
+            expires_on,
+        };
+
+        let refresh_at = AzureMonitorExporter::get_next_token_refresh(token);
+        let duration_until_refresh = refresh_at.duration_since(tokio::time::Instant::now());
+
+        // Should enforce minimum 30s refresh interval
+        assert!(duration_until_refresh.as_secs() >= 30);
     }
 }

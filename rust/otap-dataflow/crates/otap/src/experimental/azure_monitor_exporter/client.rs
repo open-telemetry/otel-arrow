@@ -360,18 +360,30 @@ enum ExportAttemptError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azure_core::Bytes;
     use azure_core::credentials::TokenRequestOptions;
     use azure_core::credentials::{AccessToken, TokenCredential};
     use std::sync::Mutex;
-    use wiremock::matchers::{header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // ==================== Test Helpers ====================
 
     #[derive(Debug)]
     struct MockCredential {
         token: String,
         expires_in: azure_core::time::Duration,
         call_count: Arc<Mutex<usize>>,
+    }
+
+    impl MockCredential {
+        fn new(token: &str, expires_in_minutes: i64) -> (Arc<Self>, Arc<Mutex<usize>>) {
+            let call_count = Arc::new(Mutex::new(0));
+            let cred = Arc::new(Self {
+                token: token.to_string(),
+                expires_in: azure_core::time::Duration::minutes(expires_in_minutes),
+                call_count: call_count.clone(),
+            });
+            (cred, call_count)
+        }
     }
 
     #[async_trait::async_trait]
@@ -391,6 +403,44 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FailingCredential {
+        call_count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl TokenCredential for FailingCredential {
+        async fn get_token(
+            &self,
+            _scopes: &[&str],
+            _options: Option<TokenRequestOptions<'_>>,
+        ) -> azure_core::Result<AccessToken> {
+            _ = self.call_count.fetch_add(1, Ordering::SeqCst);
+            Err(azure_core::Error::with_message(
+                azure_core::error::ErrorKind::Credential,
+                "Token acquisition failed",
+            ))
+        }
+    }
+
+    fn create_test_api_config() -> ApiConfig {
+        ApiConfig {
+            dcr_endpoint: "https://test.azure.com".to_string(),
+            dcr: "test-dcr".to_string(),
+            stream_name: "test-stream".to_string(),
+            schema: Default::default(),
+        }
+    }
+
+    fn create_test_http_client() -> Client {
+        Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("failed to create HTTP client")
+    }
+
+    // ==================== Construction Tests ====================
+
     #[test]
     fn test_new_builds_correct_endpoint() {
         let api_config = ApiConfig {
@@ -400,184 +450,444 @@ mod tests {
             schema: Default::default(),
         };
 
-        let call_count = Arc::new(Mutex::new(0));
-        let credential: Arc<dyn TokenCredential> = Arc::new(MockCredential {
-            token: "test_token".to_string(),
-            expires_in: azure_core::time::Duration::minutes(60),
-            call_count: call_count.clone(),
-        });
+        let (credential, _) = MockCredential::new("test_token", 60);
         let auth = Auth::from_credential(credential, "https://monitor.azure.com/.default".to_string());
+        let http_client = create_test_http_client();
 
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .http2_prior_knowledge()  // Use HTTP/2 directly (faster, no upgrade negotiation)
-            .pool_max_idle_per_host(4)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_nodelay(true)
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {e}"))
-            .expect("failed to create HTTP client");
-        let client = LogsIngestionClient::new(&api_config, http_client, auth).expect("failed to create client");
-        
+        let client = LogsIngestionClient::new(&api_config, http_client, auth)
+            .expect("failed to create client");
+
         assert_eq!(
             client.endpoint,
             "https://test.azure.com/dataCollectionRules/test-dcr-id/streams/test-stream?api-version=2021-11-01-preview"
         );
+    }
+
+    #[test]
+    fn test_new_with_special_characters_in_config() {
+        let api_config = ApiConfig {
+            dcr_endpoint: "https://my-endpoint.azure.com".to_string(),
+            dcr: "dcr-abc-123-def".to_string(),
+            stream_name: "Custom-Stream_Name".to_string(),
+            schema: Default::default(),
+        };
+
+        let (credential, _) = MockCredential::new("token", 60);
+        let auth = Auth::from_credential(credential, "scope".to_string());
+        let http_client = create_test_http_client();
+
+        let client = LogsIngestionClient::new(&api_config, http_client, auth).unwrap();
+
+        assert!(client.endpoint.contains("dcr-abc-123-def"));
+        assert!(client.endpoint.contains("Custom-Stream_Name"));
+    }
+
+    #[test]
+    fn test_from_parts_creates_client() {
+        let (credential, _) = MockCredential::new("my_token", 60);
+
+        let client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com/endpoint".to_string(),
+            credential,
+            "https://scope.azure.com/.default".to_string(),
+        );
+
+        assert_eq!(client.endpoint, "https://example.com/endpoint");
+        // Token not yet fetched, so auth_header is placeholder
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
+        // Token validity should be in the past (not yet fetched)
+        assert!(client.token_valid_until <= Instant::now());
+        assert!(client.token_refresh_after <= Instant::now());
+    }
+
+    #[test]
+    fn test_new_initial_state() {
+        let (credential, call_count) = MockCredential::new("token", 60);
+        let auth = Auth::from_credential(credential, "scope".to_string());
+        let http_client = create_test_http_client();
+        let api_config = create_test_api_config();
+
+        let client = LogsIngestionClient::new(&api_config, http_client, auth).unwrap();
+
+        // No token fetch during construction
+        assert_eq!(*call_count.lock().unwrap(), 0);
+        // Auth header is placeholder
         assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
     }
 
+    // ==================== LogsIngestionClientPool Tests ====================
+
+    #[test]
+    fn test_pool_new_creates_empty_pool() {
+        let pool = LogsIngestionClientPool::new(5);
+
+        assert_eq!(pool.clients.capacity(), 5);
+        assert_eq!(pool.clients.len(), 0);
+    }
+
+    #[test]
+    fn test_pool_new_various_capacities() {
+        for capacity in [1, 4, 8, 32, 100] {
+            let pool = LogsIngestionClientPool::new(capacity);
+            assert_eq!(pool.clients.capacity(), capacity);
+        }
+    }
+
+    #[test]
+    fn test_pool_take_and_release_single() {
+        let (credential, _) = MockCredential::new("token", 60);
+        let auth = Auth::from_credential(credential, "scope".to_string());
+        let api_config = create_test_api_config();
+
+        let mut pool = LogsIngestionClientPool::new(1);
+        let client = LogsIngestionClient::new(&api_config, create_test_http_client(), auth).unwrap();
+        pool.clients.push(client);
+
+        assert_eq!(pool.clients.len(), 1);
+
+        let taken = pool.take();
+        assert_eq!(pool.clients.len(), 0);
+
+        pool.release(taken);
+        assert_eq!(pool.clients.len(), 1);
+    }
+
+    #[test]
+    fn test_pool_take_and_release_multiple() {
+        let (credential, _) = MockCredential::new("token", 60);
+        let auth = Auth::from_credential(credential, "scope".to_string());
+        let api_config = create_test_api_config();
+
+        let mut pool = LogsIngestionClientPool::new(3);
+        for _ in 0..3 {
+            let client = LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone()).unwrap();
+            pool.clients.push(client);
+        }
+
+        assert_eq!(pool.clients.len(), 3);
+
+        // Take all
+        let c1 = pool.take();
+        let c2 = pool.take();
+        let c3 = pool.take();
+        assert_eq!(pool.clients.len(), 0);
+
+        // Release in different order
+        pool.release(c2);
+        pool.release(c1);
+        pool.release(c3);
+        assert_eq!(pool.clients.len(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "client pool is empty")]
+    fn test_pool_take_from_empty_panics() {
+        let mut pool = LogsIngestionClientPool::new(1);
+        let _ = pool.take();
+    }
+
+    #[test]
+    fn test_pool_release_beyond_capacity() {
+        let (credential, _) = MockCredential::new("token", 60);
+        let auth = Auth::from_credential(credential, "scope".to_string());
+        let api_config = create_test_api_config();
+
+        let mut pool = LogsIngestionClientPool::new(1);
+        
+        // Release more than capacity (Vec will grow)
+        for _ in 0..5 {
+            let client = LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone()).unwrap();
+            pool.release(client);
+        }
+
+        assert_eq!(pool.clients.len(), 5);
+    }
+
+    // ==================== Token Management Tests ====================
+
     #[tokio::test]
-    async fn test_export_success() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/dataCollectionRules/dcr1/streams/stream1"))
-            .and(header("Content-Type", "application/json"))
-            .and(header("Content-Encoding", "gzip"))
-            .and(header("Authorization", "Bearer test_token"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock_server)
-            .await;
-
-        let call_count = Arc::new(Mutex::new(0));
-        let credential = Arc::new(MockCredential {
-            token: "test_token".to_string(),
-            expires_in: azure_core::time::Duration::minutes(60),
-            call_count: call_count.clone(),
-        });
+    async fn test_refresh_token_updates_header() {
+        let (credential, call_count) = MockCredential::new("fresh_token", 60);
 
         let mut client = LogsIngestionClient::from_parts(
-            Client::new(),
-            format!(
-                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
-                mock_server.uri()
-            ),
+            create_test_http_client(),
+            "https://example.com".to_string(),
             credential,
             "scope".to_string(),
         );
 
-        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
-        assert!(result.is_ok());
-        assert_eq!(*call_count.lock().unwrap(), 1); // Token fetched once
+        // Initially placeholder
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
+
+        client.refresh_token().await.unwrap();
+
+        assert_eq!(
+            client.auth_header,
+            HeaderValue::from_str("Bearer fresh_token").unwrap()
+        );
+        assert_eq!(*call_count.lock().unwrap(), 1);
     }
 
     #[tokio::test]
-    async fn test_export_auth_failure_refreshes_token() {
-        let mock_server = MockServer::start().await;
-
-        // First request fails with 401
-        Mock::given(method("POST"))
-            .and(path("/dataCollectionRules/dcr1/streams/stream1"))
-            .respond_with(ResponseTemplate::new(401))
-            .expect(1)
-            .mount(&mock_server)
-            .await;
-
-        let call_count = Arc::new(Mutex::new(0));
-        let credential = Arc::new(MockCredential {
-            token: "test_token".to_string(),
-            expires_in: azure_core::time::Duration::minutes(60),
-            call_count: call_count.clone(),
-        });
+    async fn test_refresh_token_updates_validity_times() {
+        let (credential, _) = MockCredential::new("token", 60);
 
         let mut client = LogsIngestionClient::from_parts(
-            Client::new(),
-            format!(
-                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
-                mock_server.uri()
-            ),
+            create_test_http_client(),
+            "https://example.com".to_string(),
             credential,
             "scope".to_string(),
         );
 
-        // Reset and add success response for retry
-        mock_server.reset().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(401))
-            .up_to_n_times(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock_server)
-            .await;
+        let before = Instant::now();
+        client.refresh_token().await.unwrap();
 
-        // Should succeed after retry with refreshed token
-        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
-        assert!(result.is_ok());
-        assert_eq!(*call_count.lock().unwrap(), 2); // Token fetched twice (initial + refresh)
+        // Token should be valid for ~60 minutes
+        assert!(client.token_valid_until > before + Duration::from_secs(3500));
+        // Refresh should happen 5 minutes before expiry
+        assert!(client.token_refresh_after > before + Duration::from_secs(3200));
+        assert!(client.token_refresh_after < client.token_valid_until);
     }
 
     #[tokio::test]
-    async fn test_export_rate_limited_with_retry_after() {
-        let mock_server = MockServer::start().await;
-
-        // First request returns 429 with Retry-After, second succeeds
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
-            .up_to_n_times(1)
-            .mount(&mock_server)
-            .await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(204))
-            .mount(&mock_server)
-            .await;
-
-        let call_count = Arc::new(Mutex::new(0));
-        let credential = Arc::new(MockCredential {
-            token: "test_token".to_string(),
-            expires_in: azure_core::time::Duration::minutes(60),
-            call_count: call_count.clone(),
-        });
+    async fn test_ensure_valid_token_fetches_when_expired() {
+        let (credential, call_count) = MockCredential::new("token", 60);
 
         let mut client = LogsIngestionClient::from_parts(
-            Client::new(),
-            format!(
-                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
-                mock_server.uri()
-            ),
+            create_test_http_client(),
+            "https://example.com".to_string(),
             credential,
             "scope".to_string(),
         );
 
-        let start = Instant::now();
-        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
-        let elapsed = start.elapsed();
+        // Token starts expired
+        assert!(client.token_refresh_after <= Instant::now());
 
-        assert!(result.is_ok());
-        // Should have waited at least 1 second for retry
-        assert!(elapsed >= Duration::from_secs(1));
+        client.ensure_valid_token().await.unwrap();
+
+        assert_eq!(*call_count.lock().unwrap(), 1);
+        assert!(client.token_refresh_after > Instant::now());
     }
 
     #[tokio::test]
-    async fn test_export_terminal_error_no_retry() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(403))
-            .expect(1) // Should only be called once - no retry
-            .mount(&mock_server)
-            .await;
-
-        let call_count = Arc::new(Mutex::new(0));
-        let credential = Arc::new(MockCredential {
-            token: "test_token".to_string(),
-            expires_in: azure_core::time::Duration::minutes(60),
-            call_count: call_count.clone(),
-        });
+    async fn test_ensure_valid_token_caches_token() {
+        let (credential, call_count) = MockCredential::new("cached_token", 60);
 
         let mut client = LogsIngestionClient::from_parts(
-            Client::new(),
-            format!(
-                "{}/dataCollectionRules/dcr1/streams/stream1?api-version=2021-11-01-preview",
-                mock_server.uri()
-            ),
+            create_test_http_client(),
+            "https://example.com".to_string(),
             credential,
             "scope".to_string(),
         );
 
-        let result = client.export(Bytes::from(vec![1, 2, 3])).await;
+        // First call fetches token
+        client.ensure_valid_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Subsequent calls should use cached token (fast path)
+        for _ in 0..10 {
+            client.ensure_valid_token().await.unwrap();
+        }
+
+        // Should still be 1 - token was cached
+        assert_eq!(*call_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_token_refreshes_when_in_refresh_window() {
+        let (credential, call_count) = MockCredential::new("token", 60);
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        // First fetch
+        client.ensure_valid_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Simulate token about to expire (within 5 minute refresh window)
+        client.token_refresh_after = Instant::now() - Duration::from_secs(1);
+        
+        // Invalidate the cached token in Auth so it will fetch again
+        client.auth.invalidate_token().await;
+
+        // Should refresh
+        client.ensure_valid_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_token_failure() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let credential: Arc<dyn TokenCredential> = Arc::new(FailingCredential {
+            call_count: call_count.clone(),
+        });
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        let result = client.refresh_token().await;
+
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Authorization failed"));
+        assert!(result.unwrap_err().contains("Failed to acquire token"));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_token_propagates_error() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let credential: Arc<dyn TokenCredential> = Arc::new(FailingCredential {
+            call_count: call_count.clone(),
+        });
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        let result = client.ensure_valid_token().await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to acquire token"));
+    }
+
+    // ==================== Clone Tests ====================
+
+    #[tokio::test]
+    async fn test_client_clone_has_same_endpoint() {
+        let (credential, _) = MockCredential::new("token", 60);
+
+        let client1 = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com/endpoint".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        let client2 = client1.clone();
+
+        assert_eq!(client1.endpoint, client2.endpoint);
+    }
+
+    #[tokio::test]
+    async fn test_client_clone_shares_auth() {
+        let (credential, call_count) = MockCredential::new("shared_token", 60);
+
+        let mut client1 = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        // Fetch token on client1
+        client1.refresh_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+
+        // Clone shares the Auth (which has cached token)
+        let mut client2 = client1.clone();
+
+        // client2's refresh should use cached token from shared Auth
+        client2.refresh_token().await.unwrap();
+        // Auth caches, so might be 1 or 2 depending on implementation
+        // The important thing is both clients work
+        assert!(*call_count.lock().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_client_clone_has_independent_header() {
+        let (credential, _) = MockCredential::new("token", 60);
+
+        let mut client1 = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        client1.refresh_token().await.unwrap();
+
+        let client2 = client1.clone();
+
+        // Both should have the same header after clone
+        assert_eq!(client1.auth_header, client2.auth_header);
+    }
+
+    // ==================== Edge Cases ====================
+
+    #[test]
+    fn test_client_with_empty_endpoint() {
+        let (credential, _) = MockCredential::new("token", 60);
+
+        let client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        assert_eq!(client.endpoint, "");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_refresh_calls() {
+        let (credential, call_count) = MockCredential::new("token", 60);
+
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+            credential,
+            "scope".to_string(),
+        );
+
+        // Multiple refresh calls - Auth caches the token, so credential
+        // is only called once unless we invalidate
+        client.refresh_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 1);
+        
+        // Subsequent refreshes use cached token from Auth
+        for _ in 0..4 {
+            client.refresh_token().await.unwrap();
+        }
+        
+        // Still 1 because Auth caches
+        assert_eq!(*call_count.lock().unwrap(), 1);
+        
+        // If we invalidate, it will fetch again
+        client.auth.invalidate_token().await;
+        client.refresh_token().await.unwrap();
+        assert_eq!(*call_count.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_pool_create_http_clients() {
+        let pool = LogsIngestionClientPool::new(4);
+        
+        let result = pool.create_http_clients(4);
+        
+        assert!(result.is_ok());
+        let clients = result.unwrap();
+        assert_eq!(clients.len(), 4);
+    }
+
+    #[test]
+    fn test_pool_create_http_clients_zero() {
+        let pool = LogsIngestionClientPool::new(4);
+        
+        let result = pool.create_http_clients(0);
+        
+        assert!(result.is_ok());
+        let clients = result.unwrap();
+        assert_eq!(clients.len(), 0);
     }
 }

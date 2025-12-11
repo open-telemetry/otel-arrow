@@ -26,11 +26,13 @@ mod gzip_batcher;
 mod in_flight_exports;
 mod state;
 mod transformer;
+mod stats;
 
 pub use client::LogsIngestionClient;
 pub use config::Config;
 pub use exporter::AzureMonitorExporter;
 pub use transformer::Transformer;
+pub use stats::AzureMonitorExporterStats;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
 pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:otel:azuremonitor:exporter";
