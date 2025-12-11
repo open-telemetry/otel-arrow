@@ -36,9 +36,9 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::{MetricsSystem, init_logging, otel_info};
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -75,6 +75,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &pipeline.service().telemetry;
+        init_logging(&telemetry_config.logs);
+        otel_info!(
+            name: "controller.start",
+            num_nodes = pipeline.node_iter().count(),
+            pdata_channel_size = pipeline.pipeline_settings().default_pdata_channel_size
+        );
         let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();

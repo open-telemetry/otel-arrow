@@ -25,6 +25,9 @@ pub struct TelemetryConfig {
     /// Metrics system configuration.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Internal logs configuration.
+    #[serde(default)]
+    pub logs: LogsConfig,
     /// Resource attributes to associate with telemetry data.
     /// TODO: Support different types of attribute values.
     #[serde(default)]
@@ -35,6 +38,7 @@ impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             metrics: MetricsConfig::default(),
+            logs: LogsConfig::default(),
             resource: HashMap::default(),
             reporting_channel_size: default_reporting_channel_size(),
             reporting_interval: default_reporting_interval(),
@@ -48,6 +52,34 @@ fn default_reporting_channel_size() -> usize {
 
 fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
+}
+
+/// Internal logs configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct LogsConfig {
+    /// The log level for internal engine logs.
+    #[serde(default)]
+    pub level: LogLevel,
+}
+
+/// Log level for internal engine logs.
+///
+/// TODO: Change default to `Info` once per-thread subscriber is implemented
+/// to avoid contention from the global tracing subscriber.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// Logging is completely disabled.
+    #[default]
+    Off,
+    /// Debug level logging.
+    Debug,
+    /// Info level logging.
+    Info,
+    /// Warn level logging.
+    Warn,
+    /// Error level logging.
+    Error,
 }
 
 #[cfg(test)]
