@@ -158,7 +158,32 @@ impl SegmentWriter {
         let file = File::create(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         let mut writer = BufWriter::new(file);
 
-        self.write_to(&mut writer, streams, manifest, path)
+        let result = self.write_to(&mut writer, streams, manifest, path)?;
+
+        // Set the file to read-only after writing to enforce immutability.
+        // This is a defense-in-depth measure; segment files should never be
+        // modified after finalization.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // 0o440 = r--r----- (read-only for owner and group, no access for others)
+            let permissions = std::fs::Permissions::from_mode(0o440);
+            std::fs::set_permissions(path, permissions)
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix platforms, use the portable read-only flag
+            let mut permissions = std::fs::metadata(path)
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?
+                .permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(path, permissions)
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+        }
+
+        Ok(result)
     }
 
     /// Writes segment data to any `Write` implementation.

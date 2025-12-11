@@ -1077,6 +1077,20 @@ mod tests {
 
         let _ = write_test_segment(&path);
 
+        // Make the file writable so we can corrupt it for testing
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(0o644);
+            std::fs::set_permissions(&path, permissions).expect("set permissions");
+        }
+        #[cfg(not(unix))]
+        {
+            let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&path, permissions).expect("set permissions");
+        }
+
         // Corrupt a byte in the footer
         let mut bytes = std::fs::read(&path).expect("read");
         let footer_pos = bytes.len() - 20; // Somewhere in footer
