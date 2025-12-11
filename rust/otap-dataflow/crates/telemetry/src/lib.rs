@@ -56,14 +56,19 @@ pub use internal_events::_private;
 /// The fmt::init() here is truly global, and hence
 /// this will be a source of contention.
 /// We need to evaluate alternatives:
+///
 /// 1. Set up per thread subscriber.
-/// //start of thread
-/// let _guard = tracing::subscriber::set_default(subscriber);
-/// now, with this thread, all tracing calls will go to this subscriber
-/// eliminating contention.
-/// //end of thread
+///    ```ignore
+///    // start of thread
+///    let _guard = tracing::subscriber::set_default(subscriber);
+///    // now, with this thread, all tracing calls will go to this subscriber
+///    // eliminating contention.
+///    // end of thread
+///    ```
+///
 /// 2. Use custom subscriber that batches logs in thread-local buffer, and
-/// flushes them periodically.
+///    flushes them periodically.
+///
 /// The TODO here is to evaluate these options and implement one of them.
 /// As of now, this causes contention, and we just need to accept temporarily.
 pub fn init_logging(config: &otap_df_config::pipeline::LogsConfig) {
