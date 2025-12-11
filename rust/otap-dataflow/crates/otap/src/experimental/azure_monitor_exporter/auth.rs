@@ -7,9 +7,9 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
-use tokio::time::Instant;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 
 use crate::experimental::azure_monitor_exporter::config::{AuthConfig, AuthMethod};
 
@@ -391,7 +391,8 @@ mod tests {
                 } else {
                     Ok(AccessToken {
                         token: "success_token".to_string().into(),
-                        expires_on: OffsetDateTime::now_utc() + azure_core::time::Duration::minutes(60),
+                        expires_on: OffsetDateTime::now_utc()
+                            + azure_core::time::Duration::minutes(60),
                     })
                 }
             }
@@ -399,7 +400,9 @@ mod tests {
 
         let call_count = Arc::new(Mutex::new(0));
         let auth = Auth::from_credential(
-            Arc::new(FailOnceThenSucceed { call_count: call_count.clone() }),
+            Arc::new(FailOnceThenSucceed {
+                call_count: call_count.clone(),
+            }),
             "scope".to_string(),
         );
 
@@ -431,9 +434,7 @@ mod tests {
         let mut handles = vec![];
         for _ in 0..10 {
             let auth_clone = auth.clone();
-            handles.push(tokio::spawn(async move {
-                auth_clone.get_token().await
-            }));
+            handles.push(tokio::spawn(async move { auth_clone.get_token().await }));
         }
 
         // Wait for all to complete
@@ -445,7 +446,11 @@ mod tests {
 
         // Due to double-check locking, should have minimal calls (ideally 1, but timing may cause a few more)
         let final_count = *call_count.lock().unwrap();
-        assert!(final_count <= 3, "Expected at most 3 credential calls due to race, got {}", final_count);
+        assert!(
+            final_count <= 3,
+            "Expected at most 3 credential calls due to race, got {}",
+            final_count
+        );
     }
 
     // ==================== Clone Behavior Tests ====================

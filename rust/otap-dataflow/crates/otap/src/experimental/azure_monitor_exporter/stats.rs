@@ -109,7 +109,8 @@ impl AzureMonitorExporterStats {
     /// Calculate total active (non-idle) duration in seconds.
     pub fn get_active_duration_secs(&mut self, in_flight_exports: usize) -> f64 {
         self.update_idle(in_flight_exports);
-        return self.processing_started_at.elapsed().as_secs_f64() - self.idle_duration.as_secs_f64();
+        return self.processing_started_at.elapsed().as_secs_f64()
+            - self.idle_duration.as_secs_f64();
     }
 
     /// Get total accumulated idle duration in seconds.
@@ -151,12 +152,12 @@ impl AzureMonitorExporterStats {
     /// Uses a running average calculation.
     pub fn add_client_latency(&mut self, latency_secs: f64) {
         self.latency_request_count += 1.0;
-        self.average_client_latency_secs =
-            ((self.average_client_latency_secs * (self.latency_request_count - 1.0)) + latency_secs)
-                / self.latency_request_count;
+        self.average_client_latency_secs = ((self.average_client_latency_secs
+            * (self.latency_request_count - 1.0))
+            + latency_secs)
+            / self.latency_request_count;
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -216,23 +217,29 @@ mod tests {
     #[tokio::test]
     async fn test_idle_tracking() {
         let mut stats = AzureMonitorExporterStats::new();
-        
+
         // Simulate processing
         stats.message_received(0);
-        
+
         // Wait a bit (simulated)
         tokio::time::sleep(Duration::from_millis(10)).await;
-        
+
         // Update idle with 0 in-flight (should count as idle)
         stats.update_idle(0);
-        
+
         // Update idle with 1 in-flight (should NOT count as idle)
         stats.update_idle(1);
 
         // Verify getters work
         assert!(stats.started_at().elapsed().as_secs_f64() < 2.0);
         assert!(stats.last_message_received_at().elapsed().as_secs_f64() < 2.0);
-        assert_eq!(stats.get_active_duration_secs(0), stats.processing_started_at.elapsed().as_secs_f64() - stats.get_idle_duration_secs());
-        assert_eq!(stats.get_idle_duration_secs(), stats.idle_duration().as_secs_f64());
+        assert_eq!(
+            stats.get_active_duration_secs(0),
+            stats.processing_started_at.elapsed().as_secs_f64() - stats.get_idle_duration_secs()
+        );
+        assert_eq!(
+            stats.get_idle_duration_secs(),
+            stats.idle_duration().as_secs_f64()
+        );
     }
 }

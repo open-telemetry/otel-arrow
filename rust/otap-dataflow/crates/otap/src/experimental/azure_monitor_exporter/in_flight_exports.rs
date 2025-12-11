@@ -102,11 +102,11 @@ impl InFlightExports {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration as StdDuration;
     use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
     use azure_core::time::OffsetDateTime;
-    use std::sync::{Arc, Mutex};
     use reqwest::Client;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration as StdDuration;
 
     // ==================== Test Helpers ====================
 
@@ -206,8 +206,7 @@ mod tests {
     async fn test_len_after_push() {
         let mut exports = InFlightExports::new(5);
 
-        let pending_future: BoxFuture<'static, CompletedExport> =
-            Box::pin(std::future::pending());
+        let pending_future: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
 
         let _ = exports.push(pending_future).await;
 
@@ -233,8 +232,7 @@ mod tests {
     async fn test_push_under_limit_returns_none() {
         let mut exports = InFlightExports::new(5);
 
-        let pending_future: BoxFuture<'static, CompletedExport> =
-            Box::pin(std::future::pending());
+        let pending_future: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
 
         let result = exports.push(pending_future).await;
 
@@ -260,10 +258,12 @@ mod tests {
     async fn test_push_export_adds_to_futures() {
         let mut exports = InFlightExports::new(5);
         let client = create_test_client();
-        
+
         // This should not block because we are under the limit
-        let result = exports.push_export(client, 1, 10.0, Bytes::from("data")).await;
-        
+        let result = exports
+            .push_export(client, 1, 10.0, Bytes::from("data"))
+            .await;
+
         assert!(result.is_none());
         assert_eq!(exports.len(), 1);
     }
@@ -271,23 +271,25 @@ mod tests {
     #[tokio::test]
     async fn test_push_export_respects_limit() {
         let mut exports = InFlightExports::new(1);
-        
+
         // 1. Fill the capacity with a dummy future that completes immediately
         // We use a dummy future because if we used push_export, it would create a real
         // export future that might retry and take a long time to fail/complete.
         let _ = exports.push(mock_completed_export_future(100)).await;
         assert_eq!(exports.len(), 1);
-        
+
         // 2. Now call push_export. Since we are at limit (1), it must wait for a completion.
         // It should receive the completion from our dummy future immediately.
         let client = create_test_client();
-        let result = exports.push_export(client, 2, 20.0, Bytes::from("data")).await;
-        
+        let result = exports
+            .push_export(client, 2, 20.0, Bytes::from("data"))
+            .await;
+
         // Should get the completed dummy export
         assert!(result.is_some());
         let completed = result.unwrap();
         assert_eq!(completed.batch_id, 100);
-        
+
         // The new export should be in the queue
         assert_eq!(exports.len(), 1);
     }
@@ -307,19 +309,19 @@ mod tests {
     #[tokio::test]
     async fn test_drain_returns_all_futures() {
         let mut exports = InFlightExports::new(5);
-        
+
         // Push 3 dummy completed futures
         let _ = exports.push(mock_completed_export_future(1)).await;
         let _ = exports.push(mock_completed_export_future(2)).await;
         let _ = exports.push(mock_completed_export_future(3)).await;
-        
+
         assert_eq!(exports.len(), 3);
-        
+
         let drained = exports.drain().await;
-        
+
         assert_eq!(drained.len(), 3);
         assert_eq!(exports.len(), 0);
-        
+
         let ids: Vec<u64> = drained.iter().map(|c| c.batch_id).collect();
         assert!(ids.contains(&1));
         assert!(ids.contains(&2));
@@ -334,11 +336,8 @@ mod tests {
 
         // next_completion on empty should stay pending forever
         // We test this with a timeout
-        let result = tokio::time::timeout(
-            StdDuration::from_millis(10),
-            exports.next_completion(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(StdDuration::from_millis(10), exports.next_completion()).await;
 
         // Should timeout because next_completion is pending
         assert!(result.is_err());
@@ -347,11 +346,11 @@ mod tests {
     #[tokio::test]
     async fn test_next_completion_returns_completed() {
         let mut exports = InFlightExports::new(5);
-        
+
         let _ = exports.push(mock_completed_export_future(42)).await;
-        
+
         let result = exports.next_completion().await;
-        
+
         assert!(result.is_some());
         assert_eq!(result.unwrap().batch_id, 42);
         assert_eq!(exports.len(), 0);

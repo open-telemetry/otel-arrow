@@ -18,15 +18,15 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use prost::Message as _;
 
+use super::auth::Auth;
 use super::client::LogsIngestionClientPool;
-use super::stats::AzureMonitorExporterStats;
 use super::config::Config;
+use super::gzip_batcher::FlushResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::state::AzureMonitorExporterState;
+use super::stats::AzureMonitorExporterStats;
 use super::transformer::Transformer;
-use super::gzip_batcher::FlushResult;
-use super::auth::Auth;
 use crate::pdata::{Context, OtapPdata};
 
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
@@ -374,28 +374,23 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let auth = Auth::new(&self.config.auth)
-            .map_err(|e| Error::InternalError {
-                message: format!("Failed to create auth handler: {e}"),
-            })?;
+        let auth = Auth::new(&self.config.auth).map_err(|e| Error::InternalError {
+            message: format!("Failed to create auth handler: {e}"),
+        })?;
 
-        let token = auth
-            .get_token()
-            .await
-            .map_err(|e| Error::InternalError {
-                message: format!("Failed to refresh token: {e}"),
-            })?;
+        let token = auth.get_token().await.map_err(|e| Error::InternalError {
+            message: format!("Failed to refresh token: {e}"),
+        })?;
 
-        self.client_pool.initialize(&self.config.api, &auth)
+        self.client_pool
+            .initialize(&self.config.api, &auth)
             .await
             .expect("Failed to initialize client pool");
-        let mut next_token_refresh =
-            Self::get_next_token_refresh(token);
+        let mut next_token_refresh = Self::get_next_token_refresh(token);
         let mut next_stats_print =
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
-        let mut next_periodic_export =
-            tokio::time::Instant::now()
-                + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
+        let mut next_periodic_export = tokio::time::Instant::now()
+            + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
         loop {
             // Determine if we should accept new messages
@@ -421,7 +416,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_periodic_export), if !at_capacity => {
                     next_periodic_export = tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
-                    if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {              
+                    if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {
                         println!("[AzureMonitorExporter] Periodic export pending data");
                         self.queue_current_batch(&effect_handler).await?;
                     }
@@ -457,7 +452,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
                             .unwrap_or(0)
                     };
-                    
+
                     let smaps = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
                     let get_smaps_kb = |name: &str| -> u64 {
                         smaps.lines()
@@ -521,9 +516,9 @@ exports | in_flight={} stats_time={:?}
 
 #[cfg(test)]
 mod tests {
+    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
@@ -554,7 +549,7 @@ mod tests {
     fn test_get_next_token_refresh_logic() {
         let now = OffsetDateTime::now_utc();
         let expires_on = now + azure_core::time::Duration::seconds(3600);
-        
+
         let token = AccessToken {
             token: "secret".into(),
             expires_on,
@@ -567,14 +562,19 @@ mod tests {
         // Allow some delta for execution time
         let expected = 2880.0;
         let actual = duration_until_refresh.as_secs_f64();
-        assert!((actual - expected).abs() < 5.0, "Expected ~{}, got {}", expected, actual);
+        assert!(
+            (actual - expected).abs() < 5.0,
+            "Expected ~{}, got {}",
+            expected,
+            actual
+        );
     }
 
     #[test]
     fn test_get_next_token_refresh_minimum_interval() {
         let now = OffsetDateTime::now_utc();
         let expires_on = now + azure_core::time::Duration::seconds(10);
-        
+
         let token = AccessToken {
             token: "secret".into(),
             expires_on,

@@ -202,7 +202,9 @@ mod tests {
     fn decompress_and_validate(data: &Bytes) -> String {
         let mut decoder = GzDecoder::new(&data[..]);
         let mut decompressed = String::new();
-        _ = decoder.read_to_string(&mut decompressed).expect("Should decompress");
+        _ = decoder
+            .read_to_string(&mut decompressed)
+            .expect("Should decompress");
 
         assert!(decompressed.starts_with('['), "Should start with [");
         assert!(decompressed.ends_with(']'), "Should end with ]");
@@ -377,7 +379,11 @@ mod tests {
                     PushResult::BatchReady(batch_id) => {
                         let result = batcher.take_pending_batch().unwrap();
                         batch_ids.push(result.batch_id);
-                        assert_eq!(batch_id, result.batch_id + 1, "Batch ID should increment when a batch is ready");
+                        assert_eq!(
+                            batch_id,
+                            result.batch_id + 1,
+                            "Batch ID should increment when a batch is ready"
+                        );
                         break;
                     }
                     PushResult::TooLarge => panic!("Unexpected"),

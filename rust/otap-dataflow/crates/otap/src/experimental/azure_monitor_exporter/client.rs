@@ -61,7 +61,7 @@ impl LogsIngestionClientPool {
             let http_client = Client::builder()
                 .http1_only()
                 .timeout(Duration::from_secs(30))
-                .pool_max_idle_per_host(capacity)  // e.g., 32/4 = 8 connections per pool
+                .pool_max_idle_per_host(capacity) // e.g., 32/4 = 8 connections per pool
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_nodelay(true)
                 .build()
@@ -207,21 +207,27 @@ impl LogsIngestionClient {
     /// * `Err(String)` - Error message if all retries exhausted or non-retryable error
     pub async fn export(&mut self, body: Bytes) -> Result<Duration, String> {
         let mut attempt = 0u32;
-        let mut rng = SmallRng::seed_from_u64(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
-            ^ (self as *const _ as u64));  // Mix in object address
+        let mut rng = SmallRng::seed_from_u64(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                ^ (self as *const _ as u64),
+        ); // Mix in object address
 
         loop {
             match self.try_export(body.clone()).await {
                 Ok(duration) => return Ok(duration),
                 Err(ExportAttemptError::Terminal(e)) => return Err(e),
-                Err(ExportAttemptError::Retryable { message, retry_after }) => {
+                Err(ExportAttemptError::Retryable {
+                    message,
+                    retry_after,
+                }) => {
                     let delay = if let Some(server_delay) = retry_after {
                         // Server specified delay - add 3-6 seconds jitter on top, minimum 5 seconds base
                         let base_delay = server_delay.max(Duration::from_secs(5));
-                        let jitter = Duration::from_secs(3) + Duration::from_secs_f64(rng.random::<f64>() * 7.0);
+                        let jitter = Duration::from_secs(3)
+                            + Duration::from_secs_f64(rng.random::<f64>() * 7.0);
                         base_delay + jitter
                     } else {
                         // No server hint - use exponential backoff with max retries
@@ -274,7 +280,7 @@ impl LogsIngestionClient {
                 } else {
                     "unknown"
                 };
-                
+
                 // Walk the error chain for full context
                 let mut sources = Vec::new();
                 let mut current: &dyn std::error::Error = &e;
@@ -282,13 +288,13 @@ impl LogsIngestionClient {
                     sources.push(format!("{}", source));
                     current = source;
                 }
-                
+
                 let source_chain = if sources.is_empty() {
                     String::new()
                 } else {
                     format!(" [causes: {}]", sources.join(" -> "))
                 };
-                
+
                 ExportAttemptError::Retryable {
                     message: format!("Network error ({}): {}{}", detail, e, source_chain),
                     retry_after: None,
@@ -451,7 +457,8 @@ mod tests {
         };
 
         let (credential, _) = MockCredential::new("test_token", 60);
-        let auth = Auth::from_credential(credential, "https://monitor.azure.com/.default".to_string());
+        let auth =
+            Auth::from_credential(credential, "https://monitor.azure.com/.default".to_string());
         let http_client = create_test_http_client();
 
         let client = LogsIngestionClient::new(&api_config, http_client, auth)
@@ -541,7 +548,8 @@ mod tests {
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(1);
-        let client = LogsIngestionClient::new(&api_config, create_test_http_client(), auth).unwrap();
+        let client =
+            LogsIngestionClient::new(&api_config, create_test_http_client(), auth).unwrap();
         pool.clients.push(client);
 
         assert_eq!(pool.clients.len(), 1);
@@ -561,7 +569,9 @@ mod tests {
 
         let mut pool = LogsIngestionClientPool::new(3);
         for _ in 0..3 {
-            let client = LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone()).unwrap();
+            let client =
+                LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone())
+                    .unwrap();
             pool.clients.push(client);
         }
 
@@ -594,10 +604,12 @@ mod tests {
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(1);
-        
+
         // Release more than capacity (Vec will grow)
         for _ in 0..5 {
-            let client = LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone()).unwrap();
+            let client =
+                LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone())
+                    .unwrap();
             pool.release(client);
         }
 
@@ -711,7 +723,7 @@ mod tests {
 
         // Simulate token about to expire (within 5 minute refresh window)
         client.token_refresh_after = Instant::now() - Duration::from_secs(1);
-        
+
         // Invalidate the cached token in Auth so it will fetch again
         client.auth.invalidate_token().await;
 
@@ -854,15 +866,15 @@ mod tests {
         // is only called once unless we invalidate
         client.refresh_token().await.unwrap();
         assert_eq!(*call_count.lock().unwrap(), 1);
-        
+
         // Subsequent refreshes use cached token from Auth
         for _ in 0..4 {
             client.refresh_token().await.unwrap();
         }
-        
+
         // Still 1 because Auth caches
         assert_eq!(*call_count.lock().unwrap(), 1);
-        
+
         // If we invalidate, it will fetch again
         client.auth.invalidate_token().await;
         client.refresh_token().await.unwrap();
@@ -872,9 +884,9 @@ mod tests {
     #[test]
     fn test_pool_create_http_clients() {
         let pool = LogsIngestionClientPool::new(4);
-        
+
         let result = pool.create_http_clients(4);
-        
+
         assert!(result.is_ok());
         let clients = result.unwrap();
         assert_eq!(clients.len(), 4);
@@ -883,9 +895,9 @@ mod tests {
     #[test]
     fn test_pool_create_http_clients_zero() {
         let pool = LogsIngestionClientPool::new(4);
-        
+
         let result = pool.create_http_clients(0);
-        
+
         assert!(result.is_ok());
         let clients = result.unwrap();
         assert_eq!(clients.len(), 0);

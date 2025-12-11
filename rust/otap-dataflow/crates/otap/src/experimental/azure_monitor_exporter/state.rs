@@ -153,7 +153,7 @@ mod tests {
 
         assert!(state.batch_to_msg.contains_key(&batch_id));
         assert!(state.batch_to_msg.get(&batch_id).unwrap().contains(&msg_id));
-        
+
         assert!(state.msg_to_batch.contains_key(&msg_id));
         assert!(state.msg_to_batch.get(&msg_id).unwrap().contains(&batch_id));
 
@@ -176,7 +176,7 @@ mod tests {
         // Case 2: Message has batches (not orphaned)
         state.add_msg_to_data(msg_id, Context::default(), data.clone());
         state.add_batch_msg_relationship(100, msg_id);
-        
+
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_none());
         assert!(state.msg_to_data.contains_key(&msg_id));
@@ -210,7 +210,7 @@ mod tests {
 
         // msg2 should NOT be returned (it is still in batch2)
         assert!(state.msg_to_data.contains_key(&msg2));
-        
+
         // Verify msg2 relationships updated
         let msg2_batches = state.msg_to_batch.get(&msg2).unwrap();
         assert!(!msg2_batches.contains(&batch1));
@@ -218,7 +218,7 @@ mod tests {
 
         // Remove batch2 success
         let orphaned2 = state.remove_batch_success(batch2);
-        
+
         // msg2 should now be returned
         assert_eq!(orphaned2.len(), 1);
         assert_eq!(orphaned2[0].0, msg2);
@@ -267,7 +267,7 @@ mod tests {
         let mut state = AzureMonitorExporterState::new();
         state.add_msg_to_data(1, Context::default(), Bytes::from_static(b"1"));
         state.add_msg_to_data(2, Context::default(), Bytes::from_static(b"2"));
-        
+
         let drained = state.drain_all();
         assert_eq!(drained.len(), 2);
         let ids: HashSet<u64> = drained.iter().map(|(id, _, _)| *id).collect();
