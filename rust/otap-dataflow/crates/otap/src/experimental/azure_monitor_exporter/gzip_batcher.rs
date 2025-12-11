@@ -8,7 +8,7 @@ use std::io::Write;
 
 const ONE_MB: usize = 1024 * 1024; // 1 MB
 const MAX_GZIP_FLUSH_COUNT: usize = 100;
-const GZIP_SAFETY_MARGIN: usize = 100; // Safety margin in bytes
+const GZIP_SAFETY_MARGIN: usize = 30; // Safety margin in bytes
 
 pub struct GzipBatcher {
     buf: GzEncoder<Vec<u8>>,
