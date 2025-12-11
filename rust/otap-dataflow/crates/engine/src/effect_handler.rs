@@ -103,7 +103,14 @@ impl<PData> EffectHandlerCore<PData> {
         // IP and port. Incoming connections or packets are distributed between the sockets
         // (load balancing).
         // Goal: Load balancing incoming connections.
-        sock.set_reuse_port(true).map_err(into_engine_error)?;
+        // TODO: Investigate adding set_reuse_port support for Windows.
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos"
+        ))]
+        {
+            sock.set_reuse_port(true).map_err(into_engine_error)?;
+        }
         sock.set_nonblocking(true).map_err(into_engine_error)?;
         sock.bind(&addr.into()).map_err(into_engine_error)?;
         sock.listen(8192).map_err(into_engine_error)?;
@@ -149,7 +156,14 @@ impl<PData> EffectHandlerCore<PData> {
         // IP and port. Incoming packets are distributed between the sockets
         // (load balancing).
         // Goal: Load balancing incoming packets.
-        sock.set_reuse_port(true).map_err(into_engine_error)?;
+        // TODO: Investigate adding set_reuse_port support for Windows.
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos"
+        ))]
+        {
+            sock.set_reuse_port(true).map_err(into_engine_error)?;
+        }
         sock.set_nonblocking(true).map_err(into_engine_error)?;
         sock.bind(&addr.into()).map_err(into_engine_error)?;
 
