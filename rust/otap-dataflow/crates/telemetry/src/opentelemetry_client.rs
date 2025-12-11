@@ -110,7 +110,7 @@ mod tests {
     };
 
     use super::*;
-    use std::time::Duration;
+    use std::{f64::consts::PI, time::Duration};
 
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
@@ -157,5 +157,38 @@ mod tests {
 
         client.shutdown()?;
         Ok(())
+    }
+
+    #[test]
+    fn test_to_sdk_value() {
+        let string_attr = AttributeValue::String("example".to_string());
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&string_attr),
+            opentelemetry::Value::String("example".into())
+        );
+
+        let bool_attr = AttributeValue::Bool(true);
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&bool_attr),
+            opentelemetry::Value::Bool(true)
+        );
+
+        let i64_attr = AttributeValue::I64(42);
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&i64_attr),
+            opentelemetry::Value::I64(42)
+        );
+
+        let f64_attr = AttributeValue::F64(PI);
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&f64_attr),
+            opentelemetry::Value::F64(PI)
+        );
+
+        let array_attr = AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3]));
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&array_attr),
+            opentelemetry::Value::Array(opentelemetry::Array::I64(vec![1, 2, 3]))
+        );
     }
 }

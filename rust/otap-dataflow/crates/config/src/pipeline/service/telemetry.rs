@@ -282,7 +282,7 @@ mod tests {
             string_attr: "example"
             bool_attr: true
             i64_attr: 42
-            f64_attr: 3.14
+            f64_attr: 1.23
             string_array: ["one", "two", "three"]
             bool_array: [true, false, true]
             i64_array: [1, 2, 3, 4]
@@ -297,7 +297,7 @@ mod tests {
         }
 
         match attrs.get("bool_attr").unwrap() {
-            AttributeValue::Bool(b) => assert_eq!(*b, true),
+            AttributeValue::Bool(b) => assert!(*b),
             _ => panic!("Expected bool_attr to be a Bool attribute value"),
         }
 
@@ -307,7 +307,7 @@ mod tests {
         }
 
         match attrs.get("f64_attr").unwrap() {
-            AttributeValue::F64(f) => assert_eq!(*f, 3.14),
+            AttributeValue::F64(f) => assert_eq!(*f, 1.23),
             _ => panic!("Expected f64_attr to be an F64 attribute value"),
         }
 
@@ -329,7 +329,7 @@ mod tests {
                 "string_attr": "example",
                 "bool_attr": true,
                 "i64_attr": 42,
-                "f64_attr": 3.14,
+                "f64_attr": 1.23,
                 "string_array": ["one", "two", "three"],
                 "bool_array": [true, false, true],
                 "i64_array": [1, 2, 3, 4],
@@ -345,7 +345,7 @@ mod tests {
         }
 
         match attrs.get("bool_attr").unwrap() {
-            AttributeValue::Bool(b) => assert_eq!(*b, true),
+            AttributeValue::Bool(b) => assert!(*b),
             _ => panic!("Expected bool_attr to be a Bool attribute value"),
         }
 
@@ -355,7 +355,7 @@ mod tests {
         }
 
         match attrs.get("f64_attr").unwrap() {
-            AttributeValue::F64(f) => assert_eq!(*f, 3.14),
+            AttributeValue::F64(f) => assert_eq!(*f, 1.23),
             _ => panic!("Expected f64_attr to be an F64 attribute value"),
         }
 
