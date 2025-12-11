@@ -211,16 +211,17 @@ mod test {
 
     #[test]
     fn test_get_testdelayed_file_storage() {
-        let storage = StorageType::File {
-            base_uri: "testdelayed:///tmp".to_string(),
-        };
+        let temp_dir = std::env::temp_dir();
+        let base_uri = format!("testdelayed://{}", temp_dir.display());
+        let storage = StorageType::File { base_uri };
         assert!(from_storage_type(&storage).is_ok());
     }
 
     #[test]
     fn test_get_file_storage() {
+        let temp_dir = std::env::temp_dir();
         let storage = StorageType::File {
-            base_uri: "/tmp".to_string(),
+            base_uri: temp_dir.to_string_lossy().to_string(),
         };
         assert!(from_storage_type(&storage).is_ok());
     }
