@@ -699,15 +699,18 @@ pub struct LogsConfig {
 }
 
 /// Log level for internal engine logs.
+///
+/// TODO: Change default to `Info` once per-thread subscriber is implemented
+/// to avoid contention from the global tracing subscriber.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// Logging is completely disabled.
+    #[default]
     Off,
     /// Debug level logging.
     Debug,
     /// Info level logging.
-    #[default]
     Info,
     /// Warn level logging.
     Warn,

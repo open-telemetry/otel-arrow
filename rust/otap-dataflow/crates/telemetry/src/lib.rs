@@ -52,6 +52,14 @@ pub use internal_events::_private;
 ///
 /// This should be called once at application startup before any logging occurs.
 ///
+/// The log level can be controlled via:
+/// 1. The `logs.level` config setting (off, debug, info, warn, error)
+/// 2. The `RUST_LOG` environment variable for fine-grained control
+///
+/// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
+/// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
+/// noisy HTTP/2 and hyper logs.
+///
 /// TODO: The engine uses a thread-per-core model.
 /// The fmt::init() here is truly global, and hence
 /// this will be a source of contention.
@@ -73,6 +81,7 @@ pub use internal_events::_private;
 /// As of now, this causes contention, and we just need to accept temporarily.
 pub fn init_logging(config: &otap_df_config::pipeline::LogsConfig) {
     use otap_df_config::pipeline::LogLevel;
+    use tracing_subscriber::EnvFilter;
     use tracing_subscriber::filter::LevelFilter;
 
     let level = match config.level {
@@ -83,7 +92,15 @@ pub fn init_logging(config: &otap_df_config::pipeline::LogsConfig) {
         LogLevel::Error => LevelFilter::ERROR,
     };
 
-    tracing_subscriber::fmt().with_max_level(level).init();
+    // If RUST_LOG is set, use it for fine-grained control.
+    // Otherwise, fall back to the config level with some noisy dependencies silenced.
+    // Users can override by setting RUST_LOG explicitly.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Default filter: use config level, but silence known noisy HTTP dependencies
+        EnvFilter::new(format!("{level},h2=off,hyper=off"))
+    });
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
