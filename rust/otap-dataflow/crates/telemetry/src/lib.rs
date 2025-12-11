@@ -34,11 +34,88 @@ pub mod collector;
 pub mod descriptor;
 pub mod error;
 pub mod instrument;
+/// Internal logs/events module for engine.
+pub mod internal_events;
 pub mod metrics;
 pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
 pub mod semconv;
+
+// Re-export _private module from internal_events for macro usage.
+// This allows the otel_info!, otel_warn!, etc. macros to work in other crates
+// without requiring them to add tracing as a direct dependency.
+#[doc(hidden)]
+pub use internal_events::_private;
+
+// Re-export tracing span macros and types for crates that need span instrumentation.
+// This allows dependent crates to use spans without adding tracing as a direct dependency.
+// Re-exported with otel_ prefix for naming consistency with otel_info!, otel_warn!, etc.
+pub use tracing::Span as OtelSpan;
+pub use tracing::debug_span as otel_debug_span;
+pub use tracing::error_span as otel_error_span;
+pub use tracing::info_span as otel_info_span;
+pub use tracing::trace_span as otel_trace_span;
+pub use tracing::warn_span as otel_warn_span;
+
+/// Initializes internal logging for the OTAP engine.
+///
+/// This should be called once at application startup before any logging occurs.
+///
+/// The log level can be controlled via:
+/// 1. The `logs.level` config setting (off, debug, info, warn, error)
+/// 2. The `RUST_LOG` environment variable for fine-grained control
+///
+/// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
+/// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
+/// noisy HTTP/2 and hyper logs.
+///
+/// TODO: The engine uses a thread-per-core model
+/// and is NUMA aware.
+/// The fmt::init() here is truly global, and hence
+/// this will be a source of contention.
+/// We need to evaluate alternatives:
+///
+/// 1. Set up per thread subscriber.
+///    ```ignore
+///    // start of thread
+///    let _guard = tracing::subscriber::set_default(subscriber);
+///    // now, with this thread, all tracing calls will go to this subscriber
+///    // eliminating contention.
+///    // end of thread
+///    ```
+///
+/// 2. Use custom subscriber that batches logs in thread-local buffer, and
+///    flushes them periodically.
+///
+/// The TODO here is to evaluate these options and implement one of them.
+/// As of now, this causes contention, and we just need to accept temporarily.
+pub fn init_logging(config: &otap_df_config::pipeline::service::telemetry::LogsConfig) {
+    use otap_df_config::pipeline::service::telemetry::LogLevel;
+    use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::filter::LevelFilter;
+
+    let level = match config.level {
+        LogLevel::Off => LevelFilter::OFF,
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Info => LevelFilter::INFO,
+        LogLevel::Warn => LevelFilter::WARN,
+        LogLevel::Error => LevelFilter::ERROR,
+    };
+
+    // If RUST_LOG is set, use it for fine-grained control.
+    // Otherwise, fall back to the config level with some noisy dependencies silenced.
+    // Users can override by setting RUST_LOG explicitly.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Default filter: use config level, but silence known noisy HTTP dependencies
+        EnvFilter::new(format!("{level},h2=off,hyper=off"))
+    });
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_thread_names(true)
+        .init();
+}
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
