@@ -20,8 +20,8 @@ use datafusion::scalar::ScalarValue;
 /// dictionary encoded arrays.
 ///
 // TODO some of this code is lifted & adapted from [`datafusion::functions::string::contains`] and
-// eventually we could contribute it back upstream to add support upstream for dictionary arrays,
-// then upstream contains function directly.
+// eventually we could contribute it back upstream to add support for dictionary arrays, then use
+// contains function directly.
 #[derive(Default, Debug, PartialEq, Eq, Hash)]
 pub struct ExtendedContainsFunc {
     inner: ContainsFunc,
