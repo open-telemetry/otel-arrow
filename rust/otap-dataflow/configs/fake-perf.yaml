@@ -30,7 +30,3 @@ nodes:
       mem_usage: false
       disk_usage: false
       io_usage: false
-service:
-  telemetry:
-    logs:
-      level: "debug"
