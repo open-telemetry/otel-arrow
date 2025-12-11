@@ -40,6 +40,8 @@ service:
       readers:
         - periodic:
             exporter:
-              console:
+              otlp:
+                protocol: "grpc/protobuf"
+                endpoint: "http://127.0.0.1:43480"
     resource:
       service.name: "fake-debug-noop-service"

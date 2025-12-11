@@ -27,10 +27,12 @@ pub mod config;
 pub mod engine;
 pub mod error;
 pub mod record_bundle;
+pub mod segment;
 pub mod telemetry;
 pub(crate) mod wal;
 
 pub use config::{QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
 pub use engine::QuiverEngine;
 pub use error::{QuiverError, Result};
+pub use segment::SegmentError;
 pub use wal::WalError;
