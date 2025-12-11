@@ -368,6 +368,31 @@ impl FilterPlan {
             },
         }
     }
+
+    /// constructs the Expr that will get passed to the "contains" function for a column
+    /// e.g. the first argument in an expression like contains(attributes["x"], "hello")
+    ///
+    /// The second return value contains which attribute we're passing to contains. This
+    /// can be used by the caller to construct the appropriate logical expr for checking
+    /// if attribute value contains some text
+    fn contains_column_arg(
+        column_accessor: ColumnAccessor,
+    ) -> (Expr, Option<(AttributesIdentifier, String)>) {
+        let mut attrs = None;
+        let expr = match column_accessor {
+            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::StructCol(struct_name, struct_field) => {
+                col(struct_name).field(struct_field)
+            }
+            ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
+                attrs = Some((attrs_identifier, attrs_key));
+                // for now we assume that text contains is always applied to the str column
+                col(consts::ATTRIBUTE_STR)
+            }
+        };
+
+        (expr, attrs)
+    }
 }
 
 impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
@@ -431,19 +456,7 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
 
         match left_arg {
             BinaryArg::Column(left_column) => {
-                let mut attrs = None;
-                let left_expr = match left_column {
-                    ColumnAccessor::ColumnName(left_col_name) => col(left_col_name),
-                    ColumnAccessor::StructCol(left_struct_name, left_struct_field) => {
-                        col(left_struct_name).field(left_struct_field)
-                    }
-                    ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
-                        attrs = Some((attrs_identifier, attrs_key));
-                        // for now we assume that text contains is always applied to the str column
-                        col(consts::ATTRIBUTE_STR)
-                    }
-                };
-
+                let (left_expr, attrs) = Self::contains_column_arg(left_column);
                 let right_expr =
                     match right_arg {
                         BinaryArg::Literal(right_lit) => try_static_scalar_to_literal(&right_lit)?,
@@ -469,20 +482,8 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
             }
             BinaryArg::Literal(left_lit) => {
                 let left_expr = try_static_scalar_to_literal(&left_lit)?;
-
-                let mut attrs = None;
-                let right_expr = match right_arg {
-                    BinaryArg::Column(right_column) => match right_column {
-                        ColumnAccessor::ColumnName(right_col_name) => col(right_col_name),
-                        ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
-                            col(right_struct_name).field(right_struct_field)
-                        }
-                        ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
-                            attrs = Some((attrs_identifier, attrs_key));
-                            // for now we assume that text contains is always applied to the str column
-                            col(consts::ATTRIBUTE_STR)
-                        }
-                    },
+                let (right_expr, attrs) = match right_arg {
+                    BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
                     _ => {
                         return Err(Error::NotYetSupportedError {
                             message: "contains with left literal and right non-column".into(),
