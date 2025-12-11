@@ -185,15 +185,21 @@ struct BatchPortion {
 }
 
 #[derive(Default)]
-struct Inputs {
+struct Inputs<T> {
     /// Input batches.
-    pending: Vec<OtapArrowRecords>,
+    pending: Vec<T>,
 
     /// Waiter context
     context: Vec<BatchPortion>,
 
     /// A count defined by num_items(), number of spans, log records, or metric data points.
     items: usize,
+}
+
+#[derive(Default)]
+struct InputsPair {
+    otlp: Inputs<OtlpProtoBytes>,
+    otap: Inputs<OtapArrowRecords>,
 }
 
 struct MultiContext {
@@ -204,7 +210,7 @@ struct MultiContext {
 /// Per-signal buffer state
 struct SignalBuffer {
     /// Pending input state.
-    inputs: Inputs,
+    inputs: InputsPair,
 
     /// Map of inbound requests.  This contains a limited number of pending request
     /// contexts with details for the impl to notify after an outcome is available.
@@ -377,42 +383,41 @@ impl BatchProcessor {
     /// flush at least one output.
     async fn process_signal_impl(
         &mut self,
-        signal: SignalType,
+        //signal: SignalType,
         effect: &mut local::EffectHandler<OtapPdata>,
-        ctx: Context,
-        rec: OtapArrowRecords,
+        //ctx: Context,
+        //rec: OtapArrowRecords,
+        request: OtapPdata,
     ) -> Result<(), EngineError> {
-        let items = rec.num_items();
+        let signal = request.signal_type();
+        let items = request.num_items();
 
         if items == 0 {
             self.metrics.dropped_empty_records.inc();
-            effect
-                .notify_ack(AckMsg::new(OtapPdata::new(ctx, rec.into())))
-                .await?;
+            effect.notify_ack(AckMsg::new(request)).await?;
             return Ok(());
         }
 
         // Increment consumed_items for the appropriate signal
-        match signal {
+        let buffer = match signal {
             SignalType::Logs => {
                 self.metrics.consumed_items_logs.add(items as u64);
                 self.metrics.consumed_batches_logs.add(1);
+                &mut self.signals.logs
             }
             SignalType::Metrics => {
                 self.metrics.consumed_items_metrics.add(items as u64);
                 self.metrics.consumed_batches_metrics.add(1);
+                &mut self.signals.metrics
             }
             SignalType::Traces => {
                 self.metrics.consumed_items_traces.add(items as u64);
                 self.metrics.consumed_batches_traces.add(1);
+                &mut self.signals.traces
             }
-        }
-
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
         };
+
+        let (ctx, payload) = request.into_parts();
 
         // If there are subscribers, calculate an inbound slot key.
         let inkey = ctx
@@ -439,13 +444,15 @@ impl BatchProcessor {
         // Set the arrival time when the current input is empty.
         let timeout = self.config.timeout;
         let mut arrival: Option<Instant> = None;
-        if timeout != Duration::ZERO && buffer.inputs.is_empty() {
+        if timeout != Duration::ZERO && buffer.is_empty() {
             let now = Instant::now();
             arrival = Some(now);
             buffer.set_arrival(signal, now, timeout, effect).await?;
         }
 
-        buffer.inputs.accept(rec, BatchPortion::new(inkey, items));
+        buffer
+            .inputs
+            .accept(payload, BatchPortion::new(inkey, items));
 
         // Flush based on size when the batch reaches the lower limit.
         if self.config.timeout != Duration::ZERO && buffer.inputs.items < self.lower_limit.get() {
@@ -683,27 +690,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
                 NodeControlMsg::TimerTick { .. } => unreachable!(),
             },
-            Message::PData(mut request) => {
-                let signal_type = request.signal_type();
-                let payload = request.take_payload();
-
-                match OtapArrowRecords::try_from(payload) {
-                    Ok(rec) => {
-                        let (ctx, _) = request.into_parts();
-                        self.process_signal_impl(signal_type, effect, ctx, rec)
-                            .await
-                    }
-                    Err(e) => {
-                        // Conversion failed, drop the data. Count, Nack, and Log.
-                        self.metrics.dropped_conversion.inc();
-                        effect
-                            .notify_nack(NackMsg::new(e.to_string(), request))
-                            .await?;
-                        effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
-                        Ok(())
-                    }
-                }
-            }
+            Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }
 }
@@ -730,7 +717,7 @@ impl MultiContext {
     }
 }
 
-impl Inputs {
+impl<T> Inputs<T> {
     fn drain(&mut self) -> Self {
         Self {
             pending: self.pending.drain(..).collect(),
@@ -747,13 +734,13 @@ impl Inputs {
         self.pending.len()
     }
 
-    fn accept(&mut self, batch: OtapArrowRecords, part: BatchPortion) {
+    fn accept(&mut self, batch: T, part: BatchPortion) {
         self.items += part.items;
         self.pending.push(batch);
         self.context.push(part);
     }
 
-    fn take_pending(&mut self) -> Vec<OtapArrowRecords> {
+    fn take_pending(&mut self) -> Vec<T> {
         std::mem::take(&mut self.pending)
     }
 
@@ -766,7 +753,7 @@ impl SignalBuffer {
     fn new(_config: &Config) -> Self {
         // TODO configure limits
         Self {
-            inputs: Inputs::default(),
+            inputs: InputsPair::default(),
             inbound: SlotState::new(1000),
             outbound: SlotState::new(1000),
             arrival: None,
@@ -776,10 +763,10 @@ impl SignalBuffer {
     /// Takes the residual batch, used in case the final output is less than
     /// the lower bound. This removes the last output btach, the corresponding
     /// context, and places it back in the pending buffer as the first in line.
-    fn take_remaining(
+    fn take_remaining<T>(
         &mut self,
-        from_inputs: &mut Inputs,
-        output_batches: &mut Vec<OtapArrowRecords>,
+        from_inputs: &mut Inputs<T>,
+        output_batches: &mut Vec<T>,
         last_items: usize,
     ) {
         // SAFETY: protected by output_batches.len() > 1.
