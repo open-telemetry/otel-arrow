@@ -23,4 +23,8 @@ pub enum Error {
     /// Error during shutdown of a component.
     #[error("Shutdown error: {0}")]
     ShutdownError(String),
+
+    /// Error during configuration of a component.
+    #[error("Configuration error: {0}")]
+    ConfigurationError(String),
 }
