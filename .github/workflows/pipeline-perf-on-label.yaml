@@ -1,6 +1,7 @@
 # This action runs the pipeline perf continuous benchmarking suite on every PR.
 # - With 'pipelineperf' label: runs on dedicated Oracle bare-metal hardware for accurate benchmarks
 # - Without label: runs on ubuntu-latest for basic validation
+# In either case, the results does not update the charts.
 name: Pipeline Perf Pre-Merge
 
 on:
