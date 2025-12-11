@@ -29,7 +29,6 @@ pub struct TelemetryConfig {
     #[serde(default)]
     pub logs: LogsConfig,
     /// Resource attributes to associate with telemetry data.
-    /// TODO: Support different types of attribute values.
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
 }
