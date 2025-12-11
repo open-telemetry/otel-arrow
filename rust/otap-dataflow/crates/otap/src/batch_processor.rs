@@ -441,26 +441,30 @@ impl BatchProcessor {
             return Ok(());
         }
 
+        let (ctx, payload) = request.into_parts();
+
         // Increment consumed_items for the appropriate signal
-        let buffer = match signal {
+        match signal {
             SignalType::Logs => {
                 self.metrics.consumed_items_logs.add(items as u64);
                 self.metrics.consumed_batches_logs.add(1);
-                &mut self.signals.logs
             }
             SignalType::Metrics => {
                 self.metrics.consumed_items_metrics.add(items as u64);
                 self.metrics.consumed_batches_metrics.add(1);
-                &mut self.signals.metrics
             }
             SignalType::Traces => {
                 self.metrics.consumed_items_traces.add(items as u64);
                 self.metrics.consumed_batches_traces.add(1);
-                &mut self.signals.traces
             }
         };
 
-        let (ctx, payload) = request.into_parts();
+        // let buffer =
+        //         match payload.signal_format() {
+        //                 &mut self.signals.traces
+        //                 &mut self.signals.metrics
+        //                     SignalFormat::OtapRecords => &mut self.otap_signals.logs,
+        //                     SignalFormat::OtapRecords => &mut self.otlp_signals.logs,
 
         // If there are subscribers, calculate an inbound slot key.
         let inkey = ctx

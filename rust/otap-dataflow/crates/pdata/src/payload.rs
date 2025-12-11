@@ -92,7 +92,7 @@ use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
-use otap_df_config::SignalType;
+use otap_df_config::{SignalFormat, SignalType};
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
@@ -102,6 +102,7 @@ pub enum OtapPayload {
     OtlpBytes(OtlpProtoBytes),
 
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
+    /// TODO: Remove "Arrow" from this case name, it stutters; follow SignalFormat.
     OtapArrowRecords(OtapArrowRecords),
 }
 
@@ -112,6 +113,15 @@ impl OtapPayload {
         match self {
             Self::OtlpBytes(value) => value.signal_type(),
             Self::OtapArrowRecords(value) => value.signal_type(),
+        }
+    }
+
+    /// Returns the signal format.
+    #[must_use]
+    pub fn signal_format(&self) -> SignalFormat {
+        match self {
+            Self::OtapArrowRecords(_) => SignalFormat::OtapRecords,
+            Self::OtlpBytes(_) => SignalFormat::OtlpBytes,
         }
     }
 
