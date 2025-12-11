@@ -255,9 +255,7 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
     }
 }
 
-// These integration tests require the OpenTelemetry Collector binary,
-// which is only built on Linux in CI.
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(test)]
 mod tests {
     use super::super::otap::*;
     use super::*;
