@@ -20,8 +20,8 @@ use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_engine::control::PipelineAdminSender;
 use otap_df_state::store::ObservedStateHandle;
-use otap_df_telemetry::{otel_debug, otel_info};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::{otel_debug, otel_info};
 
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
