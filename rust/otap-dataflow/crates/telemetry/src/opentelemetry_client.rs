@@ -66,15 +66,15 @@ impl OpentelemetryClient {
                     opentelemetry::Value::Array(opentelemetry::Array::String(sdk_values))
                 }
                 AttributeValueArray::Bool(array_b) => {
-                    let sdk_values = array_b.iter().copied().collect();
+                    let sdk_values = array_b.to_vec();
                     opentelemetry::Value::Array(opentelemetry::Array::Bool(sdk_values))
                 }
                 AttributeValueArray::I64(array_i) => {
-                    let sdk_values = array_i.iter().copied().collect();
+                    let sdk_values = array_i.to_vec();
                     opentelemetry::Value::Array(opentelemetry::Array::I64(sdk_values))
                 }
                 AttributeValueArray::F64(array_f) => {
-                    let sdk_values = array_f.iter().copied().collect();
+                    let sdk_values = array_f.to_vec();
                     opentelemetry::Value::Array(opentelemetry::Array::F64(sdk_values))
                 }
             },
