@@ -14,7 +14,7 @@ use tokio::time::Instant;
 use crate::experimental::azure_monitor_exporter::config::{AuthConfig, AuthMethod};
 
 #[derive(Clone)]
-// TODO - Remove print statements
+// TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
 #[allow(clippy::print_stdout)]
 pub struct Auth {
     credential: Arc<dyn TokenCredential>,

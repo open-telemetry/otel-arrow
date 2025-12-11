@@ -21,7 +21,7 @@ use prost::Message as _;
 use super::auth::Auth;
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
-use super::gzip_batcher::FlushResult;
+use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::state::AzureMonitorExporterState;
@@ -252,11 +252,11 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        match self.gzip_batcher.flush() {
-            FlushResult::Flush => {
+        match self.gzip_batcher.finalize() {
+            FinalizeResult::Ok => {
                 return self.queue_pending_batch(effect_handler).await;
             }
-            FlushResult::Empty => Ok(()),
+            FinalizeResult::Empty => Ok(()),
         }
     }
 

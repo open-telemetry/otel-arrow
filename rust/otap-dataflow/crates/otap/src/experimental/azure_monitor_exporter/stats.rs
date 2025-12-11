@@ -4,6 +4,7 @@
 const IDLE_THRESHOLD_SECS: f64 = 1.0;
 
 /// Statistics for the Azure Monitor exporter.
+/// TODO: Use existing metric APIs to track these stats.
 #[derive(Debug)]
 pub struct AzureMonitorExporterStats {
     processing_started_at: tokio::time::Instant,
