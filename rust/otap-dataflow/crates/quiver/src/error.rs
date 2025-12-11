@@ -30,6 +30,13 @@ pub enum QuiverError {
         #[from]
         source: crate::wal::WalError,
     },
+    /// Wrapper for segment-specific failures.
+    #[error("segment error: {source}")]
+    Segment {
+        /// Underlying segment error.
+        #[from]
+        source: crate::segment::SegmentError,
+    },
 }
 
 impl QuiverError {
