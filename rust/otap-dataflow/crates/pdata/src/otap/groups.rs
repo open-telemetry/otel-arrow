@@ -275,7 +275,6 @@ fn generic_split<const N: usize>(
 ) -> Result<Vec<[Option<RecordBatch>; N]>> {
     assert_eq!(N, allowed_payloads.len());
     assert!(allowed_payloads.contains(&primary_payload));
-    assert!(!batches.is_empty());
 
     // First, ensure that all RecordBatches are sorted by parent_id & id so that we can efficiently
     // pluck ranges from them.
@@ -1049,18 +1048,36 @@ fn select<const N: usize>(
 // Reindexing code
 // *************************************************************************************************
 
+/// Reindex ID columns across multiple batches to ensure uniqueness when concatenating.
+///
+/// When concatenating record batches, ID columns must be offset to prevent collisions between
+/// batches. This function processes both parent tables (with ID columns) and their child tables
+/// (with PARENT_ID columns that reference the parent IDs).
+///
+/// # Arguments
+///
+/// * `batches` - Mutable slice of batch arrays to reindex in place
+/// * `allowed_payloads` - Parent payload types to process (e.g., Logs, Metrics, Spans)
 fn reindex<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
     allowed_payloads: &[ArrowPayloadType],
 ) -> Result<()> {
+    // Track the absolute ending ID position for each payload type.
+    // This is the starting offset for the next batch of that type.
     let mut starting_ids: [u32; N] = [0; N];
+
+    // Process each parent payload type
     for payload in allowed_payloads {
         let child_payloads = child_payload_types(*payload);
+
+        // Only process payloads that have children
         if !child_payloads.is_empty() {
             for batches in batches.iter_mut() {
                 let parent_offset = POSITION_LOOKUP[*payload as usize];
                 let parent = batches[parent_offset].take();
+
                 if let Some(mut parent) = parent {
+                    // Get the current offset for this parent payload type
                     let parent_starting_offset = starting_ids[parent_offset];
 
                     // When `parent` has both ID and PARENT_ID columns, resort by ID. Why? Because
@@ -1072,22 +1089,34 @@ fn reindex<const N: usize>(
                         parent = sort_record_batch(parent, HowToSort::SortById)?;
                     }
 
+                    // Reindex the parent's ID column with the accumulated offset.
+                    // Returns the updated batch and the absolute ending ID position.
                     let (parent, next_starting_id) =
                         reindex_record_batch(parent, consts::ID, parent_starting_offset)?;
-                    starting_ids[parent_offset] += next_starting_id;
-                    // return parent to batches since we took it!
+
+                    // Set the absolute ending position, where the next batch should start.
+                    starting_ids[parent_offset] = next_starting_id;
+
+                    // Return parent to batches since we took it earlier
                     let _ = batches[parent_offset].replace(parent);
 
+                    // Process child tables that reference this parent via PARENT_ID
                     for child in child_payloads {
                         let child_offset = POSITION_LOOKUP[*child as usize];
                         if let Some(child) = batches[child_offset].take() {
+                            // Reindex child's PARENT_ID column to match the parent's offset.
                             let (child, next_starting_id) = reindex_record_batch(
                                 child,
                                 consts::PARENT_ID,
                                 parent_starting_offset,
                             )?;
-                            starting_ids[child_offset] += next_starting_id;
-                            // return child to batches since we took it!
+
+                            // Track the absolute ending position for this child type too.
+                            // If the child also has its own ID column, it will be reindexed
+                            // in a later iteration when this child is processed as a parent.
+                            starting_ids[child_offset] = next_starting_id;
+
+                            // Return child to batches since we took it earlier
                             let _ = batches[child_offset].replace(child);
                             // We don't have to reindex child's id column since we'll get to it in a
                             // later iteration of the loop if it exists.
@@ -1417,17 +1446,19 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             // All the present columns should have the same Field definition, so just pick the first
             // one arbitrarily; we know there has to be at least one because if there were none, we
             // wouldn't have a mismatch to begin with.
-            let field = Arc::new(
-                schemas[*present_batch_indices
-                    .iter()
-                    .next()
-                    .expect("there should be at least one schema")]
-                .field_with_name(missing_field_name)
-                .map_err(|e| Error::Batching { source: e })?
-                .clone(),
-            );
-            // TODO: This is where the metrics batching tests fail.
-            assert!(field.is_nullable(), "{field:?} should be nullable");
+            let mut field = schemas[*present_batch_indices
+                .iter()
+                .next()
+                .expect("there should be at least one schema")]
+            .field_with_name(missing_field_name)
+            .map_err(|e| Error::Batching { source: e })?
+            .clone();
+            // If the field is not nullable, we need to make it nullable since we're adding null
+            // values for batches where this column is missing.
+            if !field.is_nullable() {
+                field = field.with_nullable(true);
+            }
+            let field = Arc::new(field);
             for missing_batch_index in all_batch_indices.difference(present_batch_indices).copied()
             {
                 if let Some(batch) = batches[missing_batch_index][payload_type_index].take() {
