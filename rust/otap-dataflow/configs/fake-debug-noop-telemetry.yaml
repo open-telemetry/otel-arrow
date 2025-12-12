@@ -37,7 +37,7 @@ nodes:
 service:
   telemetry:
     logs:
-      level: "debug"
+      level: "info"
     metrics:
       readers:
         - periodic:
