@@ -8,7 +8,7 @@
 //!   the same functionality. The advantage would be to allow performance measurements anywhere in
 //!   the pipeline.
 //! - Measure the number of memory allocations for the current thread. This would allow measuring
-//!   the memory used by the pipeline. This is possible using `mimalloc-rust-sys`.
+//!   the memory used by the pipeline. This is possible using `mimalloc-sys`.
 //! - Measure per-thread CPU usage. This would allow measuring the pipeline’s CPU load. This is
 //!   possible using the "libc" crate function `getrusage(RUSAGE\_THREAD)`.
 //! - Measure network usage either via a cgroup or via eBPF.
