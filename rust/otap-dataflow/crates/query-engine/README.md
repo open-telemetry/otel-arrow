@@ -1,6 +1,6 @@
 # OTAP Query Engine
 
-This crate provides implementation of "query engine" for transforming telemetry 
+This crate provides implementation of "query engine" for transforming telemetry
 pipeline data in OTAP format.
 
 ## Motivation
@@ -25,11 +25,12 @@ The "query engine" drives data through a pipeline of stages that may transform
 OTAP Batches. Stages implement the `crate::pipeline::PipelineStage` trait
 
 Although no particular implementation solution is required, generally these
-stages will use [DataFusion](https://docs.rs/datafusion/latest/datafusion/), 
-[arrow-rs compute functions](https://docs.rs/arrow/latest/arrow/compute/index.html), 
+stages will use [DataFusion](https://docs.rs/datafusion/latest/datafusion/),
+[arrow-rs compute functions](https://docs.rs/arrow/latest/arrow/compute/index.html),
 or some combination of the two to efficiently transform the data.
 
 Stages under active development:
+
 - Filtering
 
 ### Pipeline Definition
