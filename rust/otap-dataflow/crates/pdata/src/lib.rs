@@ -30,7 +30,9 @@ pub use payload::{OtapPayload, OtapPayloadHelpers};
 // #[cfg(test)] ?
 pub mod testing;
 
-#[cfg(test)]
+// The validation module uses Unix-specific functionality (signals via nix crate)
+// and is only used for integration tests with the OpenTelemetry Collector.
+#[cfg(all(test, unix))]
 mod validation;
 
 pub use decode::decoder::Consumer;

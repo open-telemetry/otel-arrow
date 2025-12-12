@@ -36,6 +36,8 @@ nodes:
 
 service:
   telemetry:
+    logs:
+      level: "info"
     metrics:
       readers:
         - periodic:
@@ -43,5 +45,11 @@ service:
               otlp:
                 protocol: "grpc/protobuf"
                 endpoint: "http://127.0.0.1:43480"
+      views:
+        - selector:
+            instrument_name: "logs.produced"
+          stream:
+            name: "otlp.logs.produced.count"
+            description: "Count of logs produced"
     resource:
       service.name: "fake-debug-noop-service"

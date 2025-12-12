@@ -125,6 +125,8 @@ socket2 = { version = "0.6.1", features = ["all"] }
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 tempfile = "3"
 thiserror = "2.0.17"
+tracing = { version = ">=0.1.40", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
 tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process"] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
