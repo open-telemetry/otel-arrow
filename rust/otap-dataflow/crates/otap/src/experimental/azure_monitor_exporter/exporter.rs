@@ -304,11 +304,9 @@ impl AzureMonitorExporter {
                 return self.queue_pending_batch(effect_handler).await;
             }
             Ok(FinalizeResult::Empty) => Ok(()),
-            Err(e) => {
-                Err(Error::InternalError {
-                    message: format!("Failed to finalize batch: {:?}", e),
-                })
-            },
+            Err(e) => Err(Error::InternalError {
+                message: format!("Failed to finalize batch: {:?}", e),
+            }),
         }
     }
 
@@ -570,7 +568,11 @@ exports | in_flight={} stats_time={:?}
 mod tests {
     use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
     use super::*;
+    use crate::pdata::Context;
     use azure_core::time::OffsetDateTime;
+    use otap_df_engine::local::exporter::EffectHandler;
+    use otap_df_engine::node::NodeId;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
@@ -642,5 +644,88 @@ mod tests {
             "Expected at least 29s, got {}s",
             duration_until_refresh.as_secs()
         );
+    }
+
+    #[tokio::test]
+    async fn test_handle_export_success() {
+        let config = create_test_config();
+        let mut exporter = AzureMonitorExporter::new(config).unwrap();
+
+        let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
+        let node_id = NodeId {
+            index: 0,
+            name: "test_exporter".to_string().into(),
+        };
+        let effect_handler = EffectHandler::new(node_id, reporter);
+
+        let batch_id = 1;
+        let msg_id = 100;
+        let context = Context::default();
+        let bytes = Bytes::from("test");
+
+        exporter
+            .state
+            .add_msg_to_data(msg_id, context.clone(), bytes.clone());
+        exporter.state.add_batch_msg_relationship(batch_id, msg_id);
+
+        // This might fail due to missing sender in effect_handler, but state should be updated
+        let _ = exporter
+            .handle_export_success(
+                &effect_handler,
+                batch_id,
+                10.0,
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+
+        // Verify stats
+        assert_eq!(exporter.stats.successful_batch_count(), 1.0);
+        assert_eq!(exporter.stats.successful_msg_count(), 1.0);
+        assert_eq!(exporter.stats.successful_row_count(), 10.0);
+
+        // Verify state cleared
+        assert!(exporter.state.batch_to_msg.is_empty());
+        assert!(exporter.state.msg_to_data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_export_failure() {
+        let config = create_test_config();
+        let mut exporter = AzureMonitorExporter::new(config).unwrap();
+
+        let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
+        let node_id = NodeId {
+            index: 0,
+            name: "test_exporter".to_string().into(),
+        };
+        let effect_handler = EffectHandler::new(node_id, reporter);
+
+        let batch_id = 1;
+        let msg_id = 100;
+        let context = Context::default();
+        let bytes = Bytes::from("test");
+
+        exporter
+            .state
+            .add_msg_to_data(msg_id, context.clone(), bytes.clone());
+        exporter.state.add_batch_msg_relationship(batch_id, msg_id);
+
+        let _ = exporter
+            .handle_export_failure(
+                &effect_handler,
+                batch_id,
+                10.0,
+                "Simulated error".to_string(),
+            )
+            .await;
+
+        // Verify stats
+        assert_eq!(exporter.stats.failed_batch_count(), 1.0);
+        assert_eq!(exporter.stats.failed_msg_count(), 1.0);
+        assert_eq!(exporter.stats.failed_row_count(), 10.0);
+
+        // Verify state cleared
+        assert!(exporter.state.batch_to_msg.is_empty());
+        assert!(exporter.state.msg_to_data.is_empty());
     }
 }

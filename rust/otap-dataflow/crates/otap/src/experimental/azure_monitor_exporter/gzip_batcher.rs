@@ -86,9 +86,7 @@ impl GzipBatcher {
 
         if is_first_entry {
             self.batch_id += 1;
-            self.buf
-                .write_all(b"[")
-                .map_err(|e| e.to_string())?;
+            self.buf.write_all(b"[").map_err(|e| e.to_string())?;
         }
 
         // Update calculation to use the constant
@@ -96,8 +94,7 @@ impl GzipBatcher {
         let must_flush = next_size > self.remaining_size;
 
         if must_flush {
-            self.buf.flush()
-                .map_err(|e| e.to_string())?;
+            self.buf.flush().map_err(|e| e.to_string())?;
 
             self.flush_count += 1;
             let compressed_size = self.buf.get_ref().len();
@@ -129,15 +126,11 @@ impl GzipBatcher {
             }
         } else {
             if !is_first_entry {
-                self.buf
-                    .write_all(b",")
-                    .map_err(|e| e.to_string())?;
+                self.buf.write_all(b",").map_err(|e| e.to_string())?;
                 self.total_uncompressed_size += 1;
                 self.uncompressed_size += 1;
             }
-            self.buf
-                .write_all(data)
-                .map_err(|e| e.to_string())?;
+            self.buf.write_all(data).map_err(|e| e.to_string())?;
             self.uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
             self.row_count += 1.0;
@@ -151,9 +144,7 @@ impl GzipBatcher {
             return Ok(FinalizeResult::Empty);
         }
 
-        self.buf
-            .write_all(b"]")
-            .map_err(|e| e.to_string())?;
+        self.buf.write_all(b"]").map_err(|e| e.to_string())?;
 
         let old_buf = std::mem::replace(&mut self.buf, Self::new_encoder());
 
