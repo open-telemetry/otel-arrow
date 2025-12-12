@@ -5,14 +5,20 @@ One of the mentioned key deliverables in Phase 2 of otel-arrow is:
 - **Prototype for DataFusion integration with OpenTelemetry data, OTTL-transform
   feasibility study**
 
-This folder contains work in progress to implement a 'query engine' that can:
+This folder contains work in progress to support/implement a 'query engine'
+that can:
 
 - Take in instructions in multiple common transform languages
 - Produce an intermediate language abstraction from those instructions
 - Execute requested manipulations on the data
 
 The eventual vision of this work is using this 'query engine' as a processor in
-an OTAP pipeline likely leveraging DataFusion for query execution.
+an OTAP pipeline likely leveraging DataFusion for query execution. 
+
+The implementation of this query engine that can process OTAP data is underway
+and can be found in the otap-dataflow
+[`otap-df-query-engine`](../../otap-dataflow/crates/query-engine/)
+crate. This implementation depends on crates from this workspace.
 
 ## Folder structure
 
@@ -22,7 +28,6 @@ an OTAP pipeline likely leveraging DataFusion for query execution.
 |kql-parser                  |Parser to turn KQL queries into query engine expressions (syntax trees)                            |
 |ottl-parser                 |Parser to turn OTTL queries into query engine expressions (syntax trees)                           |
 |parser-abstractions         |Common parser components and implementations for common literals                                   |
-|engine-columnar             |Query engine implementation which takes a syntax tree and runs over columnar data (arrow)          |
 |engine-recordset            |Query engine implementation which takes a syntax tree and runs over a set of records (hierarchical)|
 |engine-recordset-otlp-bridge|A bridge for running the recordset engine over Protobuf encoded blobs of OTLP data                 |
 
