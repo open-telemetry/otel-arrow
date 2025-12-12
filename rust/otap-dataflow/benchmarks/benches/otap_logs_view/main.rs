@@ -32,6 +32,10 @@ use arrow::datatypes::UInt8Type;
 use arrow::error::ArrowError;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder;
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 // Helper to create a simple OTAP logs RecordBatch for testing
 fn create_test_logs_batch(count: usize) -> Result<OtapArrowRecords, ArrowError> {

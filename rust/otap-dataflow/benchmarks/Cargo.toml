@@ -12,7 +12,6 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-mimalloc.workspace = true
 otap-df-otap = { path = "../crates/otap" }
 
 [dev-dependencies]
@@ -20,6 +19,7 @@ criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
+tikv-jemallocator.workspace = true
 
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
@@ -85,4 +85,3 @@ harness = false
 [[bench]]
 name = "otap_logs_view"
 harness = false
-
