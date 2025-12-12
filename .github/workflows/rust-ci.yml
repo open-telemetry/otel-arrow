@@ -28,7 +28,10 @@ jobs:
           - otap-dataflow
           - experimental/query_abstraction
           - experimental/query_engine
-    runs-on: ubuntu-latest
+        os:
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -43,7 +46,8 @@ jobs:
         # running llvm codecov and building the collector etc. tend to create a lot of artifacts
         # that will cause the job to run out of disk space. Here we delete some pre-installed
         # packages from the runner that are not needed to free up space
-      - name: Free disk space
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
         run: |
           echo "disk usage before"
           df -h
@@ -71,12 +75,29 @@ jobs:
 
           echo "disk usage after"
           df -h
+      - name: Free disk space (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "disk usage before"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
+
+          # Remove unnecessary tools to free up space
+          if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
+          if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
+          if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
+
+          Write-Host "disk usage after"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
 
       - name: install cargo-llvm-cov and nextest
         uses: taiki-e/install-action@3575e532701a5fc614b0c842e4119af4cc5fd16d # v2.62.60
         with:
           tool: cargo-llvm-cov,cargo-nextest
+      # The collector is only built on Linux. Integration tests that require
+      # the collector are skipped on Windows via #[cfg(not(target_os = "windows"))].
       - name: Build the test collector
+        if: runner.os == 'Linux'
         run: make otelarrowcol
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
