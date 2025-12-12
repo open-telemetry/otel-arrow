@@ -4,9 +4,12 @@
 //! Metrics level configurations.
 
 pub mod readers;
+pub mod views;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::pipeline::service::telemetry::metrics::views::ViewConfig;
 
 /// Opentelemetry Metrics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -14,6 +17,10 @@ pub struct MetricsConfig {
     /// The list of metrics readers to configure.
     #[serde(default)]
     pub readers: Vec<readers::MetricsReaderConfig>,
+
+    /// The metrics views configuration.
+    #[serde(default)]
+    pub views: Vec<ViewConfig>,
 }
 
 impl MetricsConfig {
