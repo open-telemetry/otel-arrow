@@ -271,7 +271,8 @@ impl SegmentWriter {
         };
 
         let trailer_bytes = trailer.encode();
-        // CRC covers footer + trailer (except CRC itself)
+        // CRC covers entire file (streams, directory, manifest, footer, trailer)
+        // except the final 4-byte CRC field itself
         hasher.update(&trailer_bytes[..TRAILER_SIZE - 4]);
         let crc = hasher.finalize();
 
