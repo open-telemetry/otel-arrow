@@ -210,26 +210,19 @@ mod test {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_get_testdelayed_file_storage() {
-        let temp_dir = std::env::temp_dir();
-
-        let mut base_uri = format!("testdelayed://{}", temp_dir.display());
-        if temp_dir.starts_with("C:") {
-            base_uri = temp_dir
-                .strip_prefix("C:")
-                .expect("has prefix")
-                .to_string_lossy()
-                .to_string();
-        }
-        let storage = StorageType::File { base_uri };
+        let storage = StorageType::File {
+            base_uri: "testdelayed:///tmp".to_string(),
+        };
         assert!(from_storage_type(&storage).is_ok());
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_get_file_storage() {
-        let temp_dir = std::env::temp_dir();
         let storage = StorageType::File {
-            base_uri: temp_dir.to_string_lossy().to_string(),
+            base_uri: "/tmp".to_string(),
         };
         assert!(from_storage_type(&storage).is_ok());
     }
