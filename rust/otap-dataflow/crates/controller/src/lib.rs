@@ -38,7 +38,7 @@ use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{MetricsSystem, init_logging, otel_info};
+use otap_df_telemetry::{MetricsSystem, init_logging, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -327,11 +327,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
+        // Create a tracing span for this pipeline thread
+        // so that all logs within this scope include pipeline context.
+        let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
+        let _guard = span.enter();
+
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
-            // ToDo Add a warning here once logging is implemented.
+            otel_warn!(
+                "CoreAffinity.SetFailed",
+                message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
+            );
         }
 
         obs_evt_reporter.report(ObservedEvent::admitted(
