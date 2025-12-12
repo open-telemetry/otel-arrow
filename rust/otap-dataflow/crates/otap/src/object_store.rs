@@ -209,6 +209,7 @@ mod test {
         }
     }
 
+    // Skipping on Windows: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
     #[cfg(not(windows))]
     fn test_get_testdelayed_file_storage() {
@@ -218,6 +219,7 @@ mod test {
         assert!(from_storage_type(&storage).is_ok());
     }
 
+    // Skipping on Windows: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
     #[cfg(not(windows))]
     fn test_get_file_storage() {

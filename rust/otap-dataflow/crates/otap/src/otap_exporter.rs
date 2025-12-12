@@ -782,7 +782,7 @@ mod tests {
     }
 
     // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
-    #[cfg_attr(target_os = "windows", ignore)]
+    #[cfg(not(windows))]
     #[test]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
