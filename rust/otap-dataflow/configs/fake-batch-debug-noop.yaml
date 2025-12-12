@@ -31,7 +31,7 @@ nodes:
     config:
       # At the rate configured above, this will print a batch
       # every 10 seconds.
-      send_batch_size: 1000
+      min_size: 1000
       # This interrupts it, so we expect around 300.
       timeout: 3s
   debug:
