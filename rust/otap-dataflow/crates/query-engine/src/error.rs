@@ -7,9 +7,12 @@ use arrow::error::ArrowError;
 use data_engine_expressions::QueryLocation;
 use datafusion::error::DataFusionError;
 
+/// Result type for methods returned from query engine
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors returned by query engine
 #[derive(thiserror::Error, Debug)]
+#[allow(missing_docs)]
 pub enum Error {
     /// Error which the pipeline can return if there was a problem encountered during execution
     #[error("Pipeline execution error: {cause}")]

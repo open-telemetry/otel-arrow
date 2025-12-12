@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y protobuf-compiler
 # docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 COPY --from=otel-arrow /proto/opentelemetry/proto /build/proto/opentelemetry/proto
 COPY --from=otel-arrow /proto/opentelemetry-proto /build/proto/opentelemetry-proto
+COPY --from=otel-arrow /rust/experimental /build/rust/experimental
 
 COPY . /build/rust/dataflow/.
 
