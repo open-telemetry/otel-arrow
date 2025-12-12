@@ -36,7 +36,7 @@ Stages under active development:
 ### Pipeline Definition
 
 The query engine's pipeline receives the definition of transforms to be applied
-in the from the intermediate abstract language defined in the
+in the form of the intermediate abstract language defined in the
 [`data_engine_expressions` crate](../../../experimental/query_engine/README.md#intermediate-language-abstraction).
 
 This means that transformations can be defined in any higher level language
