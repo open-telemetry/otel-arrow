@@ -130,6 +130,10 @@ impl<'de> Deserialize<'de> for AttributeValue {
             where
                 E: de::Error,
             {
+                if value > i64::MAX as u64 {
+                    let message = format!("value {} out of range (max {})", value, i64::MAX);
+                    return Err(de::Error::custom(message));
+                }
                 Ok(AttributeValue::I64(value as i64))
             }
 
@@ -401,6 +405,19 @@ mod tests {
             );
         } else {
             panic!("Expected deserialization to fail for mixed type array");
+        }
+    }
+
+    #[test]
+    fn test_attribute_value_u64_out_of_range_error() {
+        let yaml_str = r#"
+            out_of_range_value: 9223372036854775808
+            "#;
+        let result: Result<HashMap<String, AttributeValue>, _> = serde_yaml::from_str(yaml_str);
+        if let Err(err) = &result {
+            assert!(err.to_string().contains("out of range"));
+        } else {
+            panic!("Expected deserialization to fail for out of range u64 value");
         }
     }
 }
