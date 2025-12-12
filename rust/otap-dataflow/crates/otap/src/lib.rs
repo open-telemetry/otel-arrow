@@ -75,7 +75,9 @@ pub mod signal_type_router;
 pub mod attributes_processor;
 /// compression formats
 pub mod compression;
-mod metrics;
+
+pub mod metrics;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 
