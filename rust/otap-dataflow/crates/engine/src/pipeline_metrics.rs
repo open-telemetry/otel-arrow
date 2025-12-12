@@ -47,6 +47,7 @@ pub struct PipelineMetrics {
     /// Difference in pipeline cpu time since the last measurement, divided by the elapsed time.
     #[metric(unit = "{1}")]
     pub cpu_utilization: Gauge<u64>,
+
     // ToDo Add pipeline_network_io_received
     // ToDo Add pipeline_network_io_sent
 }
@@ -55,8 +56,9 @@ pub struct PipelineMetrics {
 pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
 
-    allocated: ThreadLocal<u64>,
-    deallocated: ThreadLocal<u64>,
+    jemalloc_supported: bool,
+    allocated: Option<ThreadLocal<u64>>,
+    deallocated: Option<ThreadLocal<u64>>,
     last_allocated: u64,
     last_deallocated: u64,
 
@@ -69,25 +71,38 @@ pub(crate) struct PipelineMetricsMonitor {
 
 impl PipelineMetricsMonitor {
     pub(crate) fn new(pipeline_ctx: PipelineContext) -> Self {
-        // Resolve the MIBs once ...
-        let alloc_mib = thread::allocatedp::mib().expect("no jemalloc mib, should never happen");
-        let dealloc_mib =
-            thread::deallocatedp::mib().expect("no jemalloc mib, should never happen");
+        // Try to initialize jemalloc thread-local stats. If the global allocator is not jemalloc,
+        // these calls will fail and memory-related metrics will remain unchanged.
+        let jemalloc_init = (|| {
+            let alloc_mib = thread::allocatedp::mib().ok()?;
+            let dealloc_mib = thread::deallocatedp::mib().ok()?;
 
-        // ... then get the thread-local pointers for this thread.
-        let allocated = alloc_mib
-            .read()
-            .expect("no jemalloc allocatedp mib, should never happen");
-        let deallocated = dealloc_mib
-            .read()
-            .expect("no jemalloc deallocatedp mib, should never happen");
+            let allocated = alloc_mib.read().ok()?;
+            let deallocated = dealloc_mib.read().ok()?;
 
-        // Initialize baselines so the first recompute() returns zero deltas.
-        let last_allocated = allocated.get();
-        let last_deallocated = deallocated.get();
+            let last_allocated = allocated.get();
+            let last_deallocated = deallocated.get();
+
+            Some((allocated, deallocated, last_allocated, last_deallocated))
+        })();
+
+        let (jemalloc_supported, allocated, deallocated, last_allocated, last_deallocated) =
+            if let Some((allocated, deallocated, last_allocated, last_deallocated)) = jemalloc_init
+            {
+                (
+                    true,
+                    Some(allocated),
+                    Some(deallocated),
+                    last_allocated,
+                    last_deallocated,
+                )
+            } else {
+                (false, None, None, 0, 0)
+            };
 
         Self {
             start_time: Instant::now(),
+            jemalloc_supported,
             allocated,
             deallocated,
             last_allocated,
@@ -104,25 +119,33 @@ impl PipelineMetricsMonitor {
     }
 
     pub fn update_metrics(&mut self) {
-        // === Update thread memory allocation metrics ===
-        // Fast path: `get()` is just `*ptr` and is #[inline].
-        let cur_alloc = self.allocated.get();
-        let cur_dealloc = self.deallocated.get();
+        // === Update thread memory allocation metrics (jemalloc only) ===
+        if self.jemalloc_supported {
+            if let (Some(allocated), Some(deallocated)) =
+                (self.allocated.as_ref(), self.deallocated.as_ref())
+            {
+                // Fast path: `get()` is just `*ptr` and is #[inline].
+                let cur_alloc = allocated.get();
+                let cur_dealloc = deallocated.get();
 
-        // Deltas since last time.
-        // Use wrapping_sub to be robust if jemalloc ever wraps the counters.
-        let delta_alloc = cur_alloc.wrapping_sub(self.last_allocated);
-        let delta_dealloc = cur_dealloc.wrapping_sub(self.last_deallocated);
+                // Deltas since last time.
+                // Use wrapping_sub to be robust if jemalloc ever wraps the counters.
+                let delta_alloc = cur_alloc.wrapping_sub(self.last_allocated);
+                let delta_dealloc = cur_dealloc.wrapping_sub(self.last_deallocated);
 
-        // Update baselines.
-        self.last_allocated = cur_alloc;
-        self.last_deallocated = cur_dealloc;
+                // Update baselines.
+                self.last_allocated = cur_alloc;
+                self.last_deallocated = cur_dealloc;
 
-        self.metrics.memory_allocated.set(cur_alloc);
-        self.metrics.memory_freed.set(cur_dealloc);
-        self.metrics.memory_allocated_delta.add(delta_alloc);
-        self.metrics.memory_freed_delta.add(delta_dealloc);
-        self.metrics.memory_usage.set(cur_alloc - cur_dealloc);
+                self.metrics.memory_allocated.set(cur_alloc);
+                self.metrics.memory_freed.set(cur_dealloc);
+                self.metrics.memory_allocated_delta.add(delta_alloc);
+                self.metrics.memory_freed_delta.add(delta_dealloc);
+                self.metrics
+                    .memory_usage
+                    .set(cur_alloc.saturating_sub(cur_dealloc));
+            }
+        }
 
         // === Update pipeline (thread) CPU usage metric ===
         let now_wall = Instant::now();
@@ -158,5 +181,61 @@ impl PipelineMetricsMonitor {
         // Reset time anchors for the next interval
         self.wall_start = now_wall;
         self.cpu_start = now_cpu;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::ControllerContext;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    // Ensure jemalloc is the allocator for this crate's tests so that
+    // tikv_jemalloc_ctl can read per-thread allocation counters.
+    #[global_allocator]
+    static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+    #[test]
+    fn pipeline_metrics_monitor_black_box_updates() {
+        let registry = MetricsRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx = controller.pipeline_context_with(
+            "grp".into(),
+            "pipe".into(),
+            0,
+            0,
+        );
+
+        let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
+
+        // First update establishes baselines.
+        monitor.update_metrics();
+        let cpu0 = monitor.metrics.cpu_time.get();
+        let mem0 = monitor.metrics.memory_allocated.get();
+
+        // Allocate some memory on this thread.
+        let mut v = Vec::with_capacity(10_000);
+        for i in 0..10_000u64 {
+            v.push(i);
+        }
+        let _ = black_box(&v);
+
+        // Burn some CPU so ThreadTime advances.
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(20) {
+            let _ = black_box(1u64.wrapping_mul(2));
+        }
+
+        // Ensure a non-zero wall interval.
+        std::thread::sleep(Duration::from_millis(5));
+
+        monitor.update_metrics();
+
+        assert!(monitor.metrics.cpu_time.get() >= cpu0);
+        assert!(monitor.metrics.cpu_utilization.get() <= 100);
+        assert!(monitor.metrics.memory_allocated.get() >= mem0);
+        assert!(monitor.metrics.memory_allocated_delta.get() > 0);
     }
 }

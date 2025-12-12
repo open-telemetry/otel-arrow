@@ -44,3 +44,6 @@ libmimalloc-sys = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true }
 byte-unit = { workspace = true }
 cpu-time = { workspace = true }
+
+[dev-dependencies]
+tikv-jemallocator = { workspace = true }
