@@ -167,7 +167,13 @@ impl QuiverEngine {
                 .opened_at()
                 .is_some_and(|opened_at| opened_at.elapsed() >= max_duration);
 
-            size_exceeded || time_exceeded
+            // Check if we should finalize based on stream count threshold
+            // (too many unique (slot, schema) pairs indicates schema evolution pressure)
+            let stream_count = segment.stream_count();
+            let max_streams = self.config.segment.max_stream_count as usize;
+            let streams_exceeded = stream_count >= max_streams;
+
+            size_exceeded || time_exceeded || streams_exceeded
         };
 
         // Step 4: Finalize segment if threshold exceeded
@@ -1421,5 +1427,47 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
             .collect();
         assert!(entries.is_empty(), "no segment file for empty segment");
+    }
+
+    #[test]
+    fn ingest_finalizes_segment_when_max_stream_count_exceeded() {
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Use a tiny max_stream_count to trigger stream-based finalization
+        // Use large size and time thresholds so they won't trigger
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
+            max_open_duration: std::time::Duration::from_secs(3600), // 1 hour
+            max_stream_count: 3, // Very small - will trigger after 3 unique streams
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::new(config).expect("engine created");
+
+        // Each bundle with a different schema fingerprint creates a new stream.
+        // We need to exceed max_stream_count (3) to trigger finalization.
+        for i in 0u8..4 {
+            let bundle = DummyBundleWithFingerprint::new([i; 32], 1);
+            engine.ingest(&bundle).expect("ingest succeeds");
+        }
+
+        drop(engine);
+
+        // Check that at least one segment file was created due to stream count finalization
+        let segment_dir = temp_dir.path().join("segments");
+        let entries: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+
+        assert!(
+            !entries.is_empty(),
+            "expected segment file from stream count finalization"
+        );
     }
 }
