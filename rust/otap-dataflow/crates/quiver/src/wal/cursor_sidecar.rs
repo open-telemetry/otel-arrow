@@ -66,8 +66,7 @@ impl CursorSidecar {
         let mut buf = vec![0u8; size];
         let mut cursor = 0;
 
-        buf[cursor..cursor + CURSOR_SIDECAR_MAGIC.len()]
-            .copy_from_slice(CURSOR_SIDECAR_MAGIC);
+        buf[cursor..cursor + CURSOR_SIDECAR_MAGIC.len()].copy_from_slice(CURSOR_SIDECAR_MAGIC);
         cursor += CURSOR_SIDECAR_MAGIC.len();
 
         buf[cursor..cursor + 2].copy_from_slice(&CURSOR_SIDECAR_VERSION.to_le_bytes());
@@ -106,7 +105,9 @@ impl CursorSidecar {
 
         // Validate we have enough data for the declared size
         if buf.len() < size {
-            return Err(WalError::InvalidCursorSidecar("buffer shorter than declared size"));
+            return Err(WalError::InvalidCursorSidecar(
+                "buffer shorter than declared size",
+            ));
         }
 
         // For v1, we know the exact expected size
@@ -117,7 +118,9 @@ impl CursorSidecar {
         } else if version > CURSOR_SIDECAR_VERSION {
             // Future version - we can still try to read v1 fields if size is >= v1 size
             if size < SIDECAR_V1_LEN {
-                return Err(WalError::InvalidCursorSidecar("future version too small for v1 fields"));
+                return Err(WalError::InvalidCursorSidecar(
+                    "future version too small for v1 fields",
+                ));
             }
             // Log or warn about reading a newer version file with v1 reader
             // For now, proceed to read the v1-compatible fields

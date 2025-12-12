@@ -107,7 +107,6 @@ impl WalHeader {
         Ok(())
     }
 
-
     /// Reads the header size from a file without consuming the full header.
     /// Returns the header size in bytes.
     pub fn read_header_size(file: &mut (impl Read + Seek)) -> Result<u16, WalError> {
@@ -127,8 +126,7 @@ impl WalHeader {
         }
 
         // Read header size
-        let header_size =
-            u16::from_le_bytes([buf[WAL_MAGIC.len() + 2], buf[WAL_MAGIC.len() + 3]]);
+        let header_size = u16::from_le_bytes([buf[WAL_MAGIC.len() + 2], buf[WAL_MAGIC.len() + 3]]);
 
         if (header_size as usize) < WAL_HEADER_MIN_LEN {
             return Err(WalError::InvalidHeader("header size too small"));
@@ -179,7 +177,9 @@ impl WalHeader {
 
     pub fn decode(buf: &[u8]) -> Result<Self, WalError> {
         if buf.len() < WAL_HEADER_MIN_LEN {
-            return Err(WalError::InvalidHeader("buffer too short for minimum header"));
+            return Err(WalError::InvalidHeader(
+                "buffer too short for minimum header",
+            ));
         }
 
         let mut cursor = 0;
@@ -206,14 +206,18 @@ impl WalHeader {
         }
 
         if buf.len() < header_size {
-            return Err(WalError::InvalidHeader("buffer shorter than declared header size"));
+            return Err(WalError::InvalidHeader(
+                "buffer shorter than declared header size",
+            ));
         }
 
         // For version 1, we need at least 38 bytes (the minimum for our current fields)
         // magic (10) + version (2) + header_size (2) + segment_hash (16) + wal_pos_start (8) = 38
         const V1_MIN_FIELDS: usize = 10 + 2 + 2 + 16 + 8;
         if header_size < V1_MIN_FIELDS {
-            return Err(WalError::InvalidHeader("header too small for required fields"));
+            return Err(WalError::InvalidHeader(
+                "header too small for required fields",
+            ));
         }
 
         // Segment config hash

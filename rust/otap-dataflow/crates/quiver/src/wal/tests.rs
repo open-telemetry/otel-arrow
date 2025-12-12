@@ -436,7 +436,7 @@ fn wal_writer_rejects_pre_epoch_timestamp() {
 #[test]
 fn wal_writer_rejects_truncated_existing_file() {
     use super::header::WAL_HEADER_MIN_LEN;
-    
+
     let (_dir, wal_path) = temp_wal("truncated.wal");
     {
         let mut file = std::fs::File::create(&wal_path).expect("create file");
@@ -2738,7 +2738,7 @@ fn wal_positions_stable_after_purge() {
     let bundle3 = single_slot_bundle(&descriptor, 0x03, &[9, 10, 11, 12]);
     let offset3 = writer.append_bundle(&bundle3).expect("third append");
 
-    // Verify rotations occurred  
+    // Verify rotations occurred
     assert_eq!(writer.rotation_count(), 3, "three rotations");
 
     // Persist cursor - all rotated files should be purged
@@ -2754,7 +2754,9 @@ fn wal_positions_stable_after_purge() {
 
     // Append another entry after all purges - its offset should continue correctly
     let bundle4 = single_slot_bundle(&descriptor, 0x04, &[13, 14, 15, 16]);
-    let offset4 = writer.append_bundle(&bundle4).expect("fourth append after purge");
+    let offset4 = writer
+        .append_bundle(&bundle4)
+        .expect("fourth append after purge");
 
     // The fourth entry should start where the third ended
     assert_eq!(
@@ -2949,7 +2951,11 @@ fn cursor_in_rotated_file_is_valid() {
         .expect("cursor in rotated file should succeed");
 
     // The first rotated file should be purged (it's fully consumed)
-    assert_eq!(writer.purge_count(), 1, "first rotated file should be purged");
+    assert_eq!(
+        writer.purge_count(),
+        1,
+        "first rotated file should be purged"
+    );
 
     // Persist cursor to the end of the second entry (also in a rotated file)
     let cursor2 = WalConsumerCursor {
@@ -2961,5 +2967,9 @@ fn cursor_in_rotated_file_is_valid() {
         .expect("cursor in second rotated file should succeed");
 
     // Now two rotated files should be purged
-    assert_eq!(writer.purge_count(), 2, "two rotated files should be purged");
+    assert_eq!(
+        writer.purge_count(),
+        2,
+        "two rotated files should be purged"
+    );
 }

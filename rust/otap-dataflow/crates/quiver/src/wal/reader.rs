@@ -112,7 +112,12 @@ impl WalReader {
         let start = file_offset.max(self.header_size);
         let file_len = self.file.metadata()?.len();
         let _ = self.file.seek(SeekFrom::Start(start))?;
-        Ok(WalEntryIter::new(&mut self.file, start, file_len, self.header_size))
+        Ok(WalEntryIter::new(
+            &mut self.file,
+            start,
+            file_len,
+            self.header_size,
+        ))
     }
 
     /// Seeks back to the entry immediately after the header so a fresh scan can
