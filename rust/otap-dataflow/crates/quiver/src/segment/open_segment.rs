@@ -19,6 +19,7 @@
 //! [`RecordBundle`]: crate::record_bundle::RecordBundle
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use arrow_schema::SchemaRef;
 
@@ -40,6 +41,8 @@ pub struct OpenSegment {
     manifest: Vec<ManifestEntry>,
     /// Whether finalize() has been called.
     finalized: bool,
+    /// Timestamp when the first bundle was appended (None if empty).
+    opened_at: Option<Instant>,
 }
 
 impl OpenSegment {
@@ -51,6 +54,7 @@ impl OpenSegment {
             next_stream_id: 0,
             manifest: Vec::new(),
             finalized: false,
+            opened_at: None,
         }
     }
 
@@ -76,6 +80,14 @@ impl OpenSegment {
     #[must_use]
     pub fn is_finalized(&self) -> bool {
         self.finalized
+    }
+
+    /// Returns the instant when the first bundle was appended, if any.
+    ///
+    /// This is used for time-based finalization decisions.
+    #[must_use]
+    pub fn opened_at(&self) -> Option<Instant> {
+        self.opened_at
     }
 
     /// Estimates the current in-memory size of accumulated data.
@@ -109,6 +121,11 @@ impl OpenSegment {
     pub fn append<B: RecordBundle>(&mut self, bundle: &B) -> Result<ManifestEntry, SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
+        }
+
+        // Track when the first bundle was appended for time-based finalization
+        if self.opened_at.is_none() {
+            self.opened_at = Some(Instant::now());
         }
 
         let bundle_index = self.manifest.len() as u32;
@@ -313,6 +330,32 @@ mod tests {
         assert_eq!(seg.bundle_count(), 0);
         assert_eq!(seg.stream_count(), 0);
         assert!(!seg.is_finalized());
+        assert!(seg.opened_at().is_none());
+    }
+
+    #[test]
+    fn opened_at_is_set_on_first_append() {
+        let mut seg = OpenSegment::new();
+        let schema = test_schema();
+        let batch = make_batch(&schema, &[1], &["a"]);
+        let fp = [0x11u8; 32];
+
+        // Before append, opened_at should be None
+        assert!(seg.opened_at().is_none());
+
+        let bundle = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch);
+        let _ = seg.append(&bundle).expect("append succeeds");
+
+        // After append, opened_at should be set
+        assert!(seg.opened_at().is_some());
+        let opened_at = seg.opened_at().unwrap();
+
+        // A second append should not change opened_at
+        let batch2 = make_batch(&test_schema(), &[2], &["b"]);
+        let bundle2 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
+        let _ = seg.append(&bundle2).expect("append succeeds");
+
+        assert_eq!(seg.opened_at().unwrap(), opened_at, "opened_at should not change after first bundle");
     }
 
     #[test]

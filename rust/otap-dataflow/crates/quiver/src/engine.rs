@@ -130,7 +130,7 @@ impl QuiverEngine {
     ///
     /// The bundle is first appended to the WAL for durability, then accumulated
     /// into the current open segment. If the segment exceeds the configured
-    /// size threshold, it is finalized and written to disk.
+    /// size or time threshold, it is finalized and written to disk.
     ///
     /// # Errors
     ///
@@ -159,7 +159,15 @@ impl QuiverEngine {
             // Check if we should finalize based on size threshold
             let estimated_size = segment.estimated_size_bytes();
             let target_size = self.config.segment.target_size_bytes.get() as usize;
-            estimated_size >= target_size
+            let size_exceeded = estimated_size >= target_size;
+
+            // Check if we should finalize based on time threshold
+            let max_duration = self.config.segment.max_open_duration;
+            let time_exceeded = segment
+                .opened_at()
+                .is_some_and(|opened_at| opened_at.elapsed() >= max_duration);
+
+            size_exceeded || time_exceeded
         };
 
         // Step 4: Finalize segment if threshold exceeded
@@ -170,9 +178,22 @@ impl QuiverEngine {
         Ok(())
     }
 
+    /// Gracefully shuts down the engine, finalizing any open segment.
+    ///
+    /// This should be called before dropping the engine to ensure that any
+    /// accumulated data in the open segment is written to disk. Without calling
+    /// this, data in the open segment will only be recoverable via WAL replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment finalization fails.
+    pub fn shutdown(&self) -> Result<()> {
+        self.finalize_current_segment()
+    }
+
     /// Finalizes the current open segment and writes it to disk.
     ///
-    /// This is called automatically when the size threshold is exceeded,
+    /// This is called automatically when the size or time threshold is exceeded,
     /// but can also be called explicitly for shutdown or testing.
     fn finalize_current_segment(&self) -> Result<()> {
         // Swap out the current segment and cursor for new empty ones
@@ -1272,5 +1293,133 @@ mod tests {
             "Unique fingerprints in segments: {}",
             unique_fingerprints.len()
         );
+    }
+
+    #[test]
+    fn ingest_finalizes_segment_when_max_open_duration_exceeded() {
+        use std::thread;
+        use std::time::Duration;
+
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Use a very short max_open_duration to trigger time-based finalization
+        // Use a large size so size-based finalization won't trigger
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
+            max_open_duration: Duration::from_millis(50), // Very short duration
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::new(config).expect("engine created");
+
+        // First ingest - starts the timer
+        let bundle1 = DummyBundle::with_rows(1);
+        engine.ingest(&bundle1).expect("first ingest succeeds");
+
+        // Wait for the max_open_duration to elapse
+        thread::sleep(Duration::from_millis(100));
+
+        // Second ingest - should trigger time-based finalization
+        let bundle2 = DummyBundle::with_rows(1);
+        engine.ingest(&bundle2).expect("second ingest succeeds");
+
+        drop(engine);
+
+        // Check that at least one segment file was created due to time-based finalization
+        let segment_dir = temp_dir.path().join("segments");
+        let entries: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+
+        assert!(
+            !entries.is_empty(),
+            "expected segment file from time-based finalization"
+        );
+    }
+
+    #[test]
+    fn shutdown_finalizes_open_segment() {
+        use crate::segment::SegmentReader;
+
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Use a large size threshold so size-based finalization won't trigger
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
+            max_open_duration: std::time::Duration::from_secs(3600), // 1 hour
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::new(config).expect("engine created");
+
+        // Ingest a small bundle that won't trigger size or time finalization
+        let bundle = DummyBundle::with_rows(5);
+        engine.ingest(&bundle).expect("ingest succeeds");
+
+        // Verify no segment file exists yet
+        let segment_dir = temp_dir.path().join("segments");
+        let initial_entries: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+        assert!(
+            initial_entries.is_empty(),
+            "no segment should exist before shutdown"
+        );
+
+        // Call shutdown to finalize the open segment
+        engine.shutdown().expect("shutdown succeeds");
+
+        // Verify segment file was created
+        let final_entries: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+        assert_eq!(final_entries.len(), 1, "expected one segment file after shutdown");
+
+        // Verify the segment contains the correct data
+        let segment_path = final_entries[0].path();
+        let reader = SegmentReader::open(&segment_path).expect("open segment");
+        assert_eq!(reader.bundle_count(), 1, "expected 1 bundle in segment");
+
+        let manifest = reader.manifest();
+        let reconstructed = reader.read_bundle(&manifest[0]).expect("read bundle");
+        let payload = reconstructed
+            .payload(SlotId::new(0))
+            .expect("slot 0 exists");
+        assert_eq!(payload.num_rows(), 5, "expected 5 rows in payload");
+    }
+
+    #[test]
+    fn shutdown_on_empty_segment_succeeds() {
+        let temp_dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+        let engine = QuiverEngine::new(config).expect("config valid");
+
+        // Shutdown without ingesting anything should succeed
+        engine.shutdown().expect("shutdown on empty segment succeeds");
+
+        // No segment files should be created
+        let segment_dir = temp_dir.path().join("segments");
+        let entries: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+        assert!(entries.is_empty(), "no segment file for empty segment");
     }
 }
