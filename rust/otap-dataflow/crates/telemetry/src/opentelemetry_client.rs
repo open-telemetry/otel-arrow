@@ -68,11 +68,14 @@ impl OpentelemetryClient {
 #[cfg(test)]
 mod tests {
     use opentelemetry::global;
-    use otap_df_config::pipeline::service::telemetry::metrics::{
-        MetricsConfig,
-        readers::{
-            MetricsReaderConfig, MetricsReaderPeriodicConfig,
-            periodic::MetricsPeriodicExporterConfig,
+    use otap_df_config::pipeline::service::telemetry::{
+        LogsConfig,
+        metrics::{
+            MetricsConfig,
+            readers::{
+                MetricsReaderConfig, MetricsReaderPeriodicConfig,
+                periodic::MetricsPeriodicExporterConfig,
+            },
         },
     };
 
@@ -109,6 +112,7 @@ mod tests {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(10),
             metrics: metrics_config,
+            logs: LogsConfig::default(),
             resource,
         };
         let client = OpentelemetryClient::new(&config)?;

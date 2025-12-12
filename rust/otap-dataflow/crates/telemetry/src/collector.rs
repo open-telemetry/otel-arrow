@@ -63,6 +63,7 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
+    use otap_df_config::pipeline::service::telemetry::LogsConfig;
     use otap_df_config::pipeline::service::telemetry::metrics::MetricsConfig;
 
     use super::*;
@@ -175,6 +176,7 @@ mod tests {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(reporting_interval_ms),
             metrics: MetricsConfig::default(),
+            logs: LogsConfig::default(),
             resource: HashMap::new(),
         }
     }
