@@ -6,7 +6,7 @@ pipeline data in OTAP format.
 ## Motivation
 
 - Enable efficient, programmable transformations of telemetry data
-- Support various various data transformation languages
+- Support various data transformation languages
 <!--
 TODO there are probably other motivations and design principles we could
 include such as extensibility if/when we allow for custom pipeline planners,
