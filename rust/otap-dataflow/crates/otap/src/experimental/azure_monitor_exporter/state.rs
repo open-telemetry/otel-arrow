@@ -63,6 +63,11 @@ impl AzureMonitorExporterState {
         _ = self.msg_to_data.entry(msg_id).or_insert((context, bytes));
     }
 
+    #[inline]
+    pub fn remove_msg_to_data(&mut self, msg_id: u64) -> Option<(Context, Bytes)> {
+        self.msg_to_data.remove(&msg_id)
+    }
+
     /// Remove a batch on SUCCESS - only returns messages with no remaining batches.
     pub fn remove_batch_success(&mut self, batch_id: u64) -> Vec<(u64, Context, Bytes)> {
         let mut orphaned = Vec::new();

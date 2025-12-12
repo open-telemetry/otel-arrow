@@ -91,48 +91,70 @@ impl AzureMonitorExporter {
 
         match result {
             Ok(duration) => {
-                // Export succeeded - Ack only fully-completed messages
-                let completed_messages = self.state.remove_batch_success(batch_id);
-                self.stats.add_messages(completed_messages.len() as f64);
-                self.stats.add_rows(row_count);
-                self.stats.add_batch();
-                self.stats.add_client_latency(duration.as_secs_f64());
-
-                for (_, context, bytes) in completed_messages {
-                    effect_handler
-                        .notify_ack(AckMsg::new(OtapPdata::new(
-                            context,
-                            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
-                        )))
-                        .await?;
-                }
+                self.handle_export_success(effect_handler, batch_id, row_count, duration)
+                    .await
             }
             Err(e) => {
-                // Export failed - Nack ALL messages in this batch, remove entirely
-                let failed_messages = self.state.remove_batch_failure(batch_id);
-                self.stats.add_failed_messages(failed_messages.len() as f64);
-                self.stats.add_failed_rows(row_count);
-                self.stats.add_failed_batch();
-
-                println!(
-                    "[AzureMonitorExporter] Export failed: {:?} - {:?}",
-                    batch_id, e
-                );
-
-                for (_, context, bytes) in failed_messages {
-                    effect_handler
-                        .notify_nack(NackMsg::new(
-                            &e,
-                            OtapPdata::new(
-                                context,
-                                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
-                            ),
-                        ))
-                        .await?;
-                }
+                self.handle_export_failure(effect_handler, batch_id, row_count, e)
+                    .await
             }
         }
+    }
 
+    async fn handle_export_success(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+        batch_id: u64,
+        row_count: f64,
+        duration: std::time::Duration,
+    ) -> Result<(), Error> {
+        // Export succeeded - Ack only fully-completed messages
+        let completed_messages = self.state.remove_batch_success(batch_id);
+        self.stats.add_messages(completed_messages.len() as f64);
+        self.stats.add_rows(row_count);
+        self.stats.add_batch();
+        self.stats.add_client_latency(duration.as_secs_f64());
+
+        for (_, context, bytes) in completed_messages {
+            effect_handler
+                .notify_ack(AckMsg::new(OtapPdata::new(
+                    context,
+                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
+                )))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_export_failure(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+        batch_id: u64,
+        row_count: f64,
+        error: String,
+    ) -> Result<(), Error> {
+        // Export failed - Nack ALL messages in this batch, remove entirely
+        let failed_messages = self.state.remove_batch_failure(batch_id);
+        self.stats.add_failed_messages(failed_messages.len() as f64);
+        self.stats.add_failed_rows(row_count);
+        self.stats.add_failed_batch();
+
+        println!(
+            "[AzureMonitorExporter] Export failed: {:?} - {:?}",
+            batch_id, error
+        );
+
+        for (_, context, bytes) in failed_messages {
+            effect_handler
+                .notify_nack(NackMsg::new(
+                    &error,
+                    OtapPdata::new(
+                        context,
+                        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
+                    ),
+                ))
+                .await?;
+        }
         Ok(())
     }
 
@@ -202,21 +224,46 @@ impl AzureMonitorExporter {
 
         for log_entry in log_entries_iterator {
             match self.gzip_batcher.push(&log_entry) {
-                gzip_batcher::PushResult::Ok(batch_id) => {
+                Ok(gzip_batcher::PushResult::Ok(batch_id)) => {
                     // current batch id is being associated with the current message
                     self.state.add_batch_msg_relationship(batch_id, msg_id);
                 }
-                gzip_batcher::PushResult::BatchReady(new_batch_id) => {
+                Ok(gzip_batcher::PushResult::BatchReady(new_batch_id)) => {
                     // new batch id is being associated with the current message
                     self.state.add_batch_msg_relationship(new_batch_id, msg_id);
                     self.queue_pending_batch(effect_handler).await?;
                 }
-                gzip_batcher::PushResult::TooLarge => {
-                    // TODO: Log the error or take appropriate action
-                    print!(
-                        "Log entry too large to be added to the batch: {:?}",
-                        log_entry
-                    );
+                Ok(gzip_batcher::PushResult::TooLarge) => {
+                    if let Some((context, data)) = self.state.remove_msg_to_data(msg_id) {
+                        effect_handler
+                            .notify_nack(NackMsg::new(
+                                "Log entry too large to export",
+                                OtapPdata::new(
+                                    context,
+                                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(data)),
+                                ),
+                            ))
+                            .await?;
+                    }
+                    return Err(Error::InternalError {
+                        message: "Log entry too large to export".to_string(),
+                    });
+                }
+                Err(e) => {
+                    if let Some((context, data)) = self.state.remove_msg_to_data(msg_id) {
+                        effect_handler
+                            .notify_nack(NackMsg::new(
+                                "Failed to add log entry to batch",
+                                OtapPdata::new(
+                                    context,
+                                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(data)),
+                                ),
+                            ))
+                            .await?;
+                    }
+                    return Err(Error::InternalError {
+                        message: format!("Failed to add log entry to batch: {:?}", e),
+                    });
                 }
             }
         }
@@ -253,10 +300,15 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match self.gzip_batcher.finalize() {
-            FinalizeResult::Ok => {
+            Ok(FinalizeResult::Ok) => {
                 return self.queue_pending_batch(effect_handler).await;
             }
-            FinalizeResult::Empty => Ok(()),
+            Ok(FinalizeResult::Empty) => Ok(()),
+            Err(e) => {
+                Err(Error::InternalError {
+                    message: format!("Failed to finalize batch: {:?}", e),
+                })
+            },
         }
     }
 
