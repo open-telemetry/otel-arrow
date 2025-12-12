@@ -6,8 +6,8 @@ ecosystem.
 
 ## Overview
 
-The configuration model is structured in several main components, each representing a
-distinct layer of the configuration hierarchy:
+The configuration model is structured in several main components, each
+representing a distinct layer of the configuration hierarchy:
 
 - **EngineConfig**: The root configuration, containing global engine settings
   and all pipeline groups.
