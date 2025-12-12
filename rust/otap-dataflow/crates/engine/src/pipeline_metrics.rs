@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Set of metrics collected from the OTAP engine pipelines.
+//!
+//! Note: Memory-related metrics are only populated when the global allocator is jemalloc.
+//! When another allocator is used, memory metrics remain at their default (zero) values.
 
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
@@ -13,6 +16,14 @@ use tikv_jemalloc_ctl::thread;
 use tikv_jemalloc_ctl::thread::ThreadLocal;
 
 /// Per-pipeline instance general metrics.
+///
+/// Derived metrics (not emitted explicitly):
+/// - net_allocated_delta = memory_allocated_delta - memory_freed_delta  [{By}]
+/// - allocation_rate     = memory_allocated_delta / interval_s         [{By/s}]
+/// - deallocation_rate   = memory_freed_delta / interval_s             [{By/s}]
+/// - net_allocation_rate = net_allocated_delta / interval_s            [{By/s}]
+/// - cpu_utilization_ratio = (cpu_time_delta_s / wall_time_delta_s)    [{1}]
+///   where cpu_time_delta_s is the per-interval increase in cpu_time.
 #[metric_set(name = "pipeline.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct PipelineMetrics {
@@ -45,9 +56,9 @@ pub struct PipelineMetrics {
     pub cpu_time: Counter<f64>,
 
     /// Difference in pipeline cpu time since the last measurement, divided by the elapsed time.
+    /// Reported as a ratio in the range [0, 1].
     #[metric(unit = "{1}")]
-    pub cpu_utilization: Gauge<u64>,
-
+    pub cpu_utilization: Gauge<f64>,
     // ToDo Add pipeline_network_io_received
     // ToDo Add pipeline_network_io_sent
 }
@@ -71,6 +82,8 @@ pub(crate) struct PipelineMetricsMonitor {
 
 impl PipelineMetricsMonitor {
     pub(crate) fn new(pipeline_ctx: PipelineContext) -> Self {
+        let now = Instant::now();
+
         // Try to initialize jemalloc thread-local stats. If the global allocator is not jemalloc,
         // these calls will fail and memory-related metrics will remain unchanged.
         let jemalloc_init = (|| {
@@ -101,13 +114,13 @@ impl PipelineMetricsMonitor {
             };
 
         Self {
-            start_time: Instant::now(),
+            start_time: now,
             jemalloc_supported,
             allocated,
             deallocated,
             last_allocated,
             last_deallocated,
-            wall_start: Instant::now(),
+            wall_start: now,
             cpu_start: ThreadTime::now(),
             metrics: pipeline_ctx.register_metrics::<PipelineMetrics>(),
         }
@@ -152,9 +165,7 @@ impl PipelineMetricsMonitor {
         let now_cpu = ThreadTime::now();
         let uptime = now_wall.duration_since(self.start_time).as_secs_f64();
 
-        self.metrics
-            .uptime
-            .set(uptime);
+        self.metrics.uptime.set(uptime);
 
         let wall_duration = now_wall.duration_since(self.wall_start);
         let cpu_duration = now_cpu.duration_since(self.cpu_start);
@@ -167,15 +178,14 @@ impl PipelineMetricsMonitor {
         if wall_micros > 0 {
             let cpu_micros = cpu_duration.as_micros();
 
-            // Calculation: (CPU Time / Wall Time) * 100.0
-            // We use f64 for precision during division, then cast to u64 for the Gauge.
-            let usage_pct = (cpu_micros as f64 / wall_micros as f64) * 100.0;
+            // Calculation: CPU Time / Wall Time, as a ratio.
+            let usage_ratio = cpu_micros as f64 / wall_micros as f64;
 
-            // Clamp to ensure we don't report > 100% due to any weird timing skew,
-            // though standard thread time shouldn't exceed wall time on a single thread.
-            self.metrics.cpu_utilization.set(usage_pct as u64);
+            // Clamp to ensure we don't report > 1.0 due to timing skew.
+            let usage_ratio = usage_ratio.clamp(0.0, 1.0);
+            self.metrics.cpu_utilization.set(usage_ratio);
         } else {
-            self.metrics.cpu_utilization.set(0);
+            self.metrics.cpu_utilization.set(0.0);
         }
 
         // Reset time anchors for the next interval
@@ -194,6 +204,9 @@ mod jemalloc_tests {
 
     // Ensure jemalloc is the allocator for this crate's tests so that
     // tikv_jemalloc_ctl can read per-thread allocation counters.
+    //
+    // Run this test with:
+    // `cargo test -p otap-df-engine --lib --features jemalloc-testing pipeline_metrics_monitor_black_box_updates_jemalloc`
     #[global_allocator]
     static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -229,7 +242,7 @@ mod jemalloc_tests {
         monitor.update_metrics();
 
         assert!(monitor.metrics.cpu_time.get() >= cpu0);
-        assert!(monitor.metrics.cpu_utilization.get() <= 100);
+        assert!(monitor.metrics.cpu_utilization.get() <= 1.0);
         assert!(monitor.metrics.memory_allocated.get() >= mem0);
         assert!(monitor.metrics.memory_allocated_delta.get() > 0);
     }
@@ -271,7 +284,7 @@ mod non_jemalloc_tests {
 
         // CPU metrics should still update.
         assert!(monitor.metrics.cpu_time.get() >= cpu0);
-        assert!(monitor.metrics.cpu_utilization.get() <= 100);
+        assert!(monitor.metrics.cpu_utilization.get() <= 1.0);
 
         // Memory-related metrics should remain unchanged (zero) without jemalloc.
         assert_eq!(monitor.metrics.memory_allocated.get(), 0);

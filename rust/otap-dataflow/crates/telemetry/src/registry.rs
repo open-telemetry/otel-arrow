@@ -813,15 +813,9 @@ mod tests {
         let key = metric_set.key;
 
         // First snapshot sets gauge=5, counter+=10.
-        handle.accumulate_snapshot(
-            key,
-            &[MetricValue::U64(5), MetricValue::U64(10)],
-        );
+        handle.accumulate_snapshot(key, &[MetricValue::U64(5), MetricValue::U64(10)]);
         // Second snapshot sets gauge=2 (replaces), counter+=3 (accumulates).
-        handle.accumulate_snapshot(
-            key,
-            &[MetricValue::U64(2), MetricValue::U64(3)],
-        );
+        handle.accumulate_snapshot(key, &[MetricValue::U64(2), MetricValue::U64(3)]);
 
         let mut values = Vec::new();
         handle.visit_current_metrics(|_desc, _attrs, iter| {
@@ -830,9 +824,6 @@ mod tests {
             }
         });
 
-        assert_eq!(
-            values,
-            vec![MetricValue::U64(2), MetricValue::U64(13)]
-        );
+        assert_eq!(values, vec![MetricValue::U64(2), MetricValue::U64(13)]);
     }
 }
