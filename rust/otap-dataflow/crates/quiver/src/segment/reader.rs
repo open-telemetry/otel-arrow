@@ -44,8 +44,8 @@ use std::sync::Arc;
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
 use arrow_ipc::convert::fb_to_schema;
-use arrow_ipc::reader::{read_footer_length, FileDecoder};
-use arrow_ipc::{root_as_footer, Block};
+use arrow_ipc::reader::{FileDecoder, read_footer_length};
+use arrow_ipc::{Block, root_as_footer};
 use crc32fast::Hasher;
 
 use super::error::SegmentError;
@@ -148,13 +148,11 @@ impl StreamDecoder {
         }
 
         let trailer_start = buffer.len() - 10;
-        let footer_len = read_footer_length(
-            buffer[trailer_start..]
-                .try_into()
-                .map_err(|_| SegmentError::InvalidFormat {
-                    message: "invalid IPC trailer".to_string(),
-                })?,
-        )
+        let footer_len = read_footer_length(buffer[trailer_start..].try_into().map_err(|_| {
+            SegmentError::InvalidFormat {
+                message: "invalid IPC trailer".to_string(),
+            }
+        })?)
         .map_err(|e| SegmentError::Arrow { source: e })?;
 
         let footer_start = trailer_start.saturating_sub(footer_len);
@@ -349,11 +347,8 @@ impl SegmentReader {
         )?;
 
         // Build stream lookup
-        let stream_by_id: HashMap<_, _> = streams
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.id, i))
-            .collect();
+        let stream_by_id: HashMap<_, _> =
+            streams.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
         // 5. Read batch manifest
         let manifest = Self::read_manifest(
@@ -427,11 +422,11 @@ impl SegmentReader {
         let mut payloads = HashMap::new();
 
         for (slot_id, chunk_ref) in entry.slots() {
-            let stream_meta = self.stream(chunk_ref.stream_id).ok_or_else(|| {
-                SegmentError::StreamNotFound {
-                    stream_id: chunk_ref.stream_id,
-                }
-            })?;
+            let stream_meta =
+                self.stream(chunk_ref.stream_id)
+                    .ok_or_else(|| SegmentError::StreamNotFound {
+                        stream_id: chunk_ref.stream_id,
+                    })?;
 
             // Get the stream's buffer slice
             let stream_buffer = self.buffer.slice_with_length(
@@ -502,11 +497,12 @@ impl SegmentReader {
 
     fn read_trailer(buffer: &Buffer) -> Result<(Trailer, u32), SegmentError> {
         let trailer_start = buffer.len() - TRAILER_SIZE;
-        let trailer_bytes: &[u8; TRAILER_SIZE] = buffer[trailer_start..]
-            .try_into()
-            .map_err(|_| SegmentError::InvalidFormat {
-                message: "trailer read failed".to_string(),
-            })?;
+        let trailer_bytes: &[u8; TRAILER_SIZE] =
+            buffer[trailer_start..]
+                .try_into()
+                .map_err(|_| SegmentError::InvalidFormat {
+                    message: "trailer read failed".to_string(),
+                })?;
 
         Trailer::decode(trailer_bytes)
     }
@@ -542,9 +538,11 @@ impl SegmentReader {
             });
         }
 
-        let batch = decoder.get_batch(0)?.ok_or_else(|| SegmentError::InvalidFormat {
-            message: "stream directory batch is None".to_string(),
-        })?;
+        let batch = decoder
+            .get_batch(0)?
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: "stream directory batch is None".to_string(),
+            })?;
 
         // Parse stream directory columns
         let stream_ids = Self::get_u32_column(&batch, "stream_id")?;
@@ -588,9 +586,11 @@ impl SegmentReader {
             });
         }
 
-        let batch = decoder.get_batch(0)?.ok_or_else(|| SegmentError::InvalidFormat {
-            message: "manifest batch is None".to_string(),
-        })?;
+        let batch = decoder
+            .get_batch(0)?
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: "manifest batch is None".to_string(),
+            })?;
 
         // Parse manifest columns
         let bundle_indices = Self::get_u32_column(&batch, "bundle_index")?;
@@ -630,12 +630,11 @@ impl SegmentReader {
     fn get_u32_column(batch: &RecordBatch, name: &str) -> Result<Vec<u32>, SegmentError> {
         use arrow_array::cast::AsArray;
 
-        let col =
-            batch
-                .column_by_name(name)
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!("missing column: {}", name),
-                })?;
+        let col = batch
+            .column_by_name(name)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!("missing column: {}", name),
+            })?;
 
         let arr = col
             .as_primitive_opt::<arrow_array::types::UInt32Type>()
@@ -649,12 +648,11 @@ impl SegmentReader {
     fn get_u16_column(batch: &RecordBatch, name: &str) -> Result<Vec<u16>, SegmentError> {
         use arrow_array::cast::AsArray;
 
-        let col =
-            batch
-                .column_by_name(name)
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!("missing column: {}", name),
-                })?;
+        let col = batch
+            .column_by_name(name)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!("missing column: {}", name),
+            })?;
 
         let arr = col
             .as_primitive_opt::<arrow_array::types::UInt16Type>()
@@ -668,12 +666,11 @@ impl SegmentReader {
     fn get_u64_column(batch: &RecordBatch, name: &str) -> Result<Vec<u64>, SegmentError> {
         use arrow_array::cast::AsArray;
 
-        let col =
-            batch
-                .column_by_name(name)
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!("missing column: {}", name),
-                })?;
+        let col = batch
+            .column_by_name(name)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!("missing column: {}", name),
+            })?;
 
         let arr = col
             .as_primitive_opt::<arrow_array::types::UInt64Type>()
@@ -689,12 +686,11 @@ impl SegmentReader {
         name: &str,
         expected_size: i32,
     ) -> Result<Vec<&'a [u8]>, SegmentError> {
-        let col =
-            batch
-                .column_by_name(name)
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!("missing column: {}", name),
-                })?;
+        let col = batch
+            .column_by_name(name)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!("missing column: {}", name),
+            })?;
 
         let arr = col
             .as_any()
@@ -721,12 +717,11 @@ impl SegmentReader {
         batch: &'a RecordBatch,
         name: &str,
     ) -> Result<Vec<&'a str>, SegmentError> {
-        let col =
-            batch
-                .column_by_name(name)
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!("missing column: {}", name),
-                })?;
+        let col = batch
+            .column_by_name(name)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!("missing column: {}", name),
+            })?;
 
         let arr = col
             .as_any()
@@ -963,7 +958,9 @@ mod tests {
         let (streams, manifest) = open_segment.finalize().expect("finalize");
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_to_file(path, streams, manifest).expect("write");
+        let _ = writer
+            .write_to_file(path, streams, manifest)
+            .expect("write");
 
         (stream_count, bundle_count)
     }
@@ -1028,7 +1025,10 @@ mod tests {
         assert_eq!(bundle.bundle_index(), 0);
         assert_eq!(bundle.slot_count(), 1);
         assert!(bundle.payload(SlotId::new(0)).is_some());
-        assert_eq!(bundle.payload(SlotId::new(0)).map(|b| b.num_rows()), Some(2));
+        assert_eq!(
+            bundle.payload(SlotId::new(0)).map(|b| b.num_rows()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1041,8 +1041,12 @@ mod tests {
         let reader = SegmentReader::open(&path).expect("open");
         let stream_id = reader.streams()[0].id;
 
-        let batch0 = reader.read_chunk(stream_id, ChunkIndex::new(0)).expect("chunk 0");
-        let batch1 = reader.read_chunk(stream_id, ChunkIndex::new(1)).expect("chunk 1");
+        let batch0 = reader
+            .read_chunk(stream_id, ChunkIndex::new(0))
+            .expect("chunk 0");
+        let batch1 = reader
+            .read_chunk(stream_id, ChunkIndex::new(1))
+            .expect("chunk 1");
 
         assert_eq!(batch0.num_rows(), 2);
         assert_eq!(batch1.num_rows(), 3);
@@ -1156,7 +1160,9 @@ mod tests {
         let (streams, manifest) = open_segment.finalize().expect("finalize");
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_to_file(&path, streams, manifest).expect("write");
+        let _ = writer
+            .write_to_file(&path, streams, manifest)
+            .expect("write");
 
         // Read back
         let reader = SegmentReader::open(&path).expect("open");
@@ -1168,8 +1174,14 @@ mod tests {
         let bundle = reader.read_bundle(&entry).expect("read_bundle");
 
         assert_eq!(bundle.slot_count(), 2);
-        assert_eq!(bundle.payload(SlotId::new(0)).map(|b| b.num_rows()), Some(2));
-        assert_eq!(bundle.payload(SlotId::new(1)).map(|b| b.num_rows()), Some(3));
+        assert_eq!(
+            bundle.payload(SlotId::new(0)).map(|b| b.num_rows()),
+            Some(2)
+        );
+        assert_eq!(
+            bundle.payload(SlotId::new(1)).map(|b| b.num_rows()),
+            Some(3)
+        );
     }
 
     #[test]
@@ -1220,6 +1232,9 @@ mod tests {
 
         // Bundle should still be valid because it holds Arc<Buffer> which holds the mmap
         assert_eq!(bundle.slot_count(), 1);
-        assert_eq!(bundle.payload(SlotId::new(0)).map(|b| b.num_rows()), Some(2));
+        assert_eq!(
+            bundle.payload(SlotId::new(0)).map(|b| b.num_rows()),
+            Some(2)
+        );
     }
 }

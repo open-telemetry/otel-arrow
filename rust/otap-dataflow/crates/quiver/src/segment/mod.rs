@@ -58,4 +58,4 @@ pub use stream_accumulator::StreamAccumulator;
 pub use types::{
     ChunkIndex, ManifestEntry, SegmentSeq, SlotChunkRef, StreamId, StreamKey, StreamMetadata,
 };
-pub use writer::{footer_v1_size, segment_magic, segment_version, trailer_size, SegmentWriter};
+pub use writer::{SegmentWriter, footer_v1_size, segment_magic, segment_version, trailer_size};

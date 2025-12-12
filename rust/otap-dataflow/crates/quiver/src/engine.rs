@@ -90,8 +90,7 @@ impl QuiverEngine {
 
         // Ensure segment directory exists
         let segment_dir = segment_dir(&config);
-        fs::create_dir_all(&segment_dir)
-            .map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
+        fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
 
         let wal_writer = initialize_wal_writer(&config)?;
 
@@ -491,7 +490,9 @@ mod tests {
         let reconstructed = reader.read_bundle(&manifest[0]).expect("read bundle");
         assert_eq!(reconstructed.slot_count(), 1, "expected 1 slot");
 
-        let payload = reconstructed.payload(SlotId::new(0)).expect("slot 0 exists");
+        let payload = reconstructed
+            .payload(SlotId::new(0))
+            .expect("slot 0 exists");
         assert_eq!(payload.num_rows(), 10, "expected 10 rows in payload");
 
         // === Verify WAL cursor was advanced ===
@@ -605,12 +606,12 @@ mod tests {
         // === Verify WAL contains all entries ===
         let wal_path = temp_dir.path().join("wal").join("quiver.wal");
         let mut wal_reader = WalReader::open(&wal_path).expect("open WAL");
-        let mut iter = wal_reader.iter_from(0).expect("iterator");
+        let iter = wal_reader.iter_from(0).expect("iterator");
 
         let mut wal_entry_count = 0;
         let mut wal_total_rows = 0;
         let mut last_entry_next_offset = 0;
-        while let Some(result) = iter.next() {
+        for result in iter {
             let entry = result.expect("entry decodes");
             assert_eq!(
                 entry.sequence, wal_entry_count,
@@ -672,13 +673,13 @@ mod tests {
         // === Verify recovery: WAL entries after cursor can restore missing data ===
         // Count WAL entries after the cursor (these are in the open segment)
         let mut wal_reader2 = WalReader::open(&wal_path).expect("open WAL");
-        let mut iter2 = wal_reader2
+        let iter2 = wal_reader2
             .iter_from(sidecar.wal_position)
             .expect("iterator from cursor");
 
         let mut uncommitted_bundles = 0;
         let mut uncommitted_rows = 0;
-        while let Some(result) = iter2.next() {
+        for result in iter2 {
             let entry = result.expect("entry decodes");
             for slot in &entry.slots {
                 uncommitted_rows += slot.row_count as usize;
@@ -951,9 +952,7 @@ mod tests {
             .collect();
 
         let active_wal_path = wal_dir.join("quiver.wal");
-        let active_wal_size = fs::metadata(&active_wal_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let active_wal_size = fs::metadata(&active_wal_path).map(|m| m.len()).unwrap_or(0);
 
         let rotated_wal_count = wal_files.len().saturating_sub(1); // exclude active
         let total_wal_bytes: u64 = wal_files
@@ -965,13 +964,13 @@ mod tests {
         // Read uncommitted entries (after cursor)
         let wal_path = temp_dir.path().join("wal").join("quiver.wal");
         let mut wal_reader = WalReader::open(&wal_path).expect("open WAL");
-        let mut iter = wal_reader
+        let iter = wal_reader
             .iter_from(sidecar.wal_position)
             .expect("iterator from cursor");
 
         let mut uncommitted_bundles = 0usize;
         let mut uncommitted_rows = 0usize;
-        while let Some(result) = iter.next() {
+        for result in iter {
             let entry = result.expect("entry decodes");
             for slot in &entry.slots {
                 uncommitted_rows += slot.row_count as usize;
@@ -1266,12 +1265,12 @@ mod tests {
         eprintln!("\n=== Schema Evolution Stress Test ===");
         eprintln!("Schemas simulated: {}", NUM_SCHEMAS);
         eprintln!("Bundles per schema: {}", BUNDLES_PER_SCHEMA);
-        eprintln!(
-            "Total bundles: {}",
-            NUM_SCHEMAS * BUNDLES_PER_SCHEMA
-        );
+        eprintln!("Total bundles: {}", NUM_SCHEMAS * BUNDLES_PER_SCHEMA);
         eprintln!("Segment files: {}", segment_files.len());
         eprintln!("Rows in segments: {}", total_rows);
-        eprintln!("Unique fingerprints in segments: {}", unique_fingerprints.len());
+        eprintln!(
+            "Unique fingerprints in segments: {}",
+            unique_fingerprints.len()
+        );
     }
 }

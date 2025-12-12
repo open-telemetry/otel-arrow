@@ -767,7 +767,10 @@ mod tests {
 
         // Check trailer magic (at offset 4 within the 16-byte trailer)
         let trailer_start = file_bytes.len() - TRAILER_SIZE;
-        assert_eq!(&file_bytes[trailer_start + 4..trailer_start + 12], SEGMENT_MAGIC);
+        assert_eq!(
+            &file_bytes[trailer_start + 4..trailer_start + 12],
+            SEGMENT_MAGIC
+        );
     }
 
     #[test]
