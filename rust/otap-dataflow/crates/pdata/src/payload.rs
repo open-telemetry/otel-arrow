@@ -164,7 +164,7 @@ impl OtapPayload {
 /* -------- Trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
-pub trait OtapPayloadHelpers {
+pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     fn signal_type(&self) -> SignalType;
 

@@ -15,6 +15,8 @@ pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
 
 /// Common methods for OTLP/OTAP attributes.
 pub mod attributes;
+/// Common methods for batching.
+pub mod batching;
 /// Common methods for OTLP/OTAP logs.
 pub mod logs;
 /// Common methods for OTLP/OTAP metrics.

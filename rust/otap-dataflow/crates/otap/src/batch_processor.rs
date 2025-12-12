@@ -47,9 +47,10 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otap::batching::make_output_batches;
-use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
+use otap_df_pdata::{
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
+    otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
+};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -102,6 +103,16 @@ pub enum BatchingFormat {
     Otlp,
     /// Preserve format, support both independently.
     Preserve,
+}
+
+/// The common signature of the batching methods
+trait Batcher<T: OtapPayloadHelpers> {
+    fn make_batches(
+        cfg: &Config,
+        signal: SignalType,
+        records: Vec<T>,
+    ) -> Result<Vec<T>, PDataError>;
+    fn wakeup(signal: SignalType) -> T;
 }
 
 /// Batch processor configuration.
@@ -220,7 +231,7 @@ impl Config {
         }
 
         // Zero-timeout is a valid split-only configuration.
-        if self.timeout == Duration::ZERO {
+        if self.flush_timeout == Duration::ZERO {
             if let Some(batch_size) = self.min_size {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!("min_size ({}) requires a timeout", batch_size),
@@ -303,15 +314,15 @@ pub struct BatchProcessor {
     metrics: MetricSet<BatchProcessorMetrics>,
 }
 
-pub struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
+struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
     config: &'a Config,
     signals: &'a mut SignalBatches<T>,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
 
-pub struct BatchProcessorSignal<'a, T: OtapPayloadHelpers> {
-    config: &'a Config,
+struct BatchProcessorSignal<'a, T: OtapPayloadHelpers> {
     signal: SignalType,
+    config: &'a Config,
     buffer: &'a mut SignalBuffer<T>,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
@@ -458,13 +469,15 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         for signal in [SignalType::Logs, SignalType::Traces, SignalType::Metrics] {
-            if let Some(mut otap_signals) = self.otap_format() {
+            if let Some(otap_signals) = self.otap_format() {
                 otap_signals
+                    .for_signal(signal)
                     .flush_signal_impl(signal, effect, Instant::now(), FlushReason::Shutdown)
                     .await?;
             }
-            if let Some(mut otlp_signals) = self.otlp_format() {
+            if let Some(otlp_signals) = self.otlp_format() {
                 otlp_signals
+                    .for_signal(signal)
                     .flush_signal_impl(signal, effect, Instant::now(), FlushReason::Shutdown)
                     .await?;
             }
@@ -509,7 +522,8 @@ impl BatchProcessor {
         }
 
         // Increment consumed_items for the appropriate signal
-        match request.signal_type() {
+        let signal = request.signal_type();
+        match signal {
             SignalType::Logs => {
                 self.metrics.consumed_items_logs.add(items as u64);
                 self.metrics.consumed_batches_logs.add(1);
@@ -531,28 +545,26 @@ impl BatchProcessor {
                 if self.otap_signals.is_some() {
                     self.otap_format()
                         .expect("some")
+                        .for_signal(signal)
                         .accept_payload(effect, ctx, otap, items);
                 } else {
-                    self.otlp_format().expect("some").accept_payload(
-                        effect,
-                        ctx,
-                        otap.try_into()?,
-                        items,
-                    );
+                    self.otlp_format()
+                        .expect("some")
+                        .for_signal(signal)
+                        .accept_payload(effect, ctx, otap.try_into()?, items);
                 }
             }
             OtapPayload::OtlpBytes(otlp) => {
                 if self.otlp_signals.is_some() {
                     self.otlp_format()
                         .expect("some")
+                        .for_signal(signal)
                         .accept_payload(effect, ctx, otlp, items);
                 } else {
-                    self.otap_format().expect("some").accept_payload(
-                        effect,
-                        ctx,
-                        otlp.try_into()?,
-                        items,
-                    );
+                    self.otap_format()
+                        .expect("some")
+                        .for_signal(signal)
+                        .accept_payload(effect, ctx, otlp.try_into()?, items);
                 }
             }
         };
@@ -561,6 +573,73 @@ impl BatchProcessor {
 }
 
 impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
+    fn for_signal(&self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
+        BatchProcessorSignal {
+            signal,
+            config: self.config,
+            buffer: match signal {
+                SignalType::Logs => &mut self.signals.logs,
+                SignalType::Traces => &mut self.signals.traces,
+                SignalType::Metrics => &mut self.signals.metrics,
+            },
+            metrics: self.metrics,
+        }
+    }
+}
+
+// impl<'a, T: OtapPayloadHelpers> Batcher<T> for &mut BatchProcessorSignal<'a, T> {
+//     fn make_batches(&self, signal: SignalType, pending: Vec<T>) -> Result<Vec<T>, PDataError> {
+//         // @@@
+//         Ok(pending)
+//     }
+//     fn wakeup(&self) -> T {}
+// }
+
+impl<'a> Batcher<OtapArrowRecords> for BatchProcessorSignal<'a, OtapArrowRecords> {
+    fn make_batches(
+        cfg: &Config,
+        signal: SignalType,
+        pending: Vec<OtapArrowRecords>,
+    ) -> Result<Vec<OtapArrowRecords>, PDataError> {
+        // OTAP only supports Sizer::Items
+        debug_assert_eq!(cfg.sizer, Sizer::Items);
+        make_item_batches(signal, nzu_to_nz64(cfg.max_size), pending)
+    }
+
+    fn wakeup(signal: SignalType) -> OtapArrowRecords {
+        match signal {
+            SignalType::Logs => OtapArrowRecords::Logs(otap_df_pdata::otap::Logs::default()),
+            SignalType::Metrics => {
+                OtapArrowRecords::Metrics(otap_df_pdata::otap::Metrics::default())
+            }
+            SignalType::Traces => OtapArrowRecords::Traces(otap_df_pdata::otap::Traces::default()),
+        }
+    }
+}
+
+impl<'a> Batcher<OtlpProtoBytes> for BatchProcessorSignal<'a, OtlpProtoBytes> {
+    fn make_batches(
+        cfg: &Config,
+        signal: SignalType,
+        pending: Vec<OtlpProtoBytes>,
+    ) -> Result<Vec<OtlpProtoBytes>, PDataError> {
+        // OTLP only supports Sizer::Bytes
+        debug_assert_eq!(cfg.sizer, Sizer::Bytes);
+        make_bytes_batches(signal, nzu_to_nz64(cfg.max_size), pending)
+    }
+    fn wakeup(signal: SignalType) -> OtlpProtoBytes {
+        match signal {
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
+        }
+    }
+}
+
+impl<'a, T: OtapPayloadHelpers> BatchProcessorSignal<'a, T>
+where
+    Self: Batcher<T>,
+{
     async fn accept_payload(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
@@ -569,17 +648,12 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
         items: usize,
     ) -> Result<(), EngineError> {
         let signal = payload.signal_type();
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
-        };
 
         // If there are subscribers, calculate an inbound slot key.
         let inkey = ctx
             .has_subscribers()
             .then(|| {
-                buffer
+                self.buffer
                     .inbound
                     .allocate(|| {
                         (
@@ -600,18 +674,20 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
         // Set the arrival time when the current input is empty.
         let timeout = self.config.flush_timeout;
         let mut arrival: Option<Instant> = None;
-        if timeout != Duration::ZERO && buffer.inputs.is_empty() {
+        if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
             let now = Instant::now();
             arrival = Some(now);
-            buffer.set_arrival(signal, now, timeout, effect).await?;
+            self.buffer
+                .set_arrival(signal, now, timeout, effect)
+                .await?;
         }
 
-        buffer
+        self.buffer
             .inputs
             .accept(payload, BatchPortion::new(inkey, items));
 
         // Flush based on size when the batch reaches the lower limit.
-        if timeout != Duration::ZERO && buffer.inputs.items < self.config.lower_limit() {
+        if timeout != Duration::ZERO && self.buffer.inputs.items < self.config.lower_limit() {
             Ok(())
         } else {
             self.flush_signal_impl(
@@ -638,27 +714,22 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
         now: Instant,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
-        };
-
         // If the input is empty.
-        if buffer.inputs.is_empty() {
+        if self.buffer.inputs.is_empty() {
             return Ok(());
         }
+
         // If this is a timer-based flush and we were called too soon,
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
             && self.config.flush_timeout != Duration::ZERO
-            && now.duration_since(buffer.arrival.expect("timed")) < self.config.flush_timeout
+            && now.duration_since(self.buffer.arrival.expect("timed")) < self.config.flush_timeout
         {
             return Ok(());
         }
 
-        let mut inputs = buffer.inputs.drain();
+        let mut inputs = self.buffer.inputs.drain();
 
         match reason {
             FlushReason::Size => self.metrics.flushes_size.inc(),
@@ -667,39 +738,39 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
         }
 
         let count = inputs.requests();
-        let upper_limit = self.config.max_size;
         let pending = inputs.take_pending();
-        let mut output_batches =
-            match make_output_batches(signal, nzu_to_nz64(upper_limit), pending) {
-                Ok(v) => v,
-                Err(e) => {
-                    self.metrics.batching_errors.add(count as u64);
-                    log_batching_failed(effect, signal, &e).await;
-                    let str = e.to_string();
-                    let res = Err(str.clone());
-                    // In this case, we are sending failure to all the pending inputs.
-                    buffer
-                        .handle_partial_responses(signal, effect, &res, inputs.context)
-                        .await?;
-                    return Err(EngineError::InternalError { message: str });
-                }
-            };
+
+        let mut output_batches = match Self::make_batches(self.config, signal, pending) {
+            Ok(v) => v,
+            Err(e) => {
+                self.metrics.batching_errors.add(count as u64);
+                log_batching_failed(effect, signal, &e).await;
+                let str = e.to_string();
+                let res = Err(str.clone());
+                // In this case, we are sending failure to all the pending inputs.
+                self.buffer
+                    .handle_partial_responses(signal, effect, &res, inputs.context)
+                    .await?;
+                return Err(EngineError::InternalError { message: str });
+            }
+        };
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
         if self.config.flush_timeout != Duration::ZERO
             && reason == FlushReason::Size
-            && upper_limit.is_some()
+            && self.config.max_size.is_some()
             && output_batches.len() > 1
         {
             debug_assert!(output_batches[0].num_items() >= self.config.lower_limit());
 
             if let Some(last_items) = output_batches.last().map(|last| last.num_items()) {
                 if last_items < self.config.lower_limit() {
-                    buffer.take_remaining(&mut inputs, &mut output_batches, last_items);
+                    self.buffer
+                        .take_remaining(&mut inputs, &mut output_batches, last_items);
 
                     // We use the latest arrival time as the new arrival for timeout purposes.
-                    buffer
+                    self.buffer
                         .set_arrival(signal, now, self.config.flush_timeout, effect)
                         .await?;
                 }
@@ -729,16 +800,17 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
             }
 
             // If any items require notification, get an outbound slot and subscribe.
-            if let Some(ctxs) = buffer.drain_context(items, &mut input_context) {
+            if let Some(ctxs) = self.buffer.drain_context(items, &mut input_context) {
                 let (outkey, _notused) =
-                    buffer.outbound.allocate(|| (ctxs, ())).ok_or_else(|| {
-                        EngineError::ProcessorError {
+                    self.buffer
+                        .outbound
+                        .allocate(|| (ctxs, ()))
+                        .ok_or_else(|| EngineError::ProcessorError {
                             processor: effect.processor_id(),
                             kind: ProcessorErrorKind::Other,
                             error: "outbound slots not available".into(),
                             source_detail: "".into(),
-                        }
-                    })?;
+                        })?;
 
                 effect.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
@@ -750,6 +822,16 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
         }
 
         Ok(())
+    }
+}
+
+impl<T: OtapPayloadHelpers> Inputs<T> {
+    fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            context: Vec::new(),
+            items: 0,
+        }
     }
 }
 
@@ -920,6 +1002,7 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
 impl<T: OtapPayloadHelpers> SignalBuffer<T> {
     fn new(cfg: &Config) -> Self {
         Self {
+            inputs: Inputs::<T>::default(),
             inbound: SlotState::new(cfg.inbound_request_limit.get()),
             outbound: SlotState::new(cfg.outbound_request_limit.get()),
             arrival: None,
