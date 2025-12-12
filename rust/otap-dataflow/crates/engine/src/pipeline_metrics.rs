@@ -184,8 +184,8 @@ impl PipelineMetricsMonitor {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(test, feature = "jemalloc-testing"))]
+mod jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
     use otap_df_telemetry::registry::MetricsRegistryHandle;
@@ -198,15 +198,10 @@ mod tests {
     static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
     #[test]
-    fn pipeline_metrics_monitor_black_box_updates() {
+    fn pipeline_metrics_monitor_black_box_updates_jemalloc() {
         let registry = MetricsRegistryHandle::new();
         let controller = ControllerContext::new(registry);
-        let pipeline_ctx = controller.pipeline_context_with(
-            "grp".into(),
-            "pipe".into(),
-            0,
-            0,
-        );
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
 
         let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
 
@@ -237,5 +232,52 @@ mod tests {
         assert!(monitor.metrics.cpu_utilization.get() <= 100);
         assert!(monitor.metrics.memory_allocated.get() >= mem0);
         assert!(monitor.metrics.memory_allocated_delta.get() > 0);
+    }
+}
+
+#[cfg(all(test, not(feature = "jemalloc-testing")))]
+mod non_jemalloc_tests {
+    use super::*;
+    use crate::context::ControllerContext;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn pipeline_metrics_monitor_does_not_update_memory_without_jemalloc() {
+        let registry = MetricsRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+
+        let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
+
+        monitor.update_metrics();
+        let cpu0 = monitor.metrics.cpu_time.get();
+
+        // Allocate and burn CPU.
+        let mut v = Vec::with_capacity(10_000);
+        for i in 0..10_000u64 {
+            v.push(i);
+        }
+        let _ = black_box(&v);
+
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(20) {
+            let _ = black_box(1u64.wrapping_mul(2));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+
+        monitor.update_metrics();
+
+        // CPU metrics should still update.
+        assert!(monitor.metrics.cpu_time.get() >= cpu0);
+        assert!(monitor.metrics.cpu_utilization.get() <= 100);
+
+        // Memory-related metrics should remain unchanged (zero) without jemalloc.
+        assert_eq!(monitor.metrics.memory_allocated.get(), 0);
+        assert_eq!(monitor.metrics.memory_freed.get(), 0);
+        assert_eq!(monitor.metrics.memory_usage.get(), 0);
+        assert_eq!(monitor.metrics.memory_allocated_delta.get(), 0);
+        assert_eq!(monitor.metrics.memory_freed_delta.get(), 0);
     }
 }
