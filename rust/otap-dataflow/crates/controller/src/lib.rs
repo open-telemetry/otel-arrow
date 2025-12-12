@@ -77,7 +77,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let telemetry_config = &pipeline.service().telemetry;
         init_logging(&telemetry_config.logs);
         otel_info!(
-            name: "controller.start",
+            "Controller.Start",
             num_nodes = pipeline.node_iter().count(),
             pdata_channel_size = pipeline.pipeline_settings().default_pdata_channel_size
         );
