@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 /// OpenTelemetry Metrics View configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ViewConfig {
-    /// Selector to match instruments for this view.
+    /// Selector to match instruments for this view transformation.
     pub selector: MetricSelector,
 
-    /// Stream configuration for this view.
+    /// Stream configuration for the transformation expected.
     pub stream: MetricStream,
 }
 
@@ -27,9 +27,9 @@ pub struct MetricSelector {
 /// OpenTelemetry Metric Stream configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetricStream {
-    /// The name of the instrument.
+    /// The new name of the instrument matching the selector.
     pub name: Option<String>,
-    /// The description of the instrument.
+    /// The new description of the instrument matching the selector.
     pub description: Option<String>,
 }
 
