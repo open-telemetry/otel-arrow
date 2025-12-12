@@ -630,12 +630,12 @@ impl Default for PipelineConfigBuilder {
 mod tests {
     use crate::error::Error;
     use crate::node::DispatchStrategy;
-    use crate::pipeline::service::telemetry::TelemetryConfig;
     use crate::pipeline::service::telemetry::metrics::MetricsConfig;
     use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
     use crate::pipeline::service::telemetry::metrics::readers::{
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
+    use crate::pipeline::service::telemetry::{AttributeValue, TelemetryConfig};
     use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
 
@@ -964,14 +964,22 @@ mod tests {
         assert_eq!(reporting_interval.as_secs(), 5);
 
         let resource_attrs = &telemetry_config.resource;
-        assert_eq!(
-            resource_attrs.get("service.name"),
-            Some(&"test_service".to_string())
-        );
-        assert_eq!(
-            resource_attrs.get("service.version"),
-            Some(&"1.0.0".to_string())
-        );
+
+        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
+            assert_eq!(val, "test_service");
+        } else {
+            panic!("Expected service.name to be a string");
+        }
+        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
+            assert_eq!(val, "1.0.0");
+        } else {
+            panic!("Expected service.version to be a string");
+        }
+        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
+            assert_eq!(i, 10);
+        } else {
+            panic!("Expected instance.id to be an integer");
+        }
 
         if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
             if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
@@ -1008,14 +1016,22 @@ mod tests {
         let reporting_interval = telemetry_config.reporting_interval;
         assert_eq!(reporting_interval.as_secs(), 5);
         let resource_attrs = &telemetry_config.resource;
-        assert_eq!(
-            resource_attrs.get("service.name"),
-            Some(&"test_service".to_string())
-        );
-        assert_eq!(
-            resource_attrs.get("service.version"),
-            Some(&"1.0.0".to_string())
-        );
+
+        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
+            assert_eq!(val, "test_service");
+        } else {
+            panic!("Expected service.name to be a string");
+        }
+        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
+            assert_eq!(val, "1.0.0");
+        } else {
+            panic!("Expected service.version to be a string");
+        }
+        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
+            assert_eq!(i, 10);
+        } else {
+            panic!("Expected instance.id to be an integer");
+        }
 
         if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
             if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
@@ -1178,8 +1194,20 @@ mod tests {
         let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
         assert_eq!(config.reporting_interval.as_secs(), 5);
-        assert_eq!(config.resource.get("service.name").unwrap(), "my_service");
-        assert_eq!(config.resource.get("service.version").unwrap(), "1.2.3");
+
+        let resource_attrs = &config.resource;
+
+        if let AttributeValue::String(ref val) = resource_attrs["service.name"] {
+            assert_eq!(val, "my_service");
+        } else {
+            panic!("Expected service.name to be a string");
+        }
+        if let AttributeValue::String(ref val) = resource_attrs["service.version"] {
+            assert_eq!(val, "1.2.3");
+        } else {
+            panic!("Expected service.version to be a string");
+        }
+
         let readers = &config.metrics.readers;
         assert_eq!(readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
