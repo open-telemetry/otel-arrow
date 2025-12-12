@@ -3,6 +3,8 @@
 
 //! Example of using the query engine to filter telemetry data
 
+#![allow(clippy::print_stdout)]
+
 use arrow::util::pretty::print_batches;
 
 use data_engine_kql_parser::{KqlParser, Parser};
@@ -49,7 +51,7 @@ async fn main() -> Result<()> {
 
     let otap_logs = result.get(ArrowPayloadType::Logs).expect("logs in result");
     println!("\nresult of '{query}':");
-    print_batches(&[otap_logs.clone()])?;
+    print_batches(std::slice::from_ref(otap_logs))?;
 
     // simple example filtering logs by attributes
     let query = "logs | where attributes[\"service.name\"] == \"my-app-2\"";
@@ -59,9 +61,9 @@ async fn main() -> Result<()> {
     let otap_batch = otlp_to_otap(&otap_df_pdata::proto::OtlpProtoMessage::Logs(logs.clone()));
     let result = pipeline.execute(otap_batch).await?;
 
-    let logs = result.get(ArrowPayloadType::Logs).expect("logs in result");
+    let otap_logs = result.get(ArrowPayloadType::Logs).expect("logs in result");
     println!("\nresult of '{query}':");
-    print_batches(&[logs.clone()])?;
+    print_batches(std::slice::from_ref(otap_logs))?;
 
     Ok(())
 }
