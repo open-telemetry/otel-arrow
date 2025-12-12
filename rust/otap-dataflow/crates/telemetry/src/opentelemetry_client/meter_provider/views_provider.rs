@@ -32,6 +32,7 @@ pub struct DeclarativeView {
 
 impl DeclarativeView {
     /// Create a new declarative view from the given configuration.
+    #[must_use]
     pub fn new(config: ViewConfig) -> Self {
         Self { config }
     }
@@ -45,11 +46,6 @@ impl DeclarativeView {
             if let Some(instrument_name) = &config.selector.instrument_name
                 && !instrument.name().contains(instrument_name)
             {
-                println!(
-                    "Instrument name '{}' does not match selector '{}'",
-                    instrument.name(),
-                    instrument_name
-                );
                 return None;
             }
 
