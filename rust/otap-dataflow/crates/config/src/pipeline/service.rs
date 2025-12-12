@@ -20,6 +20,8 @@ pub struct ServiceConfig {
 
 #[cfg(test)]
 mod tests {
+    use crate::pipeline::service::telemetry::AttributeValue;
+
     use super::*;
 
     #[test]
@@ -36,9 +38,10 @@ mod tests {
 
         assert_eq!(config.telemetry.reporting_channel_size, 200);
         assert_eq!(config.telemetry.reporting_interval.as_secs(), 2);
-        assert_eq!(
-            config.telemetry.resource.get("service.name").unwrap(),
-            "example_service"
-        );
+        if let Some(AttributeValue::String(value)) = config.telemetry.resource.get("service.name") {
+            assert_eq!(value, "example_service");
+        } else {
+            panic!("service.name attribute not found or not a String");
+        }
     }
 }
