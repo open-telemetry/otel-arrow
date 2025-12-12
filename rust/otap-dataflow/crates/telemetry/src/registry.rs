@@ -7,8 +7,7 @@
 //! dynamic dispatch.
 
 use crate::attributes::AttributeSetHandler;
-use crate::descriptor::MetricsDescriptor;
-use crate::descriptor::MetricsField;
+use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField};
 use crate::metrics::{MetricSet, MetricSetHandler, MetricValue};
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
@@ -204,12 +203,26 @@ impl MetricsRegistry {
     /// Merges a metrics snapshot (delta) into the registered instance keyed by `metrics_key`.
     fn accumulate_snapshot(&mut self, metrics_key: MetricsKey, metrics_values: &[MetricValue]) {
         if let Some(entry) = self.metrics.get_mut(metrics_key) {
+            debug_assert_eq!(
+                entry.metrics_descriptor.metrics.len(),
+                metrics_values.len(),
+                "descriptor.metrics and snapshot values length must match"
+            );
+
             entry
                 .metric_values
                 .iter_mut()
                 .zip(metrics_values)
-                .for_each(|(e, v)| {
-                    e.add_in_place(*v);
+                .zip(entry.metrics_descriptor.metrics.iter())
+                .for_each(|((current, incoming), field)| match field.instrument {
+                    Instrument::Gauge => {
+                        // Gauges report absolute values; replace.
+                        *current = *incoming;
+                    }
+                    Instrument::Counter | Instrument::UpDownCounter | Instrument::Histogram => {
+                        // Sum-like instruments report deltas; accumulate.
+                        current.add_in_place(*incoming);
+                    }
                 });
         } else {
             // TODO: consider logging missing key
@@ -736,5 +749,90 @@ mod tests {
         }
 
         assert_eq!(handle.len(), 5);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_gauge_replaces_counter_accumulates() {
+        #[derive(Debug)]
+        struct MockGaugeMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl MockGaugeMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                }
+            }
+        }
+
+        impl Default for MockGaugeMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_GAUGE_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_gauge_metrics",
+            metrics: &[
+                MetricsField {
+                    name: "gauge1",
+                    unit: "1",
+                    brief: "Test gauge 1",
+                    instrument: Instrument::Gauge,
+                    value_type: MetricValueType::U64,
+                },
+                MetricsField {
+                    name: "counter1",
+                    unit: "1",
+                    brief: "Test counter 1",
+                    instrument: Instrument::Counter,
+                    value_type: MetricValueType::U64,
+                },
+            ],
+        };
+
+        impl MetricSetHandler for MockGaugeMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_GAUGE_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let handle = MetricsRegistryHandle::new();
+        let attrs = MockAttributeSet::new("test_value".to_string());
+        let metric_set: MetricSet<MockGaugeMetricSet> = handle.register(attrs);
+        let key = metric_set.key;
+
+        // First snapshot sets gauge=5, counter+=10.
+        handle.accumulate_snapshot(
+            key,
+            &[MetricValue::U64(5), MetricValue::U64(10)],
+        );
+        // Second snapshot sets gauge=2 (replaces), counter+=3 (accumulates).
+        handle.accumulate_snapshot(
+            key,
+            &[MetricValue::U64(2), MetricValue::U64(3)],
+        );
+
+        let mut values = Vec::new();
+        handle.visit_current_metrics(|_desc, _attrs, iter| {
+            for (_field, value) in iter {
+                values.push(value);
+            }
+        });
+
+        assert_eq!(
+            values,
+            vec![MetricValue::U64(2), MetricValue::U64(13)]
+        );
     }
 }

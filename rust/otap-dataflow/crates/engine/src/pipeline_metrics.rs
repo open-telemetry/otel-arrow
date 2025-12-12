@@ -18,7 +18,7 @@ use tikv_jemalloc_ctl::thread::ThreadLocal;
 pub struct PipelineMetrics {
     /// The time the pipeline instance has been running.
     #[metric(unit = "{s}")]
-    pub uptime: Gauge<u64>,
+    pub uptime: Gauge<f64>,
 
     /// The amount of heap memory in use by the pipeline instance running on a specific core.
     #[metric(unit = "{By}")]
@@ -127,10 +127,11 @@ impl PipelineMetricsMonitor {
         // === Update pipeline (thread) CPU usage metric ===
         let now_wall = Instant::now();
         let now_cpu = ThreadTime::now();
+        let uptime = now_wall.duration_since(self.start_time).as_secs_f64();
 
         self.metrics
             .uptime
-            .set(now_wall.duration_since(self.start_time).as_secs());
+            .set(uptime);
 
         let wall_duration = now_wall.duration_since(self.wall_start);
         let cpu_duration = now_cpu.duration_since(self.cpu_start);

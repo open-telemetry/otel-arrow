@@ -214,14 +214,15 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
     pub async fn run(mut self) -> Result<(), Error> {
+        let mut pipeline_metrics_monitor =
+            PipelineMetricsMonitor::new(self.pipeline_context.clone());
+
         loop {
             // Get the next expirations, if any.
             let next_expiry = self.tick_timers.next_expiry();
             let next_tel_expiry = self.telemetry_timers.next_expiry();
             let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
             let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
-            let mut pipeline_metrics_monitor =
-                PipelineMetricsMonitor::new(self.pipeline_context.clone());
 
             tokio::select! {
                 biased;
