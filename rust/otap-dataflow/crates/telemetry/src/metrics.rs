@@ -151,6 +151,7 @@ impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
 }
 
 /// Immutable snapshot of a metric set's current values.
+#[derive(Debug)]
 pub struct MetricSetSnapshot {
     pub(crate) key: MetricsKey,
     pub(crate) metrics: Vec<MetricValue>,
