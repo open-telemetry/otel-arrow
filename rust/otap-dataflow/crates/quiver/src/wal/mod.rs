@@ -15,25 +15,25 @@
 //!
 //! // Reading (for replay)
 //! let mut reader = WalReader::open(&path)?;
-//! let mut cursor = WalConsumerCheckpoint::default();
+//! let mut cursor = WalConsumerCursor::default();
 //! for entry in reader.iter_from(0)? {
 //!     let bundle = entry?;
 //!     // ... rebuild state from bundle ...
 //!     cursor.increment(&bundle);  // in-memory only
 //! }
 //!
-//! // Checkpointing (after downstream confirms durability)
-//! writer.checkpoint_cursor(&cursor)?;  // persists + enables cleanup
+//! // Persisting cursor (after downstream confirms durability)
+//! writer.persist_cursor(&cursor)?;  // persists + enables cleanup
 //! ```
 //!
 //! # Module Organization
 //!
 //! | File                    | Purpose                                          |
 //! |-------------------------|--------------------------------------------------|
-//! | `writer.rs`             | Append entries, rotate files, manage checkpoints |
+//! | `writer.rs`             | Append entries, rotate files, manage cursors     |
 //! | `reader.rs`             | Iterate entries, decode payloads, track progress |
 //! | `header.rs`             | WAL file header format (magic, version, config)  |
-//! | `checkpoint_sidecar.rs` | Crash-safe checkpoint offset persistence         |
+//! | `cursor_sidecar.rs`     | Crash-safe WAL cursor persistence                |
 //! | `tests.rs`              | Integration tests and crash simulation           |
 //!
 //! # On-Disk Layout
@@ -43,7 +43,7 @@
 //! ├── quiver.wal           # Active WAL file (append target)
 //! ├── quiver.wal.1         # Rotated file (oldest)
 //! ├── quiver.wal.2         # Rotated file
-//! └── checkpoint.offset    # Consumer progress (24 bytes, CRC-protected)
+//! └── quiver.wal.cursor    # Consumer progress (24 bytes, CRC-protected)
 //! ```
 //!
 //! # Key Concepts
@@ -51,9 +51,9 @@
 //! - **Entry**: One [`RecordBundle`] serialized with CRC32 integrity check
 //! - **Rotation**: When the active file exceeds `rotation_target_bytes`, it's
 //!   renamed to `quiver.wal.N` and a fresh file starts
-//! - **Checkpoint**: Consumers call [`WalConsumerCheckpoint::increment()`] while
-//!   iterating (in-memory), then [`WalWriter::checkpoint_cursor()`] to persist
-//! - **Purge**: Rotated files are deleted once fully covered by the checkpoint
+//! - **Cursor**: Consumers call [`WalConsumerCursor::increment()`] while
+//!   iterating (in-memory), then [`WalWriter::persist_cursor()`] to persist
+//! - **Purge**: Rotated files are deleted once fully covered by the cursor
 //!
 //! See [`writer`] module docs for detailed lifecycle documentation.
 
@@ -64,7 +64,7 @@ use thiserror::Error;
 
 use crate::record_bundle::SlotId;
 
-mod checkpoint_sidecar;
+mod cursor_sidecar;
 mod header;
 mod reader;
 #[cfg(test)]
@@ -73,10 +73,13 @@ mod writer;
 
 // Keep reader exports visible even though only tests consume them today.
 #[allow(unused_imports)]
-pub(crate) use reader::{DecodedWalSlot, WalConsumerCheckpoint, WalReader, WalRecordBundle};
+pub(crate) use reader::{DecodedWalSlot, WalConsumerCursor, WalReader, WalRecordBundle};
 // Writer is used broadly soon; suppress warnings while integration lands.
 #[allow(unused_imports)]
 pub(crate) use writer::{FlushPolicy, WalOffset, WalWriter, WalWriterOptions};
+// Re-export for integration tests that need to verify cursor state.
+#[allow(unused_imports)]
+pub(crate) use cursor_sidecar::CursorSidecar;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WAL Format Constants
@@ -177,12 +180,12 @@ pub enum WalError {
         /// The hash stored in the WAL header.
         found: [u8; 16],
     },
-    /// Checkpoint sidecar contains invalid or corrupted bytes.
-    #[error("invalid checkpoint sidecar: {0}")]
-    InvalidCheckpointSidecar(&'static str),
-    /// Consumer checkpoint failed validation.
-    #[error("invalid consumer checkpoint: {0}")]
-    InvalidConsumerCheckpoint(&'static str),
+    /// Cursor sidecar contains invalid or corrupted bytes.
+    #[error("invalid cursor sidecar: {0}")]
+    InvalidCursorSidecar(&'static str),
+    /// Consumer cursor failed validation.
+    #[error("invalid consumer cursor: {0}")]
+    InvalidConsumerCursor(&'static str),
     /// Arrow serialization/deserialization failure.
     #[error("arrow serialization error: {0}")]
     Arrow(#[from] ArrowError),
