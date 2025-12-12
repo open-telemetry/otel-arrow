@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::service::telemetry::metrics::views::ViewConfig;
 
-/// Opentelemetry Metrics configuration.
+/// OpenTelemetry Metrics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct MetricsConfig {
     /// The list of metrics readers to configure.

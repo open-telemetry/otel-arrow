@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
 
-/// Opentelemetry Metrics Reader configuration.
+/// OpenTelemetry Metrics Reader configuration.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricsReaderConfig {
@@ -24,7 +24,7 @@ pub enum MetricsReaderConfig {
     },
 }
 
-/// Opentelemetry Metrics Periodic Reader configuration.
+/// OpenTelemetry Metrics Periodic Reader configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetricsReaderPeriodicConfig {
     /// The metrics exporter to use.

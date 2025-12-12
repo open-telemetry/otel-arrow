@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Opentelemetry Metrics Views configuration.
+//! OpenTelemetry Metrics Views configuration.
 
 use opentelemetry_sdk::metrics::{Instrument, MeterProviderBuilder, Stream};
 use otap_df_config::pipeline::service::telemetry::metrics::views::ViewConfig;
@@ -44,7 +44,7 @@ impl DeclarativeView {
         let config = self.config.clone();
         move |instrument: &Instrument| {
             if let Some(instrument_name) = &config.selector.instrument_name
-                && !instrument.name().contains(instrument_name)
+                && instrument.name() != instrument_name
             {
                 return None;
             }
@@ -67,16 +67,16 @@ mod tests {
     use super::*;
     use opentelemetry_sdk::metrics::SdkMeterProvider;
     use otap_df_config::pipeline::service::telemetry::metrics::views::{
-        ViewConfig, ViewSelector, ViewStream,
+        MetricSelector, MetricStream, ViewConfig,
     };
 
     #[test]
     fn test_views_provider_configure() {
         let view_config = ViewConfig {
-            selector: ViewSelector {
+            selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
             },
-            stream: ViewStream {
+            stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
                 description: Some("Total number of HTTP requests".to_string()),
             },
@@ -90,10 +90,10 @@ mod tests {
     #[test]
     fn test_declarative_view_creation() {
         let view_config = ViewConfig {
-            selector: ViewSelector {
+            selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
             },
-            stream: ViewStream {
+            stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
                 description: Some("Total number of HTTP requests".to_string()),
             },
@@ -113,10 +113,10 @@ mod tests {
     #[test]
     fn test_declarative_view_to_view_function() {
         let view_config = ViewConfig {
-            selector: ViewSelector {
+            selector: MetricSelector {
                 instrument_name: Some("requests.total".to_string()),
             },
-            stream: ViewStream {
+            stream: MetricStream {
                 name: Some("http.requests.total".to_string()),
                 description: Some("Total number of HTTP requests".to_string()),
             },

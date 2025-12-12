@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Opentelemetry SDK integration for telemetry collection and reporting as a client.
+//! OpenTelemetry SDK integration for telemetry collection and reporting as a client.
 
 pub mod meter_provider;
 
