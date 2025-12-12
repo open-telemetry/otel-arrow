@@ -14,6 +14,11 @@ This folder contains work in progress to implement a 'query engine' that can:
 The eventual vision of this work is using this 'query engine' as a processor in
 an OTAP pipeline likely leveraging DataFusion for query execution.
 
+The implementation of a query engine that can process OTAP data is underway
+and can be found in the otap-dataflow
+[`otap-df-query-engine`](../../otap-dataflow/crates/query-engine/)
+crate. The implementation depends on crates from this workspace.
+
 ## Folder structure
 
 |Name                        |Description                                                                                        |
@@ -22,7 +27,6 @@ an OTAP pipeline likely leveraging DataFusion for query execution.
 |kql-parser                  |Parser to turn KQL queries into query engine expressions (syntax trees)                            |
 |ottl-parser                 |Parser to turn OTTL queries into query engine expressions (syntax trees)                           |
 |parser-abstractions         |Common parser components and implementations for common literals                                   |
-|engine-columnar             |Query engine implementation which takes a syntax tree and runs over columnar data (arrow)          |
 |engine-recordset            |Query engine implementation which takes a syntax tree and runs over a set of records (hierarchical)|
 |engine-recordset-otlp-bridge|A bridge for running the recordset engine over Protobuf encoded blobs of OTLP data                 |
 
