@@ -27,7 +27,6 @@ pub mod batching_tests;
 pub mod filter;
 pub mod groups;
 pub mod schema;
-#[allow(missing_docs)]
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.

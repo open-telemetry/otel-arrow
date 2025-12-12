@@ -29,7 +29,6 @@ pub mod parent_id;
 /// OTAP conventional numbering for fields.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
-#[allow(missing_docs)]
 pub enum AttributeValueType {
     Empty = 0,
     Str = 1,

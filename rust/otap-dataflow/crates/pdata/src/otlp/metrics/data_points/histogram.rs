@@ -27,7 +27,6 @@ use arrow::datatypes::{
     ArrowNativeType, ArrowPrimitiveType, DataType, Field, FieldRef, Float64Type, UInt64Type,
 };
 
-#[allow(missing_docs)]
 pub struct HistogramDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
     pub parent_id: &'a UInt16Array,
@@ -82,7 +81,6 @@ impl<'a> TryFrom<&'a RecordBatch> for HistogramDpArrays<'a> {
 }
 
 /// Helper to access the element in a list array.
-#[allow(missing_docs)]
 pub struct ListValueAccessor<'a, T: ArrowPrimitiveType> {
     pub list: &'a ListArray,
     pub value: &'a PrimitiveArray<T>,
@@ -92,7 +90,6 @@ impl<'a, T> ListValueAccessor<'a, T>
 where
     T: ArrowPrimitiveType,
 {
-    #[allow(missing_docs)]
     pub fn try_new(list: &'a ArrayRef) -> Result<Self> {
         let list =
             list.as_any()
@@ -108,7 +105,6 @@ where
         Self::try_new_from_list(list)
     }
 
-    #[allow(missing_docs)]
     pub fn try_new_from_list(list: &'a ListArray) -> Result<Self> {
         let value_array = list.values();
         let value = value_array
@@ -122,7 +118,6 @@ where
         Ok(Self { list, value })
     }
 
-    #[allow(missing_docs)]
     #[must_use]
     pub fn value_at_opt(&self, idx: usize) -> Option<Vec<T::Native>> {
         if !self.list.is_valid(idx) {

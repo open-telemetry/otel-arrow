@@ -22,7 +22,6 @@ use arrow::array::{
     UInt16Array, UInt32Array, UInt64Array,
 };
 
-#[allow(missing_docs)]
 pub struct SummaryDpArrays<'a> {
     pub id: Option<&'a UInt32Array>,
     pub parent_id: &'a UInt16Array,
@@ -64,7 +63,6 @@ impl<'a> TryFrom<&'a RecordBatch> for SummaryDpArrays<'a> {
     }
 }
 
-#[allow(missing_docs)]
 pub struct QuantileArrays<'a> {
     list_array: &'a ListArray,
     quantile_array: &'a Float64Array,
