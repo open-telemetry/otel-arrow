@@ -34,9 +34,9 @@ use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -112,6 +112,10 @@ trait Batcher<T: OtapPayloadHelpers> {
         signal: SignalType,
         records: Vec<T>,
     ) -> Result<Vec<T>, PDataError>;
+
+    /// We are using an empty DelayData request as a one-shot
+    /// timer. This returns the appropriate empty request.
+    /// TODO: Add proper one-shot timer and cancellation, see #1472.
     fn wakeup(signal: SignalType) -> T;
 }
 
@@ -271,7 +275,6 @@ struct BatchPortion {
     items: usize,
 }
 
-#[derive(Default)]
 struct Inputs<T: OtapPayloadHelpers> {
     /// Input batches.
     pending: Vec<T>,
@@ -320,7 +323,10 @@ struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
 
-struct BatchProcessorSignal<'a, T: OtapPayloadHelpers> {
+struct BatchProcessorSignal<'a, T: OtapPayloadHelpers>
+where
+    SignalBuffer<T>: Batcher<T>,
+{
     signal: SignalType,
     config: &'a Config,
     buffer: &'a mut SignalBuffer<T>,
@@ -572,7 +578,10 @@ impl BatchProcessor {
     }
 }
 
-impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
+impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T>
+where
+    SignalBuffer<T>: Batcher<T>,
+{
     fn for_signal(&self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
         BatchProcessorSignal {
             signal,
@@ -585,17 +594,21 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T> {
             metrics: self.metrics,
         }
     }
+
+    async fn handle(
+        &self,
+        signal: SignalType,
+        calldata: CallData,
+        effect: &mut local::EffectHandler<OtapPdata>,
+        res: &Result<(), String>,
+    ) -> Result<(), EngineError> {
+        self.for_signal(signal)
+            .handle(signal, calldata, effect, res)
+            .await
+    }
 }
 
-// impl<'a, T: OtapPayloadHelpers> Batcher<T> for &mut BatchProcessorSignal<'a, T> {
-//     fn make_batches(&self, signal: SignalType, pending: Vec<T>) -> Result<Vec<T>, PDataError> {
-//         // @@@
-//         Ok(pending)
-//     }
-//     fn wakeup(&self) -> T {}
-// }
-
-impl<'a> Batcher<OtapArrowRecords> for BatchProcessorSignal<'a, OtapArrowRecords> {
+impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
     fn make_batches(
         cfg: &Config,
         signal: SignalType,
@@ -617,7 +630,7 @@ impl<'a> Batcher<OtapArrowRecords> for BatchProcessorSignal<'a, OtapArrowRecords
     }
 }
 
-impl<'a> Batcher<OtlpProtoBytes> for BatchProcessorSignal<'a, OtlpProtoBytes> {
+impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
     fn make_batches(
         cfg: &Config,
         signal: SignalType,
@@ -627,6 +640,7 @@ impl<'a> Batcher<OtlpProtoBytes> for BatchProcessorSignal<'a, OtlpProtoBytes> {
         debug_assert_eq!(cfg.sizer, Sizer::Bytes);
         make_bytes_batches(signal, nzu_to_nz64(cfg.max_size), pending)
     }
+
     fn wakeup(signal: SignalType) -> OtlpProtoBytes {
         match signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
@@ -638,7 +652,7 @@ impl<'a> Batcher<OtlpProtoBytes> for BatchProcessorSignal<'a, OtlpProtoBytes> {
 
 impl<'a, T: OtapPayloadHelpers> BatchProcessorSignal<'a, T>
 where
-    Self: Batcher<T>,
+    SignalBuffer<T>: Batcher<T>,
 {
     async fn accept_payload(
         &mut self,
@@ -740,7 +754,8 @@ where
         let count = inputs.requests();
         let pending = inputs.take_pending();
 
-        let mut output_batches = match Self::make_batches(self.config, signal, pending) {
+        let mut output_batches = match SignalBuffer::<T>::make_batches(self.config, signal, pending)
+        {
             Ok(v) => v,
             Err(e) => {
                 self.metrics.batching_errors.add(count as u64);
@@ -823,6 +838,24 @@ where
 
         Ok(())
     }
+
+    async fn handle(
+        &mut self,
+        signal: SignalType,
+        calldata: CallData,
+        effect: &mut local::EffectHandler<OtapPdata>,
+        res: &Result<(), String>,
+    ) -> Result<(), EngineError> {
+        let outkey: SlotKey = calldata.try_into()?;
+
+        if let Some(parts) = self.buffer.outbound.take(outkey) {
+            self.buffer
+                .handle_partial_responses(signal, effect, res, parts)
+                .await?;
+        }
+
+        Ok(())
+    }
 }
 
 impl<T: OtapPayloadHelpers> Inputs<T> {
@@ -841,7 +874,7 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         ack: AckMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.handle_response(ack.accepted.signal_type(), ack.calldata, effect, &Ok(()))
+        self.handle_response(*ack.accepted, ack.calldata, effect, &Ok(()))
             .await
     }
 
@@ -851,13 +884,13 @@ impl BatchProcessor {
         nack: NackMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
         let res = Err(nack.reason);
-        self.handle_response(nack.refused.signal_type(), nack.calldata, effect, &res)
+        self.handle_response(*nack.refused, nack.calldata, effect, &res)
             .await
     }
 
     async fn handle_response(
         &mut self,
-        signal: SignalType,
+        retdata: OtapPdata,
         calldata: CallData,
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
@@ -865,20 +898,19 @@ impl BatchProcessor {
         if calldata.is_empty() {
             return Ok(());
         }
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
-        };
-        let outkey: SlotKey = calldata.try_into()?;
 
-        if let Some(parts) = buffer.outbound.take(outkey) {
-            buffer
-                .handle_partial_responses(signal, effect, res, parts)
-                .await?;
+        let signal = retdata.signal_type();
+        match retdata.signal_format() {
+            SignalFormat::OtapRecords => self
+                .otap_format()
+                .expect("some")
+                .handle(signal, calldata, effect, res),
+            SignalFormat::OtlpBytes => self
+                .otlp_format()
+                .expect("some")
+                .handle(signal, calldata, effect, res),
         }
-
-        Ok(())
+        .await
     }
 }
 
@@ -931,6 +963,16 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 NodeControlMsg::TimerTick { .. } => unreachable!(),
             },
             Message::PData(request) => self.process_signal_impl(effect, request).await,
+        }
+    }
+}
+
+impl<T: OtapPayloadHelpers> Default for Inputs<T> {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            context: Vec::new(),
+            items: 0,
         }
     }
 }
@@ -999,10 +1041,14 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
     }
 }
 
-impl<T: OtapPayloadHelpers> SignalBuffer<T> {
+impl<T: OtapPayloadHelpers> SignalBuffer<T>
+where
+    Inputs<T>: Default,
+    Self: Batcher<T>,
+{
     fn new(cfg: &Config) -> Self {
         Self {
-            inputs: Inputs::<T>::default(),
+            inputs: Inputs::default(),
             inbound: SlotState::new(cfg.inbound_request_limit.get()),
             outbound: SlotState::new(cfg.outbound_request_limit.get()),
             arrival: None,
@@ -1115,24 +1161,13 @@ impl<T: OtapPayloadHelpers> SignalBuffer<T> {
     ) -> Result<(), EngineError> {
         self.arrival = Some(now);
 
-        // TODO: We are using an empty DelayData request, which is
-        // relatively bogus way to set a timer. We should revisit how
-        // to set one-shot timers. Note! The processor trait does not
-        // have a start() method, so it's relatively not easy to set a
-        // periodic timer in this component. Note! This means we might
-        // have a bunch of timers pending, when we want a timer we can
-        // cancel.
-        let wakeup: OtapPayload = match signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
-        }
-        .into();
-
         effect
             .delay_data(
                 now + timeout,
-                Box::new(OtapPdata::new(Context::default(), wakeup)),
+                Box::new(OtapPdata::new(
+                    Context::default(),
+                    Self::wakeup(signal).into(),
+                )),
             )
             .await
             .map_err(|_| EngineError::ProcessorError {
