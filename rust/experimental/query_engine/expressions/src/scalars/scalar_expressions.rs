@@ -1573,8 +1573,6 @@ impl InvokeFunctionScalarExpression {
 
             if return_count == 1
                 && let ScalarExpression::Static(s) = return_statement.unwrap()
-                && (self.value_type.is_none()
-                    || self.value_type.clone().unwrap() == s.get_value_type())
             {
                 return Ok(Some(if s.foldable() {
                     ResolvedStaticScalarExpression::FoldEligibleReference(s)
