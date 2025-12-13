@@ -355,7 +355,11 @@ mod tests {
         let bundle2 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
         let _ = seg.append(&bundle2).expect("append succeeds");
 
-        assert_eq!(seg.opened_at().unwrap(), opened_at, "opened_at should not change after first bundle");
+        assert_eq!(
+            seg.opened_at().unwrap(),
+            opened_at,
+            "opened_at should not change after first bundle"
+        );
     }
 
     #[test]

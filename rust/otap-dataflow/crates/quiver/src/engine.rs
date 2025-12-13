@@ -1312,7 +1312,7 @@ mod tests {
         // Use a large size so size-based finalization won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: Duration::from_millis(50), // Very short duration
+            max_open_duration: Duration::from_millis(50),                   // Very short duration
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -1359,7 +1359,7 @@ mod tests {
         // Use a large size threshold so size-based finalization won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: std::time::Duration::from_secs(3600), // 1 hour
+            max_open_duration: std::time::Duration::from_secs(3600),        // 1 hour
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -1395,7 +1395,11 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
             .collect();
-        assert_eq!(final_entries.len(), 1, "expected one segment file after shutdown");
+        assert_eq!(
+            final_entries.len(),
+            1,
+            "expected one segment file after shutdown"
+        );
 
         // Verify the segment contains the correct data
         let segment_path = final_entries[0].path();
@@ -1417,7 +1421,9 @@ mod tests {
         let engine = QuiverEngine::new(config).expect("config valid");
 
         // Shutdown without ingesting anything should succeed
-        engine.shutdown().expect("shutdown on empty segment succeeds");
+        engine
+            .shutdown()
+            .expect("shutdown on empty segment succeeds");
 
         // No segment files should be created
         let segment_dir = temp_dir.path().join("segments");
@@ -1437,7 +1443,7 @@ mod tests {
         // Use large size and time thresholds so they won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: std::time::Duration::from_secs(3600), // 1 hour
+            max_open_duration: std::time::Duration::from_secs(3600),        // 1 hour
             max_stream_count: 3, // Very small - will trigger after 3 unique streams
         };
         let config = QuiverConfig::builder()
