@@ -104,7 +104,7 @@ impl<PData> EffectHandlerCore<PData> {
         // (load balancing).
         // Goal: Load balancing incoming connections.
         // TODO: Investigate adding set_reuse_port support for Windows.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(unix)]
         {
             sock.set_reuse_port(true).map_err(into_engine_error)?;
         }
@@ -154,7 +154,7 @@ impl<PData> EffectHandlerCore<PData> {
         // (load balancing).
         // Goal: Load balancing incoming packets.
         // TODO: Investigate adding set_reuse_port support for Windows.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(unix)]
         {
             sock.set_reuse_port(true).map_err(into_engine_error)?;
         }
