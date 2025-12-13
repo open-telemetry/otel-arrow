@@ -205,7 +205,23 @@ impl SegmentWriter {
         let mut stream_metadata_list: Vec<StreamMetadata> = Vec::with_capacity(streams.len());
 
         for (ipc_bytes, mut metadata) in streams {
-            // Update metadata with actual offset
+            // Align stream start to 8-byte boundary for zero-copy mmap reads.
+            // Arrow IPC internally uses 8-byte alignment for data buffers,
+            // but those offsets are relative to the IPC file start. If the IPC
+            // file itself starts at an unaligned offset within the mmap region,
+            // Arrow must copy the data to achieve alignment. Padding here
+            // ensures each stream starts aligned, preserving zero-copy behavior.
+            let padding = (8 - (offset % 8)) % 8;
+            if padding > 0 {
+                let pad_bytes = vec![0u8; padding as usize];
+                writer
+                    .write_all(&pad_bytes)
+                    .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+                hasher.update(&pad_bytes);
+                offset += padding;
+            }
+
+            // Update metadata with actual (aligned) offset
             metadata.byte_offset = offset;
             metadata.byte_length = ipc_bytes.len() as u64;
 

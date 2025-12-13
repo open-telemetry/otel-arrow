@@ -402,6 +402,15 @@ impl SegmentReader {
         &self.manifest
     }
 
+    /// Returns a reference to the underlying buffer.
+    ///
+    /// This is primarily useful for testing zero-copy behavior by verifying
+    /// that record batch data buffers point into the mmap region.
+    #[cfg(test)]
+    pub(crate) fn buffer(&self) -> &Buffer {
+        &self.buffer
+    }
+
     /// Returns metadata for a specific stream by ID.
     #[must_use]
     pub fn stream(&self, id: StreamId) -> Option<&StreamMetadata> {
@@ -1236,5 +1245,106 @@ mod tests {
             bundle.payload(SlotId::new(0)).map(|b| b.num_rows()),
             Some(2)
         );
+    }
+
+    /// Tests mmap reading with multiple streams to verify Arrow IPC alignment
+    /// works correctly when streams are concatenated in the segment file.
+    ///
+    /// This test also verifies that data is truly zero-copy by checking that
+    /// the returned RecordBatch data buffers point into the mmap region rather
+    /// than to copied memory.
+    #[cfg(feature = "mmap")]
+    #[test]
+    fn mmap_multi_stream_alignment() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("multi_stream_mmap.qseg");
+
+        let schema = test_schema();
+        let fp0 = [0x11u8; 32];
+        let fp1 = [0x22u8; 32];
+        let fp2 = [0x33u8; 32];
+
+        // Create batches with different sizes to exercise alignment edge cases
+        let batch0 = make_batch(&schema, &[1, 2, 3], &["a", "b", "c"]);
+        let batch1 = make_batch(&schema, &[10, 20], &["xx", "yy"]);
+        let batch2 = make_batch(&schema, &[100], &["zzzzz"]);
+
+        let mut open_segment = OpenSegment::new();
+
+        // Each slot gets a different fingerprint, creating 3 separate streams
+        let bundle = TestBundle::new(vec![
+            SlotDescriptor::new(SlotId::new(0), "Logs"),
+            SlotDescriptor::new(SlotId::new(1), "LogAttrs"),
+            SlotDescriptor::new(SlotId::new(2), "ScopeAttrs"),
+        ])
+        .with_payload(SlotId::new(0), fp0, batch0.clone())
+        .with_payload(SlotId::new(1), fp1, batch1.clone())
+        .with_payload(SlotId::new(2), fp2, batch2.clone());
+
+        let _ = open_segment.append(&bundle);
+
+        let (streams, manifest) = open_segment.finalize().expect("finalize");
+
+        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let _ = writer
+            .write_to_file(&path, streams, manifest)
+            .expect("write");
+
+        // Read back with mmap
+        let reader = SegmentReader::open_mmap(&path).expect("open_mmap");
+
+        assert_eq!(reader.stream_count(), 3);
+        assert_eq!(reader.bundle_count(), 1);
+
+        let entry = reader.manifest()[0].clone();
+        let bundle = reader.read_bundle(&entry).expect("read_bundle");
+
+        assert_eq!(bundle.slot_count(), 3);
+
+        // Verify each slot's data is correctly reconstructed from mmap
+        let p0 = bundle.payload(SlotId::new(0)).expect("slot 0");
+        assert_eq!(p0.num_rows(), 3);
+
+        let p1 = bundle.payload(SlotId::new(1)).expect("slot 1");
+        assert_eq!(p1.num_rows(), 2);
+
+        let p2 = bundle.payload(SlotId::new(2)).expect("slot 2");
+        assert_eq!(p2.num_rows(), 1);
+
+        // Verify actual column data to ensure no corruption
+        let col0 = p0.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(col0.values(), &[1, 2, 3]);
+
+        let col1 = p1.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(col1.values(), &[10, 20]);
+
+        let col2 = p2.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(col2.values(), &[100]);
+
+        // Verify zero-copy: check that array data buffers point into the mmap region.
+        // Get the mmap base address and length
+        let mmap_ptr = reader.buffer().as_ptr() as usize;
+        let mmap_end = mmap_ptr + reader.buffer().len();
+
+        // Check that each column's data buffer is within the mmap region
+        for slot_id in [0, 1, 2] {
+            let payload = bundle.payload(SlotId::new(slot_id)).unwrap();
+            let col = payload.column(0);
+            let data = col.to_data();
+            for buffer in data.buffers() {
+                let buf_ptr = buffer.as_ptr() as usize;
+                let buf_end = buf_ptr + buffer.len();
+                // Buffer should be within mmap region (zero-copy)
+                assert!(
+                    buf_ptr >= mmap_ptr && buf_end <= mmap_end,
+                    "slot {} buffer at {:x}..{:x} is outside mmap {:x}..{:x} - data was copied!",
+                    slot_id,
+                    buf_ptr,
+                    buf_end,
+                    mmap_ptr,
+                    mmap_end
+                );
+            }
+        }
     }
 }

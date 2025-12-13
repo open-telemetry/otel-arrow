@@ -542,10 +542,12 @@ future versions to extend the footer without breaking backwards compatibility:
 - While a segment is open, Quiver appends messages to each stream using the
   Arrow **streaming** format so we can keep adding batches without rewriting
   footers.
-- On finalize, each stream flushes any buffered messages, writes an Arrow
-  **file** footer, and aligns the slice on an 8-byte boundary. The header stores
-  the final offsets and lengths so readers can memory map the slice and hand it
-  directly to `arrow_ipc::FileReader`.
+- On finalize, each stream flushes any buffered messages and writes an Arrow
+  **file** footer. When writing to disk, each stream is aligned to an 8-byte
+  boundary. This ensures that mmap reads are zero-copy: Arrow IPC uses 8-byte
+  alignment internally for data buffers, and aligning stream starts ensures
+  those offsets remain aligned in the mmap region. Without this padding, Arrow
+  would silently copy misaligned data to achieve alignment.
 - During replay, the reader consults the manifest to rebuild each
   `RecordBundle`, hydrating only the payloads the consumer requested.
 
