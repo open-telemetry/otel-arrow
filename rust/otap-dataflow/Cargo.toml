@@ -91,7 +91,7 @@ mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
 tikv-jemallocator = { version = "0.6.1" }
 tikv-jemalloc-ctl = { version = "0.6.1" }
-memmap2 = "0.9.9"
+memmap2 = "0.9"
 nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
