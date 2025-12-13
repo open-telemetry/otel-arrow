@@ -537,6 +537,89 @@ future versions to extend the footer without breaking backwards compatibility:
 5. Parse version from footer to determine how to interpret remaining fields
 6. Use directory/manifest offsets to locate metadata sections
 
+#### Segment File Naming
+
+Segment files are named using a zero-padded 16-digit sequence number with
+the `.qseg` extension:
+
+```text
+{segment_seq:016}.qseg
+```
+
+Examples:
+
+- `0000000000000000.qseg` (sequence 0)
+- `0000000000000001.qseg` (sequence 1)
+- `0000000000123456.qseg` (sequence 123456)
+
+The 16-digit zero-padding ensures lexicographic ordering matches numeric
+ordering, allowing simple directory listings to enumerate segments in order.
+The `SegmentSeq::to_filename_component()` method generates this format.
+
+#### Read-Only Enforcement
+
+Finalized segment files are immutable by design. After writing completes,
+`SegmentWriter` sets restrictive file permissions to prevent accidental
+modification:
+
+- **Unix**: Permissions are set to `0o440` (read-only for owner and group,
+  no access for others). This provides defense-in-depth against accidental
+  writes while still allowing the process and admin group to read.
+- **Non-Unix**: Uses the platform's `set_readonly(true)` mechanism.
+
+This immutability guarantee is critical for:
+
+- **CRC integrity**: Any modification would invalidate the file's checksum
+- **mmap safety**: Memory-mapped reads assume file contents don't change
+- **Compaction**: Background processes could safely read segments while new
+  data is written to other files
+
+#### Slot Reference Encoding
+
+The batch manifest stores slot references as a compact string format in the
+`slot_refs` column. Each manifest entry can reference multiple slots, and
+each slot maps to a specific chunk within a stream:
+
+```text
+slot_id:stream_id:chunk_index[,slot_id:stream_id:chunk_index,...]
+```
+
+Example: `"1:0:0,2:1:0,30:2:0,31:3:0"` represents a bundle with 4 slots:
+
+- Slot 1 → Stream 0, chunk 0
+- Slot 2 → Stream 1, chunk 0
+- Slot 30 → Stream 2, chunk 0
+- Slot 31 → Stream 3, chunk 0
+
+This encoding is space-efficient for the common case where bundles have
+only a few slots, while remaining human-readable for debugging. The reader
+parses this string to reconstruct the mapping from slot IDs to stream chunks.
+
+#### Error Handling and Recovery
+
+Segment files are designed to be safely detectable as corrupt or incomplete:
+
+| Error Condition | Detection Mechanism | Recovery Action |
+|-----------------|---------------------|-----------------|
+| Truncated file | File too short for trailer (< 16 bytes) | `SegmentError::Truncated` - skip file |
+| Invalid magic | Trailer magic bytes mismatch | `SegmentError::InvalidFormat` - skip file |
+| CRC mismatch | Computed CRC ≠ stored CRC | `SegmentError::ChecksumMismatch` - skip file |
+| Partial write | CRC mismatch (write interrupted) | `SegmentError::ChecksumMismatch` - skip file |
+| Invalid IPC | Arrow decoder failure | `SegmentError::Arrow` - skip file |
+| Missing stream | Stream ID not in directory | `SegmentError::StreamNotFound` |
+| Missing slot | Slot not in manifest entry | `SegmentError::SlotNotInBundle` |
+
+**Partial write safety**: The CRC32 at the end of the file is written last.
+If a write is interrupted (crash, power loss), one of three outcomes occurs:
+
+1. File is too short to contain a valid trailer → detected as truncated
+2. File has garbage at the end → CRC mismatch
+3. File was written completely → CRC validates
+
+This design ensures that partially written segment files are never mistaken
+for valid data. The engine can safely skip corrupt segments during startup
+and continue operating with the valid ones.
+
 #### Arrow IPC Encoding
 
 - While a segment is open, Quiver appends messages to each stream using the
