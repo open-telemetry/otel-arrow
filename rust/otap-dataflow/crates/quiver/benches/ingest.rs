@@ -97,7 +97,8 @@ fn bench_config(temp_dir: &std::path::Path, segment_size_mb: u64) -> QuiverConfi
             ..Default::default()
         })
         .segment(SegmentConfig {
-            target_size_bytes: NonZeroU64::new(segment_size_mb * 1024 * 1024).unwrap(),
+            target_size_bytes: NonZeroU64::new(segment_size_mb * 1024 * 1024)
+                .expect("segment size must be non-zero"),
             max_open_duration: Duration::from_secs(3600), // Don't time-finalize
             ..Default::default()
         })
@@ -203,7 +204,8 @@ fn ingest_with_finalization(c: &mut Criterion) {
                     .segment(SegmentConfig {
                         // ~100 bytes per row * 1,000 rows = 100KB per bundle
                         // 500KB target = finalize every ~5 bundles
-                        target_size_bytes: NonZeroU64::new(500 * 1024).unwrap(),
+                        target_size_bytes: NonZeroU64::new(500 * 1024)
+                            .expect("segment size must be non-zero"),
                         max_open_duration: Duration::from_secs(3600),
                         ..Default::default()
                     })

@@ -106,7 +106,7 @@ impl BenchBundle {
                 Arc::new(service_name_builder.finish()),
             ],
         )
-        .unwrap();
+        .expect("valid resource batch");
 
         // ScopeAttrs - also typically fewer rows
         let scope_rows = (num_rows / 5).max(1);
@@ -123,7 +123,7 @@ impl BenchBundle {
                 Arc::new(scope_name_builder.finish()),
             ],
         )
-        .unwrap();
+        .expect("valid scope batch");
 
         // Logs - main records, full row count
         let mut log_id_builder = Int64Builder::with_capacity(num_rows);
@@ -142,7 +142,7 @@ impl BenchBundle {
                 Arc::new(body_builder.finish()),
             ],
         )
-        .unwrap();
+        .expect("valid logs batch");
 
         // LogAttrs - typically more rows than logs (multiple attrs per log)
         let attr_rows = num_rows * 3; // ~3 attributes per log on average
@@ -162,7 +162,7 @@ impl BenchBundle {
                 Arc::new(attr_value_builder.finish()),
             ],
         )
-        .unwrap();
+        .expect("valid log attrs batch");
 
         let mut payloads = HashMap::new();
         // Use slot IDs matching OTAP ArrowPayloadType enum values
@@ -432,7 +432,9 @@ fn segment_reader_open(c: &mut Criterion) {
         let (_temp_dir, segment_path) = create_test_segment(num_bundles, 1_000);
 
         // Get file size for throughput calculation
-        let file_size = std::fs::metadata(&segment_path).unwrap().len();
+        let file_size = std::fs::metadata(&segment_path)
+            .expect("segment file exists")
+            .len();
         group.throughput(Throughput::Bytes(file_size));
 
         // Benchmark open (read into memory)
