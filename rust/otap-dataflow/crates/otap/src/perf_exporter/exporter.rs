@@ -39,6 +39,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -129,7 +130,11 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
 
-        effect_handler.info("Starting Perf Exporter\n").await;
+        otel_info!(
+            "Exporter.Start",
+            frequency_ms = self.config.frequency(),
+            message = "Starting Perf Exporter"
+        );
 
         // Start telemetry collection tick as a dedicated control message.
         let timer_cancel_handle = effect_handler

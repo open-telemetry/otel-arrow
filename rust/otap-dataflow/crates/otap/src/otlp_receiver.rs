@@ -293,6 +293,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        otap_df_telemetry::otel_info!("Receiver.Start", message = "Starting OTLP Receiver");
+
         // Make the receiver mutable so we can update metrics on telemetry collection.
         let config = &self.config.grpc;
         let listener = effect_handler.tcp_listener(config.listening_addr)?;

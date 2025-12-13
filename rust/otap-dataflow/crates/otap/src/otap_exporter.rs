@@ -35,6 +35,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,12 +109,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        effect_handler
-            .info(&format!(
-                "Exporting OTLP traffic to endpoint: {}",
-                self.config.grpc_endpoint
-            ))
-            .await;
+        otel_info!(
+            "Exporter.Start",
+            grpc_endpoint = self.config.grpc_endpoint.as_str(),
+            message = "Starting OTAP Exporter"
+        );
 
         let exporter_id = effect_handler.exporter_id();
         let mut endpoint =
