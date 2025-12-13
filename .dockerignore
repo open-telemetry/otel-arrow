@@ -1,0 +1,39 @@
+# Rust
+target/
+**/target/
+**/*.rs.bk
+
+# Go
+bin/
+pkg/
+*.exe
+*.test
+
+# Common build junk
+*.log
+*.tmp
+*.swp
+*.swo
+
+# VCS
+.git/
+.gitignore
+
+# IDE crap
+.vscode/
+.idea/
+*.iml
+
+# OS crap
+.DS_Store
+Thumbs.db
+
+# Dependencies / vendored
+node_modules/
+vendor/
+
+# Large artifacts
+dist/
+build/
+out/
+coverage/

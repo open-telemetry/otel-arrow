@@ -1,13 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use bytes::{BufMut, Bytes, BytesMut};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelAnyValueEnum;
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::config::{Config, SchemaConfig};
 
 const ATTRIBUTES_FIELD: &str = "attributes";
+
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+/// Flat view of final log line: resource + scope + record
+#[derive(Serialize)]
+struct LogEntry<'a> {
+    #[serde(flatten)]
+    resource: &'a serde_json::Map<String, Value>,
+
+    #[serde(flatten)]
+    scope: &'a serde_json::Map<String, Value>,
+
+    #[serde(flatten)]
+    record: serde_json::Map<String, Value>,
+}
 
 // TODO: Performance review and improvements
 // TODO: Make sure mapping of all fields are covered
@@ -16,74 +33,80 @@ pub struct Transformer {
     schema: SchemaConfig,
 }
 
+// TODO: Remove print_stdout after logging is set up
+#[allow(clippy::print_stdout)]
 impl Transformer {
-    /// Create a new transformer with the given configuration.
-    /// Must be used; constructing and discarding would be a no-op.
     #[must_use]
+    /// Create a new Transformer instance
     pub fn new(config: &Config) -> Self {
         Self {
             schema: config.api.schema.clone(),
         }
     }
 
-    /// Convert OTLP logs to flat JSON objects for Log Analytics.
-    /// Must be used; otherwise transformed entries are lost.
     #[must_use]
-    // TODO: Remove print_stdout after logging is set up
-    #[allow(clippy::print_stdout)]
-    pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Value> {
-        let mut entries = Vec::new();
+    /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
+    pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Bytes> {
+        let mut results = Vec::new();
+
+        // Single-threaded reusable buffer
+        let mut buf = BytesMut::with_capacity(512);
 
         for resource_logs in &request.resource_logs {
             let resource_attrs = if !self.schema.disable_schema_mapping {
-                // Schema mapping enabled: only add mapped resource attributes
                 self.apply_resource_mapping(&resource_logs.resource)
             } else {
-                // Schema mapping disabled: no resource attributes in legacy format
                 serde_json::Map::new()
             };
 
             for scope_logs in &resource_logs.scope_logs {
                 let scope_attrs = if !self.schema.disable_schema_mapping {
-                    // Schema mapping enabled: only add mapped scope attributes
                     self.apply_scope_mapping(&scope_logs.scope)
                 } else {
-                    // Schema mapping disabled: no scope attributes in legacy format
                     serde_json::Map::new()
                 };
 
                 for log_record in &scope_logs.log_records {
-                    let mut entry = serde_json::Map::new();
-
-                    if self.schema.disable_schema_mapping {
-                        // Legacy transform when schema mapping is disabled
-                        Self::legacy_transform(&mut entry, log_record);
+                    // Record-only map (no resource/scope here)
+                    let record_map = if self.schema.disable_schema_mapping {
+                        Self::legacy_transform_to_map(log_record)
                     } else {
-                        // Apply configured mappings when schema mapping is enabled
-
-                        // Add resource and scope attributes first
-                        for (k, v) in &resource_attrs {
-                            let _ = entry.insert(k.clone(), v.clone());
+                        match self.transform_log_record_to_map(log_record) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                println!(
+                                    "[AzureMonitorExporter] Skipping log record due to transformation error: {e}"
+                                );
+                                continue;
+                            }
                         }
-                        for (k, v) in &scope_attrs {
-                            let _ = entry.insert(k.clone(), v.clone());
-                        }
+                    };
 
-                        // Transform log record based on mapping
-                        // TODO: a mechanism needed to handle logs that are dropped
-                        if let Err(e) = self.transform_log_record(&mut entry, log_record) {
-                            // TODO: log it appropriately (perhaps as part of monmon)
-                            println!("Failed to transform log record: {e}");
+                    let entry = LogEntry {
+                        resource: &resource_attrs,
+                        scope: &scope_attrs,
+                        record: record_map,
+                    };
+
+                    // Reuse buffer: keep capacity, reset len
+                    buf.clear();
+
+                    {
+                        let writer = (&mut buf).writer();
+                        let mut ser = serde_json::Serializer::new(writer);
+                        if let Err(e) = entry.serialize(&mut ser) {
+                            println!("Failed to serialize log entry: {e}");
                             continue;
                         }
                     }
 
-                    entries.push(Value::Object(entry));
+                    // clone().freeze() = zero-copy Bytes from shared backing buf
+                    results.push(buf.clone().freeze());
                 }
             }
         }
 
-        entries
+        results
     }
 
     /// Legacy transform when schema mapping is disabled (matches Go implementation)
@@ -91,7 +114,6 @@ impl Transformer {
         destination: &mut serde_json::Map<String, Value>,
         log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
     ) {
-        // Use timestamp or fallback to observed timestamp
         let timestamp = if log_record.time_unix_nano != 0 {
             Self::format_timestamp(log_record.time_unix_nano)
         } else {
@@ -99,7 +121,6 @@ impl Transformer {
         };
         let _ = destination.insert("TimeGenerated".to_string(), json!(timestamp));
 
-        // Add raw data as body string
         if let Some(ref body) = log_record.body {
             if let Some(ref value) = body.value {
                 let body_str = Self::extract_string_value(value);
@@ -108,7 +129,17 @@ impl Transformer {
         }
     }
 
-    /// Apply resource mapping based on configuration  
+    /// Legacy transform → Map (wrapper so we can reuse logic)
+    #[inline]
+    fn legacy_transform_to_map(
+        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
+    ) -> serde_json::Map<String, Value> {
+        let mut map = serde_json::Map::new();
+        Self::legacy_transform(&mut map, log_record);
+        map
+    }
+
+    /// Apply resource mapping based on configuration
     fn apply_resource_mapping(
         &self,
         resource: &Option<opentelemetry_proto::tonic::resource::v1::Resource>,
@@ -116,7 +147,6 @@ impl Transformer {
         let mut attrs = serde_json::Map::new();
 
         if let Some(resource) = resource {
-            // Iterate over attributes once, lookup in HashMap for each
             for attr in &resource.attributes {
                 if let Some(mapped_name) = self.schema.resource_mapping.get(&attr.key) {
                     if let Some(ref value) = attr.value {
@@ -139,7 +169,6 @@ impl Transformer {
         let mut attrs = serde_json::Map::new();
 
         if let Some(scope) = scope {
-            // Iterate over attributes once, lookup in HashMap for each
             for attr in &scope.attributes {
                 if let Some(mapped_name) = self.schema.scope_mapping.get(&attr.key) {
                     if let Some(ref value) = attr.value {
@@ -154,18 +183,26 @@ impl Transformer {
         attrs
     }
 
+    /// Transform log record fields into a Map (no resource/scope)
+    #[inline]
+    fn transform_log_record_to_map(
+        &self,
+        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
+    ) -> Result<serde_json::Map<String, Value>, String> {
+        let mut map = serde_json::Map::new();
+        self.transform_log_record(&mut map, log_record)?;
+        Ok(map)
+    }
+
     /// Transform log record fields based on the log_record_mapping configuration
     fn transform_log_record(
         &self,
         destination: &mut serde_json::Map<String, Value>,
         log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
     ) -> Result<(), String> {
-        // Process each mapping in log_record_mapping
         for (key, value) in &self.schema.log_record_mapping {
             if key == ATTRIBUTES_FIELD {
-                // Handle nested attribute mapping
                 if let Some(attr_mapping) = value.as_object() {
-                    // Iterate over log attributes once, lookup each in the mapping
                     for attr in &log_record.attributes {
                         if let Some(attr_value) = attr_mapping.get(&attr.key) {
                             if let Some(ref value) = attr.value {
@@ -182,7 +219,6 @@ impl Transformer {
                     }
                 }
             } else {
-                // Handle direct log record field mapping - PROPAGATE ERRORS
                 let log_record_value = Self::extract_value_from_log_record(key, log_record)?;
                 let field_name = value
                     .as_str()
@@ -244,7 +280,35 @@ impl Transformer {
         }
     }
 
-    /// Convert AnyValue to JSON Value
+    /// Hot path - called for every byte in trace_id/span_id
+    #[inline]
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
+            hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
+        }
+        hex
+    }
+
+    /// Called for every log record timestamp
+    #[inline]
+    fn format_timestamp(time_unix_nano: u64) -> String {
+        if time_unix_nano > 0 {
+            let secs = (time_unix_nano / 1_000_000_000) as i64;
+            let nanos = (time_unix_nano % 1_000_000_000) as u32;
+            if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
+                dt.to_rfc3339()
+            } else {
+                chrono::Utc::now().to_rfc3339()
+            }
+        } else {
+            chrono::Utc::now().to_rfc3339()
+        }
+    }
+
+    /// Called recursively for every attribute value
+    #[inline]
     fn convert_any_value(value: &OtelAnyValueEnum) -> Value {
         match value {
             OtelAnyValueEnum::StringValue(s) => json!(s),
@@ -275,37 +339,8 @@ impl Transformer {
         }
     }
 
-    /// Convert bytes to hex string
-    fn bytes_to_hex(bytes: &[u8]) -> String {
-        // Pre-allocate the exact size needed (2 hex chars per byte)
-        // This avoids repeated allocations
-        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
-
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for &byte in bytes {
-            hex.push(HEX_CHARS[(byte >> 4) as usize] as char);
-            hex.push(HEX_CHARS[(byte & 0x0f) as usize] as char);
-        }
-        hex
-    }
-
-    /// Format timestamp from Unix nano to datetime string
-    fn format_timestamp(time_unix_nano: u64) -> String {
-        if time_unix_nano > 0 {
-            let secs = (time_unix_nano / 1_000_000_000) as i64;
-            let nanos = (time_unix_nano % 1_000_000_000) as u32;
-            if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
-                // Use RFC3339 format to match Go's time.Time format
-                dt.to_rfc3339()
-            } else {
-                chrono::Utc::now().to_rfc3339()
-            }
-        } else {
-            chrono::Utc::now().to_rfc3339()
-        }
-    }
-
-    /// Extract string value from AnyValue (matches Go's AsString behavior)
+    /// Called for body extraction on every record
+    #[inline]
     fn extract_string_value(value: &OtelAnyValueEnum) -> String {
         match value {
             OtelAnyValueEnum::StringValue(s) => s.clone(),
@@ -322,7 +357,6 @@ impl Transformer {
                 format!("[{}]", values.join(", "))
             }
             OtelAnyValueEnum::KvlistValue(_) => {
-                // Convert to JSON string for complex values
                 let json_val = Self::convert_any_value(value);
                 json_val.to_string()
             }
@@ -402,8 +436,10 @@ mod tests {
 
         let result = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 1);
-        assert!(result[0]["TimeGenerated"].as_str().is_some());
-        assert_eq!(result[0]["RawData"], "test body");
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["TimeGenerated"].as_str().is_some());
+        assert_eq!(json["RawData"], "test body");
     }
 
     #[test]
@@ -456,11 +492,13 @@ mod tests {
 
         let result = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["ServiceName"], "my-service");
-        assert_eq!(result[0]["ScopeName"], "my-scope");
-        assert_eq!(result[0]["Body"], "42");
-        assert_eq!(result[0]["Severity"], "INFO");
-        assert_eq!(result[0]["TestAttr"], true);
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["ServiceName"], "my-service");
+        assert_eq!(json["ScopeName"], "my-scope");
+        assert_eq!(json["Body"], "42");
+        assert_eq!(json["Severity"], "INFO");
+        assert_eq!(json["TestAttr"], true);
     }
 
     #[test]
@@ -497,13 +535,15 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert!(result[0]["Time"].as_str().unwrap().contains("1970"));
-        assert!(result[0]["ObservedTime"].as_str().unwrap().contains("1970"));
-        assert_eq!(result[0]["TraceId"], "ff00");
-        assert_eq!(result[0]["SpanId"], "abcd");
-        assert_eq!(result[0]["Flags"], 1);
-        assert_eq!(result[0]["SeverityNum"], 9);
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+
+        assert!(json["Time"].as_str().unwrap().contains("1970"));
+        assert!(json["ObservedTime"].as_str().unwrap().contains("1970"));
+        assert_eq!(json["TraceId"], "ff00");
+        assert_eq!(json["SpanId"], "abcd");
+        assert_eq!(json["Flags"], 1);
+        assert_eq!(json["SeverityNum"], 9);
     }
 
     #[test]
@@ -537,8 +577,9 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result[0]["Body"], "[4.14, dead]");
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "[4.14, dead]");
     }
 
     #[test]
@@ -572,8 +613,9 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert!(result[0]["Body"].as_str().unwrap().contains("nested"));
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["Body"].as_str().unwrap().contains("nested"));
     }
 
     #[test]
@@ -614,10 +656,11 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result[0]["TraceId"], json!(null));
-        assert_eq!(result[0]["SpanId"], json!(null));
-        assert_eq!(result[0]["Body"], json!(null));
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TraceId"], json!(null));
+        assert_eq!(json["SpanId"], json!(null));
+        assert_eq!(json["Body"], json!(null));
     }
 
     #[test]
@@ -643,7 +686,7 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
         assert_eq!(result.len(), 0); // Record skipped due to error
     }
 
@@ -674,12 +717,8 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert!(
-            result[0]["TimeGenerated"]
-                .as_str()
-                .unwrap()
-                .contains("1970")
-        );
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["TimeGenerated"].as_str().unwrap().contains("1970"));
     }
 }
