@@ -79,7 +79,7 @@ const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 /// Note: these are not always supported. In the present code, the only
 /// supported Sizer value is Items. We expect future support for bytes and
 /// requests sizers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Sizer {
     /// Count requests. This metric counts one per OtapPdata message.
@@ -214,9 +214,14 @@ impl Config {
         }
 
         // Presently we have only the OTAP mode of batching, which supports only Items.
-        if self.sizer != Sizer::Items {
+        let (expect_sizer, with_msg) = match self.format {
+            BatchingFormat::Otap => (Sizer::Items, "OTAP batch sizer: must be items"),
+            BatchingFormat::Otlp => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
+            BatchingFormat::Preserve => (self.sizer.clone(), ""),
+        };
+        if self.sizer != expect_sizer {
             return Err(ConfigError::InvalidUserConfig {
-                error: "sizer: must be items".into(),
+                error: with_msg.into(),
             });
         }
 
