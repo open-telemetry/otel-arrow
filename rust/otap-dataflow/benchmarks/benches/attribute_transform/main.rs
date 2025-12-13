@@ -14,6 +14,10 @@ use otap_df_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
 };
 use otap_df_pdata::schema::consts;
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn generate_native_keys_attr_batch(
     num_rows: usize,

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Opentelemetry SDK integration for telemetry collection and reporting as a client.
+//! OpenTelemetry SDK integration for telemetry collection and reporting as a client.
 
 pub mod meter_provider;
 
@@ -29,8 +29,7 @@ impl OpentelemetryClient {
 
         let runtime = None;
 
-        let meter_provider =
-            MeterProvider::configure(sdk_resource, &config.metrics.readers, runtime)?;
+        let meter_provider = MeterProvider::configure(sdk_resource, &config.metrics, runtime)?;
 
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
@@ -138,6 +137,7 @@ mod tests {
                 exporter: MetricsPeriodicExporterConfig::Console,
                 interval: Duration::from_millis(10),
             })],
+            views: Vec::new(),
         };
 
         let config = TelemetryConfig {

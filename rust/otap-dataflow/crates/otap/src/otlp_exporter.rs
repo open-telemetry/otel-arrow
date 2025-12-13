@@ -1012,6 +1012,8 @@ mod tests {
         _ = shutdown_sender.send("Shutdown");
     }
 
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
+    #[cfg(not(windows))]
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
@@ -1186,9 +1188,9 @@ mod tests {
                 .await
                 .unwrap();
             let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
             assert_eq!(logs_exported_count, 2);
-            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 2);
 
             control_sender

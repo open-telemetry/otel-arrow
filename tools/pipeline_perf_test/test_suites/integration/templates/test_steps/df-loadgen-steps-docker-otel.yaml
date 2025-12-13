@@ -54,6 +54,7 @@ steps:
               variables:
                 engine_hostname: go-collector
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
+                signals_per_second: {% if signals_per_second is none %}null{% else %}{{signals_per_second | default(100000)}}{% endif %}
         post:
           # Wait for the telemetry endpoint to be active (TODO: switch to healthcheck endpoint when available).
           - ready_check_http:

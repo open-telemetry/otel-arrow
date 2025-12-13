@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::pipeline::service::telemetry::metrics::readers::Temporality;
 
-/// Opentelemetry OTLP Exporter configuration.
+/// OpenTelemetry OTLP Exporter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct OtlpExporterConfig {
     /// The Otlp communication protocol to use when exporting data.

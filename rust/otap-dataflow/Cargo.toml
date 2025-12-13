@@ -37,7 +37,8 @@ thiserror.workspace = true
 quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
-mimalloc-rust.workspace = true
+mimalloc.workspace = true
+tikv-jemallocator.workspace = true
 rustls = { workspace = true, optional = true }
 
 [workspace.dependencies]
@@ -85,8 +86,12 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 log = "0.4"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc-rust = "0.2.1"
+mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
+libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
+tikv-jemallocator = { version = "0.6.1" }
+tikv-jemalloc-ctl = { version = "0.6.1" }
 nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
+notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
 object_store = {version = "0.12.3", default-features = false}
 once_cell = "1.20.2"
@@ -155,6 +160,7 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
 byte-unit = "5.2.0"
+cpu-time = "1.0.0"
 
 # Azure Monnitor Exporter
 azure_core = {version = "0.30.1", default-features = false }

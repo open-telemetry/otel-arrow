@@ -67,13 +67,12 @@ use otap_df_telemetry::MetricsSystem;
 use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
+use tikv_jemallocator::Jemalloc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
-use mimalloc_rust::GlobalMiMalloc;
-
 #[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;

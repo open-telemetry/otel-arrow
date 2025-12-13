@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize, de::IgnoredAny};
 
 use crate::pipeline::service::telemetry::metrics::readers::periodic::otlp::OtlpExporterConfig;
 
-/// Opentelemetry Metrics Perioidc Exporter configuration.
+/// OpenTelemetry Metrics Periodic Exporter configuration.
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub enum MetricsPeriodicExporterConfig {
     /// Console exporter that writes metrics to the console.

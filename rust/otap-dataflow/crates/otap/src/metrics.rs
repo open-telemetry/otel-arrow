@@ -54,18 +54,22 @@ pub struct ExporterPDataMetrics {
 }
 
 impl ExporterPDataMetrics {
+    /// Increment the number of pdata messages consumed.
     pub fn inc_consumed(&mut self, st: SignalType) {
         self.add_consumed(st, 1);
     }
 
+    /// Increment the number of pdata messages exported.
     pub fn inc_exported(&mut self, st: SignalType) {
         self.add_exported(st, 1);
     }
 
+    /// Increment the number of pdata messages that failed to be exported.
     pub fn inc_failed(&mut self, st: SignalType) {
         self.add_failed(st, 1);
     }
 
+    /// Add to the number of of pdata messages consumed.
     pub fn add_consumed(&mut self, st: SignalType, count: u64) {
         if count == 0 {
             return;
@@ -77,6 +81,7 @@ impl ExporterPDataMetrics {
         }
     }
 
+    /// Add to the number of pdata messages exported.
     pub fn add_exported(&mut self, st: SignalType, count: u64) {
         if count == 0 {
             return;
@@ -88,6 +93,7 @@ impl ExporterPDataMetrics {
         }
     }
 
+    /// Add to the number of pdata messages that failed to be exported.
     pub fn add_failed(&mut self, st: SignalType, count: u64) {
         if count == 0 {
             return;

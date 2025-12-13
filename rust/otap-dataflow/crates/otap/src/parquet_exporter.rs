@@ -1516,7 +1516,7 @@ mod test {
             if desc.name == "exporter.pdata" {
                 saw_exporter_pdata = true;
                 for (_field, value) in iter {
-                    if value > 0 {
+                    if value.to_f64() > 0.0 {
                         any_positive = true;
                     }
                 }
