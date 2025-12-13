@@ -406,7 +406,7 @@ impl SegmentReader {
     ///
     /// This is primarily useful for testing zero-copy behavior by verifying
     /// that record batch data buffers point into the mmap region.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "mmap"))]
     pub(crate) fn buffer(&self) -> &Buffer {
         &self.buffer
     }
