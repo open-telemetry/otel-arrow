@@ -40,19 +40,27 @@ jobs:
             # Run disk cleanup script
             bash ./.github/workflows/scripts/disk-cleanup.sh
 
-            # Enable repos (no-op if already enabled)
-            sudo dnf -y install oracle-epel-release-el8 || true
-            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
-            sudo dnf -y makecache
+            # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
+            if rpm -q python3.11 python3.11-devel &>/dev/null; then
+              echo "Python 3.11 packages already installed, skipping repository setup and package installation"
+            else
+              # Enable repos and refresh metadata (only runs if Python not installed)
+              sudo dnf -y install oracle-epel-release-el8 || true
+              sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+              sudo dnf -y makecache --timer
 
-            # Install core packages (ignore subpackages that don't exist on OL8)
-            sudo dnf -y install python3.11 python3.11-devel || true
+              # Install core packages (ignore subpackages that don't exist on OL8)
+              sudo dnf -y install python3.11 python3.11-devel || true
+            fi
+
             # pip may be packaged as part of python3.11 or available via ensurepip;
             # fall back to ensurepip if needed.
             if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
               /usr/bin/python3.11 -m ensurepip --upgrade || true
             fi
-            /usr/bin/python3.11 -m pip install --upgrade pip setuptools wheel || true
+
+            # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
+            /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
 
             # Add a 'python' shim so subsequent steps can call `python ...`
             mkdir -p "$HOME/.local/bin"
