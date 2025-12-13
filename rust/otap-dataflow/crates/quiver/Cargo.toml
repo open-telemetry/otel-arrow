@@ -47,3 +47,7 @@ workspace = true
 [[bench]]
 name = "ingest"
 harness = false
+
+[[bench]]
+name = "segment"
+harness = false
