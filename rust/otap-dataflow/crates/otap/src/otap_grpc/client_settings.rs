@@ -170,7 +170,7 @@ impl GrpcClientSettings {
         let wants_tls = tls_utils::is_https_endpoint(&self.grpc_endpoint) || self.tls.is_some();
 
         #[cfg(not(feature = "experimental-tls"))]
-        let wants_tls = tls_utils::is_https_endpoint(&self.grpc_endpoint);
+        let wants_tls = self.grpc_endpoint.trim_start().starts_with("https://");
 
         if !wants_tls {
             return Ok(endpoint);
