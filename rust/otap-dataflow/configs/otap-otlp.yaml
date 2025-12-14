@@ -16,6 +16,20 @@ nodes:
       listening_addr: "127.0.0.1:4317"
       response_stream_channel_size: 256  # Required: channel buffer capacity (number of messages)
       # timeout: "30s"  # Optional: timeout for RPC requests
+
+      # TLS / mTLS (receiver-side)
+      # tls:
+      #   # Server identity (required for TLS)
+      #   cert_file: "/path/to/server.crt"   # or `cert_pem: | ...`
+      #   key_file: "/path/to/server.key"    # or `key_pem: | ...`
+      #
+      #   # Client certificate verification for mTLS (optional)
+      #   client_ca_file: "/path/to/client-ca.crt"  # or `client_ca_pem: | ...`
+      #   include_system_ca_certs_pool: false       # default is false
+      #
+      #   # Advanced settings
+      #   handshake_timeout: "10s"           # default is 10s
+      #   reload_interval: "5m"              # default is 5m
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otlp:exporter"
