@@ -284,7 +284,7 @@ async fn add_system_trust_anchors_if_enabled(
         // Loading native certificates involves blocking I/O (e.g. reading from disk or
         // querying the OS keychain). We must offload this to a blocking thread to avoid
         // stalling the async runtime.
-        let native_certs = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             // Check cache again inside blocking task to avoid double-loading if raced
             if let Some(roots) = SYSTEM_ROOTS.get() {
                 return Ok::<_, io::Error>(roots.clone());
@@ -304,9 +304,7 @@ async fn add_system_trust_anchors_if_enabled(
             Ok(native.certs)
         })
         .await
-        .map_err(io::Error::other)??;
-
-        native_certs
+        .map_err(io::Error::other)??
     };
 
     let mut store = RootCertStore::empty();
