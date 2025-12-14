@@ -14,8 +14,9 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use tokio::sync::OnceCell;
 use tonic::transport::{Identity, ServerTlsConfig};
 
 #[cfg(feature = "experimental-tls")]
@@ -276,36 +277,30 @@ async fn add_system_trust_anchors_if_enabled(
 
     // Use cached system roots if available, otherwise load them.
     // Cloning the Vec<CertificateDer> is cheap (ref-counted inner data).
-    static SYSTEM_ROOTS: OnceLock<Vec<CertificateDer<'static>>> = OnceLock::new();
+    // OnceCell ensures only one task loads the certificates, preventing race conditions.
+    static SYSTEM_ROOTS: OnceCell<Vec<CertificateDer<'static>>> = OnceCell::const_new();
 
-    let roots = if let Some(roots) = SYSTEM_ROOTS.get() {
-        roots.clone()
-    } else {
-        // Loading native certificates involves blocking I/O (e.g. reading from disk or
-        // querying the OS keychain). We must offload this to a blocking thread to avoid
-        // stalling the async runtime.
-        tokio::task::spawn_blocking(move || {
-            // Check cache again inside blocking task to avoid double-loading if raced
-            if let Some(roots) = SYSTEM_ROOTS.get() {
-                return Ok::<_, io::Error>(roots.clone());
-            }
-
-            let native = load_native_certs();
-            if !native.errors.is_empty() {
-                log::warn!(
-                    "Errors while loading native certificates (count={}): first={:?}",
-                    native.errors.len(),
-                    native.errors.first()
-                );
-            }
-
-            // Cache the loaded certs
-            let _ = SYSTEM_ROOTS.set(native.certs.clone());
-            Ok(native.certs)
+    let roots = SYSTEM_ROOTS
+        .get_or_try_init(|| async {
+            // Loading native certificates involves blocking I/O (e.g. reading from disk or
+            // querying the OS keychain). We must offload this to a blocking thread to avoid
+            // stalling the async runtime.
+            tokio::task::spawn_blocking(|| {
+                let native = load_native_certs();
+                if !native.errors.is_empty() {
+                    log::warn!(
+                        "Errors while loading native certificates (count={}): first={:?}",
+                        native.errors.len(),
+                        native.errors.first()
+                    );
+                }
+                native.certs
+            })
+            .await
+            .map_err(io::Error::other)
         })
-        .await
-        .map_err(io::Error::other)??
-    };
+        .await?
+        .clone();
 
     let mut store = RootCertStore::empty();
     // Best-effort: accept that some system certs might not parse.
