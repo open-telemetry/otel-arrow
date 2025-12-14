@@ -16,6 +16,13 @@ use thiserror::Error;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Endpoint;
 
+/// Checks if a URI string starts with "https://" (case-insensitive, per RFC 3986).
+fn is_https_endpoint(uri: &str) -> bool {
+    uri.trim_start()
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+}
+
 /// Common configuration shared across gRPC clients.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -167,14 +174,10 @@ impl GrpcClientSettings {
         let endpoint = self.build_endpoint()?;
 
         #[cfg(feature = "experimental-tls")]
-        let wants_tls = tls_utils::is_https_endpoint(&self.grpc_endpoint) || self.tls.is_some();
+        let wants_tls = is_https_endpoint(&self.grpc_endpoint) || self.tls.is_some();
 
         #[cfg(not(feature = "experimental-tls"))]
-        let wants_tls = self
-            .grpc_endpoint
-            .trim_start()
-            .get(..8)
-            .is_some_and(|s| s.eq_ignore_ascii_case("https://"));
+        let wants_tls = is_https_endpoint(&self.grpc_endpoint);
 
         if !wants_tls {
             return Ok(endpoint);
@@ -198,7 +201,7 @@ impl GrpcClientSettings {
 
         #[cfg(not(feature = "experimental-tls"))]
         {
-            return Err(GrpcEndpointError::TlsFeatureDisabled);
+            Err(GrpcEndpointError::TlsFeatureDisabled)
         }
     }
 }
