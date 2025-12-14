@@ -4,9 +4,15 @@
 //! Shared configuration for gRPC-based clients.
 
 use crate::compression::CompressionMethod;
+
+#[cfg(feature = "experimental-tls")]
+use crate::tls_utils;
 use otap_df_config::byte_units;
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsClientConfig;
 use serde::Deserialize;
 use std::time::Duration;
+use thiserror::Error;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Endpoint;
 
@@ -79,9 +85,31 @@ pub struct GrpcClientSettings {
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
 
+    /// Client-side TLS/mTLS configuration.
+    /// Requires the `experimental-tls` feature to be enabled.
+    #[cfg(feature = "experimental-tls")]
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
+
     /// Internal Tower buffer size for the gRPC client.
     #[serde(default)]
     pub buffer_size: Option<usize>,
+}
+
+/// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
+#[derive(Debug, Error)]
+pub enum GrpcEndpointError {
+    /// Error returned by tonic while parsing/configuring the transport endpoint.
+    #[error("grpc endpoint build error: {0}")]
+    Tonic(#[from] tonic::transport::Error),
+
+    /// IO error while reading certificates/keys for TLS.
+    #[error("tls configuration error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// TLS support is not compiled in.
+    #[error("TLS support is disabled; enable the `experimental-tls` feature")]
+    TlsFeatureDisabled,
 }
 
 impl GrpcClientSettings {
@@ -133,6 +161,42 @@ impl GrpcClientSettings {
 
         Ok(endpoint)
     }
+
+    /// Builds the configured [`Endpoint`], applying TLS/mTLS settings when needed.
+    pub async fn build_endpoint_with_tls(&self) -> Result<Endpoint, GrpcEndpointError> {
+        let endpoint = self.build_endpoint()?;
+
+        #[cfg(feature = "experimental-tls")]
+        let wants_tls = tls_utils::is_https_endpoint(&self.grpc_endpoint) || self.tls.is_some();
+
+        #[cfg(not(feature = "experimental-tls"))]
+        let wants_tls = tls_utils::is_https_endpoint(&self.grpc_endpoint);
+
+        if !wants_tls {
+            return Ok(endpoint);
+        }
+
+        #[cfg(feature = "experimental-tls")]
+        {
+            let tls =
+                tls_utils::load_client_tls_config(self.tls.as_ref(), &self.grpc_endpoint).await?;
+
+            let Some(tls_config) = tls else {
+                return Err(GrpcEndpointError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "TLS configuration is required for https:// endpoints or when a tls block is provided. \
+                     Either use an https:// endpoint, or remove the empty tls configuration block.",
+                )));
+            };
+
+            Ok(endpoint.tls_config(tls_config)?)
+        }
+
+        #[cfg(not(feature = "experimental-tls"))]
+        {
+            return Err(GrpcEndpointError::TlsFeatureDisabled);
+        }
+    }
 }
 
 impl Default for GrpcClientSettings {
@@ -153,6 +217,8 @@ impl Default for GrpcClientSettings {
             http2_keepalive_timeout: default_http2_keepalive_timeout(),
             keep_alive_while_idle: default_keep_alive_while_idle(),
             timeout: None,
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
             buffer_size: None,
         }
     }
@@ -199,8 +265,15 @@ const fn default_keep_alive_while_idle() -> bool {
 }
 
 #[cfg(test)]
+#[allow(missing_docs)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "experimental-tls")]
+    use otap_df_config::tls::{TlsClientConfig, TlsConfig};
+
+    #[cfg(feature = "experimental-tls")]
+    use tempfile::NamedTempFile;
 
     #[test]
     fn defaults_match_previous_client_tuning() {
@@ -242,5 +315,273 @@ mod tests {
         .unwrap();
 
         assert_eq!(settings.effective_concurrency_limit(), 1);
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_allows_plain_http_when_tls_unset() {
+        let settings: GrpcClientSettings =
+            serde_json::from_str(r#"{ "grpc_endpoint": "http://localhost:4317" }"#).unwrap();
+        let endpoint = settings.build_endpoint_with_tls().await.unwrap();
+        let _ = endpoint;
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_accepts_https_without_explicit_tls_block() {
+        let settings: GrpcClientSettings = serde_json::from_str(
+            r#"{ "grpc_endpoint": "https://localhost:4317", "tcp_nodelay": true }"#,
+        )
+        .unwrap();
+
+        let endpoint = settings.build_endpoint_with_tls().await.unwrap();
+        let _ = endpoint;
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_rejects_http_when_tls_is_configured() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                config: TlsConfig::default(),
+                ca_file: None,
+                ca_pem: Some(
+                    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
+                ),
+                include_system_ca_certs_pool: Some(false),
+                server_name_override: Some("localhost".to_string()),
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("non-https") || msg.contains("https://"));
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_rejects_partial_mtls_cert_without_key() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                config: TlsConfig {
+                    cert_pem: Some(
+                        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+                            .to_string(),
+                    ),
+                    ..TlsConfig::default()
+                },
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(err.to_string().contains("certificate") || err.to_string().contains("mTLS"));
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_rejects_partial_mtls_key_without_cert() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                config: TlsConfig {
+                    key_pem: Some(
+                        "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"
+                            .to_string(),
+                    ),
+                    ..TlsConfig::default()
+                },
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(err.to_string().contains("certificate") || err.to_string().contains("mTLS"));
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_errors_when_ca_file_missing() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                ca_file: Some("/this/path/should/not/exist/ca.pem".into()),
+                include_system_ca_certs_pool: Some(false),
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("no such")
+                || err.to_string().to_lowercase().contains("not found")
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_enforces_tls_file_size_limit() {
+        // Create a CA file > 4MB (tls_utils MAX_TLS_FILE_SIZE).
+        let mut tmp = NamedTempFile::new().unwrap();
+        let oversized = vec![b'a'; 4 * 1024 * 1024 + 1];
+        use std::io::Write;
+        tmp.write_all(&oversized).unwrap();
+
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                ca_file: Some(tmp.path().to_path_buf()),
+                include_system_ca_certs_pool: Some(false),
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("too")
+                || err.to_string().to_lowercase().contains("limit")
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_errors_when_no_trust_anchors() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                include_system_ca_certs_pool: Some(false),
+                // No ca_file or ca_pem provided
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(
+            err.to_string().contains("trust anchor") || err.to_string().contains("no trust"),
+            "Expected trust anchor error, got: {}",
+            err
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_enforces_cert_file_size_limit() {
+        // Create a client cert file > 4MB (tls_utils MAX_TLS_FILE_SIZE).
+        let mut cert_tmp = NamedTempFile::new().unwrap();
+        let mut key_tmp = NamedTempFile::new().unwrap();
+        let oversized = vec![b'a'; 4 * 1024 * 1024 + 1];
+        use std::io::Write;
+        cert_tmp.write_all(&oversized).unwrap();
+        key_tmp.write_all(b"dummy key").unwrap();
+
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: Some(cert_tmp.path().to_path_buf()),
+                    key_file: Some(key_tmp.path().to_path_buf()),
+                    ..TlsConfig::default()
+                },
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("too")
+                || err.to_string().to_lowercase().contains("limit"),
+            "Expected file size limit error, got: {}",
+            err
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_fails_with_empty_ca_pem() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                ca_pem: Some("".to_string()), // Empty PEM
+                include_system_ca_certs_pool: Some(false),
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        // Empty ca_pem with system certs disabled means no trust anchors
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        assert!(
+            err.to_string().contains("trust anchor") || err.to_string().contains("no trust"),
+            "Expected trust anchor error for empty ca_pem, got: {}",
+            err
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_accepts_server_name_override() {
+        // server_name_override should be accepted and not cause an error
+        // (actual SNI behavior would require integration test with a real server)
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "https://127.0.0.1:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                server_name_override: Some("custom.hostname.example.com".to_string()),
+                // Use system CAs (default) so we have trust anchors
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        // Should successfully build the endpoint (SNI override is just configuration)
+        let endpoint = settings.build_endpoint_with_tls().await.unwrap();
+        let _ = endpoint;
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn build_endpoint_with_tls_errors_on_empty_tls_block_with_http() {
+        // Regression test: empty tls: {} block with http:// should return error, not panic
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig::default()), // Empty TLS config
+            ..GrpcClientSettings::default()
+        };
+
+        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("TLS configuration is required") || msg.contains("empty tls"),
+            "Expected error about empty TLS config, got: {}",
+            msg
+        );
+    }
+
+    #[cfg(not(feature = "experimental-tls"))]
+    #[test]
+    fn build_endpoint_with_tls_rejects_https_when_feature_disabled() {
+        let settings: GrpcClientSettings =
+            serde_json::from_str(r#"{ "grpc_endpoint": "https://localhost:4317" }"#).unwrap();
+
+        let err = futures::executor::block_on(settings.build_endpoint_with_tls()).unwrap_err();
+        assert!(matches!(err, GrpcEndpointError::TlsFeatureDisabled));
+    }
+
+    #[cfg(not(feature = "experimental-tls"))]
+    #[test]
+    fn build_endpoint_with_tls_allows_http_when_feature_disabled() {
+        let settings: GrpcClientSettings =
+            serde_json::from_str(r#"{ "grpc_endpoint": "http://localhost:4317" }"#).unwrap();
+
+        let endpoint = futures::executor::block_on(settings.build_endpoint_with_tls()).unwrap();
+        let _ = endpoint;
     }
 }

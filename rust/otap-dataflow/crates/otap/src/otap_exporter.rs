@@ -110,14 +110,18 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     ) -> Result<TerminalState, Error> {
         effect_handler
             .info(&format!(
-                "Exporting OTLP traffic to endpoint: {}",
-                self.config.grpc_endpoint
+                "Exporting OTAP traffic to endpoint: {}",
+                self.config.grpc.grpc_endpoint
             ))
             .await;
 
         let exporter_id = effect_handler.exporter_id();
-        let mut endpoint =
-            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
+        let mut endpoint = self
+            .config
+            .grpc
+            .build_endpoint_with_tls()
+            .await
+            .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id,
@@ -127,7 +131,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
             })?;
 
-        // Apply timeout if configured
+        // Optional per-exporter timeout overrides shared client settings.
         if let Some(timeout) = self.config.timeout {
             endpoint = endpoint.timeout(timeout);
         }
@@ -667,7 +671,7 @@ mod tests {
         let exporter =
             OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
 
-        assert_eq!(exporter.config.grpc_endpoint, "http://localhost:4317");
+        assert_eq!(exporter.config.grpc.grpc_endpoint, "http://localhost:4317");
         match exporter.config.compression_method {
             Some(ref method) => match method {
                 CompressionMethod::Gzip => {} // success

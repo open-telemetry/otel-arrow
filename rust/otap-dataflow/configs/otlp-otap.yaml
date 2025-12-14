@@ -21,3 +21,14 @@ nodes:
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       # timeout: "15s"  # Optional: timeout for RPC requests
+
+      # TLS / mTLS (exporter-side)
+      # - TLS is enabled when `grpc_endpoint` uses https://, or when `tls` is set.
+      # - If `tls` is set, the endpoint must be https://.
+      # grpc_endpoint: "https://collector.example.com:4318"
+      # tls:
+      #   ca_file: "/path/to/ca.crt"          # or `ca_pem: | ...`
+      #   include_system_ca_certs_pool: false # default is true
+      #   server_name_override: "collector.example.com"
+      #   cert_file: "/path/to/client.crt"   # optional: mTLS
+      #   key_file: "/path/to/client.key"

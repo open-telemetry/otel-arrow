@@ -4,7 +4,7 @@
 use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
-use otap_df_config::tls::TlsServerConfig;
+use otap_df_config::tls::{TlsClientConfig, TlsServerConfig};
 use rustls::RootCertStore;
 use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tonic::transport::{Identity, ServerTlsConfig};
 
+#[cfg(feature = "experimental-tls")]
+use tonic::transport::{Certificate, ClientTlsConfig};
+
 /// Maximum allowed size for TLS certificate and key files (4MB).
 /// This limit is chosen to be generous enough for typical certificate chains (which are usually < 10KB)
 /// while preventing potential OOM issues from loading extremely large files.
@@ -30,6 +33,13 @@ const MAX_TLS_FILE_SIZE: u64 = 4 * 1024 * 1024; // 4MB
 /// - Limits memory overhead for pending handshake state
 /// - May need adjustment based on actual workload characteristics
 const MAX_CONCURRENT_HANDSHAKES: usize = 64;
+
+/// Returns true if the given URI uses the HTTPS scheme.
+///
+/// Trims leading whitespace before checking to handle common configuration errors.
+pub(crate) fn is_https_endpoint(uri: &str) -> bool {
+    uri.trim_start().starts_with("https://")
+}
 
 /// Loads TLS configuration for a server.
 ///
@@ -83,6 +93,188 @@ pub async fn load_server_tls_config(
     // Note: Client CA/mTLS support is handled by build_reloadable_server_config instead.
 
     Ok(Some(tls_builder))
+}
+
+/// Loads TLS configuration for a client.
+///
+/// This is used by **exporters** and other components that initiate TLS connections.
+///
+/// Returns `Ok(None)` when TLS settings are empty and the endpoint URI is not `https://`.
+///
+/// # Known Limitations
+///
+/// **TODO: Hot Reload Not Implemented**
+///
+/// Unlike the receiver implementation (which uses `LazyReloadableCertResolver` for automatic
+/// certificate reloading), exporter TLS configuration is static and loaded once at startup.
+/// The `reload_interval` field in `TlsConfig` is present but currently unused for clients.
+///
+/// **Impact:** Exporters with expiring client certificates require process restart. This creates
+/// a feature parity gap with receivers and an operational burden for long-running exporters
+/// with short-lived certificates (e.g., certificates rotated every 24 hours).
+///
+/// **Implementation Complexity:** Adding hot reload for exporters requires either:
+/// - Recreating the gRPC channel when certificates expire (may disrupt in-flight requests)
+/// - Implementing a custom TLS connector with lazy certificate loading (complex integration
+///   with tonic's transport layer)
+///
+/// Consider implementing certificate hot reload if this becomes a operational requirement.
+#[cfg(feature = "experimental-tls")]
+pub async fn load_client_tls_config(
+    config: Option<&TlsClientConfig>,
+    endpoint_uri: &str,
+) -> Result<Option<ClientTlsConfig>, io::Error> {
+    let endpoint_uses_tls = is_https_endpoint(endpoint_uri);
+
+    let Some(config) = config else {
+        if !endpoint_uses_tls {
+            return Ok(None);
+        }
+        // HTTPS endpoints need a TLS connector. Build one with system roots.
+        let mut tls = ClientTlsConfig::new();
+        tls = add_system_trust_anchors_if_enabled(tls, true).await?;
+        return Ok(Some(tls));
+    };
+
+    let client_cert_configured =
+        config.config.cert_file.is_some() || config.config.cert_pem.is_some();
+    let client_key_configured = config.config.key_file.is_some() || config.config.key_pem.is_some();
+    let has_ca_setting = config.ca_file.is_some() || config.ca_pem.is_some();
+    let server_name_configured = config.server_name_override.is_some();
+    let tls_configured = client_cert_configured
+        || client_key_configured
+        || has_ca_setting
+        || server_name_configured
+        || config.include_system_ca_certs_pool.is_some();
+
+    if !endpoint_uses_tls && !tls_configured {
+        return Ok(None);
+    }
+
+    if !endpoint_uses_tls && tls_configured {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS is configured for a non-https endpoint; use an https:// endpoint when enabling TLS/mTLS",
+        ));
+    }
+
+    let mut tls = ClientTlsConfig::new();
+
+    // Domain name / SNI.
+    if let Some(domain) = &config.server_name_override {
+        tls = tls.domain_name(domain.clone());
+    }
+
+    // Validate trust anchors are configured.
+    let include_system = config.include_system_ca_certs_pool.unwrap_or(true);
+    let ca_configured = config.ca_file.is_some()
+        || config
+            .ca_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+
+    if !include_system && !ca_configured {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS configuration error: no trust anchors configured. \
+             Either provide ca_file/ca_pem or set include_system_ca_certs_pool to true (or omit it).",
+        ));
+    }
+
+    // System CA pool.
+    tls = add_system_trust_anchors_if_enabled(tls, include_system).await?;
+
+    // Custom CA.
+    if let Some(ca_file) = &config.ca_file {
+        let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
+            log::error!("Failed to read CA file {:?}: {}", ca_file, e);
+            e
+        })?;
+        tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
+    }
+    if let Some(ca_pem) = &config.ca_pem {
+        tls = tls.ca_certificate(Certificate::from_pem(ca_pem.as_bytes()));
+    }
+
+    // Client identity (mTLS).
+    if client_cert_configured || client_key_configured {
+        if !(client_cert_configured && client_key_configured) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS configuration error: both client certificate and key must be provided for mTLS",
+            ));
+        }
+
+        // Match on all combinations of cert/key sources to avoid unnecessary allocations.
+        // When using PEM strings, pass as_bytes() directly instead of copying to Vec.
+        tls = match (
+            (&config.config.cert_file, &config.config.cert_pem),
+            (&config.config.key_file, &config.config.key_pem),
+        ) {
+            ((Some(cert_path), _), (Some(key_path), _)) => {
+                let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
+                    log::error!("Failed to read client cert file {:?}: {}", cert_path, e);
+                    e
+                })?;
+                let key = read_file_with_limit_async(key_path).await.map_err(|e| {
+                    log::error!("Failed to read client key file {:?}: {}", key_path, e);
+                    e
+                })?;
+                tls.identity(Identity::from_pem(cert, key))
+            }
+            ((Some(cert_path), _), (None, Some(key_pem))) => {
+                let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
+                    log::error!("Failed to read client cert file {:?}: {}", cert_path, e);
+                    e
+                })?;
+                tls.identity(Identity::from_pem(cert, key_pem.as_bytes()))
+            }
+            ((None, Some(cert_pem)), (Some(key_path), _)) => {
+                let key = read_file_with_limit_async(key_path).await.map_err(|e| {
+                    log::error!("Failed to read client key file {:?}: {}", key_path, e);
+                    e
+                })?;
+                tls.identity(Identity::from_pem(cert_pem.as_bytes(), key))
+            }
+            ((None, Some(cert_pem)), (None, Some(key_pem))) => {
+                tls.identity(Identity::from_pem(cert_pem.as_bytes(), key_pem.as_bytes()))
+            }
+            _ => unreachable!("validation ensures both cert and key are configured"),
+        };
+    }
+
+    Ok(Some(tls))
+}
+
+#[cfg(feature = "experimental-tls")]
+async fn add_system_trust_anchors_if_enabled(
+    tls: ClientTlsConfig,
+    include_system: bool,
+) -> Result<ClientTlsConfig, io::Error> {
+    if !include_system {
+        return Ok(tls);
+    }
+
+    // Loading native certificates involves blocking I/O (e.g. reading from disk or
+    // querying the OS keychain). We must offload this to a blocking thread to avoid
+    // stalling the async runtime.
+    let native = tokio::task::spawn_blocking(load_native_certs)
+        .await
+        .map_err(io::Error::other)?;
+
+    if !native.errors.is_empty() {
+        log::warn!(
+            "Errors while loading native certificates (count={}): first={:?}",
+            native.errors.len(),
+            native.errors.first()
+        );
+    }
+
+    let mut roots = RootCertStore::empty();
+    // Best-effort: accept that some system certs might not parse.
+    let _ = roots.add_parsable_certificates(native.certs);
+
+    Ok(tls.trust_anchors(roots.roots))
 }
 
 /// Creates a TLS stream from a TCP listener stream and a TLS acceptor.
