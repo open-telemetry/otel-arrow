@@ -513,22 +513,39 @@ mod tests {
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
     async fn build_endpoint_with_tls_fails_with_empty_ca_pem() {
-        let settings = GrpcClientSettings {
+        // Test 1: Empty ca_pem with system CAs disabled → "no trust anchors" error
+        let settings1 = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
             tls: Some(TlsClientConfig {
-                ca_pem: Some("".to_string()), // Empty PEM
+                ca_pem: Some("".to_string()),
                 include_system_ca_certs_pool: Some(false),
                 ..TlsClientConfig::default()
             }),
             ..GrpcClientSettings::default()
         };
 
-        // Empty ca_pem with system certs disabled means no trust anchors
-        let err = settings.build_endpoint_with_tls().await.unwrap_err();
+        let err1 = settings1.build_endpoint_with_tls().await.unwrap_err();
         assert!(
-            err.to_string().contains("trust anchor") || err.to_string().contains("no trust"),
-            "Expected trust anchor error for empty ca_pem, got: {}",
-            err
+            err1.to_string().contains("no trust anchors"),
+            "Expected 'no trust anchors' error, got: {}",
+            err1
+        );
+
+        // Test 2: Whitespace-only ca_pem with system CAs enabled → "ca_pem is empty" error
+        let settings2 = GrpcClientSettings {
+            grpc_endpoint: "https://localhost:4317".to_string(),
+            tls: Some(TlsClientConfig {
+                ca_pem: Some("   ".to_string()),
+                ..TlsClientConfig::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let err2 = settings2.build_endpoint_with_tls().await.unwrap_err();
+        assert!(
+            err2.to_string().contains("ca_pem is set but empty"),
+            "Expected 'ca_pem is empty' error, got: {}",
+            err2
         );
     }
 

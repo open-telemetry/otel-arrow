@@ -215,6 +215,12 @@ pub async fn load_client_tls_config(
         tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
     }
     if let Some(ca_pem) = &config.ca_pem {
+        if ca_pem.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS configuration error: ca_pem is set but empty or contains only whitespace",
+            ));
+        }
         tls = tls.ca_certificate(Certificate::from_pem(ca_pem.as_bytes()));
     }
 
