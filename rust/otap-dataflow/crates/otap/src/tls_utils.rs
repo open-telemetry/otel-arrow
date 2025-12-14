@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
-use tokio::sync::OnceCell;
 use tonic::transport::{Identity, ServerTlsConfig};
+
+#[cfg(feature = "experimental-tls")]
+use tokio::sync::OnceCell;
 
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsClientConfig;
