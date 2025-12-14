@@ -191,8 +191,7 @@ impl GrpcClientSettings {
             let Some(tls_config) = tls else {
                 return Err(GrpcEndpointError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    "A TLS configuration block was provided for an http:// endpoint, which is not supported. \
-                     Please remove the tls configuration block or use an https:// endpoint if TLS is required.",
+                    "TLS is configured for a non-https endpoint; use an https:// endpoint when enabling TLS/mTLS",
                 )));
             };
 
@@ -566,7 +565,7 @@ mod tests {
         let err = settings.build_endpoint_with_tls().await.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("A TLS configuration block was provided for an http:// endpoint"),
+            msg.contains("TLS is configured for a non-https endpoint"),
             "Expected error about invalid http+tls usage, got: {}",
             msg
         );
