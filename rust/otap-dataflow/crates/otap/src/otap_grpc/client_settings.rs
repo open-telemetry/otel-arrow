@@ -170,7 +170,11 @@ impl GrpcClientSettings {
         let wants_tls = tls_utils::is_https_endpoint(&self.grpc_endpoint) || self.tls.is_some();
 
         #[cfg(not(feature = "experimental-tls"))]
-        let wants_tls = self.grpc_endpoint.trim_start().starts_with("https://");
+        let wants_tls = self
+            .grpc_endpoint
+            .trim_start()
+            .get(..8)
+            .is_some_and(|s| s.eq_ignore_ascii_case("https://"));
 
         if !wants_tls {
             return Ok(endpoint);
@@ -182,19 +186,10 @@ impl GrpcClientSettings {
                 tls_utils::load_client_tls_config(self.tls.as_ref(), &self.grpc_endpoint).await?;
 
             let Some(tls_config) = tls else {
-                let endpoint = self.grpc_endpoint.trim_start();
-                let err_msg = if endpoint.starts_with("http://") {
-                    "A TLS configuration block was provided for an http:// endpoint, which is not supported. \
-                     Please remove the tls configuration block or use an https:// endpoint if TLS is required."
-                } else if endpoint.starts_with("https://") {
-                    "TLS configuration is required for https:// endpoints, but the provided tls block is empty. \
-                     Please provide a valid TLS configuration or remove the https:// endpoint."
-                } else {
-                    "Invalid endpoint or TLS configuration: TLS configuration block is empty."
-                };
                 return Err(GrpcEndpointError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    err_msg,
+                    "A TLS configuration block was provided for an http:// endpoint, which is not supported. \
+                     Please remove the tls configuration block or use an https:// endpoint if TLS is required.",
                 )));
             };
 

@@ -13,8 +13,8 @@ use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 use tonic::transport::{Identity, ServerTlsConfig};
 
@@ -142,10 +142,23 @@ pub async fn load_client_tls_config(
         return Ok(Some(tls));
     };
 
-    let client_cert_configured =
-        config.config.cert_file.is_some() || config.config.cert_pem.is_some();
-    let client_key_configured = config.config.key_file.is_some() || config.config.key_pem.is_some();
-    let has_ca_setting = config.ca_file.is_some() || config.ca_pem.is_some();
+    let client_cert_configured = config.config.cert_file.is_some()
+        || config
+            .config
+            .cert_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+    let client_key_configured = config.config.key_file.is_some()
+        || config
+            .config
+            .key_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+    let has_ca_setting = config.ca_file.is_some()
+        || config
+            .ca_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
     let server_name_configured = config.server_name_override.is_some();
     let tls_configured = client_cert_configured
         || client_key_configured
@@ -261,31 +274,51 @@ async fn add_system_trust_anchors_if_enabled(
         return Ok(tls);
     }
 
-    // Loading native certificates involves blocking I/O (e.g. reading from disk or
-    // querying the OS keychain). We must offload this to a blocking thread to avoid
-    // stalling the async runtime.
-    let native = tokio::task::spawn_blocking(load_native_certs)
+    // Use cached system roots if available, otherwise load them.
+    // Cloning the Vec<CertificateDer> is cheap (ref-counted inner data).
+    static SYSTEM_ROOTS: OnceLock<Vec<CertificateDer<'static>>> = OnceLock::new();
+
+    let roots = if let Some(roots) = SYSTEM_ROOTS.get() {
+        roots.clone()
+    } else {
+        // Loading native certificates involves blocking I/O (e.g. reading from disk or
+        // querying the OS keychain). We must offload this to a blocking thread to avoid
+        // stalling the async runtime.
+        let native_certs = tokio::task::spawn_blocking(move || {
+            // Check cache again inside blocking task to avoid double-loading if raced
+            if let Some(roots) = SYSTEM_ROOTS.get() {
+                return Ok::<_, io::Error>(roots.clone());
+            }
+
+            let native = load_native_certs();
+            if !native.errors.is_empty() {
+                log::warn!(
+                    "Errors while loading native certificates (count={}): first={:?}",
+                    native.errors.len(),
+                    native.errors.first()
+                );
+            }
+
+            // Cache the loaded certs
+            let _ = SYSTEM_ROOTS.set(native.certs.clone());
+            Ok(native.certs)
+        })
         .await
-        .map_err(io::Error::other)?;
+        .map_err(io::Error::other)??;
 
-    if !native.errors.is_empty() {
-        log::warn!(
-            "Errors while loading native certificates (count={}): first={:?}",
-            native.errors.len(),
-            native.errors.first()
-        );
-    }
+        native_certs
+    };
 
-    let mut roots = RootCertStore::empty();
+    let mut store = RootCertStore::empty();
     // Best-effort: accept that some system certs might not parse.
-    let (added, ignored) = roots.add_parsable_certificates(native.certs);
+    let (added, ignored) = store.add_parsable_certificates(roots);
     log::debug!(
         "Loaded {} system CA certificates ({} ignored)",
         added,
         ignored
     );
 
-    Ok(tls.trust_anchors(roots.roots))
+    Ok(tls.trust_anchors(store.roots))
 }
 
 /// Creates a TLS stream from a TCP listener stream and a TLS acceptor.
