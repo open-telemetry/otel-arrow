@@ -4,7 +4,7 @@
 use arc_swap::ArcSwap;
 use base64::prelude::*;
 use futures::{Stream, StreamExt};
-use otap_df_config::tls::{TlsClientConfig, TlsServerConfig};
+use otap_df_config::tls::TlsServerConfig;
 use rustls::RootCertStore;
 use rustls::server::{ClientHello, ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::CertifiedKey;
@@ -17,6 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tonic::transport::{Identity, ServerTlsConfig};
+
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsClientConfig;
 
 #[cfg(feature = "experimental-tls")]
 use tonic::transport::{Certificate, ClientTlsConfig};
