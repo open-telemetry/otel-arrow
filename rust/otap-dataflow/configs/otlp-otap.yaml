@@ -37,8 +37,9 @@ nodes:
       # timeout: "15s"  # Optional: timeout for RPC requests
 
       # TLS / mTLS (exporter-side)
-      # - TLS is enabled when `grpc_endpoint` uses https://, or when `tls` is set.
-      # - If `tls` is set, the endpoint must be https://.
+      # - TLS is enabled when `grpc_endpoint` uses https://.
+      # - The `tls` block provides additional TLS/mTLS configuration options.
+      # - If `tls` is set, the endpoint must use https://.
       # grpc_endpoint: "https://collector.example.com:4318"
       # tls:
       #   ca_file: "/path/to/ca.crt"          # or `ca_pem: | ...`
