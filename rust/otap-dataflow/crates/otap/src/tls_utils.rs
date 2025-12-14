@@ -37,8 +37,11 @@ const MAX_CONCURRENT_HANDSHAKES: usize = 64;
 /// Returns true if the given URI uses the HTTPS scheme.
 ///
 /// Trims leading whitespace before checking to handle common configuration errors.
+/// Performs case-insensitive comparison per RFC 3986 (scheme is case-insensitive).
 pub(crate) fn is_https_endpoint(uri: &str) -> bool {
-    uri.trim_start().starts_with("https://")
+    uri.trim_start()
+        .get(..8)
+        .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
 }
 
 /// Loads TLS configuration for a server.
@@ -118,7 +121,7 @@ pub async fn load_server_tls_config(
 /// - Implementing a custom TLS connector with lazy certificate loading (complex integration
 ///   with tonic's transport layer)
 ///
-/// Consider implementing certificate hot reload if this becomes a operational requirement.
+/// Consider implementing certificate hot reload if this becomes an operational requirement.
 #[cfg(feature = "experimental-tls")]
 pub async fn load_client_tls_config(
     config: Option<&TlsClientConfig>,
@@ -272,7 +275,12 @@ async fn add_system_trust_anchors_if_enabled(
 
     let mut roots = RootCertStore::empty();
     // Best-effort: accept that some system certs might not parse.
-    let _ = roots.add_parsable_certificates(native.certs);
+    let (added, ignored) = roots.add_parsable_certificates(native.certs);
+    log::debug!(
+        "Loaded {} system CA certificates ({} ignored)",
+        added,
+        ignored
+    );
 
     Ok(tls.trust_anchors(roots.roots))
 }

@@ -559,8 +559,8 @@ mod tests {
         let err = settings.build_endpoint_with_tls().await.unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("TLS configuration is required") || msg.contains("empty tls"),
-            "Expected error about empty TLS config, got: {}",
+            msg.contains("TLS configuration is required"),
+            "Expected error about TLS configuration requirement, got: {}",
             msg
         );
     }
