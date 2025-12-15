@@ -3,7 +3,7 @@
 
 use crate::pdata::Context;
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
-use bytes::Bytes;
+use otap_df_pdata::OtapPayload;
 
 /// Tracks relationships between batches ⇄ messages + their data.
 /// High-perf: uses AHashMap/AHashSet (fastest hashing for u64 keys).
@@ -14,8 +14,8 @@ pub struct AzureMonitorExporterState {
     /// msg_id → set of batch_ids
     pub msg_to_batch: HashMap<u64, HashSet<u64>>,
 
-    /// msg_id → (context, bytes)
-    pub msg_to_data: HashMap<u64, (Context, Bytes)>,
+    /// msg_id → (context, optional payload for ack/nack)
+    pub msg_to_data: HashMap<u64, (Context, Option<OtapPayload>)>,
 }
 
 impl AzureMonitorExporterState {
@@ -48,7 +48,10 @@ impl AzureMonitorExporterState {
     }
 
     #[inline]
-    pub fn delete_msg_data_if_orphaned(&mut self, msg_id: u64) -> Option<(Context, Bytes)> {
+    pub fn delete_msg_data_if_orphaned(
+        &mut self,
+        msg_id: u64,
+    ) -> Option<(Context, Option<OtapPayload>)> {
         match self.msg_to_batch.get(&msg_id) {
             Some(batches) if !batches.is_empty() => None, // Has batches, not orphaned
             _ => {
@@ -59,17 +62,28 @@ impl AzureMonitorExporterState {
     }
 
     #[inline]
-    pub fn add_msg_to_data(&mut self, msg_id: u64, context: Context, bytes: Bytes) {
-        _ = self.msg_to_data.entry(msg_id).or_insert((context, bytes));
+    pub fn add_msg_to_data(
+        &mut self,
+        msg_id: u64,
+        context: Context,
+        otap_payload: Option<OtapPayload>,
+    ) {
+        _ = self
+            .msg_to_data
+            .entry(msg_id)
+            .or_insert((context, otap_payload));
     }
 
     #[inline]
-    pub fn remove_msg_to_data(&mut self, msg_id: u64) -> Option<(Context, Bytes)> {
+    pub fn remove_msg_to_data(&mut self, msg_id: u64) -> Option<(Context, Option<OtapPayload>)> {
         self.msg_to_data.remove(&msg_id)
     }
 
     /// Remove a batch on SUCCESS - only returns messages with no remaining batches.
-    pub fn remove_batch_success(&mut self, batch_id: u64) -> Vec<(u64, Context, Bytes)> {
+    pub fn remove_batch_success(
+        &mut self,
+        batch_id: u64,
+    ) -> Vec<(u64, Context, Option<OtapPayload>)> {
         let mut orphaned = Vec::new();
 
         if let Some(msgs) = self.batch_to_msg.remove(&batch_id) {
@@ -80,8 +94,8 @@ impl AzureMonitorExporterState {
                     // Only return if no remaining batches
                     if batches.is_empty() {
                         _ = self.msg_to_batch.remove(&msg_id);
-                        if let Some((context, bytes)) = self.msg_to_data.remove(&msg_id) {
-                            orphaned.push((msg_id, context, bytes));
+                        if let Some((context, otap_payload)) = self.msg_to_data.remove(&msg_id) {
+                            orphaned.push((msg_id, context, otap_payload));
                         }
                     }
                 }
@@ -93,7 +107,10 @@ impl AzureMonitorExporterState {
 
     /// Remove a batch on FAILURE - returns ALL messages in batch, removing them entirely.
     /// Messages are removed from all their batch associations.
-    pub fn remove_batch_failure(&mut self, batch_id: u64) -> Vec<(u64, Context, Bytes)> {
+    pub fn remove_batch_failure(
+        &mut self,
+        batch_id: u64,
+    ) -> Vec<(u64, Context, Option<OtapPayload>)> {
         let mut failed = Vec::new();
 
         if let Some(msgs) = self.batch_to_msg.remove(&batch_id) {
@@ -112,8 +129,8 @@ impl AzureMonitorExporterState {
                 }
 
                 // Take the message data
-                if let Some((context, bytes)) = self.msg_to_data.remove(&msg_id) {
-                    failed.push((msg_id, context, bytes));
+                if let Some((context, otap_payload)) = self.msg_to_data.remove(&msg_id) {
+                    failed.push((msg_id, context, otap_payload));
                 }
             }
         }
@@ -123,7 +140,7 @@ impl AzureMonitorExporterState {
 
     /// Drain all remaining message data (for shutdown cleanup).
     /// Returns all messages that still have data, regardless of batch associations.
-    pub fn drain_all(&mut self) -> Vec<(u64, Context, Bytes)> {
+    pub fn drain_all(&mut self) -> Vec<(u64, Context, Option<OtapPayload>)> {
         // Clear batch relationships
         self.batch_to_msg.clear();
         self.msg_to_batch.clear();
@@ -131,7 +148,7 @@ impl AzureMonitorExporterState {
         // Drain and return all message data
         self.msg_to_data
             .drain()
-            .map(|(msg_id, (context, bytes))| (msg_id, context, bytes))
+            .map(|(msg_id, (context, otap_payload))| (msg_id, context, otap_payload))
             .collect()
     }
 }
@@ -140,6 +157,15 @@ impl AzureMonitorExporterState {
 mod tests {
     use super::*;
     use crate::pdata::Context;
+    use bytes::Bytes;
+    use otap_df_pdata::otlp::OtlpProtoBytes;
+
+    /// Helper to create a test OtapPayload from bytes
+    fn test_payload(data: &'static [u8]) -> Option<OtapPayload> {
+        Some(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+            Bytes::from_static(data),
+        )))
+    }
 
     #[test]
     fn test_new() {
@@ -154,10 +180,10 @@ mod tests {
         let mut state = AzureMonitorExporterState::new();
         let msg_id = 1;
         let batch_id = 100;
-        let data = Bytes::from_static(b"test");
+        let payload = test_payload(b"test");
 
         state.add_batch_msg_relationship(batch_id, msg_id);
-        state.add_msg_to_data(msg_id, Context::default(), data.clone());
+        state.add_msg_to_data(msg_id, Context::default(), payload);
 
         assert!(state.batch_to_msg.contains_key(&batch_id));
         assert!(state.batch_to_msg.get(&batch_id).unwrap().contains(&msg_id));
@@ -172,22 +198,41 @@ mod tests {
     fn test_delete_msg_data_if_orphaned() {
         let mut state = AzureMonitorExporterState::new();
         let msg_id = 1;
-        let data = Bytes::from_static(b"test");
 
         // Case 1: Message has no batches (orphaned)
-        state.add_msg_to_data(msg_id, Context::default(), data.clone());
+        state.add_msg_to_data(msg_id, Context::default(), test_payload(b"test"));
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_some());
-        assert_eq!(removed.unwrap().1, data);
+        // Verify the payload matches
+        let (_, payload) = removed.unwrap();
+        match payload {
+            Some(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes))) => {
+                assert_eq!(bytes.as_ref(), b"test");
+            }
+            _ => panic!("Expected Some(OtlpBytes::ExportLogsRequest)"),
+        }
         assert!(!state.msg_to_data.contains_key(&msg_id));
 
         // Case 2: Message has batches (not orphaned)
-        state.add_msg_to_data(msg_id, Context::default(), data.clone());
+        state.add_msg_to_data(msg_id, Context::default(), test_payload(b"test"));
         state.add_batch_msg_relationship(100, msg_id);
 
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_none());
         assert!(state.msg_to_data.contains_key(&msg_id));
+    }
+
+    #[test]
+    fn test_delete_msg_data_if_orphaned_with_none_payload() {
+        let mut state = AzureMonitorExporterState::new();
+        let msg_id = 1;
+
+        // Test with None payload (when may_return_payload is false)
+        state.add_msg_to_data(msg_id, Context::default(), None);
+        let removed = state.delete_msg_data_if_orphaned(msg_id);
+        assert!(removed.is_some());
+        let (_, payload) = removed.unwrap();
+        assert!(payload.is_none());
     }
 
     #[test]
@@ -202,11 +247,11 @@ mod tests {
         // msg1 is in batch1 only
         // msg2 is in batch1 AND batch2
         state.add_batch_msg_relationship(batch1, msg1);
-        state.add_msg_to_data(msg1, Context::default(), Bytes::from_static(b"msg1"));
+        state.add_msg_to_data(msg1, Context::default(), test_payload(b"msg1"));
 
         state.add_batch_msg_relationship(batch1, msg2);
         state.add_batch_msg_relationship(batch2, msg2);
-        state.add_msg_to_data(msg2, Context::default(), Bytes::from_static(b"msg2"));
+        state.add_msg_to_data(msg2, Context::default(), test_payload(b"msg2"));
 
         // Remove batch1 success
         let orphaned = state.remove_batch_success(batch1);
@@ -245,11 +290,11 @@ mod tests {
         // msg1 is in batch1 only
         // msg2 is in batch1 AND batch2
         state.add_batch_msg_relationship(batch1, msg1);
-        state.add_msg_to_data(msg1, Context::default(), Bytes::from_static(b"msg1"));
+        state.add_msg_to_data(msg1, Context::default(), test_payload(b"msg1"));
 
         state.add_batch_msg_relationship(batch1, msg2);
         state.add_batch_msg_relationship(batch2, msg2);
-        state.add_msg_to_data(msg2, Context::default(), Bytes::from_static(b"msg2"));
+        state.add_msg_to_data(msg2, Context::default(), test_payload(b"msg2"));
 
         // Remove batch1 failure
         // Should return ALL messages in batch1, even if they are in other batches
@@ -273,8 +318,8 @@ mod tests {
     #[test]
     fn test_drain_all() {
         let mut state = AzureMonitorExporterState::new();
-        state.add_msg_to_data(1, Context::default(), Bytes::from_static(b"1"));
-        state.add_msg_to_data(2, Context::default(), Bytes::from_static(b"2"));
+        state.add_msg_to_data(1, Context::default(), test_payload(b"1"));
+        state.add_msg_to_data(2, Context::default(), None); // Test with None payload
 
         let drained = state.drain_all();
         assert_eq!(drained.len(), 2);

@@ -2,15 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use bytes::{BufMut, Bytes, BytesMut};
-use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-use opentelemetry_proto::tonic::common::v1::any_value::Value as OtelAnyValueEnum;
+use otap_df_pdata::views::{
+    common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType},
+    logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
+    resource::ResourceView,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::config::{Config, SchemaConfig};
 
 const ATTRIBUTES_FIELD: &str = "attributes";
-
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
 /// Flat view of final log line: resource + scope + record
@@ -33,45 +35,48 @@ pub struct Transformer {
     schema: SchemaConfig,
 }
 
-// TODO: Remove print_stdout after logging is set up
 #[allow(clippy::print_stdout)]
 impl Transformer {
+    /// Create a new Transformer with the given configuration
     #[must_use]
-    /// Create a new Transformer instance
     pub fn new(config: &Config) -> Self {
         Self {
             schema: config.api.schema.clone(),
         }
     }
 
-    #[must_use]
     /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
-    pub fn convert_to_log_analytics(&self, request: &ExportLogsServiceRequest) -> Vec<Bytes> {
+    /// Now accepts any type implementing `LogsDataView` (both `OtapLogsView` and `RawLogsData`).
+    #[must_use]
+    pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
         let mut results = Vec::new();
-
-        // Single-threaded reusable buffer
         let mut buf = BytesMut::with_capacity(512);
 
-        for resource_logs in &request.resource_logs {
-            let resource_attrs = if !self.schema.disable_schema_mapping {
-                self.apply_resource_mapping(&resource_logs.resource)
-            } else {
+        for resource_logs in logs_view.resources() {
+            let resource_attrs = if self.schema.disable_schema_mapping {
                 serde_json::Map::new()
+            } else {
+                resource_logs
+                    .resource()
+                    .map(|r| self.apply_resource_mapping(&r))
+                    .unwrap_or_default()
             };
 
-            for scope_logs in &resource_logs.scope_logs {
-                let scope_attrs = if !self.schema.disable_schema_mapping {
-                    self.apply_scope_mapping(&scope_logs.scope)
-                } else {
+            for scope_logs in resource_logs.scopes() {
+                let scope_attrs = if self.schema.disable_schema_mapping {
                     serde_json::Map::new()
+                } else {
+                    scope_logs
+                        .scope()
+                        .map(|s| self.apply_scope_mapping(&s))
+                        .unwrap_or_default()
                 };
 
-                for log_record in &scope_logs.log_records {
-                    // Record-only map (no resource/scope here)
+                for log_record in scope_logs.log_records() {
                     let record_map = if self.schema.disable_schema_mapping {
-                        Self::legacy_transform_to_map(log_record)
+                        Self::legacy_transform_to_map(&log_record)
                     } else {
-                        match self.transform_log_record_to_map(log_record) {
+                        match self.transform_log_record_to_map(&log_record) {
                             Ok(m) => m,
                             Err(e) => {
                                 println!(
@@ -88,9 +93,7 @@ impl Transformer {
                         record: record_map,
                     };
 
-                    // Reuse buffer: keep capacity, reset len
                     buf.clear();
-
                     {
                         let writer = (&mut buf).writer();
                         let mut ser = serde_json::Serializer::new(writer);
@@ -99,8 +102,6 @@ impl Transformer {
                             continue;
                         }
                     }
-
-                    // clone().freeze() = zero-copy Bytes from shared backing buf
                     results.push(buf.clone().freeze());
                 }
             }
@@ -109,51 +110,40 @@ impl Transformer {
         results
     }
 
-    /// Legacy transform when schema mapping is disabled (matches Go implementation)
-    fn legacy_transform(
-        destination: &mut serde_json::Map<String, Value>,
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
-    ) {
-        let timestamp = if log_record.time_unix_nano != 0 {
-            Self::format_timestamp(log_record.time_unix_nano)
-        } else {
-            Self::format_timestamp(log_record.observed_time_unix_nano)
-        };
-        let _ = destination.insert("TimeGenerated".to_string(), json!(timestamp));
-
-        if let Some(ref body) = log_record.body {
-            if let Some(ref value) = body.value {
-                let body_str = Self::extract_string_value(value);
-                let _ = destination.insert("RawData".to_string(), json!(body_str));
-            }
-        }
-    }
-
-    /// Legacy transform → Map (wrapper so we can reuse logic)
-    #[inline]
-    fn legacy_transform_to_map(
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
-    ) -> serde_json::Map<String, Value> {
+    /// Legacy transform when schema mapping is disabled
+    fn legacy_transform_to_map<R: LogRecordView>(log_record: &R) -> serde_json::Map<String, Value> {
         let mut map = serde_json::Map::new();
-        Self::legacy_transform(&mut map, log_record);
+
+        let timestamp = log_record
+            .time_unix_nano()
+            .filter(|&ts| ts != 0)
+            .or_else(|| log_record.observed_time_unix_nano())
+            .unwrap_or(0);
+
+        _ = map.insert(
+            "TimeGenerated".into(),
+            json!(Self::format_timestamp(timestamp)),
+        );
+
+        if let Some(body) = log_record.body() {
+            _ = map.insert("RawData".into(), json!(Self::extract_string_value(&body)));
+        }
+
         map
     }
 
     /// Apply resource mapping based on configuration
-    fn apply_resource_mapping(
+    fn apply_resource_mapping<R: ResourceView>(
         &self,
-        resource: &Option<opentelemetry_proto::tonic::resource::v1::Resource>,
+        resource: &R,
     ) -> serde_json::Map<String, Value> {
         let mut attrs = serde_json::Map::new();
 
-        if let Some(resource) = resource {
-            for attr in &resource.attributes {
-                if let Some(mapped_name) = self.schema.resource_mapping.get(&attr.key) {
-                    if let Some(ref value) = attr.value {
-                        if let Some(ref v) = value.value {
-                            let _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(v));
-                        }
-                    }
+        for attr in resource.attributes() {
+            let key = Self::str_to_string(attr.key());
+            if let Some(mapped_name) = self.schema.resource_mapping.get(&key) {
+                if let Some(value) = attr.value() {
+                    _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(&value));
                 }
             }
         }
@@ -162,20 +152,17 @@ impl Transformer {
     }
 
     /// Apply scope mapping based on configuration
-    fn apply_scope_mapping(
+    fn apply_scope_mapping<S: InstrumentationScopeView>(
         &self,
-        scope: &Option<opentelemetry_proto::tonic::common::v1::InstrumentationScope>,
+        scope: &S,
     ) -> serde_json::Map<String, Value> {
         let mut attrs = serde_json::Map::new();
 
-        if let Some(scope) = scope {
-            for attr in &scope.attributes {
-                if let Some(mapped_name) = self.schema.scope_mapping.get(&attr.key) {
-                    if let Some(ref value) = attr.value {
-                        if let Some(ref v) = value.value {
-                            let _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(v));
-                        }
-                    }
+        for attr in scope.attributes() {
+            let key = Self::str_to_string(attr.key());
+            if let Some(mapped_name) = self.schema.scope_mapping.get(&key) {
+                if let Some(value) = attr.value() {
+                    _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(&value));
                 }
             }
         }
@@ -183,104 +170,92 @@ impl Transformer {
         attrs
     }
 
-    /// Transform log record fields into a Map (no resource/scope)
-    #[inline]
-    fn transform_log_record_to_map(
+    /// Transform log record fields into a Map
+    fn transform_log_record_to_map<R: LogRecordView>(
         &self,
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
+        log_record: &R,
     ) -> Result<serde_json::Map<String, Value>, String> {
         let mut map = serde_json::Map::new();
-        self.transform_log_record(&mut map, log_record)?;
+
+        for (key, value) in &self.schema.log_record_mapping {
+            if key == ATTRIBUTES_FIELD {
+                self.map_attributes(&mut map, log_record, value)?;
+            } else {
+                let field_name = value
+                    .as_str()
+                    .ok_or("Field mapping value must be a string")?;
+                let extracted = Self::extract_field_value(key, log_record)?;
+                _ = map.insert(field_name.into(), extracted);
+            }
+        }
+
         Ok(map)
     }
 
-    /// Transform log record fields based on the log_record_mapping configuration
-    fn transform_log_record(
+    /// Map log record attributes based on attr_mapping config
+    fn map_attributes<R: LogRecordView>(
         &self,
-        destination: &mut serde_json::Map<String, Value>,
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
+        dest: &mut serde_json::Map<String, Value>,
+        log_record: &R,
+        attr_mapping_value: &Value,
     ) -> Result<(), String> {
-        for (key, value) in &self.schema.log_record_mapping {
-            if key == ATTRIBUTES_FIELD {
-                if let Some(attr_mapping) = value.as_object() {
-                    for attr in &log_record.attributes {
-                        if let Some(attr_value) = attr_mapping.get(&attr.key) {
-                            if let Some(ref value) = attr.value {
-                                if let Some(ref v) = value.value {
-                                    let field_name = attr_value
-                                        .as_str()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| attr_value.to_string());
-                                    let _ =
-                                        destination.insert(field_name, Self::convert_any_value(v));
-                                }
-                            }
-                        }
-                    }
+        let Some(attr_mapping) = attr_mapping_value.as_object() else {
+            return Ok(());
+        };
+
+        for attr in log_record.attributes() {
+            let attr_key = Self::str_to_string(attr.key());
+            if let Some(mapped_field) = attr_mapping.get(&attr_key) {
+                if let Some(val) = attr.value() {
+                    let field_name = mapped_field
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| mapped_field.to_string());
+                    _ = dest.insert(field_name, Self::convert_any_value(&val));
                 }
-            } else {
-                let log_record_value = Self::extract_value_from_log_record(key, log_record)?;
-                let field_name = value
-                    .as_str()
-                    .ok_or_else(|| "Field mapping value must be a string".to_string())?;
-                let _ = destination.insert(field_name.to_string(), log_record_value);
             }
         }
 
         Ok(())
     }
 
-    /// Extract value from log record properties by field name
-    fn extract_value_from_log_record(
-        key: &str,
-        log_record: &opentelemetry_proto::tonic::logs::v1::LogRecord,
-    ) -> Result<Value, String> {
-        let key_lower = key.to_lowercase();
-        match key_lower.as_str() {
-            "time_unix_nano" => {
-                let timestamp = Self::format_timestamp(log_record.time_unix_nano);
-                Ok(json!(timestamp))
-            }
-            "observed_time_unix_nano" => {
-                let timestamp = Self::format_timestamp(log_record.observed_time_unix_nano);
-                Ok(json!(timestamp))
-            }
-            "trace_id" => {
-                if log_record.trace_id.is_empty() {
-                    Ok(json!(null))
-                } else {
-                    let trace_id = Self::bytes_to_hex(&log_record.trace_id);
-                    Ok(json!(trace_id))
-                }
-            }
-            "span_id" => {
-                if log_record.span_id.is_empty() {
-                    Ok(json!(null))
-                } else {
-                    let span_id = Self::bytes_to_hex(&log_record.span_id);
-                    Ok(json!(span_id))
-                }
-            }
-            "flags" => Ok(json!(log_record.flags)),
-            "severity_number" => Ok(json!(log_record.severity_number as i64)),
-            "severity_text" => Ok(json!(log_record.severity_text)),
-            "body" => {
-                if let Some(ref body) = log_record.body {
-                    if let Some(ref value) = body.value {
-                        let body_str = Self::extract_string_value(value);
-                        Ok(json!(body_str))
-                    } else {
-                        Ok(json!(null))
-                    }
-                } else {
-                    Ok(json!(null))
-                }
-            }
+    /// Extract value from log record by field name
+    fn extract_field_value<R: LogRecordView>(key: &str, log_record: &R) -> Result<Value, String> {
+        match key.to_lowercase().as_str() {
+            "time_unix_nano" => Ok(json!(Self::format_timestamp(
+                log_record.time_unix_nano().unwrap_or(0)
+            ))),
+            "observed_time_unix_nano" => Ok(json!(Self::format_timestamp(
+                log_record.observed_time_unix_nano().unwrap_or(0)
+            ))),
+            "trace_id" => Ok(log_record
+                .trace_id()
+                .map(|id| json!(Self::bytes_to_hex(id)))
+                .unwrap_or(Value::Null)),
+            "span_id" => Ok(log_record
+                .span_id()
+                .map(|id| json!(Self::bytes_to_hex(id)))
+                .unwrap_or(Value::Null)),
+            "flags" => Ok(json!(log_record.flags().unwrap_or(0))),
+            "severity_number" => Ok(json!(log_record.severity_number().unwrap_or(0) as i64)),
+            "severity_text" => Ok(json!(Self::str_to_string(
+                log_record.severity_text().unwrap_or(b"")
+            ))),
+            "body" => Ok(log_record
+                .body()
+                .map(|b| json!(Self::extract_string_value(&b)))
+                .unwrap_or(Value::Null)),
             _ => Err(format!("Unknown field name: {key}")),
         }
     }
 
-    /// Hot path - called for every byte in trace_id/span_id
+    /// Convert Str<'_> (&[u8]) to String
+    #[inline]
+    fn str_to_string(s: Str<'_>) -> String {
+        String::from_utf8_lossy(s).into_owned()
+    }
+
+    /// Hot path - hex encoding for trace_id/span_id
     #[inline]
     fn bytes_to_hex(bytes: &[u8]) -> String {
         let mut hex = String::with_capacity(bytes.len() * 2);
@@ -291,76 +266,70 @@ impl Transformer {
         hex
     }
 
-    /// Called for every log record timestamp
+    /// Format nanosecond timestamp to RFC3339
     #[inline]
     fn format_timestamp(time_unix_nano: u64) -> String {
-        if time_unix_nano > 0 {
-            let secs = (time_unix_nano / 1_000_000_000) as i64;
-            let nanos = (time_unix_nano % 1_000_000_000) as u32;
-            if let Some(dt) = chrono::DateTime::from_timestamp(secs, nanos) {
-                dt.to_rfc3339()
-            } else {
-                chrono::Utc::now().to_rfc3339()
-            }
-        } else {
-            chrono::Utc::now().to_rfc3339()
+        if time_unix_nano == 0 {
+            return chrono::Utc::now().to_rfc3339();
+        }
+        let secs = (time_unix_nano / 1_000_000_000) as i64;
+        let nanos = (time_unix_nano % 1_000_000_000) as u32;
+        chrono::DateTime::from_timestamp(secs, nanos)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
+    }
+
+    /// Convert AnyValueView to serde_json::Value
+    fn convert_any_value<'a, V: AnyValueView<'a>>(value: &V) -> Value {
+        match value.value_type() {
+            ValueType::String => json!(Self::str_to_string(value.as_string().unwrap_or(b""))),
+            ValueType::Int64 => json!(value.as_int64().unwrap_or(0)),
+            ValueType::Double => json!(value.as_double().unwrap_or(0.0)),
+            ValueType::Bool => json!(value.as_bool().unwrap_or(false)),
+            ValueType::Bytes => json!(Self::bytes_to_hex(value.as_bytes().unwrap_or(&[]))),
+            ValueType::Array => value
+                .as_array()
+                .map(|iter| {
+                    json!(
+                        iter.map(|v| Self::convert_any_value(&v))
+                            .collect::<Vec<_>>()
+                    )
+                })
+                .unwrap_or(json!([])),
+            ValueType::KeyValueList => value
+                .as_kvlist()
+                .map(|iter| {
+                    let map: serde_json::Map<String, Value> = iter
+                        .filter_map(|kv| {
+                            kv.value().map(|v| {
+                                (Self::str_to_string(kv.key()), Self::convert_any_value(&v))
+                            })
+                        })
+                        .collect();
+                    Value::Object(map)
+                })
+                .unwrap_or(json!({})),
+            ValueType::Empty => Value::Null,
         }
     }
 
-    /// Called recursively for every attribute value
-    #[inline]
-    fn convert_any_value(value: &OtelAnyValueEnum) -> Value {
-        match value {
-            OtelAnyValueEnum::StringValue(s) => json!(s),
-            OtelAnyValueEnum::IntValue(i) => json!(i),
-            OtelAnyValueEnum::DoubleValue(d) => json!(d),
-            OtelAnyValueEnum::BoolValue(b) => json!(b),
-            OtelAnyValueEnum::ArrayValue(arr) => {
-                let values: Vec<Value> = arr
-                    .values
-                    .iter()
-                    .filter_map(|v| v.value.as_ref())
-                    .map(Self::convert_any_value)
-                    .collect();
-                json!(values)
-            }
-            OtelAnyValueEnum::KvlistValue(kv) => {
-                let mut map = serde_json::Map::new();
-                for item in &kv.values {
-                    if let Some(value) = &item.value {
-                        if let Some(v) = &value.value {
-                            let _ = map.insert(item.key.clone(), Self::convert_any_value(v));
-                        }
-                    }
-                }
-                Value::Object(map)
-            }
-            OtelAnyValueEnum::BytesValue(bytes) => json!(Self::bytes_to_hex(bytes)),
-        }
-    }
-
-    /// Called for body extraction on every record
-    #[inline]
-    fn extract_string_value(value: &OtelAnyValueEnum) -> String {
-        match value {
-            OtelAnyValueEnum::StringValue(s) => s.clone(),
-            OtelAnyValueEnum::IntValue(i) => i.to_string(),
-            OtelAnyValueEnum::DoubleValue(d) => d.to_string(),
-            OtelAnyValueEnum::BoolValue(b) => b.to_string(),
-            OtelAnyValueEnum::ArrayValue(arr) => {
-                let values: Vec<String> = arr
-                    .values
-                    .iter()
-                    .filter_map(|v| v.value.as_ref())
-                    .map(Self::extract_string_value)
-                    .collect();
-                format!("[{}]", values.join(", "))
-            }
-            OtelAnyValueEnum::KvlistValue(_) => {
-                let json_val = Self::convert_any_value(value);
-                json_val.to_string()
-            }
-            OtelAnyValueEnum::BytesValue(bytes) => Self::bytes_to_hex(bytes),
+    /// Extract string representation from AnyValueView (for body)
+    fn extract_string_value<'a, V: AnyValueView<'a>>(value: &V) -> String {
+        match value.value_type() {
+            ValueType::String => Self::str_to_string(value.as_string().unwrap_or(b"")),
+            ValueType::Int64 => value.as_int64().unwrap_or(0).to_string(),
+            ValueType::Double => value.as_double().unwrap_or(0.0).to_string(),
+            ValueType::Bool => value.as_bool().unwrap_or(false).to_string(),
+            ValueType::Bytes => Self::bytes_to_hex(value.as_bytes().unwrap_or(&[])),
+            ValueType::Array => value
+                .as_array()
+                .map(|iter| {
+                    let vals: Vec<String> = iter.map(|v| Self::extract_string_value(&v)).collect();
+                    format!("[{}]", vals.join(", "))
+                })
+                .unwrap_or_else(|| "[]".into()),
+            ValueType::KeyValueList => Self::convert_any_value(value).to_string(),
+            ValueType::Empty => String::new(),
         }
     }
 }
@@ -370,39 +339,36 @@ mod tests {
     use super::*;
     use opentelemetry_proto::tonic::{
         collector::logs::v1::ExportLogsServiceRequest,
-        common::v1::{AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList},
+        common::v1::{
+            AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList,
+            any_value::Value as OtelAnyValueEnum,
+        },
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
         resource::v1::Resource,
     };
+    use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use prost::Message;
     use std::collections::HashMap;
 
     fn create_test_config(disable_mapping: bool) -> Config {
-        use super::super::config::{ApiConfig, AuthConfig, Config, SchemaConfig};
+        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
 
         Config {
             api: ApiConfig {
-                dcr_endpoint: "https://test.com".to_string(),
-                stream_name: "test-stream".to_string(),
-                dcr: "test-dcr".to_string(),
+                dcr_endpoint: "https://test.com".into(),
+                stream_name: "test-stream".into(),
+                dcr: "test-dcr".into(),
                 schema: SchemaConfig {
                     disable_schema_mapping: disable_mapping,
                     resource_mapping: HashMap::from([(
-                        "service.name".to_string(),
-                        "ServiceName".to_string(),
+                        "service.name".into(),
+                        "ServiceName".into(),
                     )]),
-                    scope_mapping: HashMap::from([(
-                        "scope.name".to_string(),
-                        "ScopeName".to_string(),
-                    )]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
                     log_record_mapping: HashMap::from([
-                        ("body".to_string(), json!("Body")),
-                        ("severity_text".to_string(), json!("Severity")),
-                        (
-                            "attributes".to_string(),
-                            json!({
-                                "test.attr": "TestAttr"
-                            }),
-                        ),
+                        ("body".into(), json!("Body")),
+                        ("severity_text".into(), json!("Severity")),
+                        ("attributes".into(), json!({"test.attr": "TestAttr"})),
                     ]),
                 },
             },
@@ -424,7 +390,7 @@ mod tests {
                         time_unix_nano: 1_000_000_000,
                         observed_time_unix_nano: 2_000_000_000,
                         body: Some(AnyValue {
-                            value: Some(OtelAnyValueEnum::StringValue("test body".to_string())),
+                            value: Some(OtelAnyValueEnum::StringValue("test body".into())),
                         }),
                         ..Default::default()
                     }],
@@ -434,9 +400,11 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result.len(), 1);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
 
+        assert_eq!(result.len(), 1);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert!(json["TimeGenerated"].as_str().is_some());
         assert_eq!(json["RawData"], "test body");
@@ -451,9 +419,9 @@ mod tests {
             resource_logs: vec![ResourceLogs {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
-                        key: "service.name".to_string(),
+                        key: "service.name".into(),
                         value: Some(AnyValue {
-                            value: Some(OtelAnyValueEnum::StringValue("my-service".to_string())),
+                            value: Some(OtelAnyValueEnum::StringValue("my-service".into())),
                         }),
                     }],
                     dropped_attributes_count: 0,
@@ -461,12 +429,12 @@ mod tests {
                 }),
                 scope_logs: vec![ScopeLogs {
                     scope: Some(InstrumentationScope {
-                        name: "test-scope".to_string(),
+                        name: "test-scope".into(),
                         version: String::new(),
                         attributes: vec![KeyValue {
-                            key: "scope.name".to_string(),
+                            key: "scope.name".into(),
                             value: Some(AnyValue {
-                                value: Some(OtelAnyValueEnum::StringValue("my-scope".to_string())),
+                                value: Some(OtelAnyValueEnum::StringValue("my-scope".into())),
                             }),
                         }],
                         dropped_attributes_count: 0,
@@ -475,9 +443,9 @@ mod tests {
                         body: Some(AnyValue {
                             value: Some(OtelAnyValueEnum::IntValue(42)),
                         }),
-                        severity_text: "INFO".to_string(),
+                        severity_text: "INFO".into(),
                         attributes: vec![KeyValue {
-                            key: "test.attr".to_string(),
+                            key: "test.attr".into(),
                             value: Some(AnyValue {
                                 value: Some(OtelAnyValueEnum::BoolValue(true)),
                             }),
@@ -490,9 +458,11 @@ mod tests {
             }],
         };
 
-        let result = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result.len(), 1);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
 
+        assert_eq!(result.len(), 1);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json["ServiceName"], "my-service");
         assert_eq!(json["ScopeName"], "my-scope");
@@ -505,12 +475,12 @@ mod tests {
     fn test_all_log_record_fields() {
         let mut config = create_test_config(false);
         config.api.schema.log_record_mapping = HashMap::from([
-            ("time_unix_nano".to_string(), json!("Time")),
-            ("observed_time_unix_nano".to_string(), json!("ObservedTime")),
-            ("trace_id".to_string(), json!("TraceId")),
-            ("span_id".to_string(), json!("SpanId")),
-            ("flags".to_string(), json!("Flags")),
-            ("severity_number".to_string(), json!("SeverityNum")),
+            ("time_unix_nano".into(), json!("Time")),
+            ("observed_time_unix_nano".into(), json!("ObservedTime")),
+            ("trace_id".into(), json!("TraceId")),
+            ("span_id".into(), json!("SpanId")),
+            ("flags".into(), json!("Flags")),
+            ("severity_number".into(), json!("SeverityNum")),
         ]);
 
         let transformer = Transformer::new(&config);
@@ -535,7 +505,9 @@ mod tests {
             }],
         };
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
 
         assert!(json["Time"].as_str().unwrap().contains("1970"));
@@ -577,7 +549,9 @@ mod tests {
             }],
         };
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json["Body"], "[4.14, dead]");
     }
@@ -596,11 +570,9 @@ mod tests {
                         body: Some(AnyValue {
                             value: Some(OtelAnyValueEnum::KvlistValue(KeyValueList {
                                 values: vec![KeyValue {
-                                    key: "nested".to_string(),
+                                    key: "nested".into(),
                                     value: Some(AnyValue {
-                                        value: Some(OtelAnyValueEnum::StringValue(
-                                            "value".to_string(),
-                                        )),
+                                        value: Some(OtelAnyValueEnum::StringValue("value".into())),
                                     }),
                                 }],
                             })),
@@ -613,7 +585,9 @@ mod tests {
             }],
         };
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert!(json["Body"].as_str().unwrap().contains("nested"));
     }
@@ -621,21 +595,21 @@ mod tests {
     #[test]
     fn test_empty_values() {
         let mut config = create_test_config(false);
-        let _ = config
+        _ = config
             .api
             .schema
             .log_record_mapping
-            .insert("trace_id".to_string(), json!("TraceId"));
-        let _ = config
+            .insert("trace_id".into(), json!("TraceId"));
+        _ = config
             .api
             .schema
             .log_record_mapping
-            .insert("span_id".to_string(), json!("SpanId"));
-        let _ = config
+            .insert("span_id".into(), json!("SpanId"));
+        _ = config
             .api
             .schema
             .log_record_mapping
-            .insert("body".to_string(), json!("Body"));
+            .insert("body".into(), json!("Body"));
 
         let transformer = Transformer::new(&config);
 
@@ -656,7 +630,9 @@ mod tests {
             }],
         };
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json["TraceId"], json!(null));
         assert_eq!(json["SpanId"], json!(null));
@@ -666,11 +642,11 @@ mod tests {
     #[test]
     fn test_invalid_mapping_error() {
         let mut config = create_test_config(false);
-        let _ = config
+        _ = config
             .api
             .schema
             .log_record_mapping
-            .insert("invalid_field".to_string(), json!("Invalid"));
+            .insert("invalid_field".into(), json!("Invalid"));
 
         let transformer = Transformer::new(&config);
 
@@ -686,14 +662,16 @@ mod tests {
             }],
         };
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
-        assert_eq!(result.len(), 0); // Record skipped due to error
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
     fn test_zero_timestamp() {
         let timestamp = Transformer::format_timestamp(0);
-        assert!(timestamp.contains('T')); // RFC3339 format
+        assert!(timestamp.contains('T'));
     }
 
     #[test]
@@ -717,7 +695,9 @@ mod tests {
             }],
         };
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&request);
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         assert!(json["TimeGenerated"].as_str().unwrap().contains("1970"));
     }
