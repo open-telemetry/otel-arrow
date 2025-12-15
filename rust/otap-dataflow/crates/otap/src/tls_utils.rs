@@ -92,6 +92,7 @@ fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult
     }
 
     pem_data
+}
 
 /// Returns true if the given URI uses the HTTPS scheme.
 ///
