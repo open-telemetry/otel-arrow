@@ -27,6 +27,38 @@ pub fn otlp_to_otap(msg: &OtlpProtoMessage) -> OtapArrowRecords {
     }
 }
 
+/// Transcode a protocol message object to OTLP bytes.
+#[must_use]
+pub fn otlp_message_to_bytes(msg: OtlpProtoMessage) -> OtlpProtoBytes {
+    let mut buf = Vec::new();
+    msg.encode(&mut buf).expect("encoding should not fail");
+
+    match msg {
+        OtlpProtoMessage::Logs(_) => OtlpProtoBytes::ExportLogsRequest(buf.into()),
+        OtlpProtoMessage::Metrics(_) => OtlpProtoBytes::ExportMetricsRequest(buf.into()),
+        OtlpProtoMessage::Traces(_) => OtlpProtoBytes::ExportTracesRequest(buf.into()),
+    }
+}
+
+/// Transcode a protocol message object to OTLP bytes.
+#[must_use]
+pub fn otlp_bytes_to_message(msg: OtlpProtoBytes) -> OtlpProtoMessage {
+    match msg {
+        OtlpProtoBytes::ExportLogsRequest(b) => {
+            let ld = LogsData::decode(b).expect("decode should not fail");
+            OtlpProtoMessage::Logs(ld)
+        }
+        OtlpProtoBytes::ExportMetricsRequest(b) => {
+            let md = MetricsData::decode(b).expect("decode should not fail");
+            OtlpProtoMessage::Metrics(md)
+        }
+        OtlpProtoBytes::ExportTracesRequest(b) => {
+            let td = TracesData::decode(b).expect("decode should not fail");
+            OtlpProtoMessage::Traces(td)
+        }
+    }
+}
+
 /// Transcode OTAP records into a protocol message object.
 #[must_use]
 pub fn otap_to_otlp(otap: &OtapArrowRecords) -> OtlpProtoMessage {

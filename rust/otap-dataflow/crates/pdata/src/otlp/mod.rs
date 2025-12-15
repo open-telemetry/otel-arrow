@@ -25,6 +25,9 @@ pub mod metrics;
 pub mod traces;
 
 mod common;
+
+#[cfg(test)]
+mod batching_tests;
 #[cfg(test)]
 mod tests;
 

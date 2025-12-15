@@ -164,9 +164,11 @@ pub fn make_bytes_batches(
 
                     let field_end = Position::new(current_pos.input_idx, field_end_offset);
 
-                    // Advance the current position
+                    // Advance the current position; current_size updated below.
                     current_pos = field_end;
-                    if current_pos.offset == input_size {
+
+                    let end_of_input = current_pos.offset == input_size;
+                    if end_of_input {
                         current_pos.offset = 0;
                         current_pos.input_idx += 1;
                     }
@@ -184,6 +186,10 @@ pub fn make_bytes_batches(
 
                     // Increment size counter
                     current_size += field_size;
+
+                    if end_of_input {
+                        break;
+                    }
                 }
             }
 
