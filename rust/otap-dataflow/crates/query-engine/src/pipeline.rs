@@ -24,6 +24,7 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
 mod filter;
+mod functions;
 mod planner;
 
 /// A stage in the pipeline.
@@ -55,6 +56,8 @@ pub trait PipelineStage {
     ) -> Result<OtapArrowRecords>;
 }
 
+/// Implementation of pipeline that executes a datafusion `ExecutionPlan` on the record batch
+/// associated with the payload type
 pub struct DataFusionPipelineStage {
     /// The payload in the OtapArrowRecords this stage reads from and writes to.
     payload_type: ArrowPayloadType,
@@ -182,6 +185,7 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
+    #[must_use]
     pub fn new(pipeline_definition: PipelineExpression) -> Self {
         Self {
             pipeline_definition,
@@ -373,7 +377,7 @@ mod test {
         let table = StreamingTable::try_new(schema.clone(), vec![rb_stream.clone()]).unwrap();
 
         let ctx = Pipeline::create_session_context();
-        ctx.register_table("logs", Arc::new(table)).unwrap();
+        _ = ctx.register_table("logs", Arc::new(table)).unwrap();
         let query = ctx
             .table("logs")
             .await

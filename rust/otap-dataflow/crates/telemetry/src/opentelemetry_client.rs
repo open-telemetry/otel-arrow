@@ -1,75 +1,82 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Opentelemetry SDK integration for telemetry collection and reporting as a client.
+//! OpenTelemetry SDK integration for telemetry collection and reporting as a client.
 
-use opentelemetry::{KeyValue, global};
-use opentelemetry_sdk::{
-    Resource,
-    metrics::{PeriodicReader, SdkMeterProvider},
-};
-use otap_df_config::pipeline::{
-    MetricsPeriodicExporterConfig, MetricsReaderConfig, TelemetryConfig,
+pub mod meter_provider;
+
+use opentelemetry::KeyValue;
+use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
+use otap_df_config::pipeline::service::telemetry::{
+    AttributeValue, AttributeValueArray, TelemetryConfig,
 };
 
-use crate::error::Error;
+use crate::{error::Error, opentelemetry_client::meter_provider::MeterProvider};
 
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
+    /// The tokio runtime used to run the OpenTelemetry SDK OTLP exporter.
+    /// The reference is kept to ensure the runtime lives as long as the client.
+    _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
     // TODO: Add traces and logs providers.
 }
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
-    #[must_use]
-    pub fn new(config: &TelemetryConfig) -> Self {
-        let mut sdk_meter_builder = SdkMeterProvider::builder();
+    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+        let sdk_resource = Self::configure_resource(&config.resource);
 
-        // TODO: Load from config
-        // In the meantime, only configure it if there is one console metric reader.
+        let runtime = None;
 
-        let metric_readers = &config.metrics.readers;
-        for reader in metric_readers {
-            match reader {
-                MetricsReaderConfig::Periodic(periodic_config) => {
-                    let interval = &periodic_config.interval;
-                    match &periodic_config.exporter {
-                        MetricsPeriodicExporterConfig::Console(_console_config) => {
-                            let exporter = opentelemetry_stdout::MetricExporter::default();
-                            let reader = PeriodicReader::builder(exporter)
-                                .with_interval(*interval)
-                                .build();
-                            sdk_meter_builder = sdk_meter_builder.with_reader(reader);
-                        }
-                        _ => {
-                            // Ignore other exporters
-                        }
-                    }
-                }
-                _ => {
-                    // Ignore other readers
-                }
-            }
+        let meter_provider = MeterProvider::configure(sdk_resource, &config.metrics, runtime)?;
+
+        // Extract the meter provider and runtime by consuming the MeterProvider
+        let (meter_provider, runtime) = meter_provider.into_parts();
+
+        //TODO: Configure traces and logs providers.
+
+        Ok(Self {
+            _runtime: runtime,
+            meter_provider,
+        })
+    }
+
+    fn configure_resource(
+        resource_attributes: &std::collections::HashMap<String, AttributeValue>,
+    ) -> Resource {
+        let mut sdk_resource_builder = Resource::builder_empty();
+        for (k, v) in resource_attributes.iter() {
+            sdk_resource_builder = sdk_resource_builder
+                .with_attribute(KeyValue::new(k.clone(), Self::to_sdk_value(v)));
         }
+        sdk_resource_builder.build()
+    }
 
-        let resource_attributes = &config.resource;
-        if !resource_attributes.is_empty() {
-            let mut sdk_resource_builder = Resource::builder();
-            for (k, v) in resource_attributes.iter() {
-                sdk_resource_builder =
-                    sdk_resource_builder.with_attribute(KeyValue::new(k.clone(), v.clone()));
-            }
-            let sdk_resource = sdk_resource_builder.build();
-            sdk_meter_builder = sdk_meter_builder.with_resource(sdk_resource);
-        }
-
-        let sdk_meter_provider = sdk_meter_builder.build();
-
-        global::set_meter_provider(sdk_meter_provider.clone());
-
-        Self {
-            meter_provider: sdk_meter_provider,
+    fn to_sdk_value(attr_value: &AttributeValue) -> opentelemetry::Value {
+        match attr_value {
+            AttributeValue::String(s) => opentelemetry::Value::String(s.clone().into()),
+            AttributeValue::Bool(b) => opentelemetry::Value::Bool(*b),
+            AttributeValue::I64(i) => opentelemetry::Value::I64(*i),
+            AttributeValue::F64(f) => opentelemetry::Value::F64(*f),
+            AttributeValue::Array(arr) => match arr {
+                AttributeValueArray::String(array_s) => {
+                    let sdk_values = array_s.iter().map(|s| s.clone().into()).collect();
+                    opentelemetry::Value::Array(opentelemetry::Array::String(sdk_values))
+                }
+                AttributeValueArray::Bool(array_b) => {
+                    let sdk_values = array_b.to_vec();
+                    opentelemetry::Value::Array(opentelemetry::Array::Bool(sdk_values))
+                }
+                AttributeValueArray::I64(array_i) => {
+                    let sdk_values = array_i.to_vec();
+                    opentelemetry::Value::Array(opentelemetry::Array::I64(sdk_values))
+                }
+                AttributeValueArray::F64(array_f) => {
+                    let sdk_values = array_f.to_vec();
+                    opentelemetry::Value::Array(opentelemetry::Array::F64(sdk_values))
+                }
+            },
         }
     }
 
@@ -81,24 +88,32 @@ impl OpentelemetryClient {
 
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
-        let meter_shutdown_result = self.meter_provider.shutdown();
+        let meter_shutdown_result = self.meter_provider().shutdown();
         meter_shutdown_result.map_err(|e| Error::ShutdownError(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::{
-        ConsoleExporterConfig, MetricsConfig, MetricsReaderPeriodicConfig,
+    use opentelemetry::global;
+    use otap_df_config::pipeline::service::telemetry::{
+        AttributeValue, LogsConfig,
+        metrics::{
+            MetricsConfig,
+            readers::{
+                MetricsReaderConfig, MetricsReaderPeriodicConfig,
+                periodic::MetricsPeriodicExporterConfig,
+            },
+        },
     };
 
     use super::*;
-    use std::time::Duration;
+    use std::{f64::consts::PI, time::Duration};
 
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config);
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -112,24 +127,27 @@ mod tests {
     #[test]
     fn test_configure_opentelemetry_client() -> Result<(), Error> {
         let mut resource = std::collections::HashMap::new();
-        _ = resource.insert("service.name".to_string(), "test-service".to_string());
+        _ = resource.insert(
+            "service.name".to_string(),
+            AttributeValue::String("test-service".to_string()),
+        );
 
         let metrics_config = MetricsConfig {
             readers: vec![MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
-                exporter: MetricsPeriodicExporterConfig::Console(ConsoleExporterConfig {
-                    temporality: None,
-                }),
+                exporter: MetricsPeriodicExporterConfig::Console,
                 interval: Duration::from_millis(10),
             })],
+            views: Vec::new(),
         };
 
         let config = TelemetryConfig {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(10),
             metrics: metrics_config,
+            logs: LogsConfig::default(),
             resource,
         };
-        let client = OpentelemetryClient::new(&config);
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -138,5 +156,38 @@ mod tests {
 
         client.shutdown()?;
         Ok(())
+    }
+
+    #[test]
+    fn test_to_sdk_value() {
+        let string_attr = AttributeValue::String("example".to_string());
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&string_attr),
+            opentelemetry::Value::String("example".into())
+        );
+
+        let bool_attr = AttributeValue::Bool(true);
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&bool_attr),
+            opentelemetry::Value::Bool(true)
+        );
+
+        let i64_attr = AttributeValue::I64(42);
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&i64_attr),
+            opentelemetry::Value::I64(42)
+        );
+
+        let f64_attr = AttributeValue::F64(PI);
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&f64_attr),
+            opentelemetry::Value::F64(PI)
+        );
+
+        let array_attr = AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3]));
+        assert_eq!(
+            OpentelemetryClient::to_sdk_value(&array_attr),
+            opentelemetry::Value::Array(opentelemetry::Array::I64(vec![1, 2, 3]))
+        );
     }
 }

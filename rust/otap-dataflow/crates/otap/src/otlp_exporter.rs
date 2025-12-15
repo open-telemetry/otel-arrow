@@ -39,6 +39,7 @@ use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -117,12 +118,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        effect_handler
-            .info(&format!(
-                "Exporting OTLP traffic to endpoint: {}",
-                self.config.grpc.grpc_endpoint
-            ))
-            .await;
+        otel_info!(
+            "Exporter.Start",
+            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
+            message = "Starting OTLP Exporter"
+        );
 
         let exporter_id = effect_handler.exporter_id();
         let timer_cancel_handle = effect_handler
@@ -1012,6 +1012,8 @@ mod tests {
         _ = shutdown_sender.send("Shutdown");
     }
 
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
+    #[cfg(not(windows))]
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
@@ -1186,9 +1188,9 @@ mod tests {
                 .await
                 .unwrap();
             let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
             assert_eq!(logs_exported_count, 2);
-            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 2);
 
             control_sender

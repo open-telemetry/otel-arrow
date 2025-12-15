@@ -13,6 +13,7 @@ use crate::{
         execute_math_scalar_expression, execute_parse_scalar_expression,
         execute_temporal_scalar_expression, execute_text_scalar_expression,
     },
+    transform::transform_expressions::execute_transform_expression,
     *,
 };
 
@@ -317,32 +318,85 @@ where
                 }
             }
         }
-        ScalarExpression::Argument(a) => {
-            let mut value = execution_context
-                .get_arguments()
-                .expect("Arguments were not found")
-                .get_argument(a.get_argument_id())?;
+        ScalarExpression::Argument(a) => execute_argument_scalar_expression(execution_context, a)?,
+        ScalarExpression::InvokeFunction(i) => {
+            let function_id = i.get_function_id();
 
-            let selectors = a.get_value_accessor().get_selectors();
-            if !selectors.is_empty() {
-                for selector in selectors {
-                    match value.select(
-                        execution_context,
-                        selector,
-                        execute_scalar_expression(execution_context, selector)?.to_value(),
-                    )? {
-                        Some(v) => value = v,
-                        None => {
-                            value = ResolvedValue::Computed(OwnedValue::Null);
-                            break;
-                        }
-                    }
-                }
+            let func = execution_context
+                .get_pipeline()
+                .get_function(function_id)
+                .unwrap_or_else(|| {
+                    panic!("Function for id '{function_id}' was not found on pipeline")
+                });
+
+            let args = i.get_arguments();
+
+            let parameters = func.get_parameters();
+
+            if args.len() != parameters.len() {
+                return Err(ExpressionError::ValidationFailure(
+                    i.get_query_location().clone(),
+                    "Invalid number of arguments specified for function invocation".into(),
+                ));
             }
 
-            value
+            let arguments = ExecutionContextArgumentContainer {
+                parent_execution_context: execution_context,
+                arguments: args,
+            };
+
+            let func_execution_context = execution_context.create_scope(Some(&arguments));
+
+            let return_value = match func.get_implementation() {
+                PipelineFunctionImplementation::Expressions(expressions) => {
+                    let mut return_value = None;
+
+                    for e in expressions {
+                        match e {
+                            PipelineFunctionExpression::Transform(t) => {
+                                execute_transform_expression(&func_execution_context, t)?
+                            }
+                            PipelineFunctionExpression::Return(s) => {
+                                return_value =
+                                    Some(execute_scalar_expression(&func_execution_context, s)?);
+                                break;
+                            }
+                        }
+                    }
+
+                    match return_value {
+                        Some(v) => ResolvedValue::Computed(v.into()),
+                        None => ResolvedValue::Computed(OwnedValue::Null),
+                    }
+                }
+                PipelineFunctionImplementation::External(name) => {
+                    let func_implementation =
+                        execution_context.get_external_function_implementation(name);
+
+                    ResolvedValue::Computed(
+                        func_implementation
+                            .invoke(i, &func_execution_context)?
+                            .into(),
+                    )
+                }
+            };
+
+            if execution_context
+                .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
+            {
+                execution_context.add_diagnostic(
+                    RecordSetEngineDiagnostic::new(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        scalar_expression,
+                        format!("Executed function '{function_id}'"),
+                    )
+                    .with_nested_diagnostics(func_execution_context.take_diagnostics()),
+                );
+            }
+
+            // Note: Exit without normal logging because the above add_diagnostic call handles that
+            return Ok(return_value);
         }
-        ScalarExpression::InvokeFunction(_) => todo!(),
     };
 
     execution_context.add_diagnostic_if_enabled(
@@ -434,6 +488,41 @@ where
             ResolvedValue::Computed(OwnedValue::Null)
         },
     )
+}
+
+pub(crate) fn execute_argument_scalar_expression<'a, 'b, 'c, TRecord: Record>(
+    execution_context: &'b ExecutionContext<'a, '_, TRecord>,
+    argument_scalar_expression: &'a ArgumentScalarExpression,
+) -> Result<ResolvedValue<'c>, ExpressionError>
+where
+    'a: 'c,
+    'b: 'c,
+{
+    let mut value = execution_context
+        .get_arguments()
+        .expect("Arguments were not found")
+        .get_argument(argument_scalar_expression.get_argument_id())?;
+
+    let selectors = argument_scalar_expression
+        .get_value_accessor()
+        .get_selectors();
+    if !selectors.is_empty() {
+        for selector in selectors {
+            match value.select(
+                execution_context,
+                selector,
+                execute_scalar_expression(execution_context, selector)?.to_value(),
+            )? {
+                Some(v) => value = v,
+                None => {
+                    value = ResolvedValue::Computed(OwnedValue::Null);
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(value)
 }
 
 fn select_from_borrowed_value<'a, 'b, 'c, TRecord: Record>(
@@ -2225,6 +2314,95 @@ mod tests {
                 Some(ValueType::String),
                 1,
                 ValueAccessor::new(),
+            ),
+            "value1",
+        );
+    }
+
+    #[test]
+    fn test_execute_invoke_function_scalar_expression() {
+        fn run_test_success(input: InvokeFunctionScalarExpression, expected: &str) {
+            let mut test = TestExecutionContext::new()
+                .with_record(TestRecord::new().with_key_value(
+                    "Attributes".into(),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([(
+                        "key1".into(),
+                        OwnedValue::String(StringValueStorage::new("value1".into())),
+                    )]))),
+                ))
+                .with_pipeline(
+                    PipelineExpressionBuilder::new("")
+                        .with_functions(vec![
+                            PipelineFunction::new_with_expressions(
+                                QueryLocation::new_fake(),
+                                vec![PipelineFunctionParameter::new(
+                                    QueryLocation::new_fake(),
+                                    PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                                )],
+                                Some(ValueType::String),
+                                vec![PipelineFunctionExpression::Return(
+                                    ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        Some(ValueType::String),
+                                        0,
+                                        ValueAccessor::new(),
+                                    )),
+                                )],
+                            ),
+                            PipelineFunction::new_with_expressions(
+                                QueryLocation::new_fake(),
+                                vec![PipelineFunctionParameter::new(
+                                    QueryLocation::new_fake(),
+                                    PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                                )],
+                                Some(ValueType::Integer),
+                                vec![PipelineFunctionExpression::Return(
+                                    ScalarExpression::Argument(ArgumentScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        Some(ValueType::String),
+                                        0,
+                                        ValueAccessor::new(),
+                                    )),
+                                )],
+                            ),
+                        ])
+                        .build()
+                        .unwrap(),
+                );
+
+            let execution_context = test.create_execution_context();
+
+            let expression = ScalarExpression::InvokeFunction(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
+
+            assert_eq!(
+                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                actual.to_value()
+            );
+        }
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                0,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
+                    ),
+                ))],
             ),
             "value1",
         );

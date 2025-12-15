@@ -5,7 +5,7 @@
 //!
 //! The writer is responsible for appending Arrow payloads, rotating WAL
 //! files when size thresholds are exceeded, and reclaiming durable space once
-//! downstream consumers advance the consumer checkpoint. Safe offsets are always
+//! downstream consumers advance the consumer cursor. Safe offsets are always
 //! validated against real entry boundaries so we never expose partially written
 //! frames to readers.
 //!
@@ -17,7 +17,7 @@
 //!   RecordBundle -> encode slots -> entry header -> fs writes -> fsync
 //!                                      |                     |
 //!                                      v                     v
-//!                           consumer checkpoint <── sidecar flush
+//!                              consumer cursor <── sidecar flush
 //! ```
 //!
 //! * **Append path** – Every [`RecordBundle`] is serialized slot-by-slot into an
@@ -29,9 +29,9 @@
 //! * **Rotation** – When `rotation_target_bytes` is exceeded the active WAL file
 //!   is renamed to `wal.n` (oldest files slide toward higher numbers) and a new
 //!   header is seeded in-place. [`RotatedWalFile`] metadata keeps track of logical
-//!   data ranges so stale files can be deleted after the checkpoint advances.
-//! * **Checkpoint + sidecar** – Readers compute `WalConsumerCheckpoint` values. The
-//!   writer validates checkpoint boundaries, updates the checkpoint sidecar on disk,
+//!   data ranges so stale files can be deleted after the cursor advances.
+//! * **Cursor + sidecar** – Readers compute `WalConsumerCursor` values. The
+//!   writer validates cursor boundaries, updates the cursor sidecar on disk,
 //!   and relies on file rotation to eventually drop fully consumed bytes. The
 //!   sidecar survives crashes so restarts resume from the last known safe offset
 //!   even if a rotation has not run yet.
@@ -42,23 +42,23 @@
 //! ## Offset coordinate systems (internal)
 //!
 //! > **Note for operators:** You don't need to understand this section.
-//! > Just use `WalConsumerCheckpoint::advance()` to track progress.
+//! > Just use `WalConsumerCursor::advance()` to track progress.
 //!
-//! Internally, checkpoint metadata uses two coordinate spaces:
+//! Internally, cursor metadata uses two coordinate spaces:
 //!
 //! | Coordinate            | Measures                          | Stored in                          |
 //! |-----------------------|-----------------------------------|------------------------------------|
-//! | `global_data_offset`  | Total data bytes consumed across  | `checkpoint.offset` sidecar        |
-//! |                       | the entire WAL (headers excluded) | (stable across rotations)          |
-//! | per-file offset       | Byte position within the active   | Derived at runtime via             |
-//! |                       | WAL file (includes header)        | `to_active_file_offset()`          |
+//! | `wal_position`        | Position in the logical WAL       | `quiver.wal.cursor` sidecar        |
+//! |                       | stream (stable across rotations)  |                                    |
+//! | file offset           | Byte position within the active   | Derived at runtime via             |
+//! |                       | WAL file (includes header)        | `to_file_offset()`                 |
 //!
-//! Each [`RotatedWalFile`] stores a `cumulative_data_offset` representing the
-//! global data offset at the *end* of that file. This lets `purge_rotated_files`
-//! delete a file once `global_data_offset` exceeds its cumulative boundary.
+//! Each [`RotatedWalFile`] stores a `wal_position_end` representing the
+//! WAL stream position at the *end* of that file. This lets `purge_rotated_files`
+//! delete a file once `wal_position` exceeds its boundary.
 //!
-//! **Conversion:** `to_global_offset(file_offset)` adds data bytes from rotated
-//! files to the per-file data position. `to_active_file_offset(global)` reverses
+//! **Conversion:** `to_wal_position(file_offset)` adds data bytes from rotated
+//! files to the per-file data position. `to_file_offset(wal_position)` reverses
 //! the transformation, clamping to the active file's bounds.
 //!
 //! ## Lifecycle events
@@ -66,7 +66,7 @@
 //! | Event               | Trigger                                              |
 //! |---------------------|------------------------------------------------------|
 //! | **Rotation**        | Active file exceeds `rotation_target_bytes`          |
-//! | **Purge**           | `global_data_offset` passes a rotated file's cumulative end |
+//! | **Purge**           | `wal_position` passes a rotated file's end           |
 //! | **Backpressure**    | `aggregate_bytes > max_wal_size` or rotated file cap hit |
 //!
 //! ## Internal structure
@@ -77,7 +77,7 @@
 //!   buffer. All direct I/O (seek, write, flush/fsync) flows through this type
 //!   so we only mutate the OS file descriptor in one place.
 //! * [`WalCoordinator`] – tracks policy decisions (rotation, global caps, and
-//!   checkpoint sidecar state). It never touches raw I/O directly; instead it
+//!   cursor sidecar state). It never touches raw I/O directly; instead it
 //!   inspects `ActiveWalFile` lengths and requests actions.
 //!
 //! Splitting responsibilities this way keeps the append path easier to reason
@@ -88,10 +88,10 @@
 //!
 //! On [`WalWriter::open`]:
 //!
-//! 1. Read `checkpoint.offset` sidecar → recover `global_data_offset`.
+//! 1. Read `quiver.wal.cursor` sidecar → recover `wal_position`.
 //! 2. Scan for rotated files (`wal.N`) and rebuild the `rotated_files` queue
-//!    with cumulative offsets, sorted by rotation id (oldest first).
-//! 3. Convert `global_data_offset` → per-file offset inside the active WAL.
+//!    with WAL positions, sorted by rotation id (oldest first).
+//! 3. Convert `wal_position` → per-file offset inside the active WAL.
 //! 4. Detect the highest sequence number across all files; resume from
 //!    `highest + 1`.
 //! 5. Position the file cursor at EOF and accept new appends.
@@ -101,11 +101,11 @@
 //!
 //! ## Testing hooks
 //!
-//! * Failpoints in `test_support` simulate crashes before the checkpoint sidecar
+//! * Failpoints in `test_support` simulate crashes before the cursor sidecar
 //!   rename so we can verify idempotent recovery.
 //! * `test_force_crash` skips drop-time flushes to model abrupt exits.
 //!
-//! See the reader module for how [`WalConsumerCheckpoint`] values are derived
+//! See the reader module for how [`WalConsumerCursor`] values are derived
 //! from WAL entries.
 #![allow(dead_code)]
 
@@ -121,11 +121,11 @@ use crc32fast::Hasher;
 
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
-use super::checkpoint_sidecar::CheckpointSidecar;
-use super::header::{WAL_HEADER_LEN, WalHeader};
+use super::cursor_sidecar::CursorSidecar;
+use super::header::{WAL_HEADER_MIN_LEN, WalHeader};
 use super::reader::WalReader;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, WalConsumerCheckpoint,
+    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, WalConsumerCursor,
     WalError, WalResult,
 };
 
@@ -165,7 +165,7 @@ pub const DEFAULT_BUFFER_DECAY_RATE: (usize, usize) = (15, 16);
 /// Default maximum number of rotated WAL files to retain.
 ///
 /// New rotations are blocked when this limit is reached; the writer returns
-/// `WalAtCapacity` until the checkpoint advances and older files are purged.
+/// `WalAtCapacity` until the cursor advances and older files are purged.
 /// Eight rotated files is a reasonable trade-off: it keeps enough history for
 /// slow consumers while limiting disk footprint and recovery scan time.
 pub const DEFAULT_MAX_ROTATED_FILES: usize = 8;
@@ -296,7 +296,7 @@ impl WalWriterOptions {
 }
 
 /// Stateful writer that maintains append position, rotation metadata, and
-/// persisted consumer checkpoints. It tracks both the *current* WAL file and
+/// persisted consumer cursors. It tracks both the *current* WAL file and
 /// any rotated files so the total on-disk footprint (`aggregate_bytes`) can be
 /// compared against caps before admitting new entries.
 #[derive(Debug)]
@@ -304,7 +304,7 @@ pub(crate) struct WalWriter {
     /// Encapsulates the active WAL file handle plus its in-memory staging
     /// buffer. All raw I/O flows through this helper.
     active_file: ActiveWalFile,
-    /// Manages policy, checkpoint bookkeeping, and rotation metadata.
+    /// Manages policy, cursor bookkeeping, and rotation metadata.
     coordinator: WalCoordinator,
     /// Next sequence number to assign to an appended entry.
     next_sequence: u64,
@@ -339,31 +339,48 @@ struct ActiveWalFile {
 struct WalCoordinator {
     /// User-provided tuning knobs for the writer.
     options: WalWriterOptions,
-    /// Path to the checkpoint sidecar file on disk.
+    /// Path to the cursor sidecar file on disk.
     sidecar_path: PathBuf,
-    /// Cached copy of the persisted checkpoint offset + rotation generation.
-    checkpoint_state: CheckpointSidecar,
+    /// Cached copy of the persisted cursor position + rotation generation.
+    cursor_state: CursorSidecar,
     /// Total bytes across the active WAL plus all rotated files.
     aggregate_bytes: u64,
     /// Metadata describing each rotated `wal.N` file on disk, ordered oldest-to-newest.
     rotated_files: VecDeque<RotatedWalFile>,
+    /// WAL stream position at the start of the active file.
+    /// Initialized from the active file's header `wal_position_start` at startup,
+    /// and updated on each rotation to match the new active file's start position.
+    /// Used as a fallback in `active_wal_position_start()` when no rotated files exist.
+    wal_position_start: u64,
     /// Next rotation id to use when rotating (initialized to max existing + 1).
     next_rotation_id: u64,
-    /// Most recent offset validated to be on an entry boundary in the active file.
-    active_file_checkpoint_offset: u64,
-    /// Sequence number associated with the last committed consumer checkpoint.
-    last_checkpoint_sequence: Option<u64>,
+    /// Header size of the active WAL file in bytes.
+    /// Read from the active file's header; used for coordinate conversions.
+    /// Updated on rotation when a new file is created.
+    active_header_size: u64,
+    /// File offset in the active WAL up to which entry boundaries have been validated.
+    /// Used by `ensure_entry_boundary()` to avoid re-scanning from the file start.
+    /// Reset to `active_header_size` on rotation since the new file has no entries yet.
+    active_file_validated_entry_boundary: u64,
+    /// Sequence number associated with the last committed consumer cursor.
+    last_cursor_sequence: Option<u64>,
+    /// Count of WAL file rotations performed during this writer's lifetime.
+    rotation_count: u64,
+    /// Count of rotated files purged during this writer's lifetime.
+    purge_count: u64,
 }
 
 /// Opaque marker returned after an append.
 ///
-/// Contains the byte position and sequence number of the written entry.
-/// Useful for correlating writer positions with reader cursors during testing
-/// or debugging. Operators typically don't need to inspect these values.
+/// Contains the WAL position and sequence number of the written entry.
+/// These are logical positions in the WAL coordinate system, abstracting
+/// away file headers and rotation boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WalOffset {
-    /// Byte offset where the entry starts in the active WAL file.
+    /// WAL position where the entry starts (excludes file headers).
     pub position: u64,
+    /// WAL position immediately after the entry (used for cursor tracking).
+    pub next_offset: u64,
     /// Monotonically increasing sequence number assigned to this entry.
     pub sequence: u64,
 }
@@ -384,12 +401,14 @@ impl WalWriter {
         let metadata = file.metadata()?;
         let is_new_file = metadata.len() == 0;
 
-        if is_new_file {
+        // Read or create header, extracting wal_position_start and header_size
+        let (active_wal_start, active_header_size) = if is_new_file {
             let header = WalHeader::new(options.segment_cfg_hash);
             header.write_to(&mut file)?;
             file.flush()?;
-        } else if metadata.len() < WAL_HEADER_LEN as u64 {
-            return Err(WalError::InvalidHeader("file smaller than header"));
+            (0, header.encoded_len()) // New file starts at WAL position 0
+        } else if metadata.len() < WAL_HEADER_MIN_LEN as u64 {
+            return Err(WalError::InvalidHeader("file smaller than minimum header"));
         } else {
             let header = WalHeader::read_from(&mut file)?;
             if header.segment_cfg_hash != options.segment_cfg_hash {
@@ -398,20 +417,22 @@ impl WalWriter {
                     found: header.segment_cfg_hash,
                 });
             }
-        }
+            (header.wal_position_start, header.encoded_len())
+        };
 
         options.validate()?;
 
-        let sidecar_path = checkpoint_sidecar_path(&options.path);
-        let checkpoint_state = load_checkpoint_state(&sidecar_path)?;
+        let sidecar_path = cursor_sidecar_path(&options.path);
+        let cursor_state = load_cursor_state(&sidecar_path)?;
         let buffer_decay_rate = options.buffer_decay_rate;
 
         // Create coordinator first to scan for valid entries
         let mut coordinator = WalCoordinator::new(
             options,
             sidecar_path,
-            checkpoint_state,
-            WAL_HEADER_LEN as u64,
+            cursor_state,
+            active_header_size,
+            active_wal_start,
         );
         coordinator.reload_rotated_files(metadata.len())?;
 
@@ -429,7 +450,7 @@ impl WalWriter {
         let _ = file.seek(SeekFrom::Start(valid_offset))?;
 
         let active_file = ActiveWalFile::new(file, valid_offset, buffer_decay_rate);
-        coordinator.restore_checkpoint_offsets(active_file.len());
+        coordinator.restore_cursor_offsets(active_file.len());
         coordinator.recalculate_aggregate_bytes(active_file.len());
 
         Ok(Self {
@@ -512,27 +533,42 @@ impl WalWriter {
         self.active_file
             .maybe_flush(&self.coordinator.options().flush_policy, entry_total_bytes)?;
 
+        // Convert file offsets to WAL positions BEFORE rotation
+        // (rotation changes active_wal_position_start, which would corrupt the calculation)
+        let wal_position = self.coordinator.to_wal_position(entry_start);
+        let wal_next_position = self
+            .coordinator
+            .to_wal_position(entry_start.saturating_add(entry_total_bytes));
+
         self.coordinator
             .maybe_rotate_after_append(&mut self.active_file)?;
 
         Ok(WalOffset {
-            position: entry_start,
+            position: wal_position,
+            next_offset: wal_next_position,
             sequence,
         })
     }
 
     /// Persists the cursor position and enables cleanup of consumed WAL data.
     ///
-    /// This validates the cursor, writes to the checkpoint sidecar with fsync,
+    /// This validates the cursor, writes to the cursor sidecar with fsync,
     /// and purges any rotated files fully covered by the new position.
     ///
     /// Call this after downstream has confirmed durability (e.g., segment flush).
-    pub(crate) fn checkpoint_cursor(
-        &mut self,
-        checkpoint: &WalConsumerCheckpoint,
-    ) -> WalResult<()> {
+    pub(crate) fn persist_cursor(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
         self.coordinator
-            .checkpoint_cursor(&mut self.active_file, checkpoint)
+            .persist_cursor(&mut self.active_file, cursor)
+    }
+
+    /// Returns the number of WAL file rotations performed during this writer's lifetime.
+    pub(crate) fn rotation_count(&self) -> u64 {
+        self.coordinator.rotation_count
+    }
+
+    /// Returns the number of rotated files purged during this writer's lifetime.
+    pub(crate) fn purge_count(&self) -> u64 {
+        self.coordinator.purge_count
     }
 
     /// Encodes a slot directly into `payload_buffer`, avoiding intermediate allocations.
@@ -696,27 +732,34 @@ impl WalCoordinator {
     fn new(
         options: WalWriterOptions,
         sidecar_path: PathBuf,
-        checkpoint_state: CheckpointSidecar,
-        current_len: u64,
+        cursor_state: CursorSidecar,
+        active_header_size: u64,
+        active_wal_start: u64,
     ) -> Self {
         Self {
             options,
             sidecar_path,
-            checkpoint_state,
-            aggregate_bytes: current_len,
+            cursor_state,
+            aggregate_bytes: active_header_size,
             rotated_files: VecDeque::new(),
+            // The active file's header tells us the WAL position at the start
+            // of this file, which represents data from prior rotated files.
+            wal_position_start: active_wal_start,
             next_rotation_id: 1,
-            active_file_checkpoint_offset: WAL_HEADER_LEN as u64,
-            last_checkpoint_sequence: None,
+            active_header_size,
+            active_file_validated_entry_boundary: active_header_size,
+            last_cursor_sequence: None,
+            rotation_count: 0,
+            purge_count: 0,
         }
     }
 
-    /// Returns the total data bytes (excluding headers) across all rotated files.
-    /// Derived from the last rotated file's cumulative offset.
-    fn rotated_data_bytes(&self) -> u64 {
+    /// Returns the WAL stream position at the start of the active file.
+    /// This is the sum of data bytes from all rotated files (including purged ones).
+    fn active_wal_position_start(&self) -> u64 {
         self.rotated_files
             .back()
-            .map_or(0, |f| f.cumulative_data_offset)
+            .map_or(self.wal_position_start, |f| f.wal_position_end)
     }
 
     fn options(&self) -> &WalWriterOptions {
@@ -735,18 +778,23 @@ impl WalCoordinator {
         // Files are returned sorted oldest-to-newest by rotation_id
         let mut files = VecDeque::with_capacity(discovered.len());
         let mut aggregate = active_len;
-        let mut cumulative_data = 0u64;
+        let mut wal_position = 0u64;
         let mut max_rotation_id = 0u64;
 
         for (rotation_id, len) in &discovered {
+            let path = rotated_wal_path(&self.options.path, *rotation_id);
+            // Read header to get actual header size for this file
+            let mut file = File::open(&path)?;
+            let header_size = WalHeader::read_header_size(&mut file)? as u64;
+
             aggregate = aggregate.saturating_add(*len);
-            let data_bytes = len.saturating_sub(WAL_HEADER_LEN as u64);
-            cumulative_data = cumulative_data.saturating_add(data_bytes);
+            let data_bytes = len.saturating_sub(header_size);
+            wal_position = wal_position.saturating_add(data_bytes);
             files.push_back(RotatedWalFile {
-                path: rotated_wal_path(&self.options.path, *rotation_id),
+                path,
                 rotation_id: *rotation_id,
                 file_bytes: *len,
-                cumulative_data_offset: cumulative_data,
+                wal_position_end: wal_position,
             });
             max_rotation_id = max_rotation_id.max(*rotation_id);
         }
@@ -757,17 +805,29 @@ impl WalCoordinator {
         Ok(())
     }
 
-    fn restore_checkpoint_offsets(&mut self, active_len: u64) {
-        let header = WAL_HEADER_LEN as u64;
-        let active_data = active_len.saturating_sub(header);
-        let total_logical = self.rotated_data_bytes().saturating_add(active_data);
+    fn restore_cursor_offsets(&mut self, active_len: u64) {
+        let active_data = active_len.saturating_sub(self.active_header_size);
 
-        if self.checkpoint_state.global_data_offset > total_logical {
-            self.checkpoint_state.global_data_offset = total_logical;
+        // Get the WAL position at the end of rotated files
+        let rotated_end = self.rotated_files.back().map_or(0, |f| f.wal_position_end);
+
+        // Total logical bytes currently on disk (rotated + active data)
+        let total_on_disk = rotated_end.saturating_add(active_data);
+
+        // Handle cursor position beyond what's on disk
+        if self.cursor_state.wal_position > total_on_disk {
+            // The cursor claims more data was consumed than currently exists.
+            // This means the cursor is stale (from before a crash, data never written).
+            // Since wal_position_start is correctly initialized from the
+            // active file's header, we only need to handle stale
+            // cursors by clamping to actual data.
+            self.cursor_state.wal_position = total_on_disk;
         }
 
-        self.active_file_checkpoint_offset =
-            self.to_active_file_offset(self.checkpoint_state.global_data_offset, active_len);
+        // Initialize validated boundary to match the cursor position in the active file,
+        // so entry boundary scanning can start from there.
+        self.active_file_validated_entry_boundary =
+            self.to_file_offset(self.cursor_state.wal_position, active_len);
     }
 
     fn record_append(&mut self, entry_total_bytes: u64) {
@@ -782,59 +842,80 @@ impl WalCoordinator {
         let will_rotate = active_file
             .len()
             .saturating_add(entry_total_bytes)
-            .saturating_sub(WAL_HEADER_LEN as u64)
+            .saturating_sub(self.active_header_size)
             > self.options.rotation_target_bytes;
 
         if will_rotate && self.rotated_files.len() >= self.options.max_rotated_files {
             return Err(WalError::WalAtCapacity(
-                "rotated wal file cap reached; advance checkpoint before rotating",
+                "rotated wal file cap reached; advance cursor before rotating",
             ));
         }
 
         let mut projected = self.aggregate_bytes.saturating_add(entry_total_bytes);
         if will_rotate {
-            projected = projected.saturating_add(WAL_HEADER_LEN as u64);
+            // New file will have a fresh header
+            let new_header_size = WalHeader::new(self.options.segment_cfg_hash).encoded_len();
+            projected = projected.saturating_add(new_header_size);
         }
 
         if projected > self.options.max_wal_size {
             return Err(WalError::WalAtCapacity(
-                "wal size cap exceeded; advance checkpoint to reclaim space",
+                "wal size cap exceeded; advance cursor to reclaim space",
             ));
         }
 
         Ok(())
     }
 
-    fn checkpoint_cursor(
+    fn persist_cursor(
         &mut self,
         active_file: &mut ActiveWalFile,
-        checkpoint: &WalConsumerCheckpoint,
+        cursor: &WalConsumerCursor,
     ) -> WalResult<()> {
-        let safe_offset = self.resolve_consumer_checkpoint(active_file, checkpoint)?;
-        self.persist_checkpoint(checkpoint, safe_offset)
+        self.validate_cursor(active_file, cursor)?;
+        self.write_cursor_sidecar(cursor)
     }
 
-    fn resolve_consumer_checkpoint(
+    /// Validates the cursor is acceptable: sequence hasn't regressed, offset is valid,
+    /// and if the cursor is in the active file, it lands on an entry boundary.
+    fn validate_cursor(
         &mut self,
         active_file: &mut ActiveWalFile,
-        checkpoint: &WalConsumerCheckpoint,
-    ) -> WalResult<u64> {
-        let requested_offset = checkpoint.safe_offset.max(WAL_HEADER_LEN as u64);
+        cursor: &WalConsumerCursor,
+    ) -> WalResult<()> {
+        // Validate sequence monotonicity
+        if let Some(last_seq) = self.last_cursor_sequence {
+            if cursor.safe_sequence < last_seq {
+                return Err(WalError::InvalidConsumerCursor("safe sequence regressed"));
+            }
+        }
+
+        // Validate WAL position monotonicity
+        if cursor.safe_offset < self.cursor_state.wal_position {
+            return Err(WalError::InvalidConsumerCursor("safe offset regressed"));
+        }
+
+        let active_start = self.active_wal_position_start();
+
+        // If cursor is before or at the start of the active file, it's in a rotated file.
+        // We trust that entry boundaries were validated when that file was active.
+        if cursor.safe_offset <= active_start {
+            return Ok(());
+        }
+
+        // Cursor is in the active file - validate it's within bounds and on an entry boundary
         let file_len = active_file.file_mut().metadata()?.len();
-        if requested_offset > file_len {
-            return Err(WalError::InvalidConsumerCheckpoint(
+        let data_within_active = cursor.safe_offset.saturating_sub(active_start);
+        let file_offset = self.active_header_size.saturating_add(data_within_active);
+
+        if file_offset > file_len {
+            return Err(WalError::InvalidConsumerCursor(
                 "safe offset beyond wal tail",
             ));
         }
-        if let Some(last_seq) = self.last_checkpoint_sequence {
-            if checkpoint.safe_sequence < last_seq {
-                return Err(WalError::InvalidConsumerCheckpoint(
-                    "safe sequence regressed",
-                ));
-            }
-        }
-        self.ensure_entry_boundary(active_file, requested_offset)?;
-        Ok(requested_offset)
+
+        self.ensure_entry_boundary(active_file, file_offset)?;
+        Ok(())
     }
 
     fn ensure_entry_boundary(
@@ -842,15 +923,17 @@ impl WalCoordinator {
         active_file: &mut ActiveWalFile,
         target: u64,
     ) -> WalResult<()> {
-        if target == self.active_file_checkpoint_offset {
+        if target == self.active_file_validated_entry_boundary {
             return Ok(());
         }
-        if target < self.active_file_checkpoint_offset {
-            return Err(WalError::InvalidConsumerCheckpoint("safe offset regressed"));
+        if target < self.active_file_validated_entry_boundary {
+            return Err(WalError::InvalidConsumerCursor(
+                "safe offset regressed (file offset)",
+            ));
         }
 
         let original_pos = active_file.file_mut().stream_position()?;
-        let mut cursor = self.active_file_checkpoint_offset;
+        let mut cursor = self.active_file_validated_entry_boundary;
         let _ = active_file.file_mut().seek(SeekFrom::Start(cursor))?;
         while cursor < target {
             let mut len_buf = [0u8; 4];
@@ -859,13 +942,13 @@ impl WalCoordinator {
             let entry_total = 4u64
                 .checked_add(entry_len)
                 .and_then(|val| val.checked_add(4))
-                .ok_or(WalError::InvalidConsumerCheckpoint("entry length overflow"))?;
+                .ok_or(WalError::InvalidConsumerCursor("entry length overflow"))?;
             cursor = cursor
                 .checked_add(entry_total)
-                .ok_or(WalError::InvalidConsumerCheckpoint("safe offset overflow"))?;
+                .ok_or(WalError::InvalidConsumerCursor("safe offset overflow"))?;
             if cursor > target {
                 let _ = active_file.file_mut().seek(SeekFrom::Start(original_pos))?;
-                return Err(WalError::InvalidConsumerCheckpoint(
+                return Err(WalError::InvalidConsumerCursor(
                     "safe offset splits entry boundary",
                 ));
             }
@@ -877,31 +960,39 @@ impl WalCoordinator {
         Ok(())
     }
 
-    fn persist_checkpoint(
-        &mut self,
-        checkpoint: &WalConsumerCheckpoint,
-        recorded_offset: u64,
-    ) -> WalResult<()> {
-        let global_offset = self.to_global_offset(recorded_offset);
-        if global_offset < self.checkpoint_state.global_data_offset {
-            return Err(WalError::InvalidConsumerCheckpoint("safe offset regressed"));
+    fn write_cursor_sidecar(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
+        // Use the WAL position directly from the cursor
+        let wal_pos = cursor.safe_offset;
+
+        self.record_wal_position(wal_pos)?;
+
+        // Only update active_file_validated_entry_boundary if the cursor is in the active file
+        let active_start = self.active_wal_position_start();
+        if wal_pos > active_start {
+            let data_within_active = wal_pos.saturating_sub(active_start);
+            let file_offset = self.active_header_size.saturating_add(data_within_active);
+            self.active_file_validated_entry_boundary = file_offset;
+        } else if wal_pos == active_start {
+            // Cursor is exactly at the start of active file
+            self.active_file_validated_entry_boundary = self.active_header_size;
         }
-        self.record_global_offset(global_offset)?;
-        self.active_file_checkpoint_offset = recorded_offset;
-        self.last_checkpoint_sequence = Some(checkpoint.safe_sequence);
+        // If wal_pos < active_start, the cursor is in a rotated file,
+        // so we don't update active_file_validated_entry_boundary
+
+        self.last_cursor_sequence = Some(cursor.safe_sequence);
         self.purge_rotated_files()
     }
 
-    fn record_global_offset(&mut self, global_offset: u64) -> WalResult<()> {
-        if self.checkpoint_state.global_data_offset == global_offset && self.sidecar_path.exists() {
+    fn record_wal_position(&mut self, wal_pos: u64) -> WalResult<()> {
+        if self.cursor_state.wal_position == wal_pos && self.sidecar_path.exists() {
             return Ok(());
         }
-        self.checkpoint_state.global_data_offset = global_offset;
-        CheckpointSidecar::write_to(&self.sidecar_path, &self.checkpoint_state)
+        self.cursor_state.wal_position = wal_pos;
+        CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state)
     }
 
     fn maybe_rotate_after_append(&mut self, active_file: &mut ActiveWalFile) -> WalResult<()> {
-        let active_data_bytes = active_file.len().saturating_sub(WAL_HEADER_LEN as u64);
+        let active_data_bytes = active_file.len().saturating_sub(self.active_header_size);
         if active_data_bytes <= self.options.rotation_target_bytes {
             return Ok(());
         }
@@ -911,13 +1002,13 @@ impl WalCoordinator {
     fn rotate_active_file(&mut self, active_file: &mut ActiveWalFile) -> WalResult<()> {
         if self.rotated_files.len() >= self.options.max_rotated_files {
             return Err(WalError::WalAtCapacity(
-                "rotated wal file cap reached; advance checkpoint before rotating",
+                "rotated wal file cap reached; advance cursor before rotating",
             ));
         }
 
         active_file.flush_now()?;
         let old_len = active_file.len();
-        if old_len <= WAL_HEADER_LEN as u64 {
+        if old_len <= self.active_header_size {
             return Ok(());
         }
         self.aggregate_bytes = self.aggregate_bytes.saturating_sub(old_len);
@@ -930,31 +1021,45 @@ impl WalCoordinator {
         std::fs::rename(&self.options.path, &new_rotated_path)?;
         sync_parent_dir(&self.options.path)?;
 
-        let data_bytes = old_len.saturating_sub(WAL_HEADER_LEN as u64);
-        let cumulative_data_offset = self.rotated_data_bytes().saturating_add(data_bytes);
+        let data_bytes = old_len.saturating_sub(self.active_header_size);
+        let new_wal_position_end = self.active_wal_position_start().saturating_add(data_bytes);
         self.rotated_files.push_back(RotatedWalFile {
             path: new_rotated_path,
             rotation_id,
             file_bytes: old_len,
-            cumulative_data_offset,
+            wal_position_end: new_wal_position_end,
         });
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(old_len);
 
-        let mut file = reopen_wal_file(&self.options.path, self.options.segment_cfg_hash)?;
+        // New file's start position is the end of the last rotated file.
+        // Update wal_position_start to match the new active file's header.
+        let new_wal_start = new_wal_position_end;
+        self.wal_position_start = new_wal_start;
+        let mut file = reopen_wal_file(
+            &self.options.path,
+            self.options.segment_cfg_hash,
+            new_wal_start,
+        )?;
         let _ = file.seek(SeekFrom::End(0))?; // ensure positioned at end
-        active_file.replace_file(file, WAL_HEADER_LEN as u64);
-        self.aggregate_bytes = self.aggregate_bytes.saturating_add(active_file.len());
-        self.active_file_checkpoint_offset = WAL_HEADER_LEN as u64;
 
-        CheckpointSidecar::write_to(&self.sidecar_path, &self.checkpoint_state)?;
+        // New file has a fresh header - update active_header_size
+        let new_header_size = WalHeader::new(self.options.segment_cfg_hash).encoded_len();
+        self.active_header_size = new_header_size;
+        active_file.replace_file(file, new_header_size);
+        self.aggregate_bytes = self.aggregate_bytes.saturating_add(active_file.len());
+        self.active_file_validated_entry_boundary = new_header_size;
+        self.rotation_count = self.rotation_count.saturating_add(1);
+
+        CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state)?;
         Ok(())
     }
 
     fn purge_rotated_files(&mut self) -> WalResult<()> {
         while let Some(front) = self.rotated_files.front() {
-            if front.cumulative_data_offset <= self.checkpoint_state.global_data_offset {
+            if front.wal_position_end <= self.cursor_state.wal_position {
                 std::fs::remove_file(&front.path)?;
                 self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
+                self.purge_count = self.purge_count.saturating_add(1);
                 let _ = self.rotated_files.pop_front();
             } else {
                 break;
@@ -968,24 +1073,23 @@ impl WalCoordinator {
         self.aggregate_bytes = rotated_total.saturating_add(active_len);
     }
 
-    fn to_global_offset(&self, file_offset: u64) -> u64 {
-        let data_offset = file_offset.saturating_sub(WAL_HEADER_LEN as u64);
-        self.rotated_data_bytes().saturating_add(data_offset)
+    fn to_wal_position(&self, file_offset: u64) -> u64 {
+        let data_offset = file_offset.saturating_sub(self.active_header_size);
+        self.active_wal_position_start().saturating_add(data_offset)
     }
 
-    fn to_active_file_offset(&self, global_offset: u64, active_len: u64) -> u64 {
-        let header = WAL_HEADER_LEN as u64;
-        let active_data_len = active_len.saturating_sub(header);
-        let rotated_data = self.rotated_data_bytes();
+    fn to_file_offset(&self, wal_position: u64, active_len: u64) -> u64 {
+        let active_data_len = active_len.saturating_sub(self.active_header_size);
+        let active_start = self.active_wal_position_start();
 
-        if global_offset <= rotated_data {
-            return header;
+        if wal_position <= active_start {
+            return self.active_header_size;
         }
 
-        let data_within_active = global_offset
-            .saturating_sub(rotated_data)
+        let data_within_active = wal_position
+            .saturating_sub(active_start)
             .min(active_data_len);
-        header.saturating_add(data_within_active)
+        self.active_header_size.saturating_add(data_within_active)
     }
 
     /// Determines the next sequence number and last valid offset in the active file.
@@ -1015,20 +1119,22 @@ impl WalCoordinator {
 
     /// Scans a WAL file and returns the last valid sequence number and the
     /// byte offset immediately after the last valid entry (i.e., where new
-    /// writes should begin).
+    /// writes should begin). Returns file offsets (not WAL positions).
     fn scan_file_last_sequence(&self, path: &Path) -> WalResult<(Option<u64>, u64)> {
         if !path.exists() {
             return Ok((None, 0));
         }
         let mut reader = WalReader::open(path)?;
+        let header_size = reader.header_size();
         let iter = reader.iter_from(0)?;
         let mut last_seq = None;
-        let mut last_valid_offset = WAL_HEADER_LEN as u64;
+        let mut last_valid_offset = header_size;
         for entry in iter {
             match entry {
                 Ok(bundle) => {
                     last_seq = Some(bundle.sequence);
-                    last_valid_offset = bundle.next_offset;
+                    // Convert WAL position back to file offset for internal use
+                    last_valid_offset = bundle.next_offset + header_size;
                 }
                 Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {
                     // Partial or corrupted entry - stop here
@@ -1119,28 +1225,28 @@ pub(super) fn sync_parent_dir(path: &Path) -> WalResult<()> {
     Ok(())
 }
 
-fn checkpoint_sidecar_path(wal_path: &Path) -> PathBuf {
+fn cursor_sidecar_path(wal_path: &Path) -> PathBuf {
     wal_path
         .parent()
-        .map(|parent| parent.join("checkpoint.offset"))
-        .unwrap_or_else(|| PathBuf::from("checkpoint.offset"))
+        .map(|parent| parent.join("quiver.wal.cursor"))
+        .unwrap_or_else(|| PathBuf::from("quiver.wal.cursor"))
 }
 
-fn load_checkpoint_state(path: &Path) -> WalResult<CheckpointSidecar> {
-    match CheckpointSidecar::read_from(path) {
+fn load_cursor_state(path: &Path) -> WalResult<CursorSidecar> {
+    match CursorSidecar::read_from(path) {
         Ok(state) => Ok(state),
-        Err(WalError::InvalidCheckpointSidecar(_)) => Ok(default_checkpoint_state()),
+        Err(WalError::InvalidCursorSidecar(_)) => Ok(default_cursor_state()),
         Err(WalError::Io(err))
             if matches!(err.kind(), ErrorKind::NotFound | ErrorKind::UnexpectedEof) =>
         {
-            Ok(default_checkpoint_state())
+            Ok(default_cursor_state())
         }
         Err(err) => Err(err),
     }
 }
 
-fn default_checkpoint_state() -> CheckpointSidecar {
-    CheckpointSidecar::new(0)
+fn default_cursor_state() -> CursorSidecar {
+    CursorSidecar::new(0)
 }
 
 fn rotated_wal_path(base_path: &Path, rotation_id: u64) -> PathBuf {
@@ -1199,14 +1305,18 @@ fn discover_rotated_wal_files(base_path: &Path) -> WalResult<Vec<(u64, u64)>> {
     Ok(discovered)
 }
 
-fn reopen_wal_file(path: &Path, segment_hash: [u8; 16]) -> WalResult<File> {
+fn reopen_wal_file(
+    path: &Path,
+    segment_hash: [u8; 16],
+    wal_position_start: u64,
+) -> WalResult<File> {
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(true)
         .open(path)?;
-    WalHeader::new(segment_hash).write_to(&mut file)?;
+    WalHeader::with_base_offset(segment_hash, wal_position_start).write_to(&mut file)?;
     Ok(file)
 }
 
@@ -1219,10 +1329,9 @@ struct RotatedWalFile {
     /// Monotonic rotation id for this file (extracted from the suffix, e.g., wal.5 has id=5).
     rotation_id: u64,
     file_bytes: u64,
-    /// Global data offset at the *end* of this file (cumulative across older
-    /// rotated files). When `global_data_offset >= cumulative_data_offset` the
-    /// file is fully consumed and can be deleted.
-    cumulative_data_offset: u64,
+    /// WAL stream position at the *end* of this file. When `wal_position >= wal_position_end`
+    /// the file is fully consumed and can be deleted.
+    wal_position_end: u64,
 }
 
 impl RotatedWalFile {

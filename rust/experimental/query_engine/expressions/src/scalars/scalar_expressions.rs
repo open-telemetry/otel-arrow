@@ -8,7 +8,7 @@ pub type ScalarStaticResolutionResult<'a> =
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScalarExpression {
-    /// Resolve a value from a function argument. Values may be mutable or immutable.
+    /// Resolve a value from a function argument.
     Argument(ArgumentScalarExpression),
 
     /// Resolve a value from an immutable record attached to a query.
@@ -3467,7 +3467,6 @@ mod tests {
                 QueryLocation::new_fake(),
                 vec![PipelineFunctionParameter::new(
                     QueryLocation::new_fake(),
-                    "a",
                     PipelineFunctionParameterType::MutableValue(None),
                 )],
                 None,
@@ -3491,7 +3490,6 @@ mod tests {
                 QueryLocation::new_fake(),
                 vec![PipelineFunctionParameter::new(
                     QueryLocation::new_fake(),
-                    "a",
                     PipelineFunctionParameterType::Scalar(None),
                 )],
                 None,

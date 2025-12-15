@@ -35,6 +35,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -108,12 +109,11 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        effect_handler
-            .info(&format!(
-                "Exporting OTLP traffic to endpoint: {}",
-                self.config.grpc_endpoint
-            ))
-            .await;
+        otel_info!(
+            "Exporter.Start",
+            grpc_endpoint = self.config.grpc_endpoint.as_str(),
+            message = "Starting OTAP Exporter"
+        );
 
         let exporter_id = effect_handler.exporter_id();
         let mut endpoint =
@@ -781,6 +781,8 @@ mod tests {
         );
     }
 
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
+    #[cfg(not(windows))]
     #[test]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
@@ -878,9 +880,9 @@ mod tests {
                 .await
                 .unwrap();
             let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4]; // logs exported
+            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
             assert_eq!(logs_exported_count, 1);
-            let logs_failed_count = metrics.get_metrics()[5]; // logs failed
+            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 1);
 
             control_sender
