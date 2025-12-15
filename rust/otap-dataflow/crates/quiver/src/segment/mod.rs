@@ -48,6 +48,8 @@ mod error;
 mod open_segment;
 mod reader;
 mod stream_accumulator;
+#[cfg(test)]
+pub(crate) mod test_utils;
 mod types;
 mod writer;
 

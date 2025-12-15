@@ -258,37 +258,13 @@ impl std::fmt::Debug for StreamAccumulator {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::sync::Arc;
 
-    use arrow_array::{Int32Array, StringArray};
     use arrow_ipc::reader::FileReader;
-    use arrow_schema::{DataType, Field, Schema};
 
     use super::*;
-
-    fn test_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-        ]))
-    }
-
-    fn test_fingerprint() -> SchemaFingerprint {
-        [0xABu8; 32]
-    }
-
-    fn make_batch(schema: &SchemaRef, ids: &[i32], names: &[&str]) -> RecordBatch {
-        RecordBatch::try_new(
-            Arc::clone(schema),
-            vec![
-                Arc::new(Int32Array::from(ids.to_vec())),
-                Arc::new(StringArray::from(
-                    names.iter().map(|s| Some(*s)).collect::<Vec<_>>(),
-                )),
-            ],
-        )
-        .expect("valid batch")
-    }
+    use crate::segment::test_utils::{make_batch, test_fingerprint, test_schema};
 
     #[test]
     fn new_accumulator_is_empty() {

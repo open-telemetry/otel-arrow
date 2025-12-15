@@ -242,86 +242,13 @@ impl std::fmt::Debug for OpenSegment {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::SystemTime;
-
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
-    use arrow_ipc::reader::FileReader;
-    use arrow_schema::{DataType, Field, Schema};
     use std::io::Cursor;
 
+    use arrow_ipc::reader::FileReader;
+
     use super::*;
-    use crate::record_bundle::{BundleDescriptor, PayloadRef, SlotDescriptor};
+    use crate::segment::test_utils::{make_batch, slot_descriptors, test_schema, TestBundle};
     use crate::segment::ChunkIndex;
-
-    // Test bundle implementation
-    struct TestBundle {
-        descriptor: BundleDescriptor,
-        payloads: HashMap<SlotId, (SchemaFingerprint, RecordBatch)>,
-    }
-
-    impl TestBundle {
-        fn new(slots: Vec<SlotDescriptor>) -> Self {
-            Self {
-                descriptor: BundleDescriptor::new(slots),
-                payloads: HashMap::new(),
-            }
-        }
-
-        fn with_payload(
-            mut self,
-            slot_id: SlotId,
-            fingerprint: SchemaFingerprint,
-            batch: RecordBatch,
-        ) -> Self {
-            let _ = self.payloads.insert(slot_id, (fingerprint, batch));
-            self
-        }
-    }
-
-    impl RecordBundle for TestBundle {
-        fn descriptor(&self) -> &BundleDescriptor {
-            &self.descriptor
-        }
-
-        fn ingestion_time(&self) -> SystemTime {
-            SystemTime::now()
-        }
-
-        fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
-            self.payloads.get(&slot).map(|(fp, batch)| PayloadRef {
-                schema_fingerprint: *fp,
-                batch,
-            })
-        }
-    }
-
-    fn test_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-        ]))
-    }
-
-    fn make_batch(schema: &SchemaRef, ids: &[i32], names: &[&str]) -> RecordBatch {
-        RecordBatch::try_new(
-            Arc::clone(schema),
-            vec![
-                Arc::new(Int32Array::from(ids.to_vec())),
-                Arc::new(StringArray::from(
-                    names.iter().map(|s| Some(*s)).collect::<Vec<_>>(),
-                )),
-            ],
-        )
-        .expect("valid batch")
-    }
-
-    fn slot_descriptors() -> Vec<SlotDescriptor> {
-        vec![
-            SlotDescriptor::new(SlotId::new(0), "Logs"),
-            SlotDescriptor::new(SlotId::new(1), "LogAttrs"),
-        ]
-    }
 
     #[test]
     fn new_segment_is_empty() {

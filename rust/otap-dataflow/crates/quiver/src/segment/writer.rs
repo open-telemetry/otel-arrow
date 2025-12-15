@@ -435,37 +435,17 @@ fn encode_as_ipc(batch: &RecordBatch) -> Result<Vec<u8>, SegmentError> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::Arc;
 
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_array::RecordBatch;
+    use arrow_schema::SchemaRef;
     use tempfile::tempdir;
 
     use super::*;
     use crate::record_bundle::SlotId;
+    use crate::segment::test_utils::{make_batch, test_schema};
     use crate::segment::types::{ChunkIndex, FOOTER_V1_SIZE, SEGMENT_MAGIC, StreamId};
 
-    fn test_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-        ]))
-    }
-
-    fn make_batch(schema: &Arc<Schema>, ids: &[i32], names: &[&str]) -> RecordBatch {
-        RecordBatch::try_new(
-            Arc::clone(schema),
-            vec![
-                Arc::new(Int32Array::from(ids.to_vec())),
-                Arc::new(StringArray::from(
-                    names.iter().map(|s| Some(*s)).collect::<Vec<_>>(),
-                )),
-            ],
-        )
-        .expect("valid batch")
-    }
-
-    fn make_stream_ipc(schema: &Arc<Schema>, batches: &[RecordBatch]) -> Vec<u8> {
+    fn make_stream_ipc(schema: &SchemaRef, batches: &[RecordBatch]) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut writer = FileWriter::try_new(&mut buf, schema.as_ref()).expect("create writer");

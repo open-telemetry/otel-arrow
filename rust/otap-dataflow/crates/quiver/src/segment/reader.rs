@@ -718,86 +718,17 @@ impl SegmentReader {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::SystemTime;
 
-    use arrow_array::{DictionaryArray, Int32Array, RecordBatch, StringArray};
+    use arrow_array::{DictionaryArray, Int32Array};
     use arrow_schema::{DataType, Field, Schema};
     use tempfile::tempdir;
 
     use super::*;
-    use crate::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor};
+    use crate::record_bundle::SlotDescriptor;
+    use crate::segment::test_utils::{make_batch, slot_descriptors, test_schema, TestBundle};
     use crate::segment::types::FOOTER_V1_SIZE;
     use crate::segment::{OpenSegment, SegmentSeq, SegmentWriter};
-
-    fn test_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-            Field::new("name", DataType::Utf8, true),
-        ]))
-    }
-
-    fn make_batch(schema: &Arc<Schema>, ids: &[i32], names: &[&str]) -> RecordBatch {
-        RecordBatch::try_new(
-            Arc::clone(schema),
-            vec![
-                Arc::new(Int32Array::from(ids.to_vec())),
-                Arc::new(StringArray::from(
-                    names.iter().map(|s| Some(*s)).collect::<Vec<_>>(),
-                )),
-            ],
-        )
-        .expect("valid batch")
-    }
-
-    fn slot_descriptors() -> Vec<SlotDescriptor> {
-        vec![
-            SlotDescriptor::new(SlotId::new(0), "Logs"),
-            SlotDescriptor::new(SlotId::new(1), "LogAttrs"),
-        ]
-    }
-
-    struct TestBundle {
-        descriptor: BundleDescriptor,
-        payloads: HashMap<SlotId, ([u8; 32], RecordBatch)>,
-    }
-
-    impl TestBundle {
-        fn new(slots: Vec<SlotDescriptor>) -> Self {
-            Self {
-                descriptor: BundleDescriptor::new(slots),
-                payloads: HashMap::new(),
-            }
-        }
-
-        fn with_payload(
-            mut self,
-            slot_id: SlotId,
-            fingerprint: [u8; 32],
-            batch: RecordBatch,
-        ) -> Self {
-            let _ = self.payloads.insert(slot_id, (fingerprint, batch));
-            self
-        }
-    }
-
-    impl RecordBundle for TestBundle {
-        fn descriptor(&self) -> &BundleDescriptor {
-            &self.descriptor
-        }
-
-        fn ingestion_time(&self) -> SystemTime {
-            SystemTime::now()
-        }
-
-        fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
-            self.payloads.get(&slot).map(|(fp, batch)| PayloadRef {
-                schema_fingerprint: *fp,
-                batch,
-            })
-        }
-    }
 
     /// Test helper that creates a segment file in a temporary directory.
     /// Returns handles to the tempdir (which must be kept alive) and segment path.
