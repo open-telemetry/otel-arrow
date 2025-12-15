@@ -540,13 +540,19 @@ impl SegmentReader {
             })?;
 
         // Parse stream directory columns
-        let stream_ids = Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "stream_id")?;
-        let slot_ids = Self::get_primitive_column::<arrow_array::types::UInt16Type>(&batch, "slot_id")?;
+        let stream_ids =
+            Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "stream_id")?;
+        let slot_ids =
+            Self::get_primitive_column::<arrow_array::types::UInt16Type>(&batch, "slot_id")?;
         let fingerprints = Self::get_fixed_binary_column(&batch, "schema_fingerprint", 32)?;
-        let byte_offsets = Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_offset")?;
-        let byte_lengths = Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_length")?;
-        let row_counts = Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "row_count")?;
-        let chunk_counts = Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "chunk_count")?;
+        let byte_offsets =
+            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_offset")?;
+        let byte_lengths =
+            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_length")?;
+        let row_counts =
+            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "row_count")?;
+        let chunk_counts =
+            Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "chunk_count")?;
 
         let mut streams = Vec::with_capacity(batch.num_rows());
         for i in 0..batch.num_rows() {
@@ -588,7 +594,8 @@ impl SegmentReader {
             })?;
 
         // Parse manifest columns
-        let bundle_indices = Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
+        let bundle_indices =
+            Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
         let slot_refs_strs = Self::get_string_column(&batch, "slot_refs")?;
 
         let mut entries = Vec::with_capacity(batch.num_rows());
@@ -623,7 +630,10 @@ impl SegmentReader {
     }
 
     /// Extracts a primitive column from a RecordBatch as a Vec.
-    fn get_primitive_column<T>(batch: &RecordBatch, name: &str) -> Result<Vec<T::Native>, SegmentError>
+    fn get_primitive_column<T>(
+        batch: &RecordBatch,
+        name: &str,
+    ) -> Result<Vec<T::Native>, SegmentError>
     where
         T: arrow_array::types::ArrowPrimitiveType,
     {
@@ -635,14 +645,16 @@ impl SegmentReader {
                 message: format!("missing column: {}", name),
             })?;
 
-        let arr = col.as_primitive_opt::<T>().ok_or_else(|| SegmentError::InvalidFormat {
-            message: format!(
-                "column {} has type {:?}, expected {:?}",
-                name,
-                col.data_type(),
-                T::DATA_TYPE
-            ),
-        })?;
+        let arr = col
+            .as_primitive_opt::<T>()
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "column {} has type {:?}, expected {:?}",
+                    name,
+                    col.data_type(),
+                    T::DATA_TYPE
+                ),
+            })?;
 
         Ok(arr.values().to_vec())
     }
@@ -1109,7 +1121,9 @@ mod tests {
         }
         #[cfg(not(unix))]
         {
-            let mut permissions = std::fs::metadata(&seg.path).expect("metadata").permissions();
+            let mut permissions = std::fs::metadata(&seg.path)
+                .expect("metadata")
+                .permissions();
             permissions.set_readonly(false);
             std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
         }
