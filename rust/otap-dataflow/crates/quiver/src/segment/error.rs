@@ -102,39 +102,6 @@ impl SegmentError {
     pub fn io_no_path(source: io::Error) -> Self {
         Self::Io { path: None, source }
     }
-
-    /// Creates an invalid format error.
-    #[must_use]
-    pub fn invalid_format(message: impl Into<String>) -> Self {
-        Self::InvalidFormat {
-            message: message.into(),
-        }
-    }
-
-    /// Creates a checksum mismatch error.
-    #[must_use]
-    pub fn checksum_mismatch(segment_seq: Option<SegmentSeq>, expected: u32, actual: u32) -> Self {
-        Self::ChecksumMismatch {
-            segment_seq,
-            expected,
-            actual,
-        }
-    }
-
-    /// Creates a stream not found error.
-    #[must_use]
-    pub fn stream_not_found(stream_id: StreamId) -> Self {
-        Self::StreamNotFound { stream_id }
-    }
-
-    /// Creates a slot not in bundle error.
-    #[must_use]
-    pub fn slot_not_in_bundle(slot_id: SlotId, bundle_index: u32) -> Self {
-        Self::SlotNotInBundle {
-            slot_id,
-            bundle_index,
-        }
-    }
 }
 
 impl From<ArrowError> for SegmentError {
@@ -176,8 +143,11 @@ mod tests {
 
     #[test]
     fn checksum_mismatch_displays_hex_values() {
-        let err =
-            SegmentError::checksum_mismatch(Some(SegmentSeq::new(42)), 0xDEADBEEF, 0xCAFEBABE);
+        let err = SegmentError::ChecksumMismatch {
+            segment_seq: Some(SegmentSeq::new(42)),
+            expected: 0xDEADBEEF,
+            actual: 0xCAFEBABE,
+        };
         let msg = err.to_string();
         assert!(msg.contains("0xdeadbeef"));
         assert!(msg.contains("0xcafebabe"));
@@ -186,7 +156,9 @@ mod tests {
 
     #[test]
     fn invalid_format_includes_message() {
-        let err = SegmentError::invalid_format("missing magic bytes");
+        let err = SegmentError::InvalidFormat {
+            message: "missing magic bytes".to_string(),
+        };
         assert!(err.to_string().contains("missing magic bytes"));
     }
 
@@ -199,13 +171,18 @@ mod tests {
 
     #[test]
     fn stream_not_found_displays_stream_id() {
-        let err = SegmentError::stream_not_found(StreamId::new(7));
+        let err = SegmentError::StreamNotFound {
+            stream_id: StreamId::new(7),
+        };
         assert!(err.to_string().contains("7"));
     }
 
     #[test]
     fn slot_not_in_bundle_displays_details() {
-        let err = SegmentError::slot_not_in_bundle(SlotId::new(3), 10);
+        let err = SegmentError::SlotNotInBundle {
+            slot_id: SlotId::new(3),
+            bundle_index: 10,
+        };
         let msg = err.to_string();
         assert!(msg.contains("3"));
         assert!(msg.contains("10"));
