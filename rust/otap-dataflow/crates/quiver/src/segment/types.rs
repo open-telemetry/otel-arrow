@@ -34,6 +34,43 @@ pub(super) const TRAILER_SIZE: usize = 16;
 pub(super) const FOOTER_V1_SIZE: usize = 34;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Segment Limits
+//
+// These limits are enforced by both writers (to prevent creating invalid
+// segments) and readers (to protect against malicious/corrupted files).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Maximum number of distinct streams in a single segment.
+///
+/// A stream is created for each unique `(slot_id, schema_fingerprint)` pair.
+/// This limit prevents resource exhaustion from segments with excessive schema
+/// diversity.
+pub(super) const MAX_STREAMS_PER_SEGMENT: usize = 100_000;
+
+/// Maximum number of bundles that can be stored in a single segment.
+///
+/// Each bundle represents one ingested `RecordBundle`. This limit bounds
+/// manifest size and prevents resource exhaustion.
+pub(super) const MAX_BUNDLES_PER_SEGMENT: usize = 10_000_000;
+
+/// Maximum number of payload slots per bundle.
+///
+/// This matches the slot bitmap width (u64) used in manifest encoding.
+/// Slots beyond this limit cannot be represented in the bitmap.
+pub(super) const MAX_SLOTS_PER_BUNDLE: usize = 64;
+
+/// Maximum number of Arrow IPC dictionaries per stream.
+///
+/// Limits resource consumption when parsing dictionary-encoded data.
+pub(super) const MAX_DICTIONARIES_PER_STREAM: usize = 10_000;
+
+/// Maximum number of Arrow IPC record batches (chunks) per stream.
+///
+/// Each chunk is an Arrow RecordBatch. This limit prevents excessive
+/// memory allocation when building batch indices.
+pub(super) const MAX_CHUNKS_PER_STREAM: usize = 10_000_000;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Stream Identification
 // ─────────────────────────────────────────────────────────────────────────────
 

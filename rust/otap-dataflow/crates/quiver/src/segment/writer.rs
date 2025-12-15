@@ -80,11 +80,8 @@ use crc32fast::Hasher;
 use super::error::SegmentError;
 use super::types::{
     Footer, ManifestEntry, SEGMENT_VERSION, SegmentSeq, StreamMetadata, TRAILER_SIZE, Trailer,
+    MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT,
 };
-
-/// Maximum number of slots per bundle for manifest encoding.
-/// This matches the slot bitmap width used in the WAL.
-const MAX_SLOTS: usize = 64;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SegmentWriter
@@ -178,6 +175,26 @@ impl SegmentWriter {
         manifest: Vec<ManifestEntry>,
         path: &Path,
     ) -> Result<(u64, u32), SegmentError> {
+        // Validate limits before writing to prevent creating unreadable segments
+        if streams.len() > MAX_STREAMS_PER_SEGMENT {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "segment has {} streams, exceeds limit of {}",
+                    streams.len(),
+                    MAX_STREAMS_PER_SEGMENT
+                ),
+            });
+        }
+        if manifest.len() > MAX_BUNDLES_PER_SEGMENT {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "segment has {} bundles, exceeds limit of {}",
+                    manifest.len(),
+                    MAX_BUNDLES_PER_SEGMENT
+                ),
+            });
+        }
+
         let mut hasher = Hasher::new();
         let mut offset: u64 = 0;
 
@@ -378,7 +395,7 @@ impl SegmentWriter {
 
             for (slot_id, chunk_ref) in entry.slots() {
                 let slot_raw = slot_id.raw() as usize;
-                if slot_raw < MAX_SLOTS {
+                if slot_raw < MAX_SLOTS_PER_BUNDLE {
                     bitmap |= 1u64 << slot_raw;
                 }
                 // Format: "slot_id:stream_id:chunk_index"

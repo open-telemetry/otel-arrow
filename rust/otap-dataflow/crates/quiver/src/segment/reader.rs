@@ -51,6 +51,8 @@ use crc32fast::Hasher;
 use super::error::SegmentError;
 use super::types::{
     ChunkIndex, Footer, ManifestEntry, StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
+    MAX_BUNDLES_PER_SEGMENT, MAX_CHUNKS_PER_STREAM, MAX_DICTIONARIES_PER_STREAM,
+    MAX_SLOTS_PER_BUNDLE,
 };
 use crate::record_bundle::SlotId;
 
@@ -162,18 +164,14 @@ impl StreamDecoder {
 
         let mut decoder = FileDecoder::new(Arc::new(schema), footer.version());
 
-        // Security limits to prevent resource exhaustion from malicious files
-        const MAX_DICTIONARIES: usize = 10_000;
-        const MAX_BATCHES: usize = 10_000_000;
-
         // Read dictionaries with bounds checking
         let dictionaries: Vec<_> = footer.dictionaries().iter().flatten().collect();
-        if dictionaries.len() > MAX_DICTIONARIES {
+        if dictionaries.len() > MAX_DICTIONARIES_PER_STREAM {
             return Err(SegmentError::InvalidFormat {
                 message: format!(
                     "IPC stream has {} dictionaries, exceeds limit of {}",
                     dictionaries.len(),
-                    MAX_DICTIONARIES
+                    MAX_DICTIONARIES_PER_STREAM
                 ),
             });
         }
@@ -209,12 +207,12 @@ impl StreamDecoder {
             .map(|b| b.iter().copied().collect())
             .unwrap_or_default();
 
-        if batches.len() > MAX_BATCHES {
+        if batches.len() > MAX_CHUNKS_PER_STREAM {
             return Err(SegmentError::InvalidFormat {
                 message: format!(
                     "IPC stream has {} batches, exceeds limit of {}",
                     batches.len(),
-                    MAX_BATCHES
+                    MAX_CHUNKS_PER_STREAM
                 ),
             });
         }
@@ -709,17 +707,17 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
         let slot_refs_strs = Self::get_string_column(&batch, "slot_refs")?;
 
-        // Security limits to prevent resource exhaustion from malicious files
-        const MAX_BUNDLES: usize = 10_000_000;
-        const MAX_SLOTS_PER_BUNDLE: usize = 256;
-        const MAX_SLOT_REFS_STRING_LEN: usize = 1_000_000;
+        // Derived limit for slot_refs string length.
+        // Each slot ref is "slot:stream:chunk" which is at most ~30 chars, plus comma.
+        // With MAX_SLOTS_PER_BUNDLE slots, this gives a reasonable upper bound.
+        const MAX_SLOT_REFS_STRING_LEN: usize = MAX_SLOTS_PER_BUNDLE * 32;
 
-        if batch.num_rows() > MAX_BUNDLES {
+        if batch.num_rows() > MAX_BUNDLES_PER_SEGMENT {
             return Err(SegmentError::InvalidFormat {
                 message: format!(
                     "manifest has {} bundles, exceeds limit of {}",
                     batch.num_rows(),
-                    MAX_BUNDLES
+                    MAX_BUNDLES_PER_SEGMENT
                 ),
             });
         }

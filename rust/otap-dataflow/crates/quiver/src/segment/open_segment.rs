@@ -25,7 +25,10 @@ use arrow_schema::SchemaRef;
 
 use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
-use super::types::{ManifestEntry, StreamId, StreamKey, StreamMetadata};
+use super::types::{
+    ManifestEntry, StreamId, StreamKey, StreamMetadata,
+    MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT,
+};
 use crate::record_bundle::RecordBundle;
 
 /// In-memory buffer for an open segment.
@@ -118,9 +121,22 @@ impl OpenSegment {
     ///
     /// Returns [`SegmentError::AccumulatorFinalized`] if the segment has
     /// already been finalized.
+    /// Returns [`SegmentError::InvalidFormat`] if adding this bundle would
+    /// exceed segment limits.
     pub fn append<B: RecordBundle>(&mut self, bundle: &B) -> Result<ManifestEntry, SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
+        }
+
+        // Check bundle limit before appending
+        if self.manifest.len() >= MAX_BUNDLES_PER_SEGMENT {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "segment already has {} bundles, cannot exceed limit of {}",
+                    self.manifest.len(),
+                    MAX_BUNDLES_PER_SEGMENT
+                ),
+            });
         }
 
         // Track when the first bundle was appended for time-based finalization
@@ -138,6 +154,19 @@ impl OpenSegment {
             // Check if this slot is populated
             if let Some(payload) = bundle.payload(slot_id) {
                 let stream_key: StreamKey = (slot_id, payload.schema_fingerprint);
+
+                // Check stream limit before potentially creating a new stream
+                if !self.streams.contains_key(&stream_key)
+                    && self.streams.len() >= MAX_STREAMS_PER_SEGMENT
+                {
+                    return Err(SegmentError::InvalidFormat {
+                        message: format!(
+                            "segment already has {} streams, cannot exceed limit of {}",
+                            self.streams.len(),
+                            MAX_STREAMS_PER_SEGMENT
+                        ),
+                    });
+                }
 
                 // Get or create the stream accumulator for this (slot, schema) pair
                 let accumulator =
