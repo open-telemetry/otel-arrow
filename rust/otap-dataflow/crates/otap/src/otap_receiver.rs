@@ -40,7 +40,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_server::ArrowMetricsServiceServer,
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::DeltaCounter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
@@ -206,15 +206,15 @@ impl OTAPReceiver {
 pub struct OtapReceiverMetrics {
     /// Number of acks sent.
     #[metric(unit = "{acks}")]
-    pub acks_sent: Counter<u64>,
+    pub acks_sent: DeltaCounter<u64>,
 
     /// Number of nacks sent.
     #[metric(unit = "{nacks}")]
-    pub nacks_sent: Counter<u64>,
+    pub nacks_sent: DeltaCounter<u64>,
 
     /// Number of invalid/expired acks/nacks.
     #[metric(unit = "{ack_or_nack}")]
-    pub acks_nacks_invalid_or_expired: Counter<u64>,
+    pub acks_nacks_invalid_or_expired: DeltaCounter<u64>,
 }
 
 /// State shared between gRPC server task and the effect handler.

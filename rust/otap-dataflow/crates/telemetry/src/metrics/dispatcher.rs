@@ -101,13 +101,23 @@ impl MetricsDispatcher {
         meter: &Meter,
     ) {
         match field.instrument {
-            Instrument::Counter => self.add_opentelemetry_counter(field, value, attributes, meter),
+            Instrument::DeltaCounter => {
+                self.add_opentelemetry_counter(field, value, attributes, meter)
+            }
+            Instrument::ObserveCounter => {
+                // Observed counters are exported as gauges to avoid double-counting.
+                self.add_opentelemetry_gauge(field, value, attributes, meter)
+            }
             Instrument::Gauge => self.add_opentelemetry_gauge(field, value, attributes, meter),
             Instrument::Histogram => {
                 self.add_opentelemetry_histogram(field, value, attributes, meter)
             }
-            Instrument::UpDownCounter => {
+            Instrument::DeltaUpDownCounter => {
                 self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
+            }
+            Instrument::ObserveUpDownCounter => {
+                // Observed up-down counters are exported as gauges to avoid double-counting.
+                self.add_opentelemetry_gauge(field, value, attributes, meter)
             }
         }
     }
@@ -364,7 +374,7 @@ mod tests {
             name: "test_counter",
             brief: "A test counter",
             unit: "1",
-            instrument: Instrument::Counter,
+            instrument: Instrument::DeltaCounter,
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -424,7 +434,7 @@ mod tests {
             name: "test_up_down_counter",
             brief: "A test up_down_counter",
             unit: "1",
-            instrument: Instrument::UpDownCounter,
+            instrument: Instrument::DeltaUpDownCounter,
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);

@@ -3,7 +3,7 @@
 
 //! Metrics for the OTAP PerfExporter node.
 
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::DeltaCounter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP PerfExporter.
@@ -12,14 +12,14 @@ use otap_df_telemetry_macros::metric_set;
 pub struct PerfExporterPdataMetrics {
     /// Number of invalid pdata batches received.
     #[metric(unit = "{msg}")]
-    pub invalid_batches: Counter<u64>,
+    pub invalid_batches: DeltaCounter<u64>,
     /// Number of logs received.
     #[metric(unit = "{log}")]
-    pub logs: Counter<u64>,
+    pub logs: DeltaCounter<u64>,
     /// Number of spans received.
     #[metric(unit = "{span}")]
-    pub spans: Counter<u64>,
+    pub spans: DeltaCounter<u64>,
     /// Number of metrics received.
     #[metric(unit = "{metric}")]
-    pub metrics: Counter<u64>,
+    pub metrics: DeltaCounter<u64>,
 }

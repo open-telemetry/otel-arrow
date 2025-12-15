@@ -18,7 +18,7 @@
 //!   Wall-clock time since this pipeline instance started. Useful for detecting
 //!   restarts, warm-up effects, and aligning deltas to a known lifetime.
 //!
-//! - `cpu_time` (`Counter<f64>`, `{s}`):
+//! - `cpu_time` (`DeltaCounter<f64>`, `{s}`):
 //!   Cumulative CPU seconds consumed by the pipeline thread since start.
 //!   It advances only when the thread is scheduled on a CPU.
 //!   The per-interval increase (`cpu_time_delta`) is the CPU budget actually used.
@@ -30,21 +30,21 @@
 //!   share of that core; summing `cpu_utilization` across co-pinned pipelines
 //!   approximates total core load.
 //!
-//! - `memory_usage` (`Gauge<u64>`, `{By}`; jemalloc only):
+//! - `memory_usage` (`Gauge<u64>`, `{By}`, jemalloc only):
 //!   Current heap bytes in use by the pipeline thread:
 //!   `memory_allocated - memory_freed`. A rising long-term trend indicates a leak
 //!   or persistent buffering growth inside this pipeline.
 //!
-//! - `memory_allocated` / `memory_freed` (`Gauge<u64>`, `{By}`; jemalloc only):
+//! - `memory_allocated` / `memory_freed` (`ObserveCounter<u64>`, `{By}`, jemalloc only):
 //!   Cumulative heap bytes allocated/freed by this pipeline since start.
 //!   These are baselines for long-term trends and sanity checks.
 //!
-//! - `memory_allocated_delta` / `memory_freed_delta` (`Counter<u64>`, `{By}`; jemalloc only):
+//! - `memory_allocated_delta` / `memory_freed_delta` (`DeltaCounter<u64>`, `{By}`; jemalloc only):
 //!   Per-interval heap bytes allocated/freed. They capture allocation churn
 //!   even when `memory_usage` is stable. High churn increases allocator and cache
 //!   pressure and often correlates with latency variance.
 //!
-//! - `context_switches_voluntary_delta` (`Counter<u64>`, `{1}`; OS-dependent):
+//! - `context_switches_voluntary_delta` (`DeltaCounter<u64>`, `{1}`; OS-dependent):
 //!   Per-interval voluntary context switches for the pipeline thread
 //!   (`getrusage(RUSAGE_THREAD).ru_nvcsw` delta). These happen when the thread
 //!   blocks or yields (I/O waits, lock contention, channel backpressure, async awaits).
@@ -52,14 +52,14 @@
 //!   under light traffic. High sustained rate with low `cpu_utilization` => the
 //!   pipeline is frequently waiting.
 //!
-//! - `context_switches_involuntary_delta` (`Counter<u64>`, `{1}`; OS-dependent):
+//! - `context_switches_involuntary_delta` (`DeltaCounter<u64>`, `{1}`; OS-dependent):
 //!   Per-interval involuntary context switches (`ru_nivcsw` delta), i.e., preemption.
 //!   High rate => CPU contention / time-slice expiration. In this engine it often
 //!   indicates a core shared by multiple pipeline threads (multiple specs per CPU)
 //!   or interference from other system work on that core.
 //!
 //! - `page_faults_minor_delta` / `page_faults_major_delta`
-//!   (`Counter<u64>`, `{1}`; OS-dependent):
+//!   (`DeltaCounter<u64>`, `{1}`; OS-dependent):
 //!   Per-interval minor/major page faults (`ru_minflt`/`ru_majflt` deltas).
 //!   Minor faults indicate working-set or locality churn. Spikes can also occur
 //!   during first-touch of large buffers, and can highlight uneven sharding across
@@ -133,7 +133,7 @@
 
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{DeltaCounter, Gauge, ObserveCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
@@ -165,23 +165,23 @@ pub struct PipelineMetrics {
 
     /// Memory allocated to the heap by the pipeline instance since start.
     #[metric(unit = "{By}")]
-    pub memory_allocated: Gauge<u64>,
+    pub memory_allocated: ObserveCounter<u64>,
 
     /// Memory freed to the heap by the pipeline instance since start.
     #[metric(unit = "{By}")]
-    pub memory_freed: Gauge<u64>,
+    pub memory_freed: ObserveCounter<u64>,
 
     /// Bytes allocated to the heap by this pipeline during the last measurement window.
     #[metric(unit = "{By}")]
-    pub memory_allocated_delta: Counter<u64>,
+    pub memory_allocated_delta: DeltaCounter<u64>,
 
     /// Bytes returned to the heap by this pipeline during the last measurement window.
     #[metric(unit = "{By}")]
-    pub memory_freed_delta: Counter<u64>,
+    pub memory_freed_delta: DeltaCounter<u64>,
 
     /// Total CPU seconds used by the pipeline since start.
     #[metric(unit = "{s}")]
-    pub cpu_time: Counter<f64>,
+    pub cpu_time: DeltaCounter<f64>,
 
     /// Difference in pipeline cpu time since the last measurement, divided by the elapsed time.
     /// Reported as a ratio in the range [0, 1].
@@ -193,28 +193,28 @@ pub struct PipelineMetrics {
     /// A rising rate can indicate scheduling pressure due to blocking work
     /// (I/O, locks, backpressure) and helps distinguish "waiting" from "CPU-bound".
     #[metric(unit = "{1}")]
-    pub context_switches_voluntary_delta: Counter<u64>,
+    pub context_switches_voluntary_delta: DeltaCounter<u64>,
 
     /// Number of times the pipeline thread was preempted by the scheduler since the last update.
     ///
     /// A rising rate often indicates CPU contention or time-slice expirations.
     /// When paired with `cpu_utilization`, it helps diagnose CPU time lost to preemption.
     #[metric(unit = "{1}")]
-    pub context_switches_involuntary_delta: Counter<u64>,
+    pub context_switches_involuntary_delta: DeltaCounter<u64>,
 
     /// Number of minor page faults (served without disk I/O) since the last update.
     ///
     /// A rising rate indicates memory access pain (poor locality, working-set churn),
     /// even if heap bytes are stable.
     #[metric(unit = "{1}")]
-    pub page_faults_minor_delta: Counter<u64>,
+    pub page_faults_minor_delta: DeltaCounter<u64>,
 
     /// Number of major page faults (requiring disk I/O) since the last update.
     ///
     /// Any non-trivial rate typically indicates severe memory pressure or swapping,
     /// and correlates strongly with pipeline latency spikes.
     #[metric(unit = "{1}")]
-    pub page_faults_major_delta: Counter<u64>,
+    pub page_faults_major_delta: DeltaCounter<u64>,
     // ToDo Add pipeline_network_io_received
     // ToDo Add pipeline_network_io_sent
 }
@@ -325,8 +325,8 @@ impl PipelineMetricsMonitor {
                 self.last_allocated = cur_alloc;
                 self.last_deallocated = cur_dealloc;
 
-                self.metrics.memory_allocated.set(cur_alloc);
-                self.metrics.memory_freed.set(cur_dealloc);
+                self.metrics.memory_allocated.observe(cur_alloc);
+                self.metrics.memory_freed.observe(cur_dealloc);
                 self.metrics.memory_allocated_delta.add(delta_alloc);
                 self.metrics.memory_freed_delta.add(delta_dealloc);
                 self.metrics

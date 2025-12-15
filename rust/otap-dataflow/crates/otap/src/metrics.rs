@@ -7,7 +7,7 @@
 //! [RFC Pipeline Component Telemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
 use otap_df_config::SignalType;
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::DeltaCounter;
 use otap_df_telemetry_macros::metric_set;
 
 /// PData metrics for exporters.
@@ -18,39 +18,39 @@ use otap_df_telemetry_macros::metric_set;
 pub struct ExporterPDataMetrics {
     /// Number of pdata metrics consumed by this exporter.
     #[metric(unit = "{msg}")]
-    pub metrics_consumed: Counter<u64>,
+    pub metrics_consumed: DeltaCounter<u64>,
 
     /// Number of pdata metrics successfully exported.
     #[metric(unit = "{msg}")]
-    pub metrics_exported: Counter<u64>,
+    pub metrics_exported: DeltaCounter<u64>,
 
     /// Number of pdata metrics that failed to be exported.
     #[metric(unit = "{msg}")]
-    pub metrics_failed: Counter<u64>,
+    pub metrics_failed: DeltaCounter<u64>,
 
     /// Number of pdata logs consumed by this exporter.
     #[metric(unit = "{msg}")]
-    pub logs_consumed: Counter<u64>,
+    pub logs_consumed: DeltaCounter<u64>,
 
     /// Number of pdata logs successfully exported.
     #[metric(unit = "{msg}")]
-    pub logs_exported: Counter<u64>,
+    pub logs_exported: DeltaCounter<u64>,
 
     /// Number of pdata logs that failed to be exported.
     #[metric(unit = "{msg}")]
-    pub logs_failed: Counter<u64>,
+    pub logs_failed: DeltaCounter<u64>,
 
     /// Number of pdata traces consumed by this exporter.
     #[metric(unit = "{msg}")]
-    pub traces_consumed: Counter<u64>,
+    pub traces_consumed: DeltaCounter<u64>,
 
     /// Number of pdata traces successfully exported.
     #[metric(unit = "{msg}")]
-    pub traces_exported: Counter<u64>,
+    pub traces_exported: DeltaCounter<u64>,
 
     /// Number of pdata traces that failed to be exported.
     #[metric(unit = "{msg}")]
-    pub traces_failed: Counter<u64>,
+    pub traces_failed: DeltaCounter<u64>,
 }
 
 impl ExporterPDataMetrics {

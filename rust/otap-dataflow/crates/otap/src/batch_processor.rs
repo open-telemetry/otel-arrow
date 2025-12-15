@@ -50,7 +50,7 @@ use otap_df_engine::{
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::batching::make_output_batches;
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::DeltaCounter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -292,60 +292,60 @@ enum FlushReason {
 pub struct BatchProcessorMetrics {
     /// Total items consumed for logs signal
     #[metric(unit = "{item}")]
-    consumed_items_logs: Counter<u64>,
+    consumed_items_logs: DeltaCounter<u64>,
     /// Total items consumed for metrics signal
     #[metric(unit = "{item}")]
-    consumed_items_metrics: Counter<u64>,
+    consumed_items_metrics: DeltaCounter<u64>,
     /// Total items consumed for traces signal
     #[metric(unit = "{item}")]
-    consumed_items_traces: Counter<u64>,
+    consumed_items_traces: DeltaCounter<u64>,
 
     /// Total batches consumed for logs signal
     #[metric(unit = "{item}")]
-    consumed_batches_logs: Counter<u64>,
+    consumed_batches_logs: DeltaCounter<u64>,
     /// Total batches consumed for metrics signal
     #[metric(unit = "{item}")]
-    consumed_batches_metrics: Counter<u64>,
+    consumed_batches_metrics: DeltaCounter<u64>,
     /// Total batches consumed for traces signal
     #[metric(unit = "{item}")]
-    consumed_batches_traces: Counter<u64>,
+    consumed_batches_traces: DeltaCounter<u64>,
 
     /// Total items produced for logs signal
     #[metric(unit = "{item}")]
-    produced_items_logs: Counter<u64>,
+    produced_items_logs: DeltaCounter<u64>,
     /// Total items produced for metrics signal
     #[metric(unit = "{item}")]
-    produced_items_metrics: Counter<u64>,
+    produced_items_metrics: DeltaCounter<u64>,
     /// Total items produced for traces signal
     #[metric(unit = "{item}")]
-    produced_items_traces: Counter<u64>,
+    produced_items_traces: DeltaCounter<u64>,
 
     /// Total batches produced for logs signal
     #[metric(unit = "{item}")]
-    produced_batches_logs: Counter<u64>,
+    produced_batches_logs: DeltaCounter<u64>,
     /// Total batches produced for metrics signal
     #[metric(unit = "{item}")]
-    produced_batches_metrics: Counter<u64>,
+    produced_batches_metrics: DeltaCounter<u64>,
     /// Total batches produced for traces signal
     #[metric(unit = "{item}")]
-    produced_batches_traces: Counter<u64>,
+    produced_batches_traces: DeltaCounter<u64>,
 
     /// Number of flushes triggered by size threshold (all signals)
     #[metric(unit = "{flush}")]
-    flushes_size: Counter<u64>,
+    flushes_size: DeltaCounter<u64>,
     /// Number of flushes triggered by timer (all signals)
     #[metric(unit = "{flush}")]
-    flushes_timer: Counter<u64>,
+    flushes_timer: DeltaCounter<u64>,
 
     /// Number of messages dropped due to conversion failures
     #[metric(unit = "{msg}")]
-    dropped_conversion: Counter<u64>,
+    dropped_conversion: DeltaCounter<u64>,
     /// Number of batches for which errors encountered
     #[metric(unit = "{error}")]
-    batching_errors: Counter<u64>,
+    batching_errors: DeltaCounter<u64>,
     /// Number of empty records dropped
     #[metric(unit = "{msg}")]
-    dropped_empty_records: Counter<u64>,
+    dropped_empty_records: DeltaCounter<u64>,
 }
 
 fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {

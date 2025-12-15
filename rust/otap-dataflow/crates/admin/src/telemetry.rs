@@ -548,8 +548,10 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                         );
                     }
                     let prom_type = match field.instrument {
-                        Instrument::Counter => "counter",
-                        Instrument::UpDownCounter => "gauge",
+                        Instrument::DeltaCounter | Instrument::ObserveCounter => "counter",
+                        Instrument::DeltaUpDownCounter | Instrument::ObserveUpDownCounter => {
+                            "gauge"
+                        }
                         Instrument::Gauge => "gauge",
                         Instrument::Histogram => "histogram",
                     };
@@ -805,8 +807,8 @@ fn format_prometheus_text(
                     );
                 }
                 let prom_type = match field.instrument {
-                    Instrument::Counter => "counter",
-                    Instrument::UpDownCounter => "gauge",
+                    Instrument::DeltaCounter | Instrument::ObserveCounter => "counter",
+                    Instrument::DeltaUpDownCounter | Instrument::ObserveUpDownCounter => "gauge",
                     Instrument::Gauge => "gauge",
                     Instrument::Histogram => "gauge",
                 };
@@ -972,14 +974,14 @@ mod tests {
             MetricsField {
                 name: "requests_total",
                 unit: "1",
-                instrument: Instrument::Counter,
+                instrument: Instrument::DeltaCounter,
                 brief: "Total number of requests",
                 value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "errors_total",
                 unit: "1",
-                instrument: Instrument::Counter,
+                instrument: Instrument::DeltaCounter,
                 brief: "Total number of errors",
                 value_type: MetricValueType::U64,
             },

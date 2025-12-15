@@ -37,7 +37,7 @@ use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::DeltaCounter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_info;
 use serde::Deserialize;
@@ -469,7 +469,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     encoder: &mut Enc,
     make_future: MakeFuture,
     inflight: &mut InFlightExports<Fut>,
-    failed_counter: &mut Counter<u64>,
+    failed_counter: &mut DeltaCounter<u64>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,

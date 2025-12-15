@@ -9,10 +9,14 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
-    /// A value that can only go up or be reset to 0, used for counts
-    Counter,
-    /// A value that can go up and down, used for sizes or amount of items in a queue.
-    UpDownCounter,
+    /// A sum-like instrument reporting deltas over an interval (to be accumulated).
+    DeltaCounter,
+    /// A sum-like instrument reporting a current (observed) value (to be replaced).
+    ObserveCounter,
+    /// A sum-like instrument reporting signed deltas over an interval (to be accumulated).
+    DeltaUpDownCounter,
+    /// A sum-like instrument reporting a current (observed) signed value (to be replaced).
+    ObserveUpDownCounter,
     /// A value that can arbitrarily go up and down, used for temperature or current memory usage
     Gauge,
     /// Distribution of recorded values, used for latencies or request sizes

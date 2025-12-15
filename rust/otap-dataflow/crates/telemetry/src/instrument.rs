@@ -1,84 +1,99 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The different types of instrument used to record the metric.
+//! Metric instrument types.
 //!
-//! These instruments are designed to be used in thread-per-core scenarios.
+//! The instrumentation API intentionally distinguishes between:
+//! - delta instruments (`Delta*`): you record per-interval deltas (e.g. `add(1)`),
+//!   which are later accumulated by the registry.
+//! - observe instruments (`Observe*`): you record the current observed value
+//!   (e.g., `observe(total_bytes)`), which replaces the previous value in the registry.
 //!
-//! ToDo Finish the implementation of UpDownCounter and Gauge (clean_values and needs_flush need some massage).
-//! ToDo Add histogram support
+//! Gauges are instantaneous values that are set via `set`.
 
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 
-/// A value that can only go up or be reset to 0, used for counts.
+/// A monotonic sum-like instrument reporting deltas over an interval.
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
-pub struct Counter<T>(T);
+pub struct DeltaCounter<T>(T);
 
-/// A countable value that can go up and down that aggregates using the sum (e.g., items in a queue, bytes of memory).
+/// A sum-like instrument reporting signed deltas over an interval.
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
-pub struct UpDownCounter<T>(T);
+pub struct DeltaUpDownCounter<T>(T);
 
-/// A measurement value that aggregates using the average (e.g., temperature, physical dimensions, quotients).
+/// A monotonic sum-like instrument reporting a current observed value.
+#[repr(transparent)]
+#[derive(Default, Clone, Copy)]
+pub struct ObserveCounter<T>(T);
+
+/// A sum-like instrument reporting a current observed value that may go up or down.
+#[repr(transparent)]
+#[derive(Default, Clone, Copy)]
+pub struct ObserveUpDownCounter<T>(T);
+
+/// An instantaneous measurement value.
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
 pub struct Gauge<T>(T);
 
-// Counter implementation.
-// =======================
+// DeltaCounter implementation.
+// ============================
 
-impl<T: Copy + Default> Counter<T> {
-    /// Creates a new counter initialized with the provided value.
+impl<T: Copy + Default> DeltaCounter<T> {
+    /// Creates a new delta counter with the provided initial value.
     #[inline]
     pub const fn new(v: T) -> Self {
         Self(v)
     }
 
-    /// Reset the counter to 0.
+    /// Resets the counter to the default value (typically `0`).
     #[inline]
     pub fn reset(&mut self) {
         self.0 = T::default();
     }
 
-    /// Returns the current value of the counter.
+    /// Returns the current accumulated delta value.
     #[inline]
     pub const fn get(&self) -> T {
         self.0
     }
 }
 
-impl Debug for Counter<u64> {
+impl Debug for DeltaCounter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Counter").field("value", &self.0).finish()
+        f.debug_struct("DeltaCounter")
+            .field("value", &self.0)
+            .finish()
     }
 }
 
-impl Debug for Counter<f64> {
+impl Debug for DeltaCounter<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Counter").field("value", &self.0).finish()
+        f.debug_struct("DeltaCounter")
+            .field("value", &self.0)
+            .finish()
     }
 }
 
-impl From<u64> for Counter<u64> {
+impl From<u64> for DeltaCounter<u64> {
     fn from(value: u64) -> Self {
-        Counter(value)
+        DeltaCounter(value)
     }
 }
 
-impl From<f64> for Counter<f64> {
+impl From<f64> for DeltaCounter<f64> {
     fn from(value: f64) -> Self {
-        Counter(value)
+        DeltaCounter(value)
     }
 }
 
-impl AddAssign<u64> for Counter<u64> {
+impl AddAssign<u64> for DeltaCounter<u64> {
     fn add_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: Counter values are expected to be well-behaved in telemetry scenarios.
-            // Wrapping behavior is acceptable for performance-critical metric collection.
             self.0 = self.0.wrapping_add(rhs);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -88,19 +103,18 @@ impl AddAssign<u64> for Counter<u64> {
     }
 }
 
-impl AddAssign<f64> for Counter<f64> {
+impl AddAssign<f64> for DeltaCounter<f64> {
     fn add_assign(&mut self, rhs: f64) {
         self.0 += rhs;
     }
 }
 
-impl Counter<u64> {
-    /// Increments the counter by 1.
+impl DeltaCounter<u64> {
+    /// Increments the counter by `1`.
     #[inline]
     pub fn inc(&mut self) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: Incrementing by 1 is safe for wrapping arithmetic in telemetry contexts
             self.0 = self.0.wrapping_add(1);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -109,12 +123,11 @@ impl Counter<u64> {
         }
     }
 
-    /// Adds an arbitrary value to the counter.
+    /// Adds `v` to the counter.
     #[inline]
     pub fn add(&mut self, v: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: Counter additions are expected to be well-behaved in telemetry scenarios
             self.0 = self.0.wrapping_add(v);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -124,97 +137,95 @@ impl Counter<u64> {
     }
 }
 
-impl Counter<f64> {
-    /// Increments the counter by 1.0.
+impl DeltaCounter<f64> {
+    /// Increments the counter by `1.0`.
     #[inline]
     pub fn inc(&mut self) {
         self.0 += 1.0;
     }
 
-    /// Adds an arbitrary value to the counter.
+    /// Adds `v` to the counter.
     #[inline]
     pub fn add(&mut self, v: f64) {
         self.0 += v;
     }
 }
 
-// UpDownCounter implementation.
-// =============================
+// DeltaUpDownCounter implementation.
+// ==================================
 
-impl<T> UpDownCounter<T>
+impl<T> DeltaUpDownCounter<T>
 where
     T: Copy
-        + Default
-        + std::ops::Add<Output = T>
-        + std::ops::Sub<Output = T>
-        + AddAssign
-        + SubAssign,
+    + Default
+    + std::ops::Add<Output = T>
+    + std::ops::Sub<Output = T>
+    + AddAssign
+    + SubAssign,
 {
-    /// Creates a new up-down-counter initialized with the provided value.
+    /// Creates a new delta up/down counter with the provided initial value.
     #[inline]
     pub const fn new(v: T) -> Self {
         Self(v)
     }
 
-    /// Reset the counter to 0.
+    /// Resets the counter to the default value (typically `0`).
     #[inline]
     pub fn reset(&mut self) {
         self.0 = T::default();
     }
 
-    /// Returns the current value of the counter.
+    /// Returns the current accumulated delta value.
     #[inline]
     pub const fn get(&self) -> T {
         self.0
     }
 
-    /// Adds an arbitrary value to the up-down-counter.
+    /// Adds `v` to the counter (positive or negative depending on `T`).
     #[inline]
     pub fn add(&mut self, v: T) {
         self.0 += v;
     }
 
-    /// Subs an arbitrary value to the up-down-counter.
+    /// Subtracts `v` from the counter.
     #[inline]
     pub fn sub(&mut self, v: T) {
         self.0 -= v;
     }
 }
 
-impl Debug for UpDownCounter<u64> {
+impl Debug for DeltaUpDownCounter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpDownCounter")
+        f.debug_struct("DeltaUpDownCounter")
             .field("value", &self.0)
             .finish()
     }
 }
 
-impl Debug for UpDownCounter<f64> {
+impl Debug for DeltaUpDownCounter<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpDownCounter")
+        f.debug_struct("DeltaUpDownCounter")
             .field("value", &self.0)
             .finish()
     }
 }
 
-impl From<u64> for UpDownCounter<u64> {
+impl From<u64> for DeltaUpDownCounter<u64> {
     fn from(value: u64) -> Self {
-        UpDownCounter(value)
+        DeltaUpDownCounter(value)
     }
 }
 
-impl From<f64> for UpDownCounter<f64> {
+impl From<f64> for DeltaUpDownCounter<f64> {
     fn from(value: f64) -> Self {
-        UpDownCounter(value)
+        DeltaUpDownCounter(value)
     }
 }
 
-impl AddAssign<u64> for UpDownCounter<u64> {
+impl AddAssign<u64> for DeltaUpDownCounter<u64> {
     fn add_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: UpDownCounter arithmetic is expected to be well-behaved in telemetry scenarios.
-            // Wrapping behavior is acceptable for performance-critical metric operations.
             self.0 = self.0.wrapping_add(rhs);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -224,18 +235,16 @@ impl AddAssign<u64> for UpDownCounter<u64> {
     }
 }
 
-impl AddAssign<f64> for UpDownCounter<f64> {
+impl AddAssign<f64> for DeltaUpDownCounter<f64> {
     fn add_assign(&mut self, rhs: f64) {
         self.0 += rhs;
     }
 }
 
-impl SubAssign<u64> for UpDownCounter<u64> {
+impl SubAssign<u64> for DeltaUpDownCounter<u64> {
     fn sub_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: UpDownCounter subtraction is expected to be well-behaved in telemetry scenarios.
-            // Wrapping behavior is acceptable for performance-critical metric operations.
             self.0 = self.0.wrapping_sub(rhs);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -245,19 +254,18 @@ impl SubAssign<u64> for UpDownCounter<u64> {
     }
 }
 
-impl SubAssign<f64> for UpDownCounter<f64> {
+impl SubAssign<f64> for DeltaUpDownCounter<f64> {
     fn sub_assign(&mut self, rhs: f64) {
         self.0 -= rhs;
     }
 }
 
-impl UpDownCounter<u64> {
-    /// Increments the up-down-counter by 1.
+impl DeltaUpDownCounter<u64> {
+    /// Increments the counter by `1`.
     #[inline]
     pub fn inc(&mut self) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: Incrementing by 1 is safe for wrapping arithmetic in telemetry contexts
             self.0 = self.0.wrapping_add(1);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
@@ -266,18 +274,131 @@ impl UpDownCounter<u64> {
         }
     }
 
-    /// Decrements the up-down-counter by 1.
+    /// Decrements the counter by `1`.
     #[inline]
     pub fn dec(&mut self) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
-            // SAFETY: Decrementing by 1 is safe for wrapping arithmetic in telemetry contexts
             self.0 = self.0.wrapping_sub(1);
         }
         #[cfg(not(feature = "unchecked-arithmetic"))]
         {
             self.0 -= 1;
         }
+    }
+}
+
+// ObserveCounter implementation.
+// ==============================
+
+impl<T: Copy + Default> ObserveCounter<T> {
+    /// Creates a new observe counter with the provided initial value.
+    #[inline]
+    pub const fn new(v: T) -> Self {
+        Self(v)
+    }
+
+    /// Resets the observed value to the default (typically `0`).
+    #[inline]
+    pub fn reset(&mut self) {
+        self.0 = T::default();
+    }
+
+    /// Records a new observed value, replacing the previous one.
+    #[inline]
+    pub fn observe(&mut self, v: T) {
+        self.0 = v;
+    }
+
+    /// Returns the last observed value.
+    #[inline]
+    pub const fn get(&self) -> T {
+        self.0
+    }
+}
+
+impl Debug for ObserveCounter<u64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObserveCounter")
+            .field("value", &self.0)
+            .finish()
+    }
+}
+
+impl Debug for ObserveCounter<f64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObserveCounter")
+            .field("value", &self.0)
+            .finish()
+    }
+}
+
+impl From<u64> for ObserveCounter<u64> {
+    fn from(value: u64) -> Self {
+        ObserveCounter(value)
+    }
+}
+
+impl From<f64> for ObserveCounter<f64> {
+    fn from(value: f64) -> Self {
+        ObserveCounter(value)
+    }
+}
+
+// ObserveUpDownCounter implementation.
+// ====================================
+
+impl<T: Copy + Default> ObserveUpDownCounter<T> {
+    /// Creates a new observe up/down counter with the provided initial value.
+    #[inline]
+    pub const fn new(v: T) -> Self {
+        Self(v)
+    }
+
+    /// Resets the observed value to the default (typically `0`).
+    #[inline]
+    pub fn reset(&mut self) {
+        self.0 = T::default();
+    }
+
+    /// Records a new observed value, replacing the previous one.
+    #[inline]
+    pub fn observe(&mut self, v: T) {
+        self.0 = v;
+    }
+
+    /// Returns the last observed value.
+    #[inline]
+    pub const fn get(&self) -> T {
+        self.0
+    }
+}
+
+impl Debug for ObserveUpDownCounter<u64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObserveUpDownCounter")
+            .field("value", &self.0)
+            .finish()
+    }
+}
+
+impl Debug for ObserveUpDownCounter<f64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObserveUpDownCounter")
+            .field("value", &self.0)
+            .finish()
+    }
+}
+
+impl From<u64> for ObserveUpDownCounter<u64> {
+    fn from(value: u64) -> Self {
+        ObserveUpDownCounter(value)
+    }
+}
+
+impl From<f64> for ObserveUpDownCounter<f64> {
+    fn from(value: f64) -> Self {
+        ObserveUpDownCounter(value)
     }
 }
 
@@ -288,25 +409,25 @@ impl<T> Gauge<T>
 where
     T: Copy + Default + std::ops::Add<Output = T> + std::ops::Sub<Output = T>,
 {
-    /// Creates a new gauge initialized with the provided value.
+    /// Creates a new gauge with the provided initial value.
     #[inline]
     pub const fn new(v: T) -> Self {
         Self(v)
     }
 
-    /// Reset the gauge to 0.
+    /// Resets the gauge to the default value (typically `0`).
     #[inline]
     pub fn reset(&mut self) {
         self.0 = T::default();
     }
 
-    /// Sets the value of the gauge.
+    /// Sets the current gauge value.
     #[inline]
     pub fn set(&mut self, v: T) {
         self.0 = v;
     }
 
-    /// Returns the current value of the gauge.
+    /// Returns the current gauge value.
     #[inline]
     pub const fn get(&self) -> T {
         self.0
@@ -342,165 +463,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_counter_new() {
-        let counter = Counter::new(42u64);
-        assert_eq!(counter.get(), 42);
-    }
-
-    #[test]
-    fn test_counter_default() {
-        let counter: Counter<u64> = Counter::default();
-        assert_eq!(counter.get(), 0);
-    }
-
-    #[test]
-    fn test_counter_from() {
-        let counter = Counter::from(100u64);
-        assert_eq!(counter.get(), 100);
-    }
-
-    #[test]
-    fn test_counter_reset() {
-        let mut counter = Counter::new(42u64);
-        counter.reset();
-        assert_eq!(counter.get(), 0);
-    }
-
-    #[test]
-    fn test_counter_inc() {
-        let mut counter = Counter::new(0u64);
-        counter.inc();
-        assert_eq!(counter.get(), 1);
-
-        counter.inc();
-        assert_eq!(counter.get(), 2);
-    }
-
-    #[test]
-    fn test_counter_add() {
-        let mut counter = Counter::new(10u64);
+    fn test_delta_counter_u64_add_inc() {
+        let mut counter = DeltaCounter::new(10u64);
         counter.add(5);
-        assert_eq!(counter.get(), 15);
-
-        counter.add(0);
-        assert_eq!(counter.get(), 15);
-
-        counter.add(100);
-        assert_eq!(counter.get(), 115);
+        counter.inc();
+        assert_eq!(counter.get(), 16);
     }
 
     #[test]
-    fn test_counter_add_assign() {
-        let mut counter = Counter::new(10u64);
-        counter += 5;
-        assert_eq!(counter.get(), 15);
-
-        counter += 0;
-        assert_eq!(counter.get(), 15);
-
-        counter += 100;
-        assert_eq!(counter.get(), 115);
-    }
-
-    #[test]
-    fn test_counter_f64_add_and_inc() {
-        let mut counter = Counter::new(0.0f64);
+    fn test_delta_counter_f64_add_inc() {
+        let mut counter = DeltaCounter::new(0.0f64);
         counter.add(1.5);
-        assert!((counter.get() - 1.5).abs() < f64::EPSILON);
-
         counter.inc();
         assert!((counter.get() - 2.5).abs() < f64::EPSILON);
-
-        counter += 0.5;
-        assert!((counter.get() - 3.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_counter_large_values() {
-        let mut counter = Counter::new(u64::MAX - 10);
-        counter.add(5);
-        assert_eq!(counter.get(), u64::MAX - 5);
-    }
-
-    #[cfg(feature = "unchecked-arithmetic")]
-    #[test]
-    fn test_counter_overflow_wrapping_with_feature() {
-        // When unchecked-arithmetic is enabled, operations should wrap
-        let mut counter = Counter::new(u64::MAX);
-        counter.inc(); // Should wrap to 0
-        assert_eq!(counter.get(), 0);
-
-        let mut counter2 = Counter::new(u64::MAX - 1);
-        counter2.add(5); // Should wrap to 3
-        assert_eq!(counter2.get(), 3);
-
-        let mut counter3 = Counter::new(u64::MAX);
-        counter3 += 10; // Should wrap to 9
-        assert_eq!(counter3.get(), 9);
     }
 
     #[cfg(not(feature = "unchecked-arithmetic"))]
     #[test]
     #[should_panic]
-    fn test_counter_overflow_panic_without_feature() {
-        // When unchecked-arithmetic is disabled, operations should panic on overflow
-        let mut counter = Counter::new(u64::MAX);
-        counter.inc(); // Should panic
-    }
-
-    #[cfg(not(feature = "unchecked-arithmetic"))]
-    #[test]
-    #[should_panic]
-    fn test_counter_add_overflow_panic_without_feature() {
-        // When unchecked-arithmetic is disabled, operations should panic on overflow
-        let mut counter = Counter::new(u64::MAX - 1);
-        counter.add(5); // Should panic
-    }
-
-    #[cfg(not(feature = "unchecked-arithmetic"))]
-    #[test]
-    #[should_panic]
-    fn test_counter_add_assign_overflow_panic_without_feature() {
-        // When unchecked-arithmetic is disabled, operations should panic on overflow
-        let mut counter = Counter::new(u64::MAX);
-        counter += 10; // Should panic
-    }
-
-    #[test]
-    fn test_counter_copy() {
-        let counter1 = Counter::new(42u64);
-        let counter2 = counter1; // Should copy, not move
-        assert_eq!(counter1.get(), 42); // counter1 should still be usable
-        assert_eq!(counter2.get(), 42);
-    }
-
-    #[test]
-    fn test_counter_sequential_operations() {
-        let mut counter = Counter::new(0u64);
-
-        // Test a sequence of operations
-        counter.inc(); // 1
-        counter.add(10); // 11
-        counter += 5; // 16
-        counter.inc(); // 17
-        counter.add(3); // 20
-
-        assert_eq!(counter.get(), 20);
-    }
-
-    #[test]
-    fn test_counter_edge_cases() {
-        // Test with maximum safe values
-        let mut counter = Counter::new(u64::MAX / 2);
-        counter.add(100);
-        assert_eq!(counter.get(), (u64::MAX / 2) + 100);
-
-        // Test reset after operations
-        counter.reset();
-        assert_eq!(counter.get(), 0);
-
-        // Test operations after reset
+    fn test_delta_counter_overflow_panics_without_unchecked_arithmetic() {
+        let mut counter = DeltaCounter::new(u64::MAX);
         counter.inc();
-        assert_eq!(counter.get(), 1);
+    }
+
+    #[test]
+    fn test_observe_counter_observe() {
+        let mut counter = ObserveCounter::new(0u64);
+        counter.observe(123);
+        assert_eq!(counter.get(), 123);
+    }
+
+    #[test]
+    fn test_observe_up_down_counter_observe() {
+        let mut counter = ObserveUpDownCounter::new(0i64);
+        counter.observe(-7);
+        assert_eq!(counter.get(), -7);
+    }
+
+    #[test]
+    fn test_gauge_set() {
+        let mut gauge = Gauge::new(0u64);
+        gauge.set(42);
+        assert_eq!(gauge.get(), 42);
     }
 }

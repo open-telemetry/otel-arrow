@@ -18,7 +18,7 @@ use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
-use otap_df_telemetry::instrument::{Counter, UpDownCounter};
+use otap_df_telemetry::instrument::{DeltaCounter, DeltaUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
@@ -488,23 +488,23 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 pub struct SyslogCefReceiverMetrics {
     /// Number of log records successfully forwarded downstream
     #[metric(unit = "{item}")]
-    pub received_logs_forwarded: Counter<u64>,
+    pub received_logs_forwarded: DeltaCounter<u64>,
 
     /// Number of log records that failed to be parsed
     #[metric(unit = "{item}")]
-    pub received_logs_invalid: Counter<u64>,
+    pub received_logs_invalid: DeltaCounter<u64>,
 
     /// Number of log records refused by downstream (backpressure/unavailable)
     #[metric(unit = "{item}")]
-    pub received_logs_forward_failed: Counter<u64>,
+    pub received_logs_forward_failed: DeltaCounter<u64>,
 
     /// Total number of log records observed at the socket before parsing
     #[metric(unit = "{item}")]
-    pub received_logs_total: Counter<u64>,
+    pub received_logs_total: DeltaCounter<u64>,
 
     /// Number of active TCP connections
     #[metric(unit = "{conn}")]
-    pub tcp_connections_active: UpDownCounter<u64>,
+    pub tcp_connections_active: DeltaUpDownCounter<u64>,
 }
 
 #[cfg(test)]
