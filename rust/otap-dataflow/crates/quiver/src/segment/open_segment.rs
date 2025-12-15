@@ -26,7 +26,7 @@ use arrow_schema::SchemaRef;
 use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
 use super::types::{ManifestEntry, StreamId, StreamKey, StreamMetadata};
-use crate::record_bundle::{RecordBundle, SlotId};
+use crate::record_bundle::RecordBundle;
 
 /// In-memory buffer for an open segment.
 ///
@@ -140,10 +140,8 @@ impl OpenSegment {
                 let stream_key: StreamKey = (slot_id, payload.schema_fingerprint);
 
                 // Get or create the stream accumulator for this (slot, schema) pair
-                let accumulator = self.get_or_create_accumulator(
-                    stream_key,
-                    payload.batch.schema(),
-                );
+                let accumulator =
+                    self.get_or_create_accumulator(stream_key, payload.batch.schema());
 
                 // Append the batch and record the chunk index
                 let chunk_index = accumulator.append(payload.batch.clone())?;
@@ -244,8 +242,9 @@ mod tests {
     use arrow_ipc::reader::FileReader;
 
     use super::*;
-    use crate::segment::test_utils::{make_batch, slot_descriptors, test_schema, TestBundle};
+    use crate::record_bundle::SlotId;
     use crate::segment::ChunkIndex;
+    use crate::segment::test_utils::{TestBundle, make_batch, slot_descriptors, test_schema};
 
     #[test]
     fn new_segment_is_empty() {

@@ -44,7 +44,7 @@ use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow_schema::SchemaRef;
 
 use super::error::SegmentError;
-use super::types::{ChunkIndex, StreamId, StreamMetadata, StreamKey};
+use super::types::{ChunkIndex, StreamId, StreamKey, StreamMetadata};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 /// Accumulates `RecordBatch`es for a single `(slot, schema)` stream.

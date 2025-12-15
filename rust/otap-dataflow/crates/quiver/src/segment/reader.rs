@@ -726,7 +726,7 @@ mod tests {
 
     use super::*;
     use crate::record_bundle::SlotDescriptor;
-    use crate::segment::test_utils::{make_batch, slot_descriptors, test_schema, TestBundle};
+    use crate::segment::test_utils::{TestBundle, make_batch, slot_descriptors, test_schema};
     use crate::segment::types::FOOTER_V1_SIZE;
     use crate::segment::{OpenSegment, SegmentSeq, SegmentWriter};
 
