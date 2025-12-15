@@ -44,7 +44,7 @@ use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow_schema::SchemaRef;
 
 use super::error::SegmentError;
-use super::types::{ChunkIndex, StreamId, StreamKey, StreamMetadata};
+use super::types::{ChunkIndex, StreamId, StreamMetadata, StreamKey};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 /// Accumulates `RecordBatch`es for a single `(slot, schema)` stream.
@@ -117,7 +117,7 @@ impl StreamAccumulator {
     /// Returns the stream key for this accumulator.
     #[must_use]
     pub fn stream_key(&self) -> StreamKey {
-        StreamKey::new(self.slot_id, self.schema_fingerprint)
+        (self.slot_id, self.schema_fingerprint)
     }
 
     /// Returns the Arrow schema for this stream.
@@ -402,8 +402,8 @@ mod tests {
         let acc = StreamAccumulator::new(StreamId::new(7), SlotId::new(SLOT_ID), fp, schema);
 
         let key = acc.stream_key();
-        assert_eq!(key.slot_id, SlotId::new(SLOT_ID));
-        assert_eq!(key.schema_fingerprint, fp);
+        assert_eq!(key.0, SlotId::new(SLOT_ID));
+        assert_eq!(key.1, fp);
     }
 
     #[test]

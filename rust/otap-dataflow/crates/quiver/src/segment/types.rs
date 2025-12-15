@@ -80,24 +80,9 @@ impl From<StreamId> for u32 {
 /// Used internally to route incoming payloads to the correct stream accumulator.
 /// Two payloads with the same `StreamKey` can share a stream; different keys
 /// require separate streams.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct StreamKey {
-    /// The slot this stream belongs to.
-    pub slot_id: SlotId,
-    /// Schema fingerprint for the payload data.
-    pub schema_fingerprint: SchemaFingerprint,
-}
-
-impl StreamKey {
-    /// Creates a new stream key.
-    #[must_use]
-    pub const fn new(slot_id: SlotId, schema_fingerprint: SchemaFingerprint) -> Self {
-        Self {
-            slot_id,
-            schema_fingerprint,
-        }
-    }
-}
+///
+/// The tuple contains `(SlotId, SchemaFingerprint)`.
+pub type StreamKey = (SlotId, SchemaFingerprint);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Stream Metadata
@@ -153,7 +138,7 @@ impl StreamMetadata {
     /// Returns the stream key for this metadata.
     #[must_use]
     pub fn stream_key(&self) -> StreamKey {
-        StreamKey::new(self.slot_id, self.schema_fingerprint)
+        (self.slot_id, self.schema_fingerprint)
     }
 }
 
@@ -597,10 +582,10 @@ mod tests {
         let fp1 = [1u8; 32];
         let fp2 = [2u8; 32];
 
-        let k1 = StreamKey::new(SlotId::new(0), fp1);
-        let k2 = StreamKey::new(SlotId::new(0), fp1);
-        let k3 = StreamKey::new(SlotId::new(0), fp2);
-        let k4 = StreamKey::new(SlotId::new(1), fp1);
+        let k1: StreamKey = (SlotId::new(0), fp1);
+        let k2: StreamKey = (SlotId::new(0), fp1);
+        let k3: StreamKey = (SlotId::new(0), fp2);
+        let k4: StreamKey = (SlotId::new(1), fp1);
 
         assert_eq!(k1, k2);
         assert_ne!(k1, k3); // different fingerprint
@@ -612,8 +597,8 @@ mod tests {
         use std::collections::HashSet;
 
         let fp = [42u8; 32];
-        let k1 = StreamKey::new(SlotId::new(0), fp);
-        let k2 = StreamKey::new(SlotId::new(0), fp);
+        let k1: StreamKey = (SlotId::new(0), fp);
+        let k2: StreamKey = (SlotId::new(0), fp);
 
         let mut set = HashSet::new();
         assert!(set.insert(k1));
@@ -652,8 +637,8 @@ mod tests {
         let meta = StreamMetadata::new(StreamId::new(0), SlotId::new(2), fp, 0, 0, 0, 0);
 
         let key = meta.stream_key();
-        assert_eq!(key.slot_id, SlotId::new(2));
-        assert_eq!(key.schema_fingerprint, fp);
+        assert_eq!(key.0, SlotId::new(2));
+        assert_eq!(key.1, fp);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

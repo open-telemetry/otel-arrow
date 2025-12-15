@@ -26,7 +26,7 @@ use arrow_schema::SchemaRef;
 use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
 use super::types::{ManifestEntry, StreamId, StreamKey, StreamMetadata};
-use crate::record_bundle::{RecordBundle, SchemaFingerprint, SlotId};
+use crate::record_bundle::{RecordBundle, SlotId};
 
 /// In-memory buffer for an open segment.
 ///
@@ -137,13 +137,11 @@ impl OpenSegment {
 
             // Check if this slot is populated
             if let Some(payload) = bundle.payload(slot_id) {
-                let stream_key = StreamKey::new(slot_id, payload.schema_fingerprint);
+                let stream_key: StreamKey = (slot_id, payload.schema_fingerprint);
 
                 // Get or create the stream accumulator for this (slot, schema) pair
                 let accumulator = self.get_or_create_accumulator(
                     stream_key,
-                    payload.schema_fingerprint,
-                    slot_id,
                     payload.batch.schema(),
                 );
 
@@ -161,10 +159,9 @@ impl OpenSegment {
     fn get_or_create_accumulator(
         &mut self,
         key: StreamKey,
-        schema_fingerprint: SchemaFingerprint,
-        slot_id: SlotId,
         schema: SchemaRef,
     ) -> &mut StreamAccumulator {
+        let (slot_id, schema_fingerprint) = key;
         if !self.streams.contains_key(&key) {
             let stream_id = StreamId::new(self.next_stream_id);
             self.next_stream_id += 1;
