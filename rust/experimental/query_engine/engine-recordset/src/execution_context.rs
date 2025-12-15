@@ -17,12 +17,14 @@ use data_engine_expressions::*;
 #[cfg(test)]
 use crate::TestRecord;
 
-pub(crate) struct ExecutionContext<'a, 'b, TRecord>
+pub struct ExecutionContext<'a, 'b, TRecord>
 where
     TRecord: MapValue + 'static,
 {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'a>>>,
+    external_function_implementations:
+        &'b HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
     pipeline: &'a PipelineExpression,
     variables: ExecutionContextVariables<'b>,
     summaries: &'b Summaries<'a>,
@@ -32,8 +34,13 @@ where
 }
 
 impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
+        external_function_implementations: &'b HashMap<
+            Box<str>,
+            Box<dyn RecordSetEngineFunctionCallback>,
+        >,
         pipeline: &'a PipelineExpression,
         global_variables: &'b RefCell<MapValueStorage<OwnedValue>>,
         summaries: &'b Summaries<'a>,
@@ -44,6 +51,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         Self {
             diagnostic_level,
             diagnostics: RefCell::new(Vec::new()),
+            external_function_implementations,
             pipeline,
             attached_records,
             record: record.map(|v| RefCell::new(v)),
@@ -53,12 +61,13 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         }
     }
 
-    pub fn create_scope(
+    pub(crate) fn create_scope(
         &self,
         arguments: Option<&'b dyn ExecutionContextArguments>,
     ) -> ExecutionContext<'a, 'b, MapValueStorage<OwnedValue>> {
         ExecutionContext::<MapValueStorage<OwnedValue>>::new(
             self.diagnostic_level.clone(),
+            self.external_function_implementations,
             self.pipeline,
             self.get_variables().global_variables,
             self.summaries,
@@ -114,7 +123,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         &self.variables
     }
 
-    pub fn get_summaries(&self) -> &Summaries<'a> {
+    pub(crate) fn get_summaries(&self) -> &Summaries<'a> {
         self.summaries
     }
 
@@ -124,16 +133,19 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
 
     pub(crate) fn get_external_function_implementation(
         &self,
-        _name: &str,
+        name: &str,
     ) -> &dyn RecordSetEngineFunctionCallback {
-        todo!()
+        self.external_function_implementations
+            .get(name)
+            .unwrap_or_else(|| panic!("Function implementation for name '{name}' was not found"))
+            .as_ref()
     }
 
-    pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
+    pub(crate) fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
         self.diagnostics.take()
     }
 
-    pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, TRecord> {
+    pub(crate) fn consume_into_record(self) -> RecordSetEngineRecord<'a, TRecord> {
         RecordSetEngineRecord::new(
             self.pipeline,
             self.record.expect("record wasn't set").into_inner(),
@@ -142,13 +154,13 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
     }
 }
 
-pub(crate) struct ExecutionContextVariables<'a> {
+pub struct ExecutionContextVariables<'a> {
     global_variables: &'a RefCell<MapValueStorage<OwnedValue>>,
     local_variables: RefCell<MapValueStorage<OwnedValue>>,
 }
 
 impl<'a> ExecutionContextVariables<'a> {
-    pub fn new(global_variables: &'a RefCell<MapValueStorage<OwnedValue>>) -> Self {
+    pub(crate) fn new(global_variables: &'a RefCell<MapValueStorage<OwnedValue>>) -> Self {
         Self {
             global_variables,
             local_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
@@ -203,7 +215,7 @@ pub trait ExecutionContextArguments {
     ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError>;
 }
 
-pub struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
+pub(crate) struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
 where
     TRecord: Record + 'static,
 {
@@ -303,8 +315,49 @@ pub trait RecordSetEngineFunctionCallback: Send + Sync {
     ) -> Result<ResolvedValue<'b>, ExpressionError>;
 }
 
+pub struct RecordSetEngineFunctionClosureCallback<F>
+where
+    F: for<'a, 'b> Fn(
+        &'a dyn Expression,
+        &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError>,
+{
+    callback: F,
+}
+
+impl<F> RecordSetEngineFunctionClosureCallback<F>
+where
+    F: for<'a, 'b> Fn(
+        &'a dyn Expression,
+        &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError>,
+{
+    pub fn new(callback: F) -> RecordSetEngineFunctionClosureCallback<F> {
+        Self { callback }
+    }
+}
+
+impl<F> RecordSetEngineFunctionCallback for RecordSetEngineFunctionClosureCallback<F>
+where
+    F: for<'a, 'b> Fn(
+            &'a dyn Expression,
+            &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+        ) -> Result<ResolvedValue<'b>, ExpressionError>
+        + Send
+        + Sync,
+{
+    fn invoke<'a, 'b>(
+        &self,
+        expression: &'a dyn Expression,
+        execution_context: &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError> {
+        (self.callback)(expression, execution_context)
+    }
+}
+
 #[cfg(test)]
 pub struct TestExecutionContext<'a> {
+    external_function_implementations: HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
     pipeline: PipelineExpression,
     global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries<'a>,
@@ -313,9 +366,17 @@ pub struct TestExecutionContext<'a> {
 }
 
 #[cfg(test)]
+impl<'a> Default for TestExecutionContext<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl<'a> TestExecutionContext<'a> {
     pub fn new() -> TestExecutionContext<'a> {
         Self {
+            external_function_implementations: HashMap::new(),
             pipeline: Default::default(),
             global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(8192),
@@ -342,6 +403,16 @@ impl<'a> TestExecutionContext<'a> {
         self
     }
 
+    pub fn with_external_function_implementation<F: RecordSetEngineFunctionCallback + 'static>(
+        mut self,
+        name: &str,
+        callback: F,
+    ) -> TestExecutionContext<'a> {
+        self.external_function_implementations
+            .insert(name.into(), Box::new(callback));
+        self
+    }
+
     pub fn set_global_variable(&self, name: &str, value: ResolvedValue) {
         self.global_variables.borrow_mut().set(name, value);
     }
@@ -349,6 +420,7 @@ impl<'a> TestExecutionContext<'a> {
     pub fn create_execution_context(&mut self) -> ExecutionContext<'_, 'a, TestRecord> {
         ExecutionContext::new(
             RecordSetEngineDiagnosticLevel::Verbose,
+            &self.external_function_implementations,
             &self.pipeline,
             &self.global_variables,
             &self.summaries,

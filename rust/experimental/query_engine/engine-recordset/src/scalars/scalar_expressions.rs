@@ -2407,4 +2407,144 @@ mod tests {
             "value1",
         );
     }
+
+    #[test]
+    fn test_execute_invoke_external_function_scalar_expression() {
+        fn run_test_success(input: InvokeFunctionScalarExpression, expected: &str) {
+            let mut test = TestExecutionContext::new()
+                .with_record(TestRecord::new().with_key_value(
+                    "Attributes".into(),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([
+                        (
+                            "key1".into(),
+                            OwnedValue::String(StringValueStorage::new("value1".into())),
+                        ),
+                        (
+                            "key2".into(),
+                            OwnedValue::Map(MapValueStorage::new(HashMap::from([(
+                                "subkey1".into(),
+                                OwnedValue::String(StringValueStorage::new("subvalue1".into())),
+                            )]))),
+                        ),
+                    ]))),
+                ))
+                .with_pipeline(
+                    PipelineExpressionBuilder::new("")
+                        .with_functions(vec![PipelineFunction::new_external(
+                            "my_func",
+                            vec![
+                                PipelineFunctionParameter::new(
+                                    QueryLocation::new_fake(),
+                                    PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                                ),
+                                PipelineFunctionParameter::new(
+                                    QueryLocation::new_fake(),
+                                    PipelineFunctionParameterType::MutableValue(Some(
+                                        ValueType::Map,
+                                    )),
+                                ),
+                            ],
+                            Some(ValueType::String),
+                        )])
+                        .build()
+                        .unwrap(),
+                )
+                .with_external_function_implementation(
+                    "my_func",
+                    RecordSetEngineFunctionClosureCallback::new(|_, ec| {
+                        let arguments = ec.get_arguments().unwrap();
+
+                        {
+                            let mut mut_value2 = arguments.get_argument_mut(1)?;
+                            match mut_value2.to_static_value_mut() {
+                                Some(StaticValueMut::Map(m)) => {
+                                    let old = m.set(
+                                        "subkey1",
+                                        ResolvedValue::Computed(OwnedValue::String(
+                                            StringValueStorage::new("val".into()),
+                                        )),
+                                    );
+                                    match old {
+                                        ValueMutWriteResult::Updated(old) => {
+                                            assert_eq!("subvalue1", old.to_value().to_string())
+                                        }
+                                        _ => panic!("unexpected result"),
+                                    }
+                                }
+                                _ => panic!("value2 wasn't a map"),
+                            }
+                        }
+
+                        let value1 = arguments.get_argument(0)?;
+                        let value2 = arguments.get_argument(1)?;
+                        match value2.to_value() {
+                            Value::Map(m) => {
+                                assert_eq!(1, m.len());
+                                assert_eq!(
+                                    Some("val".into()),
+                                    m.get("subkey1").map(|v| v.to_value().to_string())
+                                );
+                            }
+                            _ => panic!("value2 wasn't a map"),
+                        }
+
+                        Ok(value1)
+                    }),
+                );
+
+            let execution_context = test.create_execution_context();
+
+            let expression = ScalarExpression::InvokeFunction(input);
+
+            let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
+
+            assert_eq!(
+                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                actual.to_value()
+            );
+        }
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                0,
+                vec![
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                ],
+            ),
+            "value1",
+        );
+    }
 }
