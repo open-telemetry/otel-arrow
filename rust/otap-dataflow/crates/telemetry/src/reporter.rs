@@ -43,7 +43,8 @@ impl MetricsReporter {
         if !metrics.needs_flush() {
             return Ok(());
         }
-        match self.metrics_sender.try_send(metrics.snapshot()) {
+        let metrics_snapshot = metrics.snapshot();
+        match self.metrics_sender.try_send(metrics_snapshot) {
             Ok(_) => {
                 // Successfully sent, reset the metrics
                 metrics.clear_values();

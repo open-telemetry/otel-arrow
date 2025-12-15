@@ -69,10 +69,11 @@ mod tests {
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsDescriptor,
-        MetricsField,
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
+        MetricsDescriptor, MetricsField,
     };
     use crate::metrics::MetricSetHandler;
+    use crate::metrics::MetricValue;
     use crate::registry::MetricsKey;
     use std::collections::HashMap;
     use std::fmt::Debug;
@@ -82,12 +83,14 @@ mod tests {
 
     #[derive(Debug)]
     struct MockMetricSet {
-        values: Vec<u64>,
+        values: Vec<MetricValue>,
     }
 
     impl MockMetricSet {
         fn new() -> Self {
-            Self { values: vec![0, 0] }
+            Self {
+                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+            }
         }
     }
 
@@ -105,12 +108,14 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 1",
                 instrument: Instrument::Counter,
+                value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "counter2",
                 unit: "1",
                 brief: "Test counter 2",
                 instrument: Instrument::Counter,
+                value_type: MetricValueType::U64,
             },
         ],
     };
@@ -128,14 +133,14 @@ mod tests {
         fn descriptor(&self) -> &'static MetricsDescriptor {
             &MOCK_METRICS_DESCRIPTOR
         }
-        fn snapshot_values(&self) -> Vec<u64> {
+        fn snapshot_values(&self) -> Vec<MetricValue> {
             self.values.clone()
         }
         fn clear_values(&mut self) {
-            self.values.iter_mut().for_each(|v| *v = 0);
+            self.values.iter_mut().for_each(MetricValue::reset);
         }
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| v != 0)
+            self.values.iter().any(|&v| !v.is_zero())
         }
     }
 
@@ -181,7 +186,7 @@ mod tests {
         }
     }
 
-    fn create_test_snapshot(key: MetricsKey, values: Vec<u64>) -> MetricSetSnapshot {
+    fn create_test_snapshot(key: MetricsKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
             metrics: values,
@@ -221,11 +226,17 @@ mod tests {
 
         // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
         reporter
-            .report_snapshot(create_test_snapshot(key, vec![10, 20]))
+            .report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::U64(10), MetricValue::U64(20)],
+            ))
             .await
             .unwrap();
         reporter
-            .report_snapshot(create_test_snapshot(key, vec![5, 15]))
+            .report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::U64(5), MetricValue::U64(15)],
+            ))
             .await
             .unwrap();
 
@@ -243,9 +254,9 @@ mod tests {
         assert_eq!(collected.len(), 2);
         // Order follows descriptor order
         assert_eq!(collected[0].0, "counter1");
-        assert_eq!(collected[0].1, 15);
+        assert_eq!(collected[0].1, MetricValue::U64(15));
         assert_eq!(collected[1].0, "counter2");
-        assert_eq!(collected[1].1, 35);
+        assert_eq!(collected[1].1, MetricValue::U64(35));
 
         // Close the channel and ensure loop ends returning None
         drop(reporter);
@@ -264,7 +275,10 @@ mod tests {
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
         reporter
-            .report_snapshot(create_test_snapshot(key, vec![7, 0]))
+            .report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::U64(7), MetricValue::U64(0)],
+            ))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -276,7 +290,13 @@ mod tests {
                 first.push((f.name, v));
             }
         });
-        assert_eq!(first, vec![("counter1", 7), ("counter2", 0)]);
+        assert_eq!(
+            first,
+            vec![
+                ("counter1", MetricValue::U64(7)),
+                ("counter2", MetricValue::U64(0))
+            ]
+        );
 
         // Second visit should see nothing
         let mut count = 0;
