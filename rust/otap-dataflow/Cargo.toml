@@ -37,8 +37,8 @@ thiserror.workspace = true
 quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
-mimalloc.workspace = true
-tikv-jemallocator.workspace = true
+mimalloc = { workspace = true, optional = true }
+tikv-jemallocator = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 
 [workspace.dependencies]
@@ -171,7 +171,9 @@ time = "0.3.44"
 wiremock = "0.6.5"
 
 [features]
-default = []
+default = ["jemalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
