@@ -141,7 +141,14 @@ impl StreamDecoder {
         })?)
         .map_err(|e| SegmentError::Arrow { source: e })?;
 
-        let footer_start = trailer_start.saturating_sub(footer_len);
+        let footer_start = trailer_start.checked_sub(footer_len).ok_or_else(|| {
+            SegmentError::InvalidFormat {
+                message: format!(
+                    "IPC footer length {} exceeds available space {}",
+                    footer_len, trailer_start
+                ),
+            }
+        })?;
         let footer = root_as_footer(&buffer[footer_start..trailer_start]).map_err(|e| {
             SegmentError::InvalidFormat {
                 message: format!("invalid IPC footer: {}", e),
@@ -155,19 +162,62 @@ impl StreamDecoder {
 
         let mut decoder = FileDecoder::new(Arc::new(schema), footer.version());
 
-        // Read dictionaries
-        for block in footer.dictionaries().iter().flatten() {
-            let block_len = block.bodyLength() as usize + block.metaDataLength() as usize;
-            let data = buffer.slice_with_length(block.offset() as usize, block_len);
+        // Security limits to prevent resource exhaustion from malicious files
+        const MAX_DICTIONARIES: usize = 10_000;
+        const MAX_BATCHES: usize = 10_000_000;
+
+        // Read dictionaries with bounds checking
+        let dictionaries: Vec<_> = footer.dictionaries().iter().flatten().collect();
+        if dictionaries.len() > MAX_DICTIONARIES {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "IPC stream has {} dictionaries, exceeds limit of {}",
+                    dictionaries.len(),
+                    MAX_DICTIONARIES
+                ),
+            });
+        }
+
+        for block in dictionaries {
+            let block_offset = block.offset() as usize;
+            let block_len = (block.bodyLength() as usize)
+                .checked_add(block.metaDataLength() as usize)
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: "dictionary block length overflow".to_string(),
+                })?;
+            let block_end = block_offset.checked_add(block_len).ok_or_else(|| {
+                SegmentError::InvalidFormat {
+                    message: "dictionary block offset+length overflow".to_string(),
+                }
+            })?;
+            if block_end > buffer.len() {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!(
+                        "dictionary block extends beyond buffer: offset={}, len={}, buffer_len={}",
+                        block_offset, block_len, buffer.len()
+                    ),
+                });
+            }
+            let data = buffer.slice_with_length(block_offset, block_len);
             decoder
                 .read_dictionary(block, &data)
                 .map_err(|e| SegmentError::Arrow { source: e })?;
         }
 
-        let batches = footer
+        let batches: Vec<Block> = footer
             .recordBatches()
             .map(|b| b.iter().copied().collect())
             .unwrap_or_default();
+
+        if batches.len() > MAX_BATCHES {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "IPC stream has {} batches, exceeds limit of {}",
+                    batches.len(),
+                    MAX_BATCHES
+                ),
+            });
+        }
 
         Ok(Self {
             buffer,
@@ -311,9 +361,19 @@ impl SegmentReader {
         // 1. Read and validate trailer
         let (trailer, stored_crc) = Self::read_trailer(&buffer)?;
 
-        // 2. Read footer
-        let footer_start = file_size - TRAILER_SIZE - trailer.footer_size as usize;
-        let footer = Self::read_footer(&buffer, footer_start, trailer.footer_size as usize)?;
+        // 2. Validate footer_size doesn't cause underflow
+        let footer_size = trailer.footer_size as usize;
+        let available_for_footer = file_size.saturating_sub(TRAILER_SIZE);
+        if footer_size > available_for_footer {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "footer_size {} exceeds available space {} (file_size={}, trailer={})",
+                    footer_size, available_for_footer, file_size, TRAILER_SIZE
+                ),
+            });
+        }
+        let footer_start = file_size - TRAILER_SIZE - footer_size;
+        let footer = Self::read_footer(&buffer, footer_start, footer_size)?;
 
         // 3. Validate CRC (covers entire file except last 4 bytes)
         let computed_crc = Self::compute_crc(&buffer);
@@ -325,7 +385,21 @@ impl SegmentReader {
             });
         }
 
-        // 4. Read stream directory
+        // 4. Validate directory and manifest offsets before reading
+        Self::validate_region(
+            file_size,
+            footer.directory_offset,
+            footer.directory_length as u64,
+            "stream directory",
+        )?;
+        Self::validate_region(
+            file_size,
+            footer.manifest_offset,
+            footer.manifest_length as u64,
+            "batch manifest",
+        )?;
+
+        // 5. Read stream directory
         let streams = Self::read_stream_directory(
             &buffer,
             footer.directory_offset as usize,
@@ -336,7 +410,7 @@ impl SegmentReader {
         let stream_by_id: HashMap<_, _> =
             streams.iter().enumerate().map(|(i, s)| (s.id, i)).collect();
 
-        // 5. Read batch manifest
+        // 6. Read batch manifest
         let manifest = Self::read_manifest(
             &buffer,
             footer.manifest_offset as usize,
@@ -423,6 +497,14 @@ impl SegmentReader {
                         stream_id: chunk_ref.stream_id,
                     })?;
 
+            // Validate stream region before slicing
+            Self::validate_region(
+                self.buffer.len(),
+                stream_meta.byte_offset,
+                stream_meta.byte_length,
+                "stream data",
+            )?;
+
             // Get the stream's buffer slice
             let stream_buffer = self.buffer.slice_with_length(
                 stream_meta.byte_offset as usize,
@@ -469,6 +551,14 @@ impl SegmentReader {
             .stream(stream_id)
             .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
 
+        // Validate stream region before slicing
+        Self::validate_region(
+            self.buffer.len(),
+            stream_meta.byte_offset,
+            stream_meta.byte_length,
+            "stream data",
+        )?;
+
         let stream_buffer = self.buffer.slice_with_length(
             stream_meta.byte_offset as usize,
             stream_meta.byte_length as usize,
@@ -489,6 +579,27 @@ impl SegmentReader {
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Validates that a region (offset, length) fits within the buffer.
+    fn validate_region(
+        buffer_len: usize,
+        offset: u64,
+        length: u64,
+        region_name: &str,
+    ) -> Result<(), SegmentError> {
+        let end = offset.checked_add(length).ok_or_else(|| SegmentError::InvalidFormat {
+            message: format!("{} offset+length overflow: offset={}, length={}", region_name, offset, length),
+        })?;
+        if end > buffer_len as u64 {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "{} extends beyond buffer: offset={}, length={}, end={}, buffer_len={}",
+                    region_name, offset, length, end, buffer_len
+                ),
+            });
+        }
+        Ok(())
+    }
 
     fn read_trailer(buffer: &Buffer) -> Result<(Trailer, u32), SegmentError> {
         let trailer_start = buffer.len() - TRAILER_SIZE;
@@ -598,28 +709,79 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
         let slot_refs_strs = Self::get_string_column(&batch, "slot_refs")?;
 
+        // Security limits to prevent resource exhaustion from malicious files
+        const MAX_BUNDLES: usize = 10_000_000;
+        const MAX_SLOTS_PER_BUNDLE: usize = 256;
+        const MAX_SLOT_REFS_STRING_LEN: usize = 1_000_000;
+
+        if batch.num_rows() > MAX_BUNDLES {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "manifest has {} bundles, exceeds limit of {}",
+                    batch.num_rows(),
+                    MAX_BUNDLES
+                ),
+            });
+        }
+
         let mut entries = Vec::with_capacity(batch.num_rows());
         for i in 0..batch.num_rows() {
             let mut entry = ManifestEntry::new(bundle_indices[i]);
 
             // Parse slot_refs string: "slot_id:stream_id:chunk_index,..."
             let refs_str = slot_refs_strs[i];
+
+            // Guard against extremely long slot_refs strings
+            if refs_str.len() > MAX_SLOT_REFS_STRING_LEN {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!(
+                        "slot_refs string length {} exceeds limit of {} in bundle {}",
+                        refs_str.len(),
+                        MAX_SLOT_REFS_STRING_LEN,
+                        i
+                    ),
+                });
+            }
+
             if !refs_str.is_empty() {
+                let mut slot_count = 0;
                 for part in refs_str.split(',') {
-                    let parts: Vec<&str> = part.split(':').collect();
-                    if parts.len() == 3 {
-                        if let (Ok(slot), Ok(stream), Ok(chunk)) = (
-                            parts[0].parse::<u16>(),
-                            parts[1].parse::<u32>(),
-                            parts[2].parse::<u32>(),
-                        ) {
-                            entry.add_slot(
-                                SlotId::new(slot),
-                                StreamId::new(stream),
-                                ChunkIndex::new(chunk),
-                            );
-                        }
+                    slot_count += 1;
+                    if slot_count > MAX_SLOTS_PER_BUNDLE {
+                        return Err(SegmentError::InvalidFormat {
+                            message: format!(
+                                "bundle {} has more than {} slots",
+                                i, MAX_SLOTS_PER_BUNDLE
+                            ),
+                        });
                     }
+
+                    let parts: Vec<&str> = part.split(':').collect();
+                    if parts.len() != 3 {
+                        return Err(SegmentError::InvalidFormat {
+                            message: format!(
+                                "invalid slot_ref format in bundle {}: expected 3 parts, got {}",
+                                i,
+                                parts.len()
+                            ),
+                        });
+                    }
+
+                    let slot = parts[0].parse::<u16>().map_err(|_| SegmentError::InvalidFormat {
+                        message: format!("invalid slot_id in bundle {}: {:?}", i, parts[0]),
+                    })?;
+                    let stream = parts[1].parse::<u32>().map_err(|_| SegmentError::InvalidFormat {
+                        message: format!("invalid stream_id in bundle {}: {:?}", i, parts[1]),
+                    })?;
+                    let chunk = parts[2].parse::<u32>().map_err(|_| SegmentError::InvalidFormat {
+                        message: format!("invalid chunk_index in bundle {}: {:?}", i, parts[2]),
+                    })?;
+
+                    entry.add_slot(
+                        SlotId::new(slot),
+                        StreamId::new(stream),
+                        ChunkIndex::new(chunk),
+                    );
                 }
             }
 
