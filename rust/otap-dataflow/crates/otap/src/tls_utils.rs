@@ -129,7 +129,7 @@ pub async fn load_server_tls_config(
 ///
 /// Consider implementing certificate hot reload if this becomes an operational requirement.
 #[cfg(feature = "experimental-tls")]
-pub async fn load_client_tls_config(
+pub(crate) async fn load_client_tls_config(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
 ) -> Result<Option<ClientTlsConfig>, io::Error> {
