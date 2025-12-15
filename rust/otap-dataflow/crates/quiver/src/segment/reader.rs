@@ -1084,6 +1084,39 @@ mod tests {
     }
 
     #[test]
+    fn footer_decode_rejects_buffer_too_short_for_version() {
+        // Footer needs at least 2 bytes for the version field
+        let buf = [0u8; 1];
+        let result = Footer::decode(&buf);
+
+        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("too short to contain version")));
+    }
+
+    #[test]
+    fn footer_decode_rejects_unsupported_version() {
+        // Create a buffer with version = 99 (unsupported)
+        let mut buf = [0u8; FOOTER_V1_SIZE];
+        buf[0] = 99; // version low byte
+        buf[1] = 0; // version high byte
+
+        let result = Footer::decode(&buf);
+
+        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("unsupported segment version: 99")));
+    }
+
+    #[test]
+    fn footer_decode_rejects_buffer_too_short_for_v1() {
+        // Create a buffer with correct version (1) but too short for full v1 footer
+        let mut buf = [0u8; 10]; // Less than FOOTER_V1_SIZE (34 bytes)
+        buf[0] = 1; // version = 1
+        buf[1] = 0;
+
+        let result = Footer::decode(&buf);
+
+        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("footer too short for version 1")));
+    }
+
+    #[test]
     fn reader_detects_checksum_mismatch() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("test.qseg");
