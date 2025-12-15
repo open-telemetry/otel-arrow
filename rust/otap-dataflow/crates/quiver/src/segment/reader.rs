@@ -540,13 +540,13 @@ impl SegmentReader {
             })?;
 
         // Parse stream directory columns
-        let stream_ids = Self::get_u32_column(&batch, "stream_id")?;
-        let slot_ids = Self::get_u16_column(&batch, "slot_id")?;
+        let stream_ids = Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "stream_id")?;
+        let slot_ids = Self::get_primitive_column::<arrow_array::types::UInt16Type>(&batch, "slot_id")?;
         let fingerprints = Self::get_fixed_binary_column(&batch, "schema_fingerprint", 32)?;
-        let byte_offsets = Self::get_u64_column(&batch, "byte_offset")?;
-        let byte_lengths = Self::get_u64_column(&batch, "byte_length")?;
-        let row_counts = Self::get_u64_column(&batch, "row_count")?;
-        let chunk_counts = Self::get_u32_column(&batch, "chunk_count")?;
+        let byte_offsets = Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_offset")?;
+        let byte_lengths = Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_length")?;
+        let row_counts = Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "row_count")?;
+        let chunk_counts = Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "chunk_count")?;
 
         let mut streams = Vec::with_capacity(batch.num_rows());
         for i in 0..batch.num_rows() {
@@ -588,7 +588,7 @@ impl SegmentReader {
             })?;
 
         // Parse manifest columns
-        let bundle_indices = Self::get_u32_column(&batch, "bundle_index")?;
+        let bundle_indices = Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
         let slot_refs_strs = Self::get_string_column(&batch, "slot_refs")?;
 
         let mut entries = Vec::with_capacity(batch.num_rows());
@@ -622,7 +622,11 @@ impl SegmentReader {
         Ok(entries)
     }
 
-    fn get_u32_column(batch: &RecordBatch, name: &str) -> Result<Vec<u32>, SegmentError> {
+    /// Extracts a primitive column from a RecordBatch as a Vec.
+    fn get_primitive_column<T>(batch: &RecordBatch, name: &str) -> Result<Vec<T::Native>, SegmentError>
+    where
+        T: arrow_array::types::ArrowPrimitiveType,
+    {
         use arrow_array::cast::AsArray;
 
         let col = batch
@@ -631,47 +635,14 @@ impl SegmentReader {
                 message: format!("missing column: {}", name),
             })?;
 
-        let arr = col
-            .as_primitive_opt::<arrow_array::types::UInt32Type>()
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("column {} is not UInt32", name),
-            })?;
-
-        Ok(arr.values().to_vec())
-    }
-
-    fn get_u16_column(batch: &RecordBatch, name: &str) -> Result<Vec<u16>, SegmentError> {
-        use arrow_array::cast::AsArray;
-
-        let col = batch
-            .column_by_name(name)
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("missing column: {}", name),
-            })?;
-
-        let arr = col
-            .as_primitive_opt::<arrow_array::types::UInt16Type>()
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("column {} is not UInt16", name),
-            })?;
-
-        Ok(arr.values().to_vec())
-    }
-
-    fn get_u64_column(batch: &RecordBatch, name: &str) -> Result<Vec<u64>, SegmentError> {
-        use arrow_array::cast::AsArray;
-
-        let col = batch
-            .column_by_name(name)
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("missing column: {}", name),
-            })?;
-
-        let arr = col
-            .as_primitive_opt::<arrow_array::types::UInt64Type>()
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("column {} is not UInt64", name),
-            })?;
+        let arr = col.as_primitive_opt::<T>().ok_or_else(|| SegmentError::InvalidFormat {
+            message: format!(
+                "column {} has type {:?}, expected {:?}",
+                name,
+                col.data_type(),
+                T::DATA_TYPE
+            ),
+        })?;
 
         Ok(arr.values().to_vec())
     }
