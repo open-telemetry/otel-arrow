@@ -11,6 +11,28 @@ use std::collections::HashMap;
 
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
+use super::error::SegmentError;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Segment Format Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Magic bytes identifying a Quiver segment file.
+pub(super) const SEGMENT_MAGIC: &[u8; 8] = b"QUIVER\0S";
+
+/// Current segment file format version.
+pub(super) const SEGMENT_VERSION: u16 = 1;
+
+/// Size of the fixed trailer at the end of the segment file.
+/// Layout: footer_size (4) + magic (8) + crc32 (4) = 16 bytes
+pub(super) const TRAILER_SIZE: usize = 16;
+
+/// Size of the footer for version 1.
+/// Layout: version (2) + stream_count (4) + bundle_count (4) +
+///         directory_offset (8) + directory_length (4) +
+///         manifest_offset (8) + manifest_length (4) = 34 bytes
+pub(super) const FOOTER_V1_SIZE: usize = 34;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Stream Identification
 // ─────────────────────────────────────────────────────────────────────────────
@@ -327,6 +349,205 @@ impl From<SegmentSeq> for u64 {
 impl std::fmt::Display for SegmentSeq {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Footer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Segment file footer structure (version 1).
+///
+/// The footer contains metadata needed to locate and interpret the segment's
+/// stream directory and batch manifest. Future versions may add additional
+/// fields; the trailer's `footer_size` field allows readers to handle
+/// variable-sized footers.
+#[derive(Debug, Clone)]
+pub(super) struct Footer {
+    pub version: u16,
+    pub stream_count: u32,
+    pub bundle_count: u32,
+    pub directory_offset: u64,
+    pub directory_length: u32,
+    pub manifest_offset: u64,
+    pub manifest_length: u32,
+}
+
+impl Footer {
+    /// Encodes the footer to bytes.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = vec![0u8; FOOTER_V1_SIZE];
+        let mut pos = 0;
+
+        // Version (2 bytes)
+        buf[pos..pos + 2].copy_from_slice(&self.version.to_le_bytes());
+        pos += 2;
+
+        // Stream count (4 bytes)
+        buf[pos..pos + 4].copy_from_slice(&self.stream_count.to_le_bytes());
+        pos += 4;
+
+        // Bundle count (4 bytes)
+        buf[pos..pos + 4].copy_from_slice(&self.bundle_count.to_le_bytes());
+        pos += 4;
+
+        // Directory offset (8 bytes)
+        buf[pos..pos + 8].copy_from_slice(&self.directory_offset.to_le_bytes());
+        pos += 8;
+
+        // Directory length (4 bytes)
+        buf[pos..pos + 4].copy_from_slice(&self.directory_length.to_le_bytes());
+        pos += 4;
+
+        // Manifest offset (8 bytes)
+        buf[pos..pos + 8].copy_from_slice(&self.manifest_offset.to_le_bytes());
+        pos += 8;
+
+        // Manifest length (4 bytes)
+        buf[pos..pos + 4].copy_from_slice(&self.manifest_length.to_le_bytes());
+        // pos += 4;
+
+        buf
+    }
+
+    /// Decodes a version 1 footer from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version is unsupported or the buffer is too short.
+    pub fn decode(buf: &[u8]) -> Result<Self, SegmentError> {
+        if buf.len() < 2 {
+            return Err(SegmentError::InvalidFormat {
+                message: "footer too short to contain version".to_string(),
+            });
+        }
+
+        let version = u16::from_le_bytes([buf[0], buf[1]]);
+        if version != SEGMENT_VERSION {
+            return Err(SegmentError::InvalidFormat {
+                message: format!("unsupported segment version: {}", version),
+            });
+        }
+
+        if buf.len() < FOOTER_V1_SIZE {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "footer too short for version 1: expected {} bytes, got {}",
+                    FOOTER_V1_SIZE,
+                    buf.len()
+                ),
+            });
+        }
+
+        let mut pos = 2; // Skip version
+
+        // Stream count (4 bytes)
+        let stream_count = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+        pos += 4;
+
+        // Bundle count (4 bytes)
+        let bundle_count = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+        pos += 4;
+
+        // Directory offset (8 bytes)
+        let directory_offset = u64::from_le_bytes([
+            buf[pos],
+            buf[pos + 1],
+            buf[pos + 2],
+            buf[pos + 3],
+            buf[pos + 4],
+            buf[pos + 5],
+            buf[pos + 6],
+            buf[pos + 7],
+        ]);
+        pos += 8;
+
+        // Directory length (4 bytes)
+        let directory_length =
+            u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+        pos += 4;
+
+        // Manifest offset (8 bytes)
+        let manifest_offset = u64::from_le_bytes([
+            buf[pos],
+            buf[pos + 1],
+            buf[pos + 2],
+            buf[pos + 3],
+            buf[pos + 4],
+            buf[pos + 5],
+            buf[pos + 6],
+            buf[pos + 7],
+        ]);
+        pos += 8;
+
+        // Manifest length (4 bytes)
+        let manifest_length =
+            u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+
+        Ok(Footer {
+            version,
+            stream_count,
+            bundle_count,
+            directory_offset,
+            directory_length,
+            manifest_offset,
+            manifest_length,
+        })
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Trailer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fixed-size trailer at the end of every segment file.
+///
+/// The trailer allows readers to locate the variable-size footer regardless
+/// of version. It contains the footer size, magic bytes for identification,
+/// and a CRC32 checksum covering the footer and trailer.
+#[derive(Debug, Clone)]
+pub(super) struct Trailer {
+    /// Size of the footer in bytes (not including trailer).
+    pub footer_size: u32,
+}
+
+impl Trailer {
+    /// Encodes the trailer to bytes (CRC placeholder at end).
+    pub fn encode(&self) -> [u8; TRAILER_SIZE] {
+        let mut buf = [0u8; TRAILER_SIZE];
+
+        // Footer size (4 bytes)
+        buf[0..4].copy_from_slice(&self.footer_size.to_le_bytes());
+
+        // Magic (8 bytes)
+        buf[4..12].copy_from_slice(SEGMENT_MAGIC);
+
+        // CRC placeholder (4 bytes) - filled by caller
+        // buf[12..16] remains zeroed
+
+        buf
+    }
+
+    /// Decodes a trailer from bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the magic bytes don't match.
+    pub fn decode(buf: &[u8; TRAILER_SIZE]) -> Result<(Self, u32), SegmentError> {
+        // Magic (8 bytes) at offset 4
+        if &buf[4..12] != SEGMENT_MAGIC {
+            return Err(SegmentError::InvalidFormat {
+                message: "invalid segment magic bytes in trailer".to_string(),
+            });
+        }
+
+        // Footer size (4 bytes)
+        let footer_size = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+
+        // CRC (4 bytes)
+        let crc = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+
+        Ok((Trailer { footer_size }, crc))
     }
 }
 

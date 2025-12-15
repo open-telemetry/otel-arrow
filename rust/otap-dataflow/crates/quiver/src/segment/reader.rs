@@ -49,24 +49,10 @@ use arrow_ipc::{Block, root_as_footer};
 use crc32fast::Hasher;
 
 use super::error::SegmentError;
-use super::types::{ChunkIndex, ManifestEntry, StreamId, StreamMetadata};
+use super::types::{
+    ChunkIndex, Footer, ManifestEntry, StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
+};
 use crate::record_bundle::SlotId;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants (must match writer.rs)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Magic bytes identifying a Quiver segment file.
-const SEGMENT_MAGIC: &[u8; 8] = b"QUIVER\0S";
-
-/// Current segment file format version.
-const SEGMENT_VERSION: u16 = 1;
-
-/// Size of the fixed trailer at the end of the segment file.
-const TRAILER_SIZE: usize = 16;
-
-/// Size of the footer for version 1.
-const FOOTER_V1_SIZE: usize = 34;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ReconstructedBundle
@@ -744,123 +730,6 @@ impl SegmentReader {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Footer
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-struct Footer {
-    version: u16,
-    #[allow(dead_code)]
-    stream_count: u32,
-    #[allow(dead_code)]
-    bundle_count: u32,
-    directory_offset: u64,
-    directory_length: u32,
-    manifest_offset: u64,
-    manifest_length: u32,
-}
-
-impl Footer {
-    fn decode(buf: &[u8]) -> Result<Self, SegmentError> {
-        if buf.len() < 2 {
-            return Err(SegmentError::InvalidFormat {
-                message: "footer too short to contain version".to_string(),
-            });
-        }
-
-        let version = u16::from_le_bytes([buf[0], buf[1]]);
-        if version != SEGMENT_VERSION {
-            return Err(SegmentError::InvalidFormat {
-                message: format!("unsupported segment version: {}", version),
-            });
-        }
-
-        if buf.len() < FOOTER_V1_SIZE {
-            return Err(SegmentError::InvalidFormat {
-                message: format!(
-                    "footer too short for version 1: expected {} bytes, got {}",
-                    FOOTER_V1_SIZE,
-                    buf.len()
-                ),
-            });
-        }
-
-        let mut pos = 2;
-
-        let stream_count = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
-        pos += 4;
-
-        let bundle_count = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
-        pos += 4;
-
-        let directory_offset = u64::from_le_bytes([
-            buf[pos],
-            buf[pos + 1],
-            buf[pos + 2],
-            buf[pos + 3],
-            buf[pos + 4],
-            buf[pos + 5],
-            buf[pos + 6],
-            buf[pos + 7],
-        ]);
-        pos += 8;
-
-        let directory_length =
-            u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
-        pos += 4;
-
-        let manifest_offset = u64::from_le_bytes([
-            buf[pos],
-            buf[pos + 1],
-            buf[pos + 2],
-            buf[pos + 3],
-            buf[pos + 4],
-            buf[pos + 5],
-            buf[pos + 6],
-            buf[pos + 7],
-        ]);
-        pos += 8;
-
-        let manifest_length =
-            u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
-
-        Ok(Footer {
-            version,
-            stream_count,
-            bundle_count,
-            directory_offset,
-            directory_length,
-            manifest_offset,
-            manifest_length,
-        })
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Trailer
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-struct Trailer {
-    footer_size: u32,
-}
-
-impl Trailer {
-    fn decode(buf: &[u8; TRAILER_SIZE]) -> Result<(Self, u32), SegmentError> {
-        if &buf[4..12] != SEGMENT_MAGIC {
-            return Err(SegmentError::InvalidFormat {
-                message: "invalid segment magic bytes in trailer".to_string(),
-            });
-        }
-
-        let footer_size = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let crc = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-
-        Ok((Trailer { footer_size }, crc))
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -876,6 +745,7 @@ mod tests {
 
     use super::*;
     use crate::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor};
+    use crate::segment::types::FOOTER_V1_SIZE;
     use crate::segment::{OpenSegment, SegmentSeq, SegmentWriter};
 
     fn test_schema() -> Arc<Schema> {
@@ -1109,7 +979,9 @@ mod tests {
         let buf = [0u8; 1];
         let result = Footer::decode(&buf);
 
-        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("too short to contain version")));
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("too short to contain version"))
+        );
     }
 
     #[test]
@@ -1121,7 +993,9 @@ mod tests {
 
         let result = Footer::decode(&buf);
 
-        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("unsupported segment version: 99")));
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("unsupported segment version: 99"))
+        );
     }
 
     #[test]
@@ -1133,7 +1007,9 @@ mod tests {
 
         let result = Footer::decode(&buf);
 
-        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("footer too short for version 1")));
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("footer too short for version 1"))
+        );
     }
 
     #[test]
@@ -1142,7 +1018,9 @@ mod tests {
         let buf = Buffer::from_vec(vec![0u8; 5]);
         let result = StreamDecoder::new(buf);
 
-        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("IPC stream too short")));
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("IPC stream too short"))
+        );
     }
 
     #[test]
