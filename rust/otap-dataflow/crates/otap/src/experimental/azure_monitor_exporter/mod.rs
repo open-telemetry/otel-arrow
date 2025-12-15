@@ -18,14 +18,20 @@ use std::sync::Arc;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 
+mod auth;
 mod client;
 mod config;
 mod exporter;
+mod gzip_batcher;
+mod in_flight_exports;
+mod state;
+mod stats;
 mod transformer;
 
 pub use client::LogsIngestionClient;
 pub use config::Config;
 pub use exporter::AzureMonitorExporter;
+pub use stats::AzureMonitorExporterStats;
 pub use transformer::Transformer;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
