@@ -870,7 +870,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::SystemTime;
 
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_array::{DictionaryArray, Int32Array, RecordBatch, StringArray};
     use arrow_schema::{DataType, Field, Schema};
     use tempfile::tempdir;
 
@@ -1038,6 +1038,26 @@ mod tests {
             bundle.payload(SlotId::new(0)).map(|b| b.num_rows()),
             Some(2)
         );
+
+        // Test payloads() method - returns HashMap of all payloads
+        let payloads = bundle.payloads();
+        assert_eq!(payloads.len(), 1);
+        assert!(payloads.contains_key(&SlotId::new(0)));
+    }
+
+    #[test]
+    fn reader_file_size() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("test.qseg");
+
+        let _ = write_test_segment(&path);
+
+        let reader = SegmentReader::open(&path).expect("open");
+
+        // file_size() should match the actual file size on disk
+        let file_metadata = std::fs::metadata(&path).expect("metadata");
+        assert_eq!(reader.file_size(), file_metadata.len() as usize);
+        assert!(reader.file_size() > 0);
     }
 
     #[test]
@@ -1114,6 +1134,108 @@ mod tests {
         let result = Footer::decode(&buf);
 
         assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("footer too short for version 1")));
+    }
+
+    #[test]
+    fn stream_decoder_rejects_buffer_too_short() {
+        // StreamDecoder needs at least 10 bytes for the IPC trailer
+        let buf = Buffer::from_vec(vec![0u8; 5]);
+        let result = StreamDecoder::new(buf);
+
+        assert!(matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("IPC stream too short")));
+    }
+
+    #[test]
+    fn stream_decoder_rejects_invalid_footer() {
+        // Create a buffer that's long enough but has garbage data
+        // The IPC trailer is the last 10 bytes, which contains the footer length
+        let buf = Buffer::from_vec(vec![0xFFu8; 100]);
+        let result = StreamDecoder::new(buf);
+
+        // This will fail when trying to parse the footer (either invalid footer length
+        // or invalid FlatBuffer data)
+        assert!(result.is_err());
+        match result {
+            Err(SegmentError::InvalidFormat { message }) => {
+                assert!(
+                    message.contains("IPC footer") || message.contains("IPC"),
+                    "expected IPC-related error, got: {}",
+                    message
+                );
+            }
+            Err(SegmentError::Arrow { .. }) => {
+                // Arrow errors are also acceptable for malformed IPC data
+            }
+            Err(other) => panic!("unexpected error type: {:?}", other),
+            Ok(_) => panic!("expected error for invalid IPC data"),
+        }
+    }
+
+    #[test]
+    fn roundtrip_dictionary_encoded_data() {
+        // This test exercises the dictionary reading code path in StreamDecoder::new
+        // (lines 174-178) by using dictionary-encoded string columns.
+        use arrow_array::types::Int32Type;
+
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("dict_encoded.qseg");
+
+        // Create a schema with a dictionary-encoded string column
+        let dict_field = Field::new(
+            "category",
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            false,
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            dict_field,
+        ]));
+
+        // Create dictionary-encoded data with repeated values (good for compression)
+        let categories = ["apple", "banana", "apple", "cherry", "banana"];
+        let dict_array: DictionaryArray<Int32Type> = categories.into_iter().collect();
+
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(dict_array),
+            ],
+        )
+        .expect("valid batch");
+
+        let fp = [0xDDu8; 32];
+        let bundle = TestBundle::new(vec![SlotDescriptor::new(SlotId::new(0), "DictData")])
+            .with_payload(SlotId::new(0), fp, batch.clone());
+
+        let mut open_segment = OpenSegment::new();
+        let _ = open_segment.append(&bundle);
+
+        let (streams, manifest) = open_segment.finalize().expect("finalize");
+
+        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let _ = writer
+            .write_to_file(&path, streams, manifest)
+            .expect("write");
+
+        // Read back and verify
+        let reader = SegmentReader::open(&path).expect("open");
+        assert_eq!(reader.bundle_count(), 1);
+
+        let entry = reader.manifest()[0].clone();
+        let reconstructed = reader.read_bundle(&entry).expect("read_bundle");
+
+        let payload = reconstructed.payload(SlotId::new(0)).expect("payload");
+        assert_eq!(payload.num_rows(), 5);
+        assert_eq!(payload.num_columns(), 2);
+
+        // Verify the dictionary column was correctly reconstructed
+        let dict_col = payload
+            .column(1)
+            .as_any()
+            .downcast_ref::<DictionaryArray<Int32Type>>()
+            .expect("dictionary column");
+        assert_eq!(dict_col.len(), 5);
     }
 
     #[test]
