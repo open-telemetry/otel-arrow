@@ -44,7 +44,7 @@ impl ParserState {
 
             for (parameter, default_value) in parameters_with_defaults {
                 if let Some(v) = default_value {
-                    default_values.insert(parameter.get_name().into(), v);
+                    default_values.insert(name.clone(), v);
                 }
                 parameters.push(parameter);
             }
