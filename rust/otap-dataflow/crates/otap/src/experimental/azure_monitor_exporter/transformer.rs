@@ -475,12 +475,12 @@ mod tests {
     fn test_all_log_record_fields() {
         let mut config = create_test_config(false);
         config.api.schema.log_record_mapping = HashMap::from([
-            ("time_unix_nano".into(), json!("Time")),
-            ("observed_time_unix_nano".into(), json!("ObservedTime")),
-            ("trace_id".into(), json!("TraceId")),
-            ("span_id".into(), json!("SpanId")),
-            ("flags".into(), json!("Flags")),
-            ("severity_number".into(), json!("SeverityNum")),
+            ("time_unix_nano".to_string(), json!("Time")),
+            ("observed_time_unix_nano".to_string(), json!("ObservedTime")),
+            ("trace_id".to_string(), json!("TraceId")),
+            ("span_id".to_string(), json!("SpanId")),
+            ("flags".to_string(), json!("Flags")),
+            ("severity_number".to_string(), json!("SeverityNum")),
         ]);
 
         let transformer = Transformer::new(&config);
@@ -493,8 +493,13 @@ mod tests {
                     log_records: vec![LogRecord {
                         time_unix_nano: 1_000_000_000,
                         observed_time_unix_nano: 2_000_000_000,
-                        trace_id: vec![0xFF, 0x00],
-                        span_id: vec![0xAB, 0xCD],
+                        // trace_id must be 16 bytes
+                        trace_id: vec![
+                            0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                            0x00, 0x00, 0x00, 0x01,
+                        ],
+                        // span_id must be 8 bytes
+                        span_id: vec![0xAB, 0xCD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
                         flags: 1,
                         severity_number: 9,
                         ..Default::default()
@@ -507,13 +512,14 @@ mod tests {
 
         let bytes = request.encode_to_vec();
         let logs_view = RawLogsData::new(&bytes);
-        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
 
         assert!(json["Time"].as_str().unwrap().contains("1970"));
         assert!(json["ObservedTime"].as_str().unwrap().contains("1970"));
-        assert_eq!(json["TraceId"], "ff00");
-        assert_eq!(json["SpanId"], "abcd");
+        assert_eq!(json["TraceId"], "ff000000000000000000000000000001");
+        assert_eq!(json["SpanId"], "abcd000000000001");
         assert_eq!(json["Flags"], 1);
         assert_eq!(json["SeverityNum"], 9);
     }
