@@ -124,10 +124,17 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         let max_signal_count = traffic_config.get_max_signal_count();
         let signals_per_second = traffic_config.get_signal_rate();
         let max_batch_size = traffic_config.get_max_batch_size();
+        let rate_limit_status = match signals_per_second {
+            Some(rate) => format!("{} signals/sec", rate),
+            None => "uncapped".to_string(),
+        };
         otel_info!(
             "Receiver.Start",
-            signals_per_second = signals_per_second.unwrap_or(0),
+            signals_per_second = rate_limit_status,
             max_batch_size = max_batch_size,
+            metrics_per_iteration = metric_count,
+            traces_per_iteration = trace_count,
+            logs_per_iteration = log_count,
             message = "Fake data generator receiver started"
         );
         let mut signal_count: u64 = 0;
@@ -180,6 +187,11 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                     sleep(remaining_time).await;
                                 }
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
+                            } else {
+                                otel_debug!(
+                                    "RateLimit.Uncapped",
+                                    message = "Rate limiting disabled, continuing immediately"
+                                );
                             }
                         }
                         Err(e) => {

@@ -73,7 +73,7 @@ criterion = "0.8.0"
 data-encoding = "2.9.0"
 datafusion = { version = "51.0.0", default-features = false }
 fluke-hpack = "0.3.1"
-flume = { version = "0.11.1", default-features = false, features = ["async"] }
+flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.31"
 futures-core = "0.3"
 futures-channel = "0.3"
