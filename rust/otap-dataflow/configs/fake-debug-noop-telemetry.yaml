@@ -38,6 +38,10 @@ service:
   telemetry:
     logs:
       level: "info"
+      processors:
+        - batch:
+            exporter:
+              console:
     metrics:
       readers:
         - periodic:

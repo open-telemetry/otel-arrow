@@ -3,6 +3,7 @@
 
 //! Telemetry level configurations.
 
+pub mod logs;
 pub mod metrics;
 
 use std::{collections::HashMap, time::Duration};
@@ -10,7 +11,7 @@ use std::{collections::HashMap, time::Duration};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::pipeline::service::telemetry::metrics::MetricsConfig;
+use crate::pipeline::service::telemetry::{logs::LogsConfig, metrics::MetricsConfig};
 
 /// Telemetry backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -51,34 +52,6 @@ fn default_reporting_channel_size() -> usize {
 
 fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
-}
-
-/// Internal logs configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct LogsConfig {
-    /// The log level for internal engine logs.
-    #[serde(default)]
-    pub level: LogLevel,
-}
-
-/// Log level for internal engine logs.
-///
-/// TODO: Change default to `Info` once per-thread subscriber is implemented
-/// to avoid contention from the global tracing subscriber.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    /// Logging is completely disabled.
-    #[default]
-    Off,
-    /// Debug level logging.
-    Debug,
-    /// Info level logging.
-    Info,
-    /// Warn level logging.
-    Warn,
-    /// Error level logging.
-    Error,
 }
 
 /// Attribute value types for telemetry resource attributes.
