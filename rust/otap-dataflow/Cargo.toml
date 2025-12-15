@@ -48,6 +48,8 @@ otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
+data_engine_expressions = { path = "../experimental/query_engine/expressions" }
+data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
 
 ahash = "0.8.11"
 arc-swap = "1.7"
