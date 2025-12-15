@@ -19,6 +19,7 @@ import (
 	headerssetterextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
 	basicauthextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	pprofextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension"
+	filterprocessor "github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor"
 	otelarrowreceiver "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver"
 	otlpjsonfilereceiver "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver"
 	otlpreceiver "go.opentelemetry.io/collector/receiver/otlpreceiver"
@@ -74,11 +75,13 @@ func components() (otelcol.Factories, error) {
 	factories.ExporterModules[fileexporter.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.140.1"
 
 	factories.Processors, err = otelcol.MakeFactoryMap[processor.Factory](
+		filterprocessor.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
 	}
 	factories.ProcessorModules = make(map[component.Type]string, len(factories.Processors))
+	factories.ProcessorModules[filterprocessor.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.140.1"
 
 	factories.Connectors, err = otelcol.MakeFactoryMap[connector.Factory](
 	)

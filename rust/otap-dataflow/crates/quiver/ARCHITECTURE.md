@@ -87,16 +87,24 @@ WAL entries belonging to:
   `wal/quiver.wal`, rolling into numbered siblings (`.1`, `.2`, ...) only when
   rotation triggers as described below. The steady-state design keeps writes
   sequential for simplicity and page-cache locality.
-- **File header**: fixed-width preamble (`b"QUIVER\0WAL"`), version, and the
-  target segment configuration hash. Concretely the header is
-  `{magic: [u8;10], version: u16, reserved: u16, segment_cfg_hash: [u8;16]}` and
-  is always little-endian. `reserved` must be zero today; we bump `version` for
-  any incompatible encoding change so older binaries can decisively reject files
-  they cannot interpret and newer binaries can interpret the older file format.
+- **File header**: variable-width preamble starting with magic (`b"QUIVER\0WAL"`),
+  version, header size, segment configuration hash, and WAL position start.
+  Concretely the header is `{magic: [u8;10], version: u16, header_size: u16,
+  segment_cfg_hash: [u8;16], wal_position_start: u64}` (38 bytes for version 1)
+  and is always little-endian. The `header_size` field allows future versions to
+  add fields without breaking backwards compatibility; readers should read
+  `header_size` bytes total and ignore any unknown trailing fields. We bump
+  `version` for any incompatible encoding change so older binaries can
+  decisively reject files they cannot interpret and newer binaries can interpret
+  the older file format.
   `segment_cfg_hash` is a 128-bit digest (e.g., truncated
   BLAKE3) over the adapter-owned layout contract: slot id -> payload mappings,
   per-slot ordering, checksum policy toggles, and any other settings that a
-  particular adapter (OTAP today) uses to interpret RecordBundle payloads. We
+  particular adapter (OTAP today) uses to interpret RecordBundle payloads.
+  `wal_position_start` records the WAL stream position at the start of this
+  file; on rotation the new file's header captures the previous file's
+  `wal_position_end` so that positions remain stable even after older rotated
+  files are purged. We
   treat operational knobs such as `segment.target_size`, flush cadence, or
   retention caps as *out of scope* for the hash so mundane tuning never
   invalidates an otherwise healthy WAL. On replay a hash mismatch is treated the
@@ -176,32 +184,35 @@ WAL entries belonging to:
   recovery can jump directly to the latest checkpoint instead of replaying the
   entire log.
 
-##### Checkpointing & rotation mechanics
+##### Cursor persistence & rotation mechanics
 
-- **Track checkpoint progress**: After a segment finalizes and its metadata + file
-  are flushed, we advance a *logical* cursor that counts data bytes (headers
-  excluded) across the entire WAL stream. This `global_data_offset` represents "the
-  earliest WAL data still needed for crash recovery." We persist that `u64` into
-  a tiny sidecar file (e.g., `wal/checkpoint.offset`) immediately after advancing
-  it and fsync the sidecar so crash recovery can resume from that logical offset
-  without rescanning finalized entries.
-- **Checkpoint sidecar format**: The sidecar is a fixed 24-byte struct written in
-  little-endian order:
+- **Track cursor progress**: After a segment finalizes and its metadata + file
+  are flushed, we advance a *logical* cursor that tracks position in the WAL
+  stream. This `wal_position` represents "the earliest WAL data still needed for
+  crash recovery." We persist that `u64` into a tiny sidecar file (e.g.,
+  `wal/quiver.wal.cursor`) immediately after advancing it and fsync the sidecar
+  so crash recovery can resume from that logical position without rescanning
+  finalized entries.
+- **Cursor sidecar format**: The sidecar is a variable-width struct (24 bytes
+  for version 1) written in little-endian order. The `size` field enables future
+  versions to add fields while maintaining backward compatibility; a v1 reader
+  can read a v2+ file by extracting the v1-compatible fields and skipping unknown
+  trailing bytes:
 
   ```text
-  CheckpointSidecar {
+  CursorSidecar (v1, 24 bytes) {
       [u8; 8] magic = b"QUIVER\0T";  // distinguishes from WAL proper
       u16 version = 1;                // bump if layout changes
-      u16 reserved = 0;
-      u64 global_data_offset;         // logical data bytes still required
-      u32 crc32;                      // covers magic..global_data_offset
+      u16 size = 24;                  // total encoded size (enables variable-width)
+      u64 wal_position;               // position in the WAL stream
+      u32 crc32;                      // covers magic..wal_position (everything except CRC)
   }
   ```
 
-  We write updates via `checkpoint.offset.tmp`: encode the struct, compute the CRC,
+  We write updates via `quiver.wal.cursor.tmp`: encode the struct, compute the CRC,
   `pwrite`+`fdatasync`, then `renameat` over the live file so readers see either
-  the old or new offset. On startup we verify the magic, version, and checksum
-  before trusting the recorded offsets; failure falls back to scanning from the
+  the old or new position. On startup we verify the magic, version, and checksum
+  before trusting the recorded position; failure falls back to scanning from the
   beginning of `quiver.wal`.
 - **Record prefix reclamation**: When higher layers report a safe cursor, we
   translate it into the logical coordinate space and persist it via the sidecar
@@ -210,7 +221,7 @@ WAL entries belonging to:
 - **Drop reclaimed prefixes**: Once the active file grows beyond
   `rotation_target_bytes` we rotate it to `quiver.wal.N` (where N is a
   monotonically increasing rotation id), start a fresh WAL, and remember the
-  byte span covered by the retired file. When the persisted consumer checkpoint
+  byte span covered by the retired file. When the persisted consumer cursor
   fully covers a rotated file we delete the file outright. Until a rotation
   occurs the reclaimed bytes remain in the active file even though they are
   logically safe to discard.
@@ -347,6 +358,10 @@ Protects processed data; smaller footprint, buffers during downstream outages
   provide its own slot table.
 - **Stream**: The ordered sequence of Arrow IPC messages Quiver writes for a
   `(slot, schema_fingerprint)` pairing inside a segment.
+- **Chunk**: A single Arrow `RecordBatch` within a stream. Each `RecordBundle`
+  payload slot that matches the stream's `(slot, schema)` key contributes one
+  chunk. Chunks share the stream's unified dictionary vocabulary and are
+  individually addressable via the batch manifest.
 - **Stream Directory**: The header table that records every stream's id, slot,
   schema fingerprint, byte offset, byte length, and statistics.
 - **Batch Manifest**: The ordered list of `RecordBundle` arrivals. Each entry

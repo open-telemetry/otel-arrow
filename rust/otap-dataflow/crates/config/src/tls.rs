@@ -95,6 +95,13 @@ pub struct TlsServerConfig {
     pub include_system_ca_certs_pool: Option<bool>,
     // /// Path to the Certificate Revocation List (CRL) to use by the server to verify a client certificate.
     // pub client_crl_file: Option<PathBuf>,
+    /// Enable file watching for client CA certificate hot-reload.
+    /// When enabled, changes to `client_ca_file` will be detected and the
+    /// client certificate verifier will be automatically updated without restart.
+    /// Requires `client_ca_file` to be set. Defaults to false.
+    #[serde(default)]
+    pub watch_client_ca: bool,
+
     /// Timeout for TLS handshake. Defaults to 10 seconds.
     /// Prevents slow/malicious clients from holding connection slots.
     #[serde(default = "default_handshake_timeout", with = "humantime_serde")]

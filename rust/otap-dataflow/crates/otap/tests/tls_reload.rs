@@ -158,6 +158,7 @@ mod tests {
             client_ca_pem: None,
             include_system_ca_certs_pool: None,
             handshake_timeout: None,
+            watch_client_ca: false,
         };
 
         let addr: SocketAddr = "127.0.0.1:0".parse().expect("Invalid address");

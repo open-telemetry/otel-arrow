@@ -134,7 +134,7 @@ impl ControllerContext {
 
 impl PipelineContext {
     /// Creates a new `PipelineContext`.
-    fn new(
+    pub(crate) fn new(
         parent_ctx: ControllerContext,
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,

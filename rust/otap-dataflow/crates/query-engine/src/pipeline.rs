@@ -24,6 +24,7 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
 mod filter;
+mod functions;
 mod planner;
 
 /// A stage in the pipeline.
@@ -55,6 +56,8 @@ pub trait PipelineStage {
     ) -> Result<OtapArrowRecords>;
 }
 
+/// Implementation of pipeline that executes a datafusion `ExecutionPlan` on the record batch
+/// associated with the payload type
 pub struct DataFusionPipelineStage {
     /// The payload in the OtapArrowRecords this stage reads from and writes to.
     payload_type: ArrowPayloadType,
@@ -182,6 +185,7 @@ pub struct Pipeline {
 
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
+    #[must_use]
     pub fn new(pipeline_definition: PipelineExpression) -> Self {
         Self {
             pipeline_definition,
@@ -257,6 +261,12 @@ mod test {
     use datafusion::logical_expr::{col, lit};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+    };
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{
+        ResourceSpans, ScopeSpans, Span, TracesData,
+    };
 
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
@@ -278,9 +288,45 @@ mod test {
         }
     }
 
+    /// helper function for converting [`Metric`]s to [`MetricsData`]
+    pub fn to_metrics_data(metrics: Vec<Metric>) -> MetricsData {
+        MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                scope_metrics: vec![ScopeMetrics {
+                    metrics,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    /// helper function for converting [`Span`]s to [`TracesData`]
+    pub fn to_traces_data(spans: Vec<Span>) -> TracesData {
+        TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
     /// helper function for converting OTLP logs to OTAP batch
-    pub fn to_otap(log_records: Vec<LogRecord>) -> OtapArrowRecords {
+    pub fn to_otap_logs(log_records: Vec<LogRecord>) -> OtapArrowRecords {
         otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
+    }
+
+    /// helper function for converting OTLP spans to OTAP batch
+    pub fn to_otap_traces(spans: Vec<Span>) -> OtapArrowRecords {
+        otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(spans)))
+    }
+
+    /// helper function for converting OTLP metrics to OTAP batch
+    pub fn to_otap_metrics(metrics: Vec<Metric>) -> OtapArrowRecords {
+        otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)))
     }
 
     #[tokio::test]
@@ -290,7 +336,7 @@ mod test {
         // the `PlannedPipeline` and its `PipelineStage`s and any additional datafusion context
         // they need
 
-        let otap_batch1 = to_otap(vec![
+        let otap_batch1 = to_otap_logs(vec![
             LogRecord {
                 severity_text: "ERROR".into(),
                 event_name: "1".into(),
@@ -308,7 +354,7 @@ mod test {
             },
         ]);
 
-        let otap_batch2 = to_otap(vec![
+        let otap_batch2 = to_otap_logs(vec![
             LogRecord {
                 severity_text: "DEBUG".into(),
                 event_name: "4".into(),
@@ -331,7 +377,7 @@ mod test {
         let table = StreamingTable::try_new(schema.clone(), vec![rb_stream.clone()]).unwrap();
 
         let ctx = Pipeline::create_session_context();
-        ctx.register_table("logs", Arc::new(table)).unwrap();
+        _ = ctx.register_table("logs", Arc::new(table)).unwrap();
         let query = ctx
             .table("logs")
             .await

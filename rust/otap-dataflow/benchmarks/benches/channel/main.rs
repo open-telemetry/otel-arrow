@@ -12,12 +12,11 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
 use std::rc::Rc;
+use tikv_jemallocator::Jemalloc;
 use tokio::task::LocalSet;
 
-use mimalloc_rust::GlobalMiMalloc;
-
 #[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 const MSG_COUNT: usize = 100_000;
 const CHANNEL_SIZE: usize = 256;

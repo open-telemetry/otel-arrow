@@ -55,8 +55,20 @@ impl Debug for Counter<u64> {
     }
 }
 
+impl Debug for Counter<f64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Counter").field("value", &self.0).finish()
+    }
+}
+
 impl From<u64> for Counter<u64> {
     fn from(value: u64) -> Self {
+        Counter(value)
+    }
+}
+
+impl From<f64> for Counter<f64> {
+    fn from(value: f64) -> Self {
         Counter(value)
     }
 }
@@ -73,6 +85,12 @@ impl AddAssign<u64> for Counter<u64> {
         {
             self.0 += rhs;
         }
+    }
+}
+
+impl AddAssign<f64> for Counter<f64> {
+    fn add_assign(&mut self, rhs: f64) {
+        self.0 += rhs;
     }
 }
 
@@ -103,6 +121,20 @@ impl Counter<u64> {
         {
             self.0 += v;
         }
+    }
+}
+
+impl Counter<f64> {
+    /// Increments the counter by 1.0.
+    #[inline]
+    pub fn inc(&mut self) {
+        self.0 += 1.0;
+    }
+
+    /// Adds an arbitrary value to the counter.
+    #[inline]
+    pub fn add(&mut self, v: f64) {
+        self.0 += v;
     }
 }
 
@@ -157,8 +189,22 @@ impl Debug for UpDownCounter<u64> {
     }
 }
 
+impl Debug for UpDownCounter<f64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpDownCounter")
+            .field("value", &self.0)
+            .finish()
+    }
+}
+
 impl From<u64> for UpDownCounter<u64> {
     fn from(value: u64) -> Self {
+        UpDownCounter(value)
+    }
+}
+
+impl From<f64> for UpDownCounter<f64> {
+    fn from(value: f64) -> Self {
         UpDownCounter(value)
     }
 }
@@ -178,6 +224,12 @@ impl AddAssign<u64> for UpDownCounter<u64> {
     }
 }
 
+impl AddAssign<f64> for UpDownCounter<f64> {
+    fn add_assign(&mut self, rhs: f64) {
+        self.0 += rhs;
+    }
+}
+
 impl SubAssign<u64> for UpDownCounter<u64> {
     fn sub_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
@@ -190,6 +242,12 @@ impl SubAssign<u64> for UpDownCounter<u64> {
         {
             self.0 -= rhs;
         }
+    }
+}
+
+impl SubAssign<f64> for UpDownCounter<f64> {
+    fn sub_assign(&mut self, rhs: f64) {
+        self.0 -= rhs;
     }
 }
 
@@ -261,8 +319,20 @@ impl Debug for Gauge<u64> {
     }
 }
 
+impl Debug for Gauge<f64> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gauge").field("value", &self.0).finish()
+    }
+}
+
 impl From<u64> for Gauge<u64> {
     fn from(value: u64) -> Self {
+        Gauge(value)
+    }
+}
+
+impl From<f64> for Gauge<f64> {
+    fn from(value: f64) -> Self {
         Gauge(value)
     }
 }
@@ -330,6 +400,19 @@ mod tests {
 
         counter += 100;
         assert_eq!(counter.get(), 115);
+    }
+
+    #[test]
+    fn test_counter_f64_add_and_inc() {
+        let mut counter = Counter::new(0.0f64);
+        counter.add(1.5);
+        assert!((counter.get() - 1.5).abs() < f64::EPSILON);
+
+        counter.inc();
+        assert!((counter.get() - 2.5).abs() < f64::EPSILON);
+
+        counter += 0.5;
+        assert!((counter.get() - 3.0).abs() < f64::EPSILON);
     }
 
     #[test]

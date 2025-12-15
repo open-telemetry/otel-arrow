@@ -17,7 +17,7 @@ from ....core.strategies.hook_strategy import HookStrategy, HookStrategyConfig
 from ....core.context.base import BaseContext
 from ....core.context import ComponentHookContext, FrameworkElementHookContext
 from ....runner.registry import hook_registry, PluginMeta
-from typing import Dict
+from typing import Any, Dict
 from jinja2 import Environment, FileSystemLoader, TemplateError
 import os
 
@@ -37,7 +37,7 @@ class RenderTemplateConfig(HookStrategyConfig):
 
     template_path: str
     output_path: str
-    variables: Dict[str, str]
+    variables: Dict[str, Any]
 
 
 @hook_registry.register_class(HOOK_NAME)

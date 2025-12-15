@@ -5,13 +5,17 @@ use std::ops::{BitAnd, BitOr};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, BooleanArray, BooleanBufferBuilder, RecordBatch, StructArray, UInt16Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBufferBuilder, PrimitiveArray,
+    RecordBatch, StructArray, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
-use arrow::datatypes::Schema;
+use arrow::datatypes::{Schema, UInt16Type, UInt32Type};
 use async_trait::async_trait;
-use data_engine_expressions::{LogicalExpression, ScalarExpression};
+use data_engine_expressions::{
+    ContainsLogicalExpression, Expression, LogicalExpression, MatchesLogicalExpression,
+    ScalarExpression, StaticScalarExpression,
+};
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{DFSchema, HashMap, HashSet};
@@ -23,16 +27,19 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
+use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::filter::build_uint16_id_filter;
-use otap_df_pdata::otap::{Logs, Metrics, Traces};
+use otap_df_pdata::arrays::MaybeDictArrayAccessor;
+use otap_df_pdata::otap::filter::{build_uint16_id_filter, build_uint32_id_filter};
+use otap_df_pdata::otap::{Logs, Metrics, ParentPayloadType, Traces, parent_payload_type};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
     try_static_scalar_to_literal,
@@ -361,6 +368,31 @@ impl FilterPlan {
             },
         }
     }
+
+    /// constructs the Expr that will get passed to the "contains" function for a column
+    /// e.g. the first argument in an expression like contains(attributes["x"], "hello")
+    ///
+    /// The second return value contains which attribute we're passing to contains. This
+    /// can be used by the caller to construct the appropriate logical expr for checking
+    /// if attribute value contains some text
+    fn contains_column_arg(
+        column_accessor: ColumnAccessor,
+    ) -> (Expr, Option<(AttributesIdentifier, String)>) {
+        let mut attrs = None;
+        let expr = match column_accessor {
+            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::StructCol(struct_name, struct_field) => {
+                col(struct_name).field(struct_field)
+            }
+            ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
+                attrs = Some((attrs_identifier, attrs_key));
+                // for now we assume that text contains is always applied to the str column
+                col(consts::ATTRIBUTE_STR)
+            }
+        };
+
+        (expr, attrs)
+    }
 }
 
 impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
@@ -400,12 +432,135 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
                 let inner = Self::try_from(not_expr.get_inner_expression())?;
                 Ok(Self::not(inner))
             }
+            LogicalExpression::Contains(contains_expr) => {
+                Ok(Self::from(FilterPlan::try_from(contains_expr)?))
+            }
+            LogicalExpression::Matches(matches_expr) => {
+                Ok(Self::from(FilterPlan::try_from(matches_expr)?))
+            }
 
             // TODO add support for these expressions eventually
-            LogicalExpression::Matches(_)
-            | LogicalExpression::Contains(_)
-            | LogicalExpression::Scalar(_) => Err(Error::NotYetSupportedError {
+            LogicalExpression::Scalar(_) => Err(Error::NotYetSupportedError {
                 message: format!("Logical expression not yet supported {logical_expr:?}"),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
+    type Error = Error;
+
+    fn try_from(contains_expr: &ContainsLogicalExpression) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(contains_expr.get_haystack())?;
+        let right_arg = BinaryArg::try_from(contains_expr.get_needle())?;
+
+        match left_arg {
+            BinaryArg::Column(left_column) => {
+                let (left_expr, attrs) = Self::contains_column_arg(left_column);
+                let right_expr =
+                    match right_arg {
+                        BinaryArg::Literal(right_lit) => try_static_scalar_to_literal(&right_lit)?,
+                        _ => return Err(Error::NotYetSupportedError {
+                            message:
+                                "text contains predicate comparing column left to non literal right"
+                                    .into(),
+                        }),
+                    };
+
+                let contains_expr = contains(left_expr, right_expr);
+                Ok(match attrs {
+                    None => FilterPlan::from(contains_expr),
+                    Some((attrs_identifier, attrs_key)) => {
+                        FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(contains_expr),
+                            attrs_identifier,
+                        ))
+                    }
+                })
+            }
+            BinaryArg::Literal(left_lit) => {
+                let left_expr = try_static_scalar_to_literal(&left_lit)?;
+                let (right_expr, attrs) = match right_arg {
+                    BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
+                    _ => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "contains with left literal and right non-column".into(),
+                        });
+                    }
+                };
+
+                let contains_expr = contains(left_expr, right_expr);
+                Ok(match attrs {
+                    None => FilterPlan::from(contains_expr),
+                    Some((attrs_identifier, attrs_key)) => {
+                        FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(contains_expr),
+                            attrs_identifier,
+                        ))
+                    }
+                })
+            }
+            BinaryArg::Null => Err(Error::NotYetSupportedError {
+                message: "contains with left literal null".into(),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
+    type Error = Error;
+
+    fn try_from(matches_expr: &MatchesLogicalExpression) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(matches_expr.get_haystack())?;
+        let pattern = match matches_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
+                lit(regex.get_value().as_str().to_string())
+            }
+            _ => {
+                return Err(Error::InvalidPipelineError {
+                    cause: "expected pattern to be a static regex".into(),
+                    query_location: Some(matches_expr.get_query_location().clone()),
+                });
+            }
+        };
+
+        match left_arg {
+            BinaryArg::Column(left_column) => Ok(match left_column {
+                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
+                    col(left_col_name),
+                    Operator::RegexMatch,
+                    pattern,
+                )),
+                ColumnAccessor::StructCol(struct_name, struct_field) => {
+                    FilterPlan::from(binary_expr(
+                        col(struct_name).field(struct_field),
+                        Operator::RegexMatch,
+                        pattern,
+                    ))
+                }
+                ColumnAccessor::Attributes(attrs_identifier, attr_key) => {
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        col(consts::ATTRIBUTE_KEY)
+                            .eq(lit(attr_key))
+                            .and(binary_expr(
+                                col(consts::ATTRIBUTE_STR),
+                                Operator::RegexMatch,
+                                pattern,
+                            )),
+                        attrs_identifier,
+                    ))
+                }
+            }),
+            BinaryArg::Literal(_) => Err(Error::NotYetSupportedError {
+                message: "literal matches regex".into(),
+            }),
+            BinaryArg::Null => Err(Error::InvalidPipelineError {
+                cause: "cannot match null against regex".into(),
+                query_location: Some(matches_expr.get_query_location().clone()),
             }),
         }
     }
@@ -595,20 +750,30 @@ impl FilterExec {
 
         // also apply any attribute filters
         if let Some(attrs_filter) = &mut self.attributes_filter {
-            let id_col = match get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
-                Some(id_col) => id_col,
-                None => {
-                    // None of the records have any attributes
-                    return Ok(BooleanArray::new(
-                        if self.missing_attrs_pass {
-                            BooleanBuffer::new_set(root_rb.num_rows())
-                        } else {
-                            BooleanBuffer::new_unset(root_rb.num_rows())
-                        },
-                        None,
-                    ));
-                }
-            };
+            let id_col =
+                match UInt16Type::get_id_col_from_parent(root_rb, attrs_filter.payload_type())? {
+                    Some(MaybeDictArrayAccessor::Native(id_col)) => id_col,
+                    Some(_) => {
+                        // currently based on how `UInt16Type::get_id_col_from_parent` is
+                        // implemented, this is actually unreachable, but putting the error
+                        // here instead of unreachable! for posterity in case we change the impl
+                        // in future for some reason
+                        return Err(Error::ExecutionError {
+                            cause: "invalid type for ID column on root batch".into(),
+                        });
+                    }
+                    None => {
+                        // None of the records have any attributes
+                        return Ok(BooleanArray::new(
+                            if self.missing_attrs_pass {
+                                BooleanBuffer::new_set(root_rb.num_rows())
+                            } else {
+                                BooleanBuffer::new_unset(root_rb.num_rows())
+                            },
+                            None,
+                        ));
+                    }
+                };
 
             let id_mask = attrs_filter.execute(otap_batch, session_ctx, false)?;
             let mut attrs_selection_vec_builder = BooleanBufferBuilder::new(root_rb.num_rows());
@@ -1031,7 +1196,7 @@ impl FilterProjection {
     /// there is some form of [`Expr`] tree which is not recognized
     fn try_new(logical_expr: &Expr) -> Result<Self> {
         let mut visitor = ProjectedSchemaExprVisitor::default();
-        logical_expr.visit(&mut visitor)?;
+        _ = logical_expr.visit(&mut visitor)?;
         Ok(Self {
             schema: visitor.into(),
         })
@@ -1137,7 +1302,7 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
 
     fn f_down(&mut self, node: &'a Self::Node) -> datafusion::error::Result<TreeNodeRecursion> {
         if let Expr::Column(col) = node {
-            self.root_columns.insert(col.name.clone());
+            _ = self.root_columns.insert(col.name.clone());
         }
 
         // here we're checking if the expression we're visiting references a field within a struct
@@ -1163,7 +1328,7 @@ impl<'a> TreeNodeVisitor<'a> for ProjectedSchemaExprVisitor {
                             .struct_columns
                             .entry(col.name.clone())
                             .or_insert(HashSet::new());
-                        struct_fields.insert(nested_col.clone());
+                        _ = struct_fields.insert(nested_col.clone());
 
                         // don't continue as we've found a column. Otherwise this will continue
                         // down the expression tree and we'll visit the Column expression twice.
@@ -1194,11 +1359,11 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
                 .sum::<usize>();
         let mut schema = Vec::with_capacity(num_cols);
 
-        for col in visitor.root_columns.into_iter() {
+        for col in visitor.root_columns {
             schema.push(ProjectedSchemaColumn::Root(col))
         }
 
-        for (struct_name, cols) in visitor.struct_columns.into_iter() {
+        for (struct_name, cols) in visitor.struct_columns {
             schema.push(ProjectedSchemaColumn::Struct(
                 struct_name,
                 cols.into_iter().collect(),
@@ -1209,37 +1374,78 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
     }
 }
 
-/// helper function for getting the ID column associated with the parent_id in the child record
-/// batch which is identified by the passed payload type
-// TODO - this currently only supports the root record batch. When we support additional signal
-// types with more deeply nested tree of payload types, we'll need to correct the logic here
-fn get_id_col_from_parent(
-    root_rb: &RecordBatch,
-    child_payload_type: ArrowPayloadType,
-) -> Result<Option<&UInt16Array>> {
-    match child_payload_type {
-        ArrowPayloadType::ResourceAttrs => root_rb
-            .column_by_name(consts::RESOURCE)
-            .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
-            .and_then(|arr| arr.column_by_name(consts::ID)),
-        ArrowPayloadType::ScopeAttrs => root_rb
-            .column_by_name(consts::SCOPE)
-            .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
-            .and_then(|arr| arr.column_by_name(consts::ID)),
-        _ => root_rb.column_by_name(consts::ID),
+/// This trait makes some helper functions for filtering child [`RecordBatch`]s generic over the
+/// type of ID (u16/u32) that are used to make the relationship between parent and child
+trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {
+    /// helper function for getting the ID column associated with the parent_id in the child record
+    /// batch which is identified by the passed payload type
+    fn get_id_col_from_parent(
+        root_rb: &RecordBatch,
+        child_payload_type: ArrowPayloadType,
+    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>>;
+
+    /// build a selection vector for the parent ID column based on which IDs are contained within
+    /// the id_mask bitmap
+    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray>;
+}
+
+impl ChildBatchFilterIdHelper for UInt16Type {
+    fn get_id_col_from_parent(
+        root_rb: &RecordBatch,
+        child_payload_type: ArrowPayloadType,
+    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>> {
+        match child_payload_type {
+            ArrowPayloadType::ResourceAttrs => root_rb
+                .column_by_name(consts::RESOURCE)
+                .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
+                .and_then(|arr| arr.column_by_name(consts::ID)),
+            ArrowPayloadType::ScopeAttrs => root_rb
+                .column_by_name(consts::SCOPE)
+                .and_then(|arr| arr.as_any().downcast_ref::<StructArray>())
+                .and_then(|arr| arr.column_by_name(consts::ID)),
+            _ => root_rb.column_by_name(consts::ID),
+        }
+        .map(|id_col| {
+            id_col
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: format!(
+                        "unexpected type for ID column. Expected u16 found {}",
+                        id_col.data_type()
+                    ),
+                })
+                .map(MaybeDictArrayAccessor::Native)
+        })
+        .transpose()
     }
-    .map(|id_col| {
-        id_col
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| Error::ExecutionError {
-                cause: format!(
-                    "unexpected type for ID column. Expected u16 found {}",
-                    id_col.data_type()
-                ),
+
+    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
+        build_uint16_id_filter(parent_ids, &id_mask).map_err(|e| Error::ExecutionError {
+            cause: format!("error filtering child batch {:?}", e),
+        })
+    }
+}
+
+impl ChildBatchFilterIdHelper for UInt32Type {
+    fn get_id_col_from_parent(
+        root_rb: &RecordBatch,
+        _child_payload_type: ArrowPayloadType,
+    ) -> Result<Option<MaybeDictArrayAccessor<'_, PrimitiveArray<Self>>>> {
+        root_rb
+            .column_by_name(consts::ID)
+            .map(MaybeDictArrayAccessor::try_new)
+            .transpose()
+            .map_err(|e| Error::ExecutionError {
+                cause: format!("error filtering child batch by id: {}", e),
             })
-    })
-    .transpose()
+    }
+
+    fn build_selection_vec(parent_ids: &ArrayRef, id_mask: RoaringBitmap) -> Result<BooleanArray> {
+        build_uint32_id_filter(parent_ids, &id_mask).map_err(|e| Error::ExecutionError {
+            cause: format!("error filtering child batch {:?}", e),
+        })
+    }
 }
 
 fn get_parent_id_column(record_batch: &RecordBatch) -> Result<&UInt16Array> {
@@ -1274,21 +1480,41 @@ impl FilterPipelineStage {
 
     /// After filtering has been applied to the parent record batch, go into the child record batch
     /// and remove rows with parent_id pointing to parents that were filtered out
-    fn filter_child_batch(
+    fn filter_child_batch<T: ChildBatchFilterIdHelper>(
         &self,
         otap_batch: &mut OtapArrowRecords,
-        payload_type: ArrowPayloadType,
-    ) -> Result<()> {
-        let root_rb = match otap_batch.root_record_batch() {
+        child_payload_type: ArrowPayloadType,
+    ) -> Result<()>
+    where
+        <T as ArrowPrimitiveType>::Native: Into<u32>,
+    {
+        let parent_rb = match parent_payload_type(child_payload_type) {
+            None => {
+                // shouldn't happen
+                return Err(Error::ExecutionError {
+                    cause: "filter_child_batch called with root payload type".into(),
+                });
+            }
+            Some(ParentPayloadType::Root) => otap_batch.root_record_batch(),
+            Some(ParentPayloadType::NonRoot(parent_payload_type)) => {
+                otap_batch.get(parent_payload_type)
+            }
+        };
+
+        let parent_rb = match parent_rb {
             Some(rb) => rb,
             None => {
-                // if the root record batch is missing, it we must have an empty OTAP batch
-                // hence nothing to do
+                if otap_batch.get(child_payload_type).is_some() {
+                    // the parent record batch has been removed (completely filtered out), so
+                    // there is nothing to link to, this child batch, so we can remove it
+                    otap_batch.remove(child_payload_type);
+                }
+
                 return Ok(());
             }
         };
 
-        let child_rb = match otap_batch.get(payload_type) {
+        let child_rb = match otap_batch.get(child_payload_type) {
             Some(rb) => rb,
             None => {
                 // if child batch doesn't exist, then there are no records to filter
@@ -1296,7 +1522,8 @@ impl FilterPipelineStage {
             }
         };
 
-        let id_col = get_id_col_from_parent(root_rb, payload_type)?.ok_or_else(||
+        let id_col =
+            T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(||
             // this would be considered an unexpected state for this batch. We have a child
             // record batch that is supposed to have it's parent_id pointing to an ID column
             // on the root batch which does not exist
@@ -1309,7 +1536,7 @@ impl FilterPipelineStage {
 
         // build the selection vector for the child record batch. This uses common code shared
         // with the filter processor
-        let id_mask = id_col.iter().flatten().map(|i| i as u32).collect();
+        let id_mask = id_col.iter().flatten().map(|i| i.into()).collect();
         let child_parent_ids =
             child_rb
                 .column_by_name(consts::PARENT_ID)
@@ -1317,20 +1544,21 @@ impl FilterPipelineStage {
                     cause: "parent_id column not found on child batch".into(),
                 })?;
 
-        let child_selection_vec =
-            build_uint16_id_filter(child_parent_ids, &id_mask).map_err(|e| {
-                Error::ExecutionError {
-                    cause: format!("error filtering child batch {:?}", e),
-                }
-            })?;
+        let child_selection_vec = T::build_selection_vec(child_parent_ids, id_mask)?;
 
-        // create the new child record batch from rows that were selected and update the OTAP batch
-        let new_child_rb = filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
-            Error::ExecutionError {
-                cause: format!("error filtering child batch {:?}", e),
-            }
-        })?;
-        otap_batch.set(payload_type, new_child_rb);
+        if child_selection_vec.true_count() == 0 {
+            // the child record batch has been completely filtered out
+            otap_batch.remove(child_payload_type);
+        } else {
+            // create the new child record batch from rows that were selected and update the OTAP batch
+            let new_child_rb =
+                filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
+                    Error::ExecutionError {
+                        cause: format!("error filtering child batch {:?}", e),
+                    }
+                })?;
+            otap_batch.set(child_payload_type, new_child_rb);
+        }
 
         Ok(())
     }
@@ -1380,13 +1608,119 @@ impl PipelineStage for FilterPipelineStage {
         // update the child batches after filtering has been applied to parent
         match otap_batch.root_payload_type() {
             ArrowPayloadType::Logs => {
-                self.filter_child_batch(&mut otap_batch, ArrowPayloadType::LogAttrs)?;
-                self.filter_child_batch(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
-                self.filter_child_batch(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
+                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::LogAttrs)?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                )?;
+            }
+            ArrowPayloadType::Spans => {
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEvents,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanEventAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinks,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SpanLinkAttrs,
+                )?;
+            }
+            ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::MetricAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ScopeAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ResourceAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::SummaryDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplars,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::NumberDpExemplarAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplars,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::HistogramDpExemplarAttrs,
+                )?;
+                self.filter_child_batch::<UInt16Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpAttrs,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplars,
+                )?;
+                self.filter_child_batch::<UInt32Type>(
+                    &mut otap_batch,
+                    ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                )?;
             }
             signal_type => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!(
+                return Err(Error::ExecutionError {
+                    cause: format!(
                         "signal type {:?} not yet supported by FilterPipelineStage",
                         signal_type
                     ),
@@ -1416,12 +1750,19 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
+        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
+    };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status, TracesData};
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use prost::Message;
 
-    use crate::pipeline::test::{to_logs_data, to_otap};
+    use crate::pipeline::test::{to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces};
 
     /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
@@ -1430,17 +1771,31 @@ mod test {
         LogsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
+    /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
+    pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        TracesData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
+    /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
+    pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let parser_result = KqlParser::parse(kql_expr).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch.clone()).await.unwrap();
+        let result = pipeline.execute(otap_batch).await.unwrap();
         otap_to_logs_data(result)
     }
 
     #[tokio::test]
     async fn test_simple_filter() {
-        let otap_batch = to_otap(vec![
+        let otap_batch = to_otap_logs(vec![
             LogRecord::build()
                 .severity_text("TRACE")
                 .event_name("1")
@@ -1458,7 +1813,7 @@ mod test {
         let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
-        let expected = to_otap(vec![
+        let expected = to_otap_logs(vec![
             LogRecord::build()
                 .severity_text("ERROR")
                 .event_name("3")
@@ -1475,7 +1830,7 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_attrs_filter() {
-        let otap_batch = to_otap(vec![
+        let otap_batch = to_otap_logs(vec![
             LogRecord::build()
                 .event_name("1")
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
@@ -1515,6 +1870,217 @@ mod test {
             &result_otlp.resource_logs[0].scope_logs[0].log_records,
             &expected,
         )
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_contains() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("error happen")
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("bert"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("username", AnyValue::new_string("tim"))])
+                .event_name("the error was caught")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("terry"),
+                )])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where event_name contains \"error\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+
+        // check we could specify the column on the right
+        let result = exec_logs_pipeline(
+            "logs | where \"1234\" contains event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+
+        // also check we can filter by attributes using contains
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"username\"] contains \"y\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()],
+        );
+
+        // check that we could also specify the column on the right for attributes
+        let result = exec_logs_pipeline(
+            "logs | where \"albert\" contains attributes[\"username\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_contains_struct_cols() {
+        let input = LogsData {
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "version1".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("a"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+                ResourceLogs {
+                    schema_url: "experimental".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("b"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r2.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+            ],
+        };
+        let result = exec_logs_pipeline(
+            "logs | where resource.schema_url contains \"version\"",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![input.resource_logs[0].clone()],
+            }
+        );
+
+        // test same as above, but with literal contains the column value
+        let result = exec_logs_pipeline(
+            "logs | where \"experimental version\" contains resource.schema_url",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![input.resource_logs[1].clone()],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_regex() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("error happen")
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("bert"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("username", AnyValue::new_string("tim"))])
+                .event_name("the error was caught")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("terry"),
+                )])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where event_name matches regex \"^err.*\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+
+        // also check we can filter by attributes using contains
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"username\"] matches regex \"^t.*\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_matches_regex_struct_cols() {
+        let input = LogsData {
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "version1".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("a"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+                ResourceLogs {
+                    schema_url: "experimental".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("b"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r2.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+            ],
+        };
+        let result = exec_logs_pipeline(
+            "logs | where resource.schema_url matches regex \"v.*1\"",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![input.resource_logs[0].clone()],
+            }
+        );
     }
 
     #[tokio::test]
@@ -1586,6 +2152,460 @@ mod test {
                 resource_logs: vec![input.resource_logs[0].clone()],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_traces() {
+        let spans = vec![
+            Span::build()
+                .name("span1")
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .events(vec![
+                    Event::build()
+                        .name("event1.1")
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .finish(),
+                ])
+                .links(vec![
+                    Link::build()
+                        .span_id(vec![11; 8])
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .finish(),
+                ])
+                .finish(),
+            Span::build()
+                .name("span2")
+                .trace_id(vec![2; 16])
+                .span_id(vec![2; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .events(vec![
+                    Event::build()
+                        .name("event2.1")
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Event::build()
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .name("event2.2")
+                        .finish(),
+                ])
+                .links(vec![
+                    Link::build()
+                        .span_id(vec![21; 8])
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Link::build()
+                        .span_id(vec![22; 8])
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .finish(),
+                ])
+                .finish(),
+            Span::build()
+                .name("span3")
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val3"))])
+                .events(vec![
+                    Event::build()
+                        .name("event3.1")
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Event::build().name("event3.2").finish(),
+                    Event::build().name("event3.2").finish(),
+                ])
+                .links(vec![
+                    Link::build().span_id(vec![31; 8]).finish(),
+                    Link::build()
+                        .span_id(vec![32; 8])
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Link::build().span_id(vec![33; 8]).finish(),
+                ])
+                .finish(),
+        ];
+
+        let input = to_otap_traces(spans.clone());
+        let parser_result = KqlParser::parse("traces | where name == \"span2\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        // assert everything got filtered to the right size
+        let result_spans = result.get(ArrowPayloadType::Spans).unwrap();
+        assert_eq!(result_spans.num_rows(), 1);
+
+        let span_attrs = result.get(ArrowPayloadType::SpanAttrs).unwrap();
+        assert_eq!(span_attrs.num_rows(), 1);
+
+        let span_events = result.get(ArrowPayloadType::SpanEvents).unwrap();
+        assert_eq!(span_events.num_rows(), 2);
+
+        let span_links = result.get(ArrowPayloadType::SpanLinks).unwrap();
+        assert_eq!(span_links.num_rows(), 2);
+
+        let span_link_attrs = result.get(ArrowPayloadType::SpanLinkAttrs).unwrap();
+        assert_eq!(span_link_attrs.num_rows(), 3);
+
+        let span_event_attrs = result.get(ArrowPayloadType::SpanEventAttrs).unwrap();
+        assert_eq!(span_event_attrs.num_rows(), 3);
+
+        let traces_data = otap_to_traces_data(result);
+        assert_eq!(traces_data.resource_spans.len(), 1);
+        assert_eq!(traces_data.resource_spans[0].scope_spans.len(), 1);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[1].clone()]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_filter_traces_by_attrs() {
+        let spans = vec![
+            Span::build()
+                .name("span1")
+                .trace_id(vec![1; 16])
+                .span_id(vec![1; 8])
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .status(Status::default())
+                .finish(),
+            Span::build()
+                .name("span2")
+                .trace_id(vec![2; 16])
+                .span_id(vec![2; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let input = to_otap_traces(spans.clone());
+        let parser_result =
+            KqlParser::parse("traces | where attributes[\"key\"] == \"val1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let traces_data = otap_to_traces_data(result);
+        assert_eq!(traces_data.resource_spans.len(), 1);
+        assert_eq!(traces_data.resource_spans[0].scope_spans.len(), 1);
+        pretty_assertions::assert_eq!(
+            &traces_data.resource_spans[0].scope_spans[0].spans,
+            &[spans[0].clone()]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_metrics() {
+        let metrics = vec![
+            Metric::build()
+                .name("metric1")
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![1; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_gauge(Gauge {
+                    data_points: vec![
+                        NumberDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![2; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric1")
+                .data_histogram(Histogram {
+                    data_points: vec![
+                        HistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![1; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                    aggregation_temporality: 0,
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_histogram(Histogram {
+                    data_points: vec![
+                        HistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![2; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                    aggregation_temporality: 0,
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric1")
+                .data_exponential_histogram(ExponentialHistogram {
+                    data_points: vec![
+                        ExponentialHistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![1; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val1"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .positive(Buckets::default())
+                            .negative(Buckets::default())
+                            .finish(),
+                    ],
+                    aggregation_temporality: 0,
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_exponential_histogram(ExponentialHistogram {
+                    data_points: vec![
+                        ExponentialHistogramDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .exemplars(vec![
+                                Exemplar::build()
+                                    .trace_id(vec![2; 16])
+                                    .filtered_attributes(vec![KeyValue::new(
+                                        "key",
+                                        AnyValue::new_string("val2"),
+                                    )])
+                                    .finish(),
+                            ])
+                            .finish(),
+                    ],
+                    aggregation_temporality: 0,
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric1")
+                .data_summary(Summary {
+                    data_points: vec![
+                        SummaryDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                            .finish(),
+                    ],
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_summary(Summary {
+                    data_points: vec![
+                        SummaryDataPoint::build()
+                            .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                            .finish(),
+                    ],
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val"))])
+                .finish(),
+        ];
+
+        let input = to_otap_metrics(metrics.clone());
+        let parser_result = KqlParser::parse("traces | where name == \"metric1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        // assert everything got filtered to the right size
+        let result_metrics = result.get(ArrowPayloadType::UnivariateMetrics).unwrap();
+        assert_eq!(result_metrics.num_rows(), 4);
+
+        let attrs = result.get(ArrowPayloadType::MetricAttrs).unwrap();
+        assert_eq!(attrs.num_rows(), 4);
+
+        let number_dps = result.get(ArrowPayloadType::NumberDataPoints).unwrap();
+        assert_eq!(number_dps.num_rows(), 1);
+
+        let number_dp_attrs = result.get(ArrowPayloadType::NumberDpAttrs).unwrap();
+        assert_eq!(number_dp_attrs.num_rows(), 1);
+
+        let number_dp_exemplars = result.get(ArrowPayloadType::NumberDpExemplars).unwrap();
+        assert_eq!(number_dp_exemplars.num_rows(), 1);
+
+        let number_dp_exemplar_attrs = result.get(ArrowPayloadType::NumberDpExemplarAttrs).unwrap();
+        assert_eq!(number_dp_exemplar_attrs.num_rows(), 1);
+
+        let hist_dps = result.get(ArrowPayloadType::HistogramDataPoints).unwrap();
+        assert_eq!(hist_dps.num_rows(), 1);
+
+        let hist_dp_attrs = result.get(ArrowPayloadType::HistogramDpAttrs).unwrap();
+        assert_eq!(hist_dp_attrs.num_rows(), 1);
+
+        let hist_dp_exemplars = result.get(ArrowPayloadType::HistogramDpExemplars).unwrap();
+        assert_eq!(hist_dp_exemplars.num_rows(), 1);
+
+        let hist_dp_exemplar_attrs = result
+            .get(ArrowPayloadType::HistogramDpExemplarAttrs)
+            .unwrap();
+        assert_eq!(hist_dp_exemplar_attrs.num_rows(), 1);
+
+        let exp_hist_dps = result
+            .get(ArrowPayloadType::ExpHistogramDataPoints)
+            .unwrap();
+        assert_eq!(exp_hist_dps.num_rows(), 1);
+
+        let exp_hist_dp_attrs = result.get(ArrowPayloadType::ExpHistogramDpAttrs).unwrap();
+        assert_eq!(exp_hist_dp_attrs.num_rows(), 1);
+
+        let exp_hist_dp_exemplars = result
+            .get(ArrowPayloadType::ExpHistogramDpExemplars)
+            .unwrap();
+        assert_eq!(exp_hist_dp_exemplars.num_rows(), 1);
+
+        let exp_hist_dp_exemplar_attrs = result
+            .get(ArrowPayloadType::ExpHistogramDpExemplarAttrs)
+            .unwrap();
+        assert_eq!(exp_hist_dp_exemplar_attrs.num_rows(), 1);
+
+        let summary_dps = result.get(ArrowPayloadType::SummaryDataPoints).unwrap();
+        assert_eq!(summary_dps.num_rows(), 1);
+
+        let summary_dp_attrs = result.get(ArrowPayloadType::SummaryDpAttrs).unwrap();
+        assert_eq!(summary_dp_attrs.num_rows(), 1);
+
+        let metrics_data = otap_to_metrics_data(result);
+        assert_eq!(metrics_data.resource_metrics.len(), 1);
+        assert_eq!(metrics_data.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            &metrics_data.resource_metrics[0].scope_metrics[0].metrics,
+            &[
+                metrics[0].clone(),
+                metrics[2].clone(),
+                metrics[4].clone(),
+                metrics[6].clone()
+            ]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_filter_metrics_by_attrs() {
+        let metrics = vec![
+            Metric::build()
+                .name("metric1")
+                .data_gauge(Gauge {
+                    data_points: Vec::default(),
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .finish(),
+            Metric::build()
+                .name("metric2")
+                .data_gauge(Gauge {
+                    data_points: Vec::default(),
+                })
+                .metadata(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .finish(),
+        ];
+
+        let input = to_otap_metrics(metrics.clone());
+        let parser_result =
+            KqlParser::parse("metrics | where attributes[\"key\"] == \"val1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        let metrics_data = otap_to_metrics_data(result);
+        assert_eq!(metrics_data.resource_metrics.len(), 1);
+        assert_eq!(metrics_data.resource_metrics[0].scope_metrics.len(), 1);
+        pretty_assertions::assert_eq!(
+            &metrics_data.resource_metrics[0].scope_metrics[0].metrics,
+            &[metrics[0].clone(),]
+        )
+    }
+
+    #[tokio::test]
+    async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {
+        let spans = vec![
+            Span::build()
+                .name("span1")
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val1"))])
+                .finish(),
+            Span::build()
+                .name("span2")
+                .trace_id(vec![2; 16])
+                .span_id(vec![2; 8])
+                .status(Status::default())
+                .attributes(vec![KeyValue::new("key", AnyValue::new_string("val2"))])
+                .events(vec![
+                    Event::build()
+                        .name("event2.1")
+                        .attributes(vec![
+                            KeyValue::new("key2", AnyValue::new_string("val2")),
+                            KeyValue::new("key3", AnyValue::new_string("val2")),
+                        ])
+                        .finish(),
+                    Event::build()
+                        .attributes(vec![KeyValue::new("key2", AnyValue::new_string("val2"))])
+                        .name("event2.2")
+                        .finish(),
+                ])
+                .finish(),
+        ];
+
+        let input = to_otap_traces(spans);
+        let parser_result = KqlParser::parse("traces | where name == \"span1\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(input).await.unwrap();
+
+        // since we've filtered for span1, which has no events, the event and event attrs batches
+        // should no longer be present
+        assert!(result.get(ArrowPayloadType::SpanEvents).is_none());
+        assert!(result.get(ArrowPayloadType::SpanEventAttrs).is_none())
     }
 
     #[tokio::test]
@@ -1701,7 +2721,7 @@ mod test {
                 ])
                 .finish(),
         ];
-        let otap_batch = to_otap(log_records.clone());
+        let otap_batch = to_otap_logs(log_records.clone());
 
         // check simple filter "and" properties
         let parser_result =
@@ -1770,7 +2790,7 @@ mod test {
                 ])
                 .finish(),
         ];
-        let otap_batch = to_otap(log_records.clone());
+        let otap_batch = to_otap_logs(log_records.clone());
 
         // check simple filter "or" with properties predicates
         let parser_result = KqlParser::parse(
@@ -2093,7 +3113,7 @@ mod test {
         let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         // assert it's equal to empty batch because there were no matches
@@ -2103,7 +3123,7 @@ mod test {
         let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
@@ -2139,7 +3159,7 @@ mod test {
         let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
@@ -2149,7 +3169,7 @@ mod test {
             KqlParser::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
@@ -2160,7 +3180,7 @@ mod test {
                 .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
-            .execute(to_otap(log_records.clone()))
+            .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
@@ -2173,7 +3193,7 @@ mod test {
         ] {
             let parser_result = KqlParser::parse(inverted_attrs_filter).unwrap();
             let mut pipeline = Pipeline::new(parser_result.pipeline);
-            let input = to_otap(log_records.clone());
+            let input = to_otap_logs(log_records.clone());
             let result = pipeline.execute(input.clone()).await.unwrap();
             assert_eq!(result, input);
         }
@@ -2228,6 +3248,58 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_not_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .severity_text("DEBUG")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where severity_text != string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()],
+        );
+
+        // check it's supported if null literal on the left and column on the right
+        let result = exec_logs_pipeline(
+            "logs | where string(null) != severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()],
         );
     }
 
@@ -2295,7 +3367,57 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_struct_property_is_null() {
+    async fn test_filter_property_is_not_null_missing_column() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("a")),
+                    KeyValue::new("y", AnyValue::new_string("d")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("b")),
+                    KeyValue::new("y", AnyValue::new_string("e")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("c")),
+                    KeyValue::new("y", AnyValue::new_string("f")),
+                ])
+                .finish(),
+        ];
+
+        // just double check this gets encoded as something w/out the column we're using
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
+
+        let parser_result = KqlParser::parse("logs | where severity_text != string(null)").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(log_records.clone()))
+            .await
+            .unwrap();
+        // assert it's equal to empty batch because there were no matches
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // assert we do the right thing where the null is on the left and value on the right
+        let parser_result = KqlParser::parse("logs | where string(null) != severity_text").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(log_records.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_null() {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -2362,7 +3484,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_struct_property_is_null_missing_column() {
+    async fn test_filter_struct_property_is_null_missing_column() {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -2408,6 +3530,114 @@ mod test {
                 }],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_not_null() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .name("name1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        // test filter by scope properties
+        let result = exec_logs_pipeline(
+            "logs | where instrumentation_scope.name != string(null)",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[0].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+
+        // test filter by scope properties, this time the null is on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) != instrumentation_scope.name",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    resource: Some(Resource::default()),
+                    scope_logs: vec![scope_logs[0].clone()],
+                    ..Default::default()
+                }],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_not_null_missing_column() {
+        let scope_logs = vec![
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+            ScopeLogs {
+                scope: Some(
+                    InstrumentationScope::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
+                        .finish(),
+                ),
+                log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                ..Default::default()
+            },
+        ];
+
+        let input = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: scope_logs.clone(),
+                ..Default::default()
+            }],
+        };
+
+        let parser_result =
+            KqlParser::parse("logs | where instrumentation_scope.name != string(null)").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(otlp_to_otap(&OtlpProtoMessage::Logs(input)))
+            .await
+            .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
     }
 
     #[tokio::test]
@@ -2485,6 +3715,78 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_attribute_is_not_null() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("b"))])
+                .finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"x\"] != string(null)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+
+        // check the same thing works if we put null on the left
+        let result = exec_logs_pipeline(
+            "logs | where string(null) != attributes[\"x\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_not_null_no_attrs() {
+        let log_records = vec![
+            LogRecord::build().event_name("1").finish(),
+            LogRecord::build().event_name("2").finish(),
+            LogRecord::build().event_name("3").finish(),
+        ];
+
+        // double check that when we encode this as OTLP that the attributes
+        // record batch is not present
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+
+        let parser_result =
+            KqlParser::parse("logs | where attributes[\"x\"] != string(null)").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(log_records.clone()))
+            .await
+            .unwrap();
+        // assert it's equal to empty batch because there were no matches
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+
+        // assert we do the right thing where the null is on the left and value on the right
+        let parser_result =
+            KqlParser::parse("logs | where string(null) != attributes[\"x\"]").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline
+            .execute(to_otap_logs(log_records.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
+    }
+
+    #[tokio::test]
     async fn test_optional_attrs_existence_changes() {
         // what happens if some optional attributes are present one batch, then not present in the
         // next, then present in the next, etc.
@@ -2494,7 +3796,7 @@ mod test {
         let mut pipeline = Pipeline::new(parser_result.pipeline);
 
         // no attrs to start
-        let batch1 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
+        let batch1 = to_otap_logs(vec![LogRecord::build().event_name("a").finish()]);
         let result = pipeline.execute(batch1).await.unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
@@ -2505,13 +3807,13 @@ mod test {
                 .attributes(vec![KeyValue::new("a", AnyValue::new_string("1234"))])
                 .finish(),
         ];
-        let batch2 = to_otap(log_records.clone());
+        let batch2 = to_otap_logs(log_records.clone());
         let result = pipeline.execute(batch2).await.unwrap();
-        let expected = to_otap(log_records[1..2].to_vec());
+        let expected = to_otap_logs(log_records[1..2].to_vec());
         assert_eq!(result, expected);
 
         // handle another record batch with missing attributes
-        let batch3 = to_otap(vec![LogRecord::build().event_name("a").finish()]);
+        let batch3 = to_otap_logs(vec![LogRecord::build().event_name("a").finish()]);
         let result = pipeline.execute(batch3).await.unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
     }
@@ -2546,7 +3848,7 @@ mod test {
         ];
 
         // assert the behaviour is correct when nothing is filtered out
-        let otap_input = to_otap(log_records);
+        let otap_input = to_otap_logs(log_records);
         let parser_result = KqlParser::parse("logs | where severity_text == \"INFO\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_input.clone()).await.unwrap();
