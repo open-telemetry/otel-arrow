@@ -816,56 +816,77 @@ mod tests {
         }
     }
 
-    fn write_test_segment(path: &Path) -> (usize, usize) {
-        let schema = test_schema();
-        let fp = [0x11u8; 32];
+    /// Test helper that creates a segment file in a temporary directory.
+    /// Returns handles to the tempdir (which must be kept alive) and segment path.
+    struct TestSegment {
+        /// Must be kept alive to prevent cleanup of the temp directory.
+        #[allow(dead_code)]
+        dir: tempfile::TempDir,
+        /// Path to the segment file.
+        path: std::path::PathBuf,
+        /// Number of streams in the segment.
+        stream_count: usize,
+        /// Number of bundles in the segment.
+        bundle_count: usize,
+    }
 
-        let batch1 = make_batch(&schema, &[1, 2], &["a", "b"]);
-        let batch2 = make_batch(&schema, &[3, 4, 5], &["c", "d", "e"]);
+    impl TestSegment {
+        /// Creates a test segment with 2 bundles in a single stream.
+        fn new() -> Self {
+            let dir = tempdir().expect("tempdir");
+            let path = dir.path().join("test.qseg");
 
-        let mut open_segment = OpenSegment::new();
+            let schema = test_schema();
+            let fp = [0x11u8; 32];
 
-        let bundle1 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch1);
-        let bundle2 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
+            let batch1 = make_batch(&schema, &[1, 2], &["a", "b"]);
+            let batch2 = make_batch(&schema, &[3, 4, 5], &["c", "d", "e"]);
 
-        let _ = open_segment.append(&bundle1);
-        let _ = open_segment.append(&bundle2);
+            let mut open_segment = OpenSegment::new();
 
-        let stream_count = open_segment.stream_count();
-        let bundle_count = open_segment.bundle_count();
+            let bundle1 =
+                TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch1);
+            let bundle2 =
+                TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
 
-        let (streams, manifest) = open_segment.finalize().expect("finalize");
+            let _ = open_segment.append(&bundle1);
+            let _ = open_segment.append(&bundle2);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer
-            .write_to_file(path, streams, manifest)
-            .expect("write");
+            let stream_count = open_segment.stream_count();
+            let bundle_count = open_segment.bundle_count();
 
-        (stream_count, bundle_count)
+            let (streams, manifest) = open_segment.finalize().expect("finalize");
+
+            let writer = SegmentWriter::new(SegmentSeq::new(1));
+            let _ = writer
+                .write_to_file(&path, streams, manifest)
+                .expect("write");
+
+            Self {
+                dir,
+                path,
+                stream_count,
+                bundle_count,
+            }
+        }
     }
 
     #[test]
     fn reader_opens_valid_segment() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let (expected_streams, expected_bundles) = write_test_segment(&path);
+        let reader = SegmentReader::open(&seg.path).expect("open");
 
-        let reader = SegmentReader::open(&path).expect("open");
-
-        assert_eq!(reader.stream_count(), expected_streams);
-        assert_eq!(reader.bundle_count(), expected_bundles);
+        assert_eq!(reader.stream_count(), seg.stream_count);
+        assert_eq!(reader.bundle_count(), seg.bundle_count);
         assert_eq!(reader.version(), 1);
     }
 
     #[test]
     fn reader_returns_stream_metadata() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let streams = reader.streams();
 
         assert_eq!(streams.len(), 1);
@@ -876,12 +897,9 @@ mod tests {
 
     #[test]
     fn reader_returns_manifest_entries() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let manifest = reader.manifest();
 
         assert_eq!(manifest.len(), 2);
@@ -891,12 +909,9 @@ mod tests {
 
     #[test]
     fn reader_reads_bundle() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let entry = reader.manifest()[0].clone();
 
         let bundle = reader.read_bundle(&entry).expect("read_bundle");
@@ -917,27 +932,21 @@ mod tests {
 
     #[test]
     fn reader_file_size() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
 
         // file_size() should match the actual file size on disk
-        let file_metadata = std::fs::metadata(&path).expect("metadata");
+        let file_metadata = std::fs::metadata(&seg.path).expect("metadata");
         assert_eq!(reader.file_size(), file_metadata.len() as usize);
         assert!(reader.file_size() > 0);
     }
 
     #[test]
     fn reader_reads_chunk() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
 
         let batch0 = reader
@@ -1118,43 +1127,37 @@ mod tests {
 
     #[test]
     fn reader_detects_checksum_mismatch() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
-
-        let _ = write_test_segment(&path);
+        let seg = TestSegment::new();
 
         // Make the file writable so we can corrupt it for testing
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let permissions = std::fs::Permissions::from_mode(0o644);
-            std::fs::set_permissions(&path, permissions).expect("set permissions");
+            std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
         }
         #[cfg(not(unix))]
         {
-            let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+            let mut permissions = std::fs::metadata(&seg.path).expect("metadata").permissions();
             permissions.set_readonly(false);
-            std::fs::set_permissions(&path, permissions).expect("set permissions");
+            std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
         }
 
         // Corrupt a byte in the footer
-        let mut bytes = std::fs::read(&path).expect("read");
+        let mut bytes = std::fs::read(&seg.path).expect("read");
         let footer_pos = bytes.len() - 20; // Somewhere in footer
         bytes[footer_pos] ^= 0xFF;
-        std::fs::write(&path, &bytes).expect("write");
+        std::fs::write(&seg.path, &bytes).expect("write");
 
-        let result = SegmentReader::open(&path);
+        let result = SegmentReader::open(&seg.path);
         assert!(matches!(result, Err(SegmentError::ChecksumMismatch { .. })));
     }
 
     #[test]
     fn reader_stream_lookup_by_id() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
 
         let meta = reader.stream(stream_id);
@@ -1167,12 +1170,9 @@ mod tests {
 
     #[test]
     fn reader_chunk_out_of_bounds() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
 
         let result = reader.read_chunk(stream_id, ChunkIndex::new(99));
@@ -1228,12 +1228,9 @@ mod tests {
 
     #[test]
     fn reconstructed_bundle_into_payloads() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let _ = write_test_segment(&path);
-
-        let reader = SegmentReader::open(&path).expect("open");
+        let reader = SegmentReader::open(&seg.path).expect("open");
         let entry = reader.manifest()[0].clone();
 
         let bundle = reader.read_bundle(&entry).expect("read_bundle");
@@ -1246,27 +1243,21 @@ mod tests {
     #[cfg(feature = "mmap")]
     #[test]
     fn reader_opens_mmap() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
+        let seg = TestSegment::new();
 
-        let (expected_streams, expected_bundles) = write_test_segment(&path);
+        let reader = SegmentReader::open_mmap(&seg.path).expect("open_mmap");
 
-        let reader = SegmentReader::open_mmap(&path).expect("open_mmap");
-
-        assert_eq!(reader.stream_count(), expected_streams);
-        assert_eq!(reader.bundle_count(), expected_bundles);
+        assert_eq!(reader.stream_count(), seg.stream_count);
+        assert_eq!(reader.bundle_count(), seg.bundle_count);
     }
 
     #[cfg(feature = "mmap")]
     #[test]
     fn mmap_bundle_outlives_reader() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("test.qseg");
-
-        let _ = write_test_segment(&path);
+        let seg = TestSegment::new();
 
         let bundle = {
-            let reader = SegmentReader::open_mmap(&path).expect("open_mmap");
+            let reader = SegmentReader::open_mmap(&seg.path).expect("open_mmap");
             let entry = reader.manifest()[0].clone();
             reader.read_bundle(&entry).expect("read_bundle")
             // reader dropped here
