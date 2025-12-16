@@ -141,26 +141,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let counter = meter
                     .u64_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v,
-                    MetricValue::F64(v) => v as u64,
-                };
                 counter.add(v, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let counter = meter
                     .f64_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                counter.add(value.to_f64(), attributes);
+                counter.add(v, attributes);
             }
         }
     }
@@ -172,26 +168,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let gauge = meter
                     .u64_gauge(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v,
-                    MetricValue::F64(v) => v as u64,
-                };
                 gauge.record(v, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let gauge = meter
                     .f64_gauge(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                gauge.record(value.to_f64(), attributes);
+                gauge.record(v, attributes);
             }
         }
     }
@@ -203,26 +195,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let histogram = meter
                     .u64_histogram(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v,
-                    MetricValue::F64(v) => v as u64,
-                };
                 histogram.record(v, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let histogram = meter
                     .f64_histogram(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                histogram.record(value.to_f64(), attributes);
+                histogram.record(v, attributes);
             }
         }
     }
@@ -234,26 +222,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let up_down_counter = meter
                     .i64_up_down_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v as i64,
-                    MetricValue::F64(v) => v as i64,
-                };
-                up_down_counter.add(v, attributes);
+                up_down_counter.add(v as i64, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let up_down_counter = meter
                     .f64_up_down_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                up_down_counter.add(value.to_f64(), attributes);
+                up_down_counter.add(v, attributes);
             }
         }
     }

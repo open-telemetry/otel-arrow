@@ -141,7 +141,7 @@ use tikv_jemalloc_ctl::thread;
 use tikv_jemalloc_ctl::thread::ThreadLocal;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
-use nix::sys::resource::{getrusage, UsageWho};
+use nix::sys::resource::{UsageWho, getrusage};
 
 /// Per-pipeline instance general metrics.
 ///
