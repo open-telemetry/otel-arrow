@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1765900970842,
+  "lastUpdate": 1765928998869,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2038,6 +2038,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 2601137.5100851255,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "76450334+andborja@users.noreply.github.com",
+            "name": "Andres Borja",
+            "username": "andborja"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6dbec074678d2265b953223691466e41ffa0ce4b",
+          "message": "feat: Add declarative configuration for otlp logs exporter (#1635)\n\nAdd declarative configuration for otlp logs exporter\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2025-12-16T23:11:15Z",
+          "tree_id": "7be994590179b95a7b9329eef5c46ba06d2f5c6e",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/6dbec074678d2265b953223691466e41ffa0ce4b"
+        },
+        "date": 1765928998361,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_total",
+            "value": 47000,
+            "unit": "count",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Dropped Log Count"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.44315582513809204,
+            "unit": "%",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_avg",
+            "value": 98.72321560784508,
+            "unit": "%",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_max",
+            "value": 98.90293688613478,
+            "unit": "%",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 98.72321560784508,
+            "unit": "%",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 98.90293688613478,
+            "unit": "%",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 32.864322916666666,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 33.55078125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_total",
+            "value": 10605750,
+            "unit": "count",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Counts"
+          },
+          {
+            "name": "logs_received_total",
+            "value": 10558750,
+            "unit": "count",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Counts"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 176759.5127642343,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 175976.19266901058,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001014,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 4592208.8573152665,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 4395046.919079983,
             "unit": "bytes/sec",
             "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Network Utilization"
           }
