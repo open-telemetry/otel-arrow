@@ -1416,7 +1416,7 @@ mod tests {
             serde_json::json!({
                 "otap": {
                     "sizer": "items",
-                    "min_size": "1000"
+                    "min_size": 1000
                 },
             }),
         );
@@ -1531,6 +1531,7 @@ mod tests {
     }
 
     /// Test event: either process input or deliver pending timers
+    #[derive(Clone)]
     enum TestEvent {
         Input(OtlpProtoMessage),
         Elapsed, // Signal to deliver all pending DelayedData messages
@@ -1801,8 +1802,8 @@ mod tests {
                     "min_size": 4,
                     "max_size": 5,
                     "sizer": "items",
-                    "flush_timeout": "1s"
-                }
+                },
+                "flush_timeout": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1858,8 +1859,8 @@ mod tests {
                     "min_size": 10,  // Higher than input (3 items), so won't trigger size flush
                     "max_size": 10,
                     "sizer": "items",
-                    "flush_timeout": "50ms"
-                }
+                },
+                "flush_timeout": "50ms"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1919,8 +1920,8 @@ mod tests {
                     "min_size": 3,
                     "max_size": 3,
                     "sizer": "items",
-                    "flush_timeout": "1s"
-                }
+                },
+                "flush_timeout": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1968,19 +1969,17 @@ mod tests {
             inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
         events.push(TestEvent::Elapsed);
 
-        let cfg = json!({
-            "otap": {
-                "min_size": 5,
-                "max_size": 10,
-                "sizer": "items",
-                "flush_timeout": "1s"
-            }
-        });
-
         run_batch_processor_test(
-            events.into_iter(),
+            events.iter().cloned(),
             subscribe,
-            cfg,
+            json!({
+                "otap": {
+                    "min_size": 5,
+                    "max_size": 10,
+                    "sizer": "items",
+                },
+                "flush_timeout": "1s"
+            }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
@@ -1994,6 +1993,22 @@ mod tests {
                     assert_eq!(batch.num_items(), 6, "each batch should have 6 items");
                 }
             },
+        );
+
+        run_batch_processor_test(
+            events.iter().cloned(),
+            subscribe,
+            json!({
+                "otlp": {
+                    "min_size": 50,
+                    "max_size": 100,
+                    "sizer": "bytes",
+                },
+                "format": "otlp",
+                "flush_timeout": "1s"
+            }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
+            |_| {},
         );
     }
 
@@ -2026,19 +2041,17 @@ mod tests {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
 
-        let cfg = json!({
-            "otap": {
-                "min_size": null,
-                "max_size": 2,
-                "sizer": "items",
-                "flush_timeout": "0s",
-            }
-        });
-
         run_batch_processor_test(
-            events.into_iter(),
+            events.clone().into_iter(),
             subscribe,
-            cfg,
+            json!({
+                "otap": {
+                    "min_size": null,
+                    "max_size": 2,
+                    "sizer": "items",
+                },
+                "flush_timeout": "0s"
+            }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
@@ -2054,6 +2067,22 @@ mod tests {
                     "split pattern without rebuffering"
                 );
             },
+        );
+
+        run_batch_processor_test(
+            events.into_iter(),
+            subscribe,
+            json!({
+                "otlp": {
+                    "min_size": null,
+                    "max_size": 20,
+                    "sizer": "bytes",
+                },
+                "format": "otlp",
+                "flush_timeout": "0s"
+            }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
+            |_| {},
         );
     }
 
@@ -2087,15 +2116,6 @@ mod tests {
         extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
         nack_position: usize,
     ) {
-        let cfg = json!({
-            "otap": {
-                "min_size": 4,
-                "max_size": 5,
-                "sizer": "items",
-                "flush_timeout": "1s",
-            }
-        });
-
         // Use inputs with unique markers
         let num_inputs = 20;
         let inputs_otlp: Vec<OtlpProtoMessage> = (0..num_inputs).map(create_marked_input).collect();
@@ -2106,43 +2126,64 @@ mod tests {
             .collect();
         events.push(TestEvent::Elapsed);
 
-        run_batch_processor_test(
-            events.into_iter(),
-            true,
-            cfg,
-            Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
-                if idx == nack_position {
-                    AckPolicy::Nack("test nack")
-                } else {
-                    AckPolicy::Ack
-                }
+        for cfg in [
+            json!({
+                "otap": {
+                    "min_size": 4,
+                    "max_size": 5,
+                    "sizer": "items",
+                },
+                "flush_timeout": "1s"
             }),
-            move |event_outputs| {
-                let mut max_marker: Option<u64> = None;
-
-                for output_msg in event_outputs {
-                    let markers: Vec<_> = output_msg
-                        .messages()
-                        .iter()
-                        .flat_map(&extract_markers)
-                        .collect();
-
-                    if markers.is_empty() {
-                        continue;
+            json!({
+                "otlp": {
+                    "min_size": 20,
+                    "max_size": 30,
+                    "sizer": "bytes",
+                },
+                "format": "otlp",
+                "flush_timeout": "1s"
+            }),
+        ] {
+            let extract_markers = extract_markers.clone();
+            run_batch_processor_test(
+                events.iter().cloned(),
+                true,
+                cfg,
+                Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
+                    if idx == nack_position {
+                        AckPolicy::Nack("test nack")
+                    } else {
+                        AckPolicy::Ack
                     }
+                }),
+                move |event_outputs| {
+                    let mut max_marker: Option<u64> = None;
 
-                    let batch_min = *markers.iter().min().unwrap();
-                    let batch_max = *markers.iter().max().unwrap();
+                    for output_msg in event_outputs {
+                        let markers: Vec<_> = output_msg
+                            .messages()
+                            .iter()
+                            .flat_map(&extract_markers)
+                            .collect();
 
-                    // Verify in-line property: current batch's minimum must be > previous max
-                    if let Some(prev_max) = max_marker {
-                        assert!(batch_min > prev_max);
+                        if markers.is_empty() {
+                            continue;
+                        }
+
+                        let batch_min = *markers.iter().min().unwrap();
+                        let batch_max = *markers.iter().max().unwrap();
+
+                        // Verify in-line property: current batch's minimum must be > previous max
+                        if let Some(prev_max) = max_marker {
+                            assert!(batch_min > prev_max);
+                        }
+
+                        max_marker = Some(batch_max);
                     }
-
-                    max_marker = Some(batch_max);
-                }
-            },
-        );
+                },
+            );
+        }
     }
 
     /// Create traces with unique timestamps as markers

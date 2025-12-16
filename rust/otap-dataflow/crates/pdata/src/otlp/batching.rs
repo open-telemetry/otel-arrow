@@ -57,6 +57,8 @@ fn finalize_batch(
         batch.extend_from_slice(&buf[start_pos.offset..end_pos.offset]);
     } else {
         // Multiple inputs
+        debug_assert!(start_pos.input_idx < inputs.len());
+
         let buf = inputs[start_pos.input_idx].as_bytes();
         batch.extend_from_slice(&buf[start_pos.offset..]);
 
@@ -64,8 +66,11 @@ fn finalize_batch(
             batch.extend_from_slice(inputs[idx].as_bytes());
         }
 
-        let buf = inputs[end_pos.input_idx].as_bytes();
-        batch.extend_from_slice(&buf[..end_pos.offset]);
+        if end_pos.offset != 0 {
+            debug_assert!(end_pos.input_idx < inputs.len());
+            let buf = inputs[end_pos.input_idx].as_bytes();
+            batch.extend_from_slice(&buf[..end_pos.offset]);
+        }
     }
 
     outputs.push(OtlpProtoBytes::new_from_bytes(signal, batch))

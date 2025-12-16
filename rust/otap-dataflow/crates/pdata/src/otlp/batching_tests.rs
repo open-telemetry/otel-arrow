@@ -3,10 +3,8 @@
 
 //! This module tests batching.rs logic.
 
-use crate::otap::batching::make_item_batches;
 use crate::otlp::OtlpProtoBytes;
 use crate::otlp::batching::make_bytes_batches;
-use crate::payload::OtapPayload;
 use crate::proto::OtlpProtoMessage;
 use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::DataGenerator;
@@ -15,23 +13,28 @@ use crate::testing::round_trip::otlp_message_to_bytes;
 use std::num::NonZeroU64;
 
 /// Test bytes-based batching with various size limits
-fn test_batching(inputs_otlp: &[OtlpProtoMessage]) {
-    let signal = inputs_otlp.get(0).expect("ok").signal_type();
+fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
+    // Clone the inputs for later equivalence checking.
+    let inputs_otlp: Vec<_> = inputs_otlp.collect();
+    let signal_type = inputs_otlp.get(0).expect("ok").signal_type();
 
-    let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp.iter().map(otlp_message_to_bytes).collect();
+    let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp
+        .iter()
+        .map(|m| otlp_message_to_bytes(m.clone()))
+        .collect();
 
     let total_input_bytes: usize = inputs_bytes.iter().map(|b| b.byte_size()).sum();
 
     // Run a single equivalence test
-    let mut test_config = |limit: Option<NonZeroU64>, label: &str| {
+    let test_config = |limit: Option<NonZeroU64>, label: &str| {
         let outputs = make_bytes_batches(signal_type, limit, inputs_bytes.clone()).expect("ok");
         let total: usize = outputs.iter().map(|b| b.byte_size()).sum();
         assert_eq!(total_input_bytes, total, "{}: byte count mismatch", label);
 
         // Convert outputs back to OtlpProtoMessage and verify equivalence
         let outputs_msgs: Vec<OtlpProtoMessage> =
-            outputs.iter().map(otlp_bytes_to_message).collect();
-        assert_equivalent(inputs_otlp, &outputs_msgs);
+            outputs.into_iter().map(otlp_bytes_to_message).collect();
+        assert_equivalent(&inputs_otlp, &outputs_msgs);
     };
 
     // Run with no limit (worst case)
@@ -73,76 +76,25 @@ fn test_batching(inputs_otlp: &[OtlpProtoMessage]) {
 #[test]
 fn test_simple_batch_logs() {
     for input_count in 1..=20 {
-        for max_items in 3..=5 {
-            // TODO: This 1 (limit) is not used for logs, fix.
-            let mut datagen = DataGenerator::new(1);
-            test_batching(
-                (0..input_count).map(|_| datagen.generate_logs().into()),
-                Some(NonZeroU64::new(max_items).unwrap()),
-            );
-        }
+        let mut datagen = DataGenerator::new(1);
+        test_batching((0..input_count).map(|_| datagen.generate_logs().into()));
     }
 }
 
 #[test]
 fn test_simple_batch_traces() {
     for input_count in 1..=20 {
-        for max_items in 3..=5 {
-            // TODO: This 1 (limit) is not used for metrics, fix.
-            let mut datagen = DataGenerator::new(1);
-            test_batching(
-                (0..input_count).map(|_| datagen.generate_traces().into()),
-                Some(NonZeroU64::new(max_items).unwrap()),
-            );
-        }
+        let mut datagen = DataGenerator::new(1);
+        test_batching((0..input_count).map(|_| datagen.generate_traces().into()));
     }
 }
 
 #[test]
 fn test_simple_batch_metrics() {
     for input_count in 1..=20 {
-        for max_items in 3..=15 {
-            for point_count in 1..=10 {
-                let mut datagen = DataGenerator::new(point_count);
-                test_batching(
-                    (0..input_count).map(|_| datagen.generate_metrics().into()),
-                    Some(NonZeroU64::new(max_items).unwrap()),
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn test_comprehensive_batch_metrics() {
-    let test_cases = generate_metrics_batching_test_cases();
-
-    for (idx, test_case) in test_cases.iter().enumerate() {
-        let mut datagen = DataGenerator::with_metrics_config(test_case.config.clone());
-
-        let inputs: Vec<_> = (0..test_case.input_count)
-            .map(|_| datagen.generate_metrics_from_config().into())
-            .collect();
-
-        // Run the test, capturing any panics with better error messages
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            test_batching(
-                inputs.into_iter(),
-                Some(NonZeroU64::new(test_case.max_output_batch).unwrap()),
-            );
-        }));
-
-        if let Err(e) = result {
-            eprintln!(
-                "Test case {} failed: {}\n  Config: {:?}\n  Max batch: {}\n  Inputs: {}\n  Total points: {}",
-                idx,
-                test_case.name,
-                test_case.config,
-                test_case.max_output_batch,
-                test_case.input_count,
-                test_case.config.total_points()
-            );
-            std::panic::resume_unwind(e);
+        for point_count in 1..=10 {
+            let mut datagen = DataGenerator::new(point_count);
+            test_batching((0..input_count).map(|_| datagen.generate_metrics().into()));
         }
     }
 }
