@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 
-use crate::record_bundle::{SchemaFingerprint, SlotId};
+use arrow_array::types::UInt32Type;
+
+use crate::record_bundle::{ArrowPrimitive, SchemaFingerprint, SlotId};
 
 use super::error::SegmentError;
 
@@ -111,6 +113,13 @@ impl From<StreamId> for u32 {
         id.0
     }
 }
+
+impl ArrowPrimitive for StreamId {
+    type ArrowType = UInt32Type;
+}
+
+// Compile-time check: StreamId's inner u32 must match UInt32Type::Native
+crate::assert_arrow_type_matches!(StreamId, u32, UInt32Type);
 
 /// Composite key identifying a stream by its slot and schema fingerprint.
 ///
@@ -217,6 +226,13 @@ impl ChunkIndex {
         Self(self.0.saturating_add(1))
     }
 }
+
+impl ArrowPrimitive for ChunkIndex {
+    type ArrowType = UInt32Type;
+}
+
+// Compile-time check: ChunkIndex's inner u32 must match UInt32Type::Native
+crate::assert_arrow_type_matches!(ChunkIndex, u32, UInt32Type);
 
 impl From<u32> for ChunkIndex {
     fn from(raw: u32) -> Self {

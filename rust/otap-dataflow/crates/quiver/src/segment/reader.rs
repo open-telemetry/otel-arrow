@@ -41,6 +41,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
 use arrow_ipc::convert::fb_to_schema;
@@ -743,12 +744,22 @@ impl SegmentReader {
         // Parse manifest columns
         let bundle_indices =
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
-        let slot_refs_strs = Self::get_string_column(&batch, "slot_refs")?;
 
-        // Derived limit for slot_refs string length.
-        // Each slot ref is "slot:stream:chunk" which is at most ~30 chars, plus comma.
-        // With MAX_SLOTS_PER_BUNDLE slots, this gives a reasonable upper bound.
-        const MAX_SLOT_REFS_STRING_LEN: usize = MAX_SLOTS_PER_BUNDLE * 32;
+        // Get the slot_refs list column
+        let slot_refs_col = batch
+            .column_by_name("slot_refs")
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: "missing column: slot_refs".to_string(),
+            })?;
+
+        let slot_refs_list = slot_refs_col
+            .as_list_opt::<i32>()
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "slot_refs column has type {:?}, expected List",
+                    slot_refs_col.data_type()
+                ),
+            })?;
 
         if batch.num_rows() > MAX_BUNDLES_PER_SEGMENT {
             return Err(SegmentError::InvalidFormat {
@@ -764,76 +775,55 @@ impl SegmentReader {
         for i in 0..batch.num_rows() {
             let mut entry = ManifestEntry::new(bundle_indices[i]);
 
-            // Parse slot_refs string: "slot_id:stream_id:chunk_index,..."
-            let refs_str = slot_refs_strs[i];
+            // Get the struct array for this bundle's slot refs
+            let slot_refs_for_bundle = slot_refs_list.value(i);
+            let struct_array = slot_refs_for_bundle
+                .as_struct_opt()
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: format!(
+                        "slot_refs list item has type {:?}, expected Struct",
+                        slot_refs_for_bundle.data_type()
+                    ),
+                })?;
 
-            // Guard against extremely long slot_refs strings
-            if refs_str.len() > MAX_SLOT_REFS_STRING_LEN {
+            let slot_count = struct_array.len();
+            if slot_count > MAX_SLOTS_PER_BUNDLE {
                 return Err(SegmentError::InvalidFormat {
                     message: format!(
-                        "slot_refs string length {} exceeds limit of {} in bundle {}",
-                        refs_str.len(),
-                        MAX_SLOT_REFS_STRING_LEN,
-                        i
+                        "bundle {} has {} slots, exceeds limit of {}",
+                        i, slot_count, MAX_SLOTS_PER_BUNDLE
                     ),
                 });
             }
 
-            if !refs_str.is_empty() {
-                let mut slot_count = 0;
-                for part in refs_str.split(',') {
-                    slot_count += 1;
-                    if slot_count > MAX_SLOTS_PER_BUNDLE {
-                        return Err(SegmentError::InvalidFormat {
-                            message: format!(
-                                "bundle {} has more than {} slots",
-                                i, MAX_SLOTS_PER_BUNDLE
-                            ),
-                        });
-                    }
+            // Extract the three columns from the struct
+            let slot_ids = struct_array
+                .column_by_name("slot_id")
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: "slot_refs struct missing slot_id field".to_string(),
+                })?
+                .as_primitive::<arrow_array::types::UInt16Type>();
 
-                    let parts: Vec<&str> = part.split(':').collect();
-                    if parts.len() != 3 {
-                        return Err(SegmentError::InvalidFormat {
-                            message: format!(
-                                "invalid slot_ref format in bundle {}: expected 3 parts, got {}",
-                                i,
-                                parts.len()
-                            ),
-                        });
-                    }
+            let stream_ids = struct_array
+                .column_by_name("stream_id")
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: "slot_refs struct missing stream_id field".to_string(),
+                })?
+                .as_primitive::<arrow_array::types::UInt32Type>();
 
-                    let slot =
-                        parts[0]
-                            .parse::<u16>()
-                            .map_err(|_| SegmentError::InvalidFormat {
-                                message: format!("invalid slot_id in bundle {}: {:?}", i, parts[0]),
-                            })?;
-                    let stream =
-                        parts[1]
-                            .parse::<u32>()
-                            .map_err(|_| SegmentError::InvalidFormat {
-                                message: format!(
-                                    "invalid stream_id in bundle {}: {:?}",
-                                    i, parts[1]
-                                ),
-                            })?;
-                    let chunk =
-                        parts[2]
-                            .parse::<u32>()
-                            .map_err(|_| SegmentError::InvalidFormat {
-                                message: format!(
-                                    "invalid chunk_index in bundle {}: {:?}",
-                                    i, parts[2]
-                                ),
-                            })?;
+            let chunk_indices = struct_array
+                .column_by_name("chunk_index")
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: "slot_refs struct missing chunk_index field".to_string(),
+                })?
+                .as_primitive::<arrow_array::types::UInt32Type>();
 
-                    entry.add_slot(
-                        SlotId::new(slot),
-                        StreamId::new(stream),
-                        ChunkIndex::new(chunk),
-                    );
-                }
+            for j in 0..slot_count {
+                entry.add_slot(
+                    SlotId::new(slot_ids.value(j)),
+                    StreamId::new(stream_ids.value(j)),
+                    ChunkIndex::new(chunk_indices.value(j)),
+                );
             }
 
             entries.push(entry);
@@ -850,8 +840,6 @@ impl SegmentReader {
     where
         T: arrow_array::types::ArrowPrimitiveType,
     {
-        use arrow_array::cast::AsArray;
-
         let col = batch
             .column_by_name(name)
             .ok_or_else(|| SegmentError::InvalidFormat {
@@ -900,26 +888,6 @@ impl SegmentReader {
                 ),
             });
         }
-
-        Ok((0..arr.len()).map(|i| arr.value(i)).collect())
-    }
-
-    fn get_string_column<'a>(
-        batch: &'a RecordBatch,
-        name: &str,
-    ) -> Result<Vec<&'a str>, SegmentError> {
-        let col = batch
-            .column_by_name(name)
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("missing column: {}", name),
-            })?;
-
-        let arr = col
-            .as_any()
-            .downcast_ref::<arrow_array::StringArray>()
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!("column {} is not Utf8", name),
-            })?;
 
         Ok((0..arr.len()).map(|i| arr.value(i)).collect())
     }

@@ -7,6 +7,83 @@ use std::borrow::Cow;
 use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
+use arrow_array::types::{ArrowPrimitiveType, UInt16Type};
+use arrow_schema::DataType;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Arrow Type Mapping
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Trait for newtypes that wrap an Arrow primitive type.
+///
+/// This trait bridges Quiver's domain-specific newtypes (like [`SlotId`]) with
+/// Arrow's type system. By associating each newtype with an [`ArrowPrimitiveType`],
+/// we get compile-time guarantees that the Arrow schema matches the Rust type.
+///
+/// # Example
+///
+/// ```ignore
+/// // In schema construction:
+/// Field::new("slot_id", SlotId::arrow_data_type(), false)
+///
+/// // The returned DataType is derived from Arrow's UInt16Type::DATA_TYPE,
+/// // ensuring it stays synchronized with SlotId's underlying u16.
+/// ```
+pub trait ArrowPrimitive {
+    /// The Arrow primitive type corresponding to this Rust type.
+    ///
+    /// This must implement [`ArrowPrimitiveType`], which provides `DATA_TYPE`
+    /// and `Native` associated items.
+    type ArrowType: ArrowPrimitiveType;
+
+    /// Returns the Arrow `DataType` for schema construction.
+    ///
+    /// This delegates to `<Self::ArrowType as ArrowPrimitiveType>::DATA_TYPE`.
+    fn arrow_data_type() -> DataType {
+        Self::ArrowType::DATA_TYPE
+    }
+}
+
+/// Compile-time assertion that a newtype's inner primitive matches its Arrow type.
+///
+/// This macro generates a const assertion that fails at compile time if the
+/// newtype's inner type doesn't match `<ArrowType as ArrowPrimitiveType>::Native`.
+///
+/// # Example
+///
+/// ```ignore
+/// pub struct SlotId(u16);
+/// impl ArrowPrimitive for SlotId { type ArrowType = UInt16Type; }
+/// assert_arrow_type_matches!(SlotId, u16);
+///
+/// // If someone changes SlotId to u32 but forgets to update ArrowType:
+/// pub struct SlotId(u32);  // Changed!
+/// impl ArrowPrimitive for SlotId { type ArrowType = UInt16Type; }  // Forgot to update!
+/// assert_arrow_type_matches!(SlotId, u32);  // Compile error!
+/// ```
+#[macro_export]
+macro_rules! assert_arrow_type_matches {
+    ($newtype:ty, $inner:ty, $arrow_type:ty) => {
+        const _: () = {
+            // Assert that ArrowType::Native == $inner at compile time
+            const fn check_same_type<T, U>() {
+                assert!(
+                    std::mem::size_of::<T>() == std::mem::size_of::<U>(),
+                    "ArrowType::Native size doesn't match inner type"
+                );
+                assert!(
+                    std::mem::align_of::<T>() == std::mem::align_of::<U>(),
+                    "ArrowType::Native alignment doesn't match inner type"
+                );
+            }
+            check_same_type::<<$arrow_type as arrow_array::types::ArrowPrimitiveType>::Native, $inner>();
+        };
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slot Identification
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// Logical identifier for a payload slot inside a bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -26,6 +103,13 @@ impl SlotId {
         self.0
     }
 }
+
+impl ArrowPrimitive for SlotId {
+    type ArrowType = UInt16Type;
+}
+
+// Compile-time check: SlotId's inner u16 must match UInt16Type::Native
+assert_arrow_type_matches!(SlotId, u16, UInt16Type);
 
 /// Metadata describing a slot that may appear inside a [`RecordBundle`].
 #[derive(Clone, Debug, PartialEq, Eq)]

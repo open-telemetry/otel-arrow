@@ -76,17 +76,19 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_array::builder::{
-    FixedSizeBinaryBuilder, StringBuilder, UInt16Builder, UInt32Builder, UInt64Builder,
+    FixedSizeBinaryBuilder, ListBuilder, StructBuilder, UInt16Builder, UInt32Builder,
+    UInt64Builder,
 };
 use arrow_ipc::writer::FileWriter;
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use crc32fast::Hasher;
 
 use super::error::SegmentError;
 use super::types::{
-    Footer, MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
-    SEGMENT_VERSION, SegmentSeq, StreamMetadata, TRAILER_SIZE, Trailer,
+    ChunkIndex, Footer, MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
+    SEGMENT_VERSION, SegmentSeq, StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
 };
+use crate::record_bundle::{ArrowPrimitive, SlotId};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SegmentWriter
@@ -313,7 +315,7 @@ impl SegmentWriter {
     ///
     /// Schema:
     /// - stream_id: UInt32
-    /// - slot_id: UInt8
+    /// - slot_id: UInt16
     /// - schema_fingerprint: FixedSizeBinary(32)
     /// - byte_offset: UInt64
     /// - byte_length: UInt64
@@ -371,53 +373,69 @@ impl SegmentWriter {
     ///
     /// Schema:
     /// - bundle_index: UInt32
-    /// - slot_bitmap: UInt64 (which slots are populated, for fast filtering)
-    /// - slot_refs: UTF-8 (comma-separated "slot:stream:chunk" triplets)
+    /// - slot_refs: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
-    /// We use a compact string encoding for slot_refs to handle the sparse
-    /// nature of bundles without requiring a fixed-width schema for all
-    /// possible slots.
+    /// Using Arrow's native List and Struct types enables zero-copy decoding
+    /// and avoids string parsing overhead.
     fn encode_manifest(&self, entries: &[ManifestEntry]) -> Result<Vec<u8>, SegmentError> {
+        // Define the inner struct type for slot references.
+        // Uses ArrowPrimitive::arrow_data_type() to ensure the Arrow schema stays
+        // synchronized with the Rust primitive types.
+        let slot_ref_fields = Fields::from(vec![
+            Field::new("slot_id", SlotId::arrow_data_type(), false),
+            Field::new("stream_id", StreamId::arrow_data_type(), false),
+            Field::new("chunk_index", ChunkIndex::arrow_data_type(), false),
+        ]);
+
+        // Note: The list item field must be nullable to match what ListBuilder produces
         let schema = Arc::new(Schema::new(vec![
             Field::new("bundle_index", DataType::UInt32, false),
-            Field::new("slot_bitmap", DataType::UInt64, false),
-            Field::new("slot_refs", DataType::Utf8, false),
+            Field::new(
+                "slot_refs",
+                DataType::List(Arc::new(Field::new_struct("item", slot_ref_fields.clone(), true))),
+                false,
+            ),
         ]));
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
-        let mut slot_bitmap_builder = UInt64Builder::with_capacity(entries.len());
-        let mut slot_refs_builder = StringBuilder::with_capacity(entries.len(), entries.len() * 64);
+
+        // Create the list builder with a struct builder inside
+        let struct_builder = StructBuilder::from_fields(
+            slot_ref_fields,
+            entries.iter().map(|e| e.slot_count()).sum(),
+        );
+        let mut slot_refs_builder = ListBuilder::new(struct_builder);
 
         for entry in entries {
             bundle_index_builder.append_value(entry.bundle_index);
 
-            // Build slot bitmap and refs JSON
-            let mut bitmap: u64 = 0;
-            let mut refs: Vec<String> = Vec::new();
+            // Get the struct builder from the list builder
+            let struct_builder = slot_refs_builder.values();
 
             for (slot_id, chunk_ref) in entry.slots() {
-                let slot_raw = slot_id.raw() as usize;
-                if slot_raw < MAX_SLOTS_PER_BUNDLE {
-                    bitmap |= 1u64 << slot_raw;
-                }
-                // Format: "slot_id:stream_id:chunk_index"
-                refs.push(format!(
-                    "{}:{}:{}",
-                    slot_id.raw(),
-                    chunk_ref.stream_id.raw(),
-                    chunk_ref.chunk_index.raw()
-                ));
+                // Append values to each field builder within the struct
+                struct_builder
+                    .field_builder::<UInt16Builder>(0)
+                    .unwrap()
+                    .append_value(slot_id.raw());
+                struct_builder
+                    .field_builder::<UInt32Builder>(1)
+                    .unwrap()
+                    .append_value(chunk_ref.stream_id.raw());
+                struct_builder
+                    .field_builder::<UInt32Builder>(2)
+                    .unwrap()
+                    .append_value(chunk_ref.chunk_index.raw());
+                struct_builder.append(true);
             }
 
-            slot_bitmap_builder.append_value(bitmap);
-            slot_refs_builder.append_value(refs.join(","));
+            slot_refs_builder.append(true);
         }
 
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
                 Arc::new(bundle_index_builder.finish()),
-                Arc::new(slot_bitmap_builder.finish()),
                 Arc::new(slot_refs_builder.finish()),
             ],
         )

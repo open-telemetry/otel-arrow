@@ -550,7 +550,7 @@ future versions to extend the footer without breaking backwards compatibility:
 ├─────────────────────────────────────────────────────────────────────────┤
 │                         Batch Manifest                                  │
 │  Encoded as Arrow IPC (self-describing schema)                          │
-│  Columns: bundle_index, slot_bitmap, slot_refs                          │
+│  Columns: bundle_index, slot_refs (List<Struct>)                        │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                         Footer (variable size, version-dependent)       │
 │  Version 1 (34 bytes):                                                  │
