@@ -77,10 +77,9 @@ ahash = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
 
-# KQL processor dependencies
-data_engine_recordset_otlp_bridge = { path = "../../../experimental/query_engine/engine-recordset-otlp-bridge", optional = true }
-data_engine_recordset = { path = "../../../experimental/query_engine/engine-recordset", optional = true }
-data_engine_expressions = { path = "../../../experimental/query_engine/expressions", optional = true }
+data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
+data_engine_recordset = { workspace = true, optional = true }
+data_engine_expressions = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
@@ -103,13 +102,13 @@ azure-monitor-exporter = [
     "dep:azure_core",
     "dep:ahash",
 ]
+azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 kql-processor = [
     "experimental-exporters",
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset",
     "dep:data_engine_expressions",
 ]
-azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 
 [dev-dependencies]
 flume.workspace = true

@@ -171,6 +171,11 @@ reqwest = { version = "0.12.24", default-features = false }
 time = "0.3.44"
 wiremock = "0.6.5"
 
+# KQL processor
+data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engine-recordset-otlp-bridge" }
+data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
+data_engine_expressions = { path = "../experimental/query_engine/expressions" }
+
 [features]
 default = []
 azure = ["otap-df-otap/azure"]

@@ -184,12 +184,10 @@ pub fn create_kql_processor(
 
     let processor = KqlProcessor::with_pipeline_ctx(pipeline_ctx, config)?;
 
-    let user_config = Arc::new(NodeUserConfig::new_processor_config(KQL_PROCESSOR_URN));
-
     Ok(ProcessorWrapper::local(
         processor,
         node,
-        user_config,
+        node_config,
         processor_config,
     ))
 }
@@ -374,17 +372,16 @@ impl KqlProcessor {
         _input_items: u64,
     ) -> Result<OtlpProtoBytes, Error> {
         use data_engine_recordset_otlp_bridge::*;
-        
+
         let diagnostic_level = self.config.get_diagnostic_level();
 
         // Parse the protobuf bytes into ExportLogsServiceRequest
-        let request = ExportLogsServiceRequest::from_protobuf(&bytes)
-            .map_err(|e| {
-                self.metrics.query_errors.add(1);
-                Error::InternalError {
-                    message: format!("Failed to parse OTLP protobuf: {}", e),
-                }
-            })?;
+        let request = ExportLogsServiceRequest::from_protobuf(&bytes).map_err(|e| {
+            self.metrics.query_errors.add(1);
+            Error::InternalError {
+                message: format!("Failed to parse OTLP protobuf: {}", e),
+            }
+        })?;
 
         // Use the KQL bridge to process the logs
         let (included_records, _dropped_records) =
@@ -405,7 +402,9 @@ impl KqlProcessor {
                         message: format!("Failed to encode OTLP protobuf: {}", e),
                     }
                 })?;
-            Ok(OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::copy_from_slice(&protobuf_bytes)))
+            Ok(OtlpProtoBytes::ExportLogsRequest(
+                bytes::Bytes::copy_from_slice(&protobuf_bytes),
+            ))
         } else {
             // No records included, return empty
             Ok(OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::new()))
@@ -434,11 +433,11 @@ impl Processor<OtapPdata> for KqlProcessor {
                 match control_msg {
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
-                    } => metrics_reporter
-                        .report(&mut self.metrics)
-                        .map_err(|e| Error::InternalError {
+                    } => metrics_reporter.report(&mut self.metrics).map_err(|e| {
+                        Error::InternalError {
                             message: e.to_string(),
-                        }),
+                        }
+                    }),
                     NodeControlMsg::Config { config } => {
                         if let Ok(new_config) = serde_json::from_value::<KqlConfig>(config) {
                             // Re-parse the pipeline if query changed
@@ -535,7 +534,7 @@ mod tests {
     fn test_conditional_extend_vendor_info() {
         // Test demonstrating vendor-specific enrichment based on EventName or Body matching
         let pipeline_ctx = create_test_pipeline_context();
-        
+
         // Query that matches on EventName or Body and extends with vendor info
         let query = r#"
             source
@@ -565,7 +564,7 @@ mod tests {
     #[test]
     fn test_multiple_conditions_with_or() {
         let pipeline_ctx = create_test_pipeline_context();
-        
+
         // Query demonstrating OR conditions and statement-by-statement enrichment
         let query = r#"
             source
@@ -601,7 +600,7 @@ mod tests {
     #[test]
     fn test_pattern_matching_extend() {
         let pipeline_ctx = create_test_pipeline_context();
-        
+
         // Query using pattern matching with 'has' operator
         let query = r#"
             source
@@ -628,13 +627,16 @@ mod tests {
         };
 
         let processor = KqlProcessor::with_pipeline_ctx(pipeline_ctx, config);
-        assert!(processor.is_ok(), "Pattern matching query should parse successfully");
+        assert!(
+            processor.is_ok(),
+            "Pattern matching query should parse successfully"
+        );
     }
 
     #[test]
     fn test_body_modification_with_strcat() {
         let pipeline_ctx = create_test_pipeline_context();
-        
+
         // Query that appends supplemental information to the Body
         let query = r#"
             source
@@ -655,13 +657,16 @@ mod tests {
         };
 
         let processor = KqlProcessor::with_pipeline_ctx(pipeline_ctx, config);
-        assert!(processor.is_ok(), "Body modification with strcat should parse successfully");
+        assert!(
+            processor.is_ok(),
+            "Body modification with strcat should parse successfully"
+        );
     }
 
     #[test]
     fn test_body_enrichment_with_vendor_links() {
         let pipeline_ctx = create_test_pipeline_context();
-        
+
         // Query that adds vendor-specific links and guidelines based on content
         let query = r#"
             source
@@ -688,6 +693,9 @@ mod tests {
         };
 
         let processor = KqlProcessor::with_pipeline_ctx(pipeline_ctx, config);
-        assert!(processor.is_ok(), "Body enrichment with vendor links should parse successfully");
+        assert!(
+            processor.is_ok(),
+            "Body enrichment with vendor links should parse successfully"
+        );
     }
 }

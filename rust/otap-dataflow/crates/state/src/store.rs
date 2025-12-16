@@ -101,17 +101,77 @@ impl ObservedStateStore {
     }
 
     /// Reports a new observed event in the store.
-    #[allow(
-        clippy::print_stderr,
-        reason = "Use `eprintln!` while waiting for https://github.com/open-telemetry/otel-arrow/issues/1237."
-    )]
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
         // ToDo Event reporting see: https://github.com/open-telemetry/otel-arrow/issues/1237
         // The code below is temporary and should be replaced with a proper event reporting
         // mechanism (see previous todo).
         match &observed_event.r#type {
-            EventType::Request(_) | EventType::Error(_) => {
-                eprintln!("Observed event: {observed_event:?}")
+            EventType::Request(_) => {
+                log::debug!("Pipeline request: {:?}", observed_event);
+            }
+            EventType::Error(error_event) => {
+                use crate::event::{ErrorEvent, ErrorSummary};
+
+                let (error_type, summary) = match error_event {
+                    ErrorEvent::AdmissionError(s) => ("AdmissionError", s),
+                    ErrorEvent::ConfigRejected(s) => ("ConfigRejected", s),
+                    ErrorEvent::UpdateFailed(s) => ("UpdateFailed", s),
+                    ErrorEvent::RollbackFailed(s) => ("RollbackFailed", s),
+                    ErrorEvent::DrainError(s) => ("DrainError", s),
+                    ErrorEvent::RuntimeError(s) => ("RuntimeError", s),
+                    ErrorEvent::DeleteError(s) => ("DeleteError", s),
+                };
+
+                match summary {
+                    ErrorSummary::Pipeline {
+                        error_kind,
+                        message,
+                        source,
+                    } => {
+                        let pipeline_id = &*observed_event.key.pipeline_id;
+                        otap_df_telemetry::otel_error!(
+                            "Pipeline.Error",
+                            pipeline_id = pipeline_id,
+                            error_type = error_type,
+                            error_kind = error_kind,
+                            message = message
+                        );
+                        if let Some(src) = source {
+                            otap_df_telemetry::otel_error!(
+                                "Pipeline.Error.Source",
+                                pipeline_id = pipeline_id,
+                                source = src
+                            );
+                        }
+                    }
+                    ErrorSummary::Node {
+                        node,
+                        node_kind,
+                        error_kind,
+                        message,
+                        source,
+                    } => {
+                        let pipeline_id = &*observed_event.key.pipeline_id;
+                        let node_kind_str = format!("{:?}", node_kind);
+                        otap_df_telemetry::otel_error!(
+                            "Pipeline.NodeError",
+                            pipeline_id = pipeline_id,
+                            error_type = error_type,
+                            node = node,
+                            node_kind = node_kind_str.as_str(),
+                            error_kind = error_kind,
+                            message = message
+                        );
+                        if let Some(src) = source {
+                            otap_df_telemetry::otel_error!(
+                                "Pipeline.NodeError.Source",
+                                pipeline_id = pipeline_id,
+                                node = node,
+                                source = src
+                            );
+                        }
+                    }
+                }
             }
             EventType::Success(_) => { /* no console output for success events */ }
         }

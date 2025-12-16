@@ -21,7 +21,7 @@ nodes:
         metric_weight: 0
         trace_weight: 0
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  
+
   kql:
     kind: processor
     plugin_urn: "urn:otel:kql:processor"
@@ -34,12 +34,11 @@ nodes:
       query: |
         source
         | extend Body = case(
-            EventName == "payment.failed" or Body has "payment",
-            strcat(Body, "\n\nTroubleshooting: https://docs.example.com/payment-errors\nSupport: https://support.example.com/ticket"),
+            EventName == "azure.resource.log",
+            strcat(Body, "\n\nTroubleshooting resource errors: https://docs.example.com/exporter-errors#kql-processor"),
             Body
         )
-      diagnostic_level: "info"
-  
+
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
@@ -51,7 +50,7 @@ nodes:
     config:
       verbosity: detailed
       mode: signal
-  
+
   noop:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
