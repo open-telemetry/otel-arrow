@@ -1,4 +1,3 @@
-# Shows the batch processor.
 settings:
   default_pipeline_ctrl_msg_channel_size: 100
   default_node_ctrl_msg_channel_size: 100
