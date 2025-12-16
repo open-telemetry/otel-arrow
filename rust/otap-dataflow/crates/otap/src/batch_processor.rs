@@ -94,6 +94,19 @@ pub enum Sizer {
     Bytes,
 }
 
+impl Sizer {
+    /// Returns Sizer-specific size logic.
+    fn batch_size<T: OtapPayloadHelpers>(&self, payload: &T) -> Result<usize, PDataError> {
+        match self {
+            Self::Requests => Ok(1),
+            Self::Items => Ok(payload.num_items()),
+            Self::Bytes => payload.num_bytes().ok_or_else(|| PDataError::Format {
+                error: "bytes encoding not known".into(),
+            }),
+        }
+    }
+}
+
 /// Min/max size for a specific format
 #[derive(Debug, Clone, Deserialize)]
 pub struct FormatConfig {
@@ -307,13 +320,13 @@ impl FormatConfig {
             });
         }
 
-        // If both sizes are set, check max_size is >= the batch_size.
-        if let (Some(max_size), Some(batch_size)) = (self.max_size, self.min_size) {
-            if max_size < batch_size {
+        // If both sizes are set, check max_size is >= the min_size.
+        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size) {
+            if max_size < min_size {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!(
                         "max_size ({}) must be >= min_size ({}) or unset",
-                        max_size, batch_size,
+                        max_size, min_size,
                     ),
                 });
             }
@@ -321,9 +334,9 @@ impl FormatConfig {
 
         // Zero-timeout is a valid split-only configuration, but must have
         if no_timeout {
-            if let Some(batch_size) = self.min_size {
+            if let Some(min_size) = self.min_size {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!("min_size ({}) requires a timeout", batch_size),
+                    error: format!("min_size ({}) requires a timeout", min_size),
                 });
             }
             if self.max_size.is_none() {
@@ -519,7 +532,7 @@ impl BatchProcessor {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
-        // This checks that if both are present, max_size >= batch_size, and
+        // This checks that if both are present, max_size >= min_size, and
         // that at least one is present so that lower_limit is valid below.
         config.validate()?;
 
@@ -855,18 +868,38 @@ where
             && self.fmtcfg.max_size.is_some()
             && output_batches.len() > 1
         {
-            debug_assert!(output_batches[0].num_items() >= self.fmtcfg.lower_limit());
-
-            if let Some(last_items) = output_batches.last().map(|last| last.num_items()) {
-                if last_items < self.fmtcfg.lower_limit() {
-                    self.buffer
-                        .take_remaining(&mut inputs, &mut output_batches, last_items);
-
-                    // We use the latest arrival time as the new arrival for timeout purposes.
-                    self.buffer
-                        .set_arrival(self.signal, now, self.config.flush_timeout, effect)
-                        .await?;
+            let num_output = output_batches.len();
+            let sizer = self.fmtcfg.sizer;
+            match sizer {
+                Sizer::Items => {
+                    // This property holds because item-based batches never batches
+                    // short of min_size.
+                    debug_assert!(
+                        sizer
+                            .batch_size(&output_batches[0])
+                            .expect("first over lower_limit")
+                            >= self.fmtcfg.lower_limit()
+                    );
                 }
+                Sizer::Requests => unreachable!("requests sizer not implemented"),
+                Sizer::Bytes => {
+                    // All batches can be under or over. We know byte size.
+                    debug_assert!(sizer.batch_size(&output_batches[num_output - 1]).is_ok());
+                }
+            };
+
+            let last_batch_size = self
+                .fmtcfg
+                .sizer
+                .batch_size(&output_batches[num_output - 1])?;
+
+            if last_batch_size < self.fmtcfg.lower_limit() {
+                self.buffer.take_remaining(&mut inputs, &mut output_batches);
+
+                // We use the latest arrival time as the new arrival for timeout purposes.
+                self.buffer
+                    .set_arrival(self.signal, now, self.config.flush_timeout, effect)
+                    .await?;
             }
         }
 
@@ -1150,15 +1183,11 @@ where
     /// Takes the residual batch, used in case the final output is less than
     /// the lower bound. This removes the last output btach, the corresponding
     /// context, and places it back in the pending buffer as the first in line.
-    fn take_remaining(
-        &mut self,
-        from_inputs: &mut Inputs<T>,
-        output_batches: &mut Vec<T>,
-        last_items: usize,
-    ) {
+    fn take_remaining(&mut self, from_inputs: &mut Inputs<T>, output_batches: &mut Vec<T>) {
         // SAFETY: protected by output_batches.len() > 1.
         let remaining = output_batches.pop().expect("has last");
         let last_input = from_inputs.context.last().expect("has last");
+        let last_items = remaining.num_items();
         let new_part = BatchPortion::new(last_input.inkey, last_items);
 
         from_inputs.items -= last_items;
