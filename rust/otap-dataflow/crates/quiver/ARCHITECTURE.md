@@ -26,8 +26,8 @@ value: a fixed set of payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`,
 with batches of telemetry.
 Each segment file:
 
-- Groups multiple `RecordBundle` arrivals (8-64MB target size) and persists the
-  per-slot Arrow streams they reference.
+- Groups multiple `RecordBundle` arrivals (32MB default target size) and persists
+ the per-slot Arrow streams they reference.
 - Supports many payload types and evolving schemas inside the same segment via
   a stream directory + batch manifest.
 - Contains metadata: time ranges, signal type (via adapter), schema fingerprints,

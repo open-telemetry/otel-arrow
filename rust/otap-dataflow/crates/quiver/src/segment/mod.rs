@@ -46,7 +46,7 @@
 //!
 //! | Term                 | Definition                                                                                                                                                                             |
 //! |----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-//! | **Segment**          | A container file grouping multiple `RecordBundle` arrivals. Contains one or more *streams* plus metadata (stream directory + batch manifest). Target size is 8-64 MB.                  |
+//! | **Segment**          | A container file grouping multiple `RecordBundle` arrivals. Contains one or more *streams* plus metadata (stream directory + batch manifest). Default target size is 32 MB.            |
 //! | **Stream**           | An ordered sequence of *chunks* for a specific `(slot, schema_fingerprint)` pairing. All chunks in a stream share a schema and unified dictionary vocabulary. Serialized as Arrow IPC. |
 //! | **Chunk**            | A single Arrow `RecordBatch` within a stream. Chunks share the stream's unified dictionary vocabulary and are individually addressable via the batch manifest.                         |
 //! | **Stream Directory** | Metadata table at the segment level listing every stream's id, slot, schema fingerprint, byte offset, byte length, and statistics.                                                     |
