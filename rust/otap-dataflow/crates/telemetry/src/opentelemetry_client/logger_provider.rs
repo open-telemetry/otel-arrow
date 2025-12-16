@@ -276,6 +276,36 @@ mod tests {
     }
 
     #[test]
+    fn test_logger_provider_configure_otlp_exporter() -> Result<(), Error> {
+        let resource = Resource::builder().build();
+        let logger_config = LogsConfig {
+            level: LogLevel::Info,
+            processors: vec![
+                otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig::Batch(
+                    BatchLogProcessorConfig {
+                        exporter: LogBatchProcessorExporterConfig::Otlp(
+                            OtlpExporterConfig {
+                                endpoint: "http://localhost:4317".to_string(),
+                                protocol: OtlpProtocol::Grpc,
+                            },
+                        ),
+                    },
+                ),
+            ],
+        };
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let (sdk_logger_provider, runtime_option) = logger_provider.into_parts();
+
+        assert!(runtime_option.is_some());
+
+        emit_log();
+
+        let result = sdk_logger_provider.shutdown();
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[test]
     fn test_logger_provider_configure_default() -> Result<(), Error> {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
@@ -289,6 +319,28 @@ mod tests {
 
         let result = sdk_logger_provider.shutdown();
         assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_configure_http_binary_exporter() -> Result<(), Error> {
+        let otlp_config = OtlpExporterConfig {
+            endpoint: "http://localhost:4318".to_string(),
+            protocol: OtlpProtocol::HttpBinary,
+        };
+        let exporter = LoggerProvider::configure_http_exporter(&otlp_config, Protocol::HttpBinary)?;
+        drop(exporter); // just ensure it constructs without error
+        Ok(())
+    }
+
+    #[test]
+    fn test_configure_http_json_exporter() -> Result<(), Error> {
+        let otlp_config = OtlpExporterConfig {
+            endpoint: "http://localhost:4318".to_string(),
+            protocol: OtlpProtocol::HttpJson,
+        };
+        let exporter = LoggerProvider::configure_http_exporter(&otlp_config, Protocol::HttpJson)?;
+        drop(exporter); // just ensure it constructs without error
         Ok(())
     }
 
