@@ -251,12 +251,12 @@ impl MetricsDispatcher {
 mod tests {
     use std::f64::consts::PI;
 
+    use super::*;
+    use crate::descriptor::MetricValueType;
     use crate::{
         attributes::AttributeIterator,
         descriptor::{AttributeField, AttributeValueType, AttributesDescriptor},
     };
-
-    use super::*;
 
     #[test]
     fn test_to_opentelemetry_key_value() {
