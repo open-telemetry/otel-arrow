@@ -211,7 +211,7 @@ impl ChunkIndex {
     /// Returns the next sequential chunk index.
     ///
     /// Uses saturating addition to prevent overflow. In practice, chunk indices
-    /// are bounded by [`MAX_CHUNKS_PER_STREAM`] which is well below u32::MAX.
+    /// are bounded by an internal limit which is well below `u32::MAX`.
     #[must_use]
     pub const fn next(self) -> Self {
         Self(self.0.saturating_add(1))

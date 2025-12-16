@@ -3,8 +3,8 @@
 
 //! Segment file writer for Quiver.
 //!
-//! This module provides [`SegmentWriter`], which takes the output from
-//! [`OpenSegment::finalize`] and writes a complete segment file to disk.
+//! This module provides [`SegmentWriter`], which takes an [`OpenSegment`]
+//! and writes a complete segment file to disk using streaming serialization.
 //!
 //! # Segment File Layout
 //!
@@ -51,18 +51,23 @@
 //!
 //! # Usage
 //!
+//! The preferred API uses [`write_segment`](SegmentWriter::write_segment), which
+//! streams IPC data directly to disk without buffering all serialized data in
+//! memory:
+//!
 //! ```ignore
-//! use quiver::segment::{OpenSegment, SegmentWriter};
+//! use quiver::segment::{OpenSegment, SegmentWriter, SegmentSeq};
 //!
-//! // Finalize an open segment
-//! let (streams, manifest) = open_segment.finalize()?;
+//! // Build an open segment
+//! let mut open_segment = OpenSegment::new();
+//! open_segment.append(&bundle)?;
 //!
-//! // Write to disk
-//! let writer = SegmentWriter::new(segment_seq);
-//! let (bytes_written, checksum) = writer.write_to_file(&path, streams, manifest)?;
+//! // Write directly to disk (streaming serialization)
+//! let writer = SegmentWriter::new(SegmentSeq::new(1));
+//! let (bytes_written, checksum) = writer.write_segment(&path, open_segment)?;
 //! ```
 //!
-//! [`OpenSegment::finalize`]: super::OpenSegment::finalize
+//! [`OpenSegment`]: super::OpenSegment
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -87,11 +92,13 @@ use super::types::{
 // SegmentWriter
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Writes finalized segment data to a file.
+/// Writes segment data to a file.
 ///
-/// Takes the output of [`OpenSegment::finalize`](super::OpenSegment::finalize)
-/// and produces a complete segment file with stream data, directory, manifest,
-/// and footer.
+/// Use [`write_segment`](Self::write_segment) to write an [`OpenSegment`]
+/// directly to disk with streaming serialization, avoiding the need to buffer
+/// all serialized IPC data in memory.
+///
+/// [`OpenSegment`]: super::OpenSegment
 #[derive(Debug)]
 pub struct SegmentWriter {
     /// Sequence number for this segment.
@@ -111,13 +118,15 @@ impl SegmentWriter {
         self.segment_seq
     }
 
-    /// Writes a complete segment file to disk.
+    /// Writes an open segment directly to disk with streaming serialization.
+    ///
+    /// This method streams each stream's IPC data directly to disk, avoiding
+    /// the need to buffer all serialized data in memory.
     ///
     /// # Arguments
     ///
-    /// * `path` - Path where the segment file will be written
-    /// * `streams` - Stream data and metadata from `OpenSegment::finalize`
-    /// * `manifest` - Batch manifest entries from `OpenSegment::finalize`
+    /// * `path` - Path where the segment file will be written.
+    /// * `segment` - The open segment to finalize and write.
     ///
     /// # Returns
     ///
@@ -127,21 +136,27 @@ impl SegmentWriter {
     ///
     /// Returns [`SegmentError::Io`] if file operations fail.
     /// Returns [`SegmentError::Arrow`] if IPC encoding fails.
-    pub fn write_to_file(
+    /// Returns [`SegmentError::EmptySegment`] if the segment has no bundles.
+    pub fn write_segment(
         &self,
         path: impl AsRef<Path>,
-        streams: Vec<(Vec<u8>, StreamMetadata)>,
-        manifest: Vec<ManifestEntry>,
+        segment: super::OpenSegment,
     ) -> Result<(u64, u32), SegmentError> {
         let path = path.as_ref();
+        let (accumulators, manifest) = segment.into_parts()?;
+
         let file = File::create(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         let mut writer = BufWriter::new(file);
 
-        let result = self.write_to(&mut writer, streams, manifest, path)?;
+        let result = self.write_streaming(&mut writer, accumulators, manifest, path)?;
 
-        // Set the file to read-only after writing to enforce immutability.
-        // This is a defense-in-depth measure; segment files should never be
-        // modified after finalization.
+        Self::set_readonly(path)?;
+
+        Ok(result)
+    }
+
+    /// Sets the file to read-only after writing to enforce immutability.
+    fn set_readonly(path: &Path) -> Result<(), SegmentError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -162,25 +177,26 @@ impl SegmentWriter {
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         }
 
-        Ok(result)
+        Ok(())
     }
 
-    /// Writes segment data to any `Write` implementation.
+    /// Writes segment data with streaming IPC serialization.
     ///
-    /// This is the core write logic, separated from file handling for testability.
-    fn write_to<W: Write>(
+    /// Serializes each stream directly to the writer, avoiding the need to
+    /// buffer all IPC bytes in memory before writing.
+    fn write_streaming<W: Write>(
         &self,
         writer: &mut W,
-        streams: Vec<(Vec<u8>, StreamMetadata)>,
+        accumulators: Vec<super::StreamAccumulator>,
         manifest: Vec<ManifestEntry>,
         path: &Path,
     ) -> Result<(u64, u32), SegmentError> {
         // Validate limits before writing to prevent creating unreadable segments
-        if streams.len() > MAX_STREAMS_PER_SEGMENT {
+        if accumulators.len() > MAX_STREAMS_PER_SEGMENT {
             return Err(SegmentError::InvalidFormat {
                 message: format!(
                     "segment has {} streams, exceeds limit of {}",
-                    streams.len(),
+                    accumulators.len(),
                     MAX_STREAMS_PER_SEGMENT
                 ),
             });
@@ -199,17 +215,12 @@ impl SegmentWriter {
         let mut offset: u64 = 0;
 
         // ─────────────────────────────────────────────────────────────────────
-        // 1. Write stream data region
+        // 1. Write stream data region (streaming)
         // ─────────────────────────────────────────────────────────────────────
-        let mut stream_metadata_list: Vec<StreamMetadata> = Vec::with_capacity(streams.len());
+        let mut stream_metadata_list: Vec<StreamMetadata> = Vec::with_capacity(accumulators.len());
 
-        for (ipc_bytes, mut metadata) in streams {
+        for accumulator in accumulators {
             // Align stream start to 8-byte boundary for zero-copy mmap reads.
-            // Arrow IPC internally uses 8-byte alignment for data buffers,
-            // but those offsets are relative to the IPC file start. If the IPC
-            // file itself starts at an unaligned offset within the mmap region,
-            // Arrow must copy the data to achieve alignment. Padding here
-            // ensures each stream starts aligned, preserving zero-copy behavior.
             let padding = (8 - (offset % 8)) % 8;
             if padding > 0 {
                 let pad_bytes = vec![0u8; padding as usize];
@@ -220,17 +231,11 @@ impl SegmentWriter {
                 offset += padding;
             }
 
-            // Update metadata with actual (aligned) offset
-            metadata.byte_offset = offset;
-            metadata.byte_length = ipc_bytes.len() as u64;
+            // Write stream directly to output, wrapped in a hashing writer
+            let mut hashing_writer = HashingWriter::new(writer, &mut hasher);
+            let metadata = accumulator.write_to(&mut hashing_writer, offset)?;
 
-            // Write stream data
-            writer
-                .write_all(&ipc_bytes)
-                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
-            hasher.update(&ipc_bytes);
-            offset += ipc_bytes.len() as u64;
-
+            offset += metadata.byte_length;
             stream_metadata_list.push(metadata);
         }
 
@@ -286,12 +291,9 @@ impl SegmentWriter {
         };
 
         let trailer_bytes = trailer.encode();
-        // CRC covers entire file (streams, directory, manifest, footer, trailer)
-        // except the final 4-byte CRC field itself
         hasher.update(&trailer_bytes[..TRAILER_SIZE - 4]);
         let crc = hasher.finalize();
 
-        // Write trailer with CRC
         writer
             .write_all(&trailer_bytes[..TRAILER_SIZE - 4])
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
@@ -300,7 +302,6 @@ impl SegmentWriter {
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         offset += TRAILER_SIZE as u64;
 
-        // Flush to ensure data is written
         writer
             .flush()
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
@@ -447,6 +448,34 @@ fn encode_as_ipc(batch: &RecordBatch) -> Result<Vec<u8>, SegmentError> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helper Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A writer wrapper that updates a CRC32 hasher as data is written.
+struct HashingWriter<'a, W> {
+    inner: &'a mut W,
+    hasher: &'a mut Hasher,
+}
+
+impl<'a, W> HashingWriter<'a, W> {
+    fn new(inner: &'a mut W, hasher: &'a mut Hasher) -> Self {
+        Self { inner, hasher }
+    }
+}
+
+impl<W: Write> Write for HashingWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -454,8 +483,6 @@ fn encode_as_ipc(batch: &RecordBatch) -> Result<Vec<u8>, SegmentError> {
 mod tests {
     use std::fs;
 
-    use arrow_array::RecordBatch;
-    use arrow_schema::SchemaRef;
     use tempfile::tempdir;
 
     use super::*;
@@ -463,71 +490,48 @@ mod tests {
     use crate::segment::test_utils::{make_batch, test_schema};
     use crate::segment::types::{ChunkIndex, FOOTER_V1_SIZE, SEGMENT_MAGIC, StreamId};
 
-    fn make_stream_ipc(schema: &SchemaRef, batches: &[RecordBatch]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        {
-            let mut writer = FileWriter::try_new(&mut buf, schema.as_ref()).expect("create writer");
-            for batch in batches {
-                writer.write(batch).expect("write batch");
-            }
-            writer.finish().expect("finish");
-        }
-        buf
-    }
-
     #[test]
-    fn write_empty_segment_creates_valid_file() {
+    fn write_empty_segment_fails() {
+        use crate::segment::{OpenSegment, SegmentError};
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.qseg");
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let open_segment = OpenSegment::new();
 
-        // Empty streams and manifest
-        let streams: Vec<(Vec<u8>, StreamMetadata)> = vec![];
-        let manifest: Vec<ManifestEntry> = vec![];
-
-        let (bytes_written, crc) = writer.write_to_file(&path, streams, manifest).unwrap();
-
-        // Should have written just the empty directory, manifest, footer, and trailer
-        assert!(bytes_written >= (FOOTER_V1_SIZE + TRAILER_SIZE) as u64);
-        assert!(crc != 0);
-
-        // File should exist
-        let metadata = fs::metadata(&path).unwrap();
-        assert_eq!(metadata.len(), bytes_written);
+        // Empty segment should fail
+        let result = writer.write_segment(&path, open_segment);
+        assert!(matches!(result, Err(SegmentError::EmptySegment)));
     }
 
     #[test]
     fn write_segment_with_single_stream() {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.qseg");
 
         let schema = test_schema();
         let batch1 = make_batch(&schema, &[1, 2], &["a", "b"]);
         let batch2 = make_batch(&schema, &[3], &["c"]);
-        let ipc_bytes = make_stream_ipc(&schema, &[batch1, batch2]);
 
-        let stream_meta = StreamMetadata::new(
-            StreamId::new(0),
-            SlotId::new(0),
-            [0x11u8; 32],
-            0, // Will be updated by writer
-            ipc_bytes.len() as u64,
-            3, // row_count
-            2, // chunk_count
-        );
+        // Build an open segment with two batches in the same stream
+        let mut open_segment = OpenSegment::new();
+        let fp = test_fingerprint();
 
-        let mut manifest_entry = ManifestEntry::new(0);
-        manifest_entry.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(0));
+        let bundle1 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch1);
+        let bundle2 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
+
+        let _ = open_segment.append(&bundle1).unwrap();
+        let _ = open_segment.append(&bundle2).unwrap();
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let streams = vec![(ipc_bytes.clone(), stream_meta)];
-        let manifest = vec![manifest_entry];
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).unwrap();
 
-        let (bytes_written, _crc) = writer.write_to_file(&path, streams, manifest).unwrap();
-
-        // File should be larger than just the IPC bytes
-        assert!(bytes_written > ipc_bytes.len() as u64);
+        // File should be non-empty
+        assert!(bytes_written > 0);
 
         // Verify we can read back the trailer
         let file_bytes = fs::read(&path).unwrap();
@@ -543,6 +547,9 @@ mod tests {
 
     #[test]
     fn write_segment_with_multiple_streams() {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, slot_descriptors};
+
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.qseg");
 
@@ -550,46 +557,65 @@ mod tests {
 
         // Stream 0: slot 0
         let batch0 = make_batch(&schema, &[1, 2], &["a", "b"]);
-        let ipc_bytes0 = make_stream_ipc(&schema, &[batch0]);
-        let stream_meta0 = StreamMetadata::new(
-            StreamId::new(0),
-            SlotId::new(0),
-            [0x11u8; 32],
-            0,
-            ipc_bytes0.len() as u64,
-            2,
-            1,
-        );
-
         // Stream 1: slot 1
         let batch1 = make_batch(&schema, &[3, 4, 5], &["c", "d", "e"]);
-        let ipc_bytes1 = make_stream_ipc(&schema, &[batch1]);
-        let stream_meta1 = StreamMetadata::new(
-            StreamId::new(1),
-            SlotId::new(1),
-            [0x22u8; 32],
-            0, // Will be updated
-            ipc_bytes1.len() as u64,
-            3,
-            1,
-        );
 
-        let mut manifest_entry = ManifestEntry::new(0);
-        manifest_entry.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(0));
-        manifest_entry.add_slot(SlotId::new(1), StreamId::new(1), ChunkIndex::new(0));
+        // Build an open segment with two streams
+        let mut open_segment = OpenSegment::new();
+        let fp0 = [0x11u8; 32];
+        let fp1 = [0x22u8; 32];
+
+        let bundle = TestBundle::new(slot_descriptors())
+            .with_payload(SlotId::new(0), fp0, batch0)
+            .with_payload(SlotId::new(1), fp1, batch1);
+
+        let _ = open_segment.append(&bundle).unwrap();
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let streams = vec![
-            (ipc_bytes0.clone(), stream_meta0),
-            (ipc_bytes1.clone(), stream_meta1),
-        ];
-        let manifest = vec![manifest_entry];
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).unwrap();
 
-        let (bytes_written, _crc) = writer.write_to_file(&path, streams, manifest).unwrap();
+        // File should be non-empty
+        assert!(bytes_written > 0);
+    }
 
-        // File should contain both streams plus metadata
-        let total_stream_size = ipc_bytes0.len() + ipc_bytes1.len();
-        assert!(bytes_written > total_stream_size as u64);
+    #[test]
+    fn write_segment_streaming_produces_readable_file() {
+        use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
+        use crate::segment::{OpenSegment, SegmentReader};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("streaming.qseg");
+
+        // Build an open segment with data
+        let schema = test_schema();
+        let descriptors = slot_descriptors();
+        let batch = make_batch(&schema, &[1, 2, 3], &["a", "b", "c"]);
+
+        let mut open_segment = OpenSegment::new();
+        let bundle = TestBundle::new(descriptors).with_payload(
+            SlotId::new(0),
+            test_fingerprint(),
+            batch.clone(),
+        );
+        let _ = open_segment.append(&bundle).unwrap();
+
+        // Write using the streaming API
+        let writer = SegmentWriter::new(SegmentSeq::new(42));
+        let (bytes_written, crc) = writer.write_segment(&path, open_segment).unwrap();
+
+        assert!(bytes_written > 0);
+        assert!(crc != 0);
+
+        // Verify the file is readable
+        let reader = SegmentReader::open(&path).unwrap();
+        assert_eq!(reader.bundle_count(), 1);
+        assert_eq!(reader.stream_count(), 1);
+
+        // Read back the bundle
+        let manifest = reader.manifest();
+        let reconstructed = reader.read_bundle(&manifest[0]).unwrap();
+        let payload = reconstructed.payload(SlotId::new(0)).unwrap();
+        assert_eq!(payload.num_rows(), 3);
     }
 
     #[test]

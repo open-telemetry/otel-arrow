@@ -179,10 +179,10 @@ fn ingest_sustained(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark with segment finalization overhead isolated.
+/// Benchmark with frequent segment writes to measure finalization overhead.
 ///
 /// Uses 1,000 rows per bundle to reflect typical production batch sizes.
-fn ingest_with_finalization(c: &mut Criterion) {
+fn ingest_with_frequent_writes(c: &mut Criterion) {
     let mut group = c.benchmark_group("ingest_finalization");
     group.sample_size(30);
 
@@ -231,6 +231,6 @@ criterion_group!(
     benches,
     ingest_single,
     ingest_sustained,
-    ingest_with_finalization
+    ingest_with_frequent_writes
 );
 criterion_main!(benches);

@@ -258,20 +258,20 @@ fn segment_accumulate_many(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark segment finalization (the expensive serialization step).
+/// Benchmark end-to-end segment write performance.
 ///
-/// All finalization benchmarks use 1,000 rows per bundle (typical production
-/// batch size) and measure the cost of building the batch manifest, computing
-/// slot references, and preparing streams for writing.
+/// All write benchmarks use 1,000 rows per bundle (typical production batch
+/// size) and measure the cost of building the batch manifest, serializing
+/// stream data, and writing to disk.
 ///
 /// Sub-benchmarks:
 /// - `single_slot`: Varying bundle count with single-slot bundles
 /// - `multi_stream`: 10 different schemas (schema evolution scenario)
 /// - `multi_slot`: OTAP-style 4-slot bundles (realistic structure)
-fn segment_finalize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("segment_finalize");
+fn segment_write(c: &mut Criterion) {
+    let mut group = c.benchmark_group("segment_write");
 
-    // ── Single-slot finalization (varying bundle counts) ──
+    // ── Single-slot write (varying bundle counts) ──
     for num_bundles in [10, 50, 100] {
         let bundle = BenchBundle::single_slot(1_000, [0u8; 32]);
 
@@ -282,20 +282,28 @@ fn segment_finalize(c: &mut Criterion) {
             |b, &num_bundles| {
                 b.iter_batched(
                     || {
+                        let temp_dir = tempfile::tempdir().expect("create temp dir");
                         let mut segment = OpenSegment::new();
                         for _ in 0..num_bundles {
                             segment.append(&bundle).expect("append succeeds");
                         }
-                        segment
+                        (temp_dir, segment)
                     },
-                    |segment| segment.finalize().expect("finalize succeeds"),
+                    |(temp_dir, segment)| {
+                        let segment_path = temp_dir.path().join("bench_segment.qseg");
+                        let writer = SegmentWriter::new(SegmentSeq::new(1));
+                        writer
+                            .write_segment(&segment_path, segment)
+                            .expect("write succeeds");
+                        temp_dir // Keep temp_dir alive until write completes
+                    },
                     criterion::BatchSize::SmallInput,
                 );
             },
         );
     }
 
-    // ── Multi-stream finalization (schema evolution scenario) ──
+    // ── Multi-stream write (schema evolution scenario) ──
     // 10 different fingerprints = 10 different streams
     {
         let bundles: Vec<BenchBundle> = (0..10u8)
@@ -305,19 +313,28 @@ fn segment_finalize(c: &mut Criterion) {
         group.throughput(Throughput::Elements(10));
         group.bench_function("multi_stream/10_schemas", |b| {
             b.iter_batched(
-                OpenSegment::new,
-                |mut segment| {
+                || {
+                    let temp_dir = tempfile::tempdir().expect("create temp dir");
+                    let mut segment = OpenSegment::new();
                     for bundle in &bundles {
                         segment.append(bundle).expect("append succeeds");
                     }
-                    segment.finalize().expect("finalize succeeds")
+                    (temp_dir, segment)
+                },
+                |(temp_dir, segment)| {
+                    let segment_path = temp_dir.path().join("bench_segment.qseg");
+                    let writer = SegmentWriter::new(SegmentSeq::new(1));
+                    writer
+                        .write_segment(&segment_path, segment)
+                        .expect("write succeeds");
+                    temp_dir
                 },
                 criterion::BatchSize::SmallInput,
             );
         });
     }
 
-    // ── Multi-slot finalization (OTAP logs payload structure) ──
+    // ── Multi-slot write (OTAP logs payload structure) ──
     // 4 slots: ResourceAttrs, ScopeAttrs, Logs, LogAttrs
     {
         let bundle = BenchBundle::multi_slot(1_000);
@@ -325,72 +342,25 @@ fn segment_finalize(c: &mut Criterion) {
         group.throughput(Throughput::Elements(50));
         group.bench_function("multi_slot/50_bundles", |b| {
             b.iter_batched(
-                OpenSegment::new,
-                |mut segment| {
+                || {
+                    let temp_dir = tempfile::tempdir().expect("create temp dir");
+                    let mut segment = OpenSegment::new();
                     for _ in 0..50 {
                         segment.append(&bundle).expect("append succeeds");
                     }
-                    segment.finalize().expect("finalize succeeds")
+                    (temp_dir, segment)
+                },
+                |(temp_dir, segment)| {
+                    let segment_path = temp_dir.path().join("bench_segment.qseg");
+                    let writer = SegmentWriter::new(SegmentSeq::new(1));
+                    writer
+                        .write_segment(&segment_path, segment)
+                        .expect("write succeeds");
+                    temp_dir
                 },
                 criterion::BatchSize::SmallInput,
             );
         });
-    }
-
-    group.finish();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Write benchmarks
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Benchmark SegmentWriter::write_to_file (the I/O-bound operation).
-///
-/// Measures the cost of:
-/// - Writing streams with 8-byte alignment padding
-/// - Building stream directory
-/// - Serializing batch manifest
-/// - Computing and writing CRC checksums
-/// - Writing footer and trailer
-///
-/// Uses multi-slot bundles to represent realistic OTAP data.
-fn segment_write_to_file(c: &mut Criterion) {
-    let mut group = c.benchmark_group("segment_write");
-
-    for num_bundles in [10, 50, 100] {
-        // Prepare finalized segment data
-        let bundle = BenchBundle::multi_slot(1_000);
-        let mut segment = OpenSegment::new();
-        for _ in 0..num_bundles {
-            segment.append(&bundle).expect("append succeeds");
-        }
-        let (streams, manifest) = segment.finalize().expect("finalize succeeds");
-
-        // Calculate approximate file size for throughput (streams are (Vec<u8>, StreamMetadata) tuples)
-        let total_bytes: usize = streams.iter().map(|(data, _)| data.len()).sum();
-
-        group.throughput(Throughput::Bytes(total_bytes as u64));
-        group.bench_with_input(
-            BenchmarkId::new("bundles", num_bundles),
-            &(streams, manifest),
-            |b, (streams, manifest)| {
-                b.iter_batched(
-                    || {
-                        let temp_dir = tempfile::tempdir().expect("create temp dir");
-                        let segment_path = temp_dir.path().join("bench_segment.qseg");
-                        (temp_dir, segment_path)
-                    },
-                    |(temp_dir, segment_path)| {
-                        let writer = SegmentWriter::new(SegmentSeq::new(1));
-                        writer
-                            .write_to_file(&segment_path, streams.clone(), manifest.clone())
-                            .expect("write succeeds");
-                        temp_dir // Keep temp_dir alive until write completes
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
     }
 
     group.finish();
@@ -411,12 +381,11 @@ fn create_test_segment(num_bundles: usize, num_rows: usize) -> (tempfile::TempDi
     for _ in 0..num_bundles {
         segment.append(&bundle).expect("append succeeds");
     }
-    let (streams, manifest) = segment.finalize().expect("finalize succeeds");
 
     // Write to file
     let writer = SegmentWriter::new(SegmentSeq::new(1));
     writer
-        .write_to_file(&segment_path, streams, manifest)
+        .write_segment(&segment_path, segment)
         .expect("write succeeds");
 
     (temp_dir, segment_path)
@@ -507,8 +476,7 @@ criterion_group!(
     benches,
     segment_append_throughput,
     segment_accumulate_many,
-    segment_finalize,
-    segment_write_to_file,
+    segment_write,
     segment_reader_open,
     segment_read_bundles,
 );

@@ -13,10 +13,12 @@
 //! 1. Create with [`OpenSegment::new`].
 //! 2. Append bundles via [`OpenSegment::append`]; each call routes payloads
 //!    to stream accumulators and records a manifest entry.
-//! 3. When ready to finalize (size threshold, duration, or shutdown), call
-//!    [`OpenSegment::finalize`] to produce the segment data and metadata.
+//! 3. When ready to write to disk (size threshold, duration, or shutdown),
+//!    pass the segment to [`SegmentWriter::write_segment`] which handles
+//!    finalization and streaming writes in one step.
 //!
 //! [`RecordBundle`]: crate::record_bundle::RecordBundle
+//! [`SegmentWriter::write_segment`]: super::SegmentWriter::write_segment
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -27,7 +29,6 @@ use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
 use super::types::{
     MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT, ManifestEntry, StreamId, StreamKey,
-    StreamMetadata,
 };
 use crate::record_bundle::RecordBundle;
 
@@ -197,22 +198,19 @@ impl OpenSegment {
         self.streams.get_mut(&key).expect("just inserted or exists")
     }
 
-    /// Finalizes the open segment, producing stream data and metadata.
+    /// Consumes the segment, returning components for streaming finalization.
     ///
-    /// Returns a tuple of:
-    /// - `Vec<(Vec<u8>, StreamMetadata)>`: The serialized Arrow IPC data and
-    ///   metadata for each stream.
-    /// - `Vec<ManifestEntry>`: The batch manifest entries.
-    ///
-    /// After finalization, no more bundles can be appended.
+    /// Returns the stream accumulators (sorted by stream ID) and the manifest.
+    /// This is used by [`SegmentWriter::write_segment`](super::SegmentWriter::write_segment)
+    /// to stream IPC data directly to disk without buffering in memory.
     ///
     /// # Errors
     ///
     /// Returns [`SegmentError::AccumulatorFinalized`] if already finalized.
     /// Returns [`SegmentError::EmptySegment`] if no bundles were appended.
-    pub fn finalize(
+    pub(super) fn into_parts(
         mut self,
-    ) -> Result<(Vec<(Vec<u8>, StreamMetadata)>, Vec<ManifestEntry>), SegmentError> {
+    ) -> Result<(Vec<StreamAccumulator>, Vec<ManifestEntry>), SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
         }
@@ -221,21 +219,12 @@ impl OpenSegment {
         }
         self.finalized = true;
 
-        let mut streams_data = Vec::with_capacity(self.streams.len());
-        let mut current_offset: u64 = 0;
-
-        // Finalize each stream accumulator
         // Sort by stream ID for deterministic output order
         let mut stream_entries: Vec<_> = self.streams.into_iter().collect();
         stream_entries.sort_by_key(|(_, acc)| acc.stream_id());
 
-        for (_, accumulator) in stream_entries {
-            let (ipc_bytes, metadata) = accumulator.finalize(current_offset)?;
-            current_offset += metadata.byte_length;
-            streams_data.push((ipc_bytes, metadata));
-        }
-
-        Ok((streams_data, self.manifest))
+        let accumulators = stream_entries.into_iter().map(|(_, acc)| acc).collect();
+        Ok((accumulators, self.manifest))
     }
 
     /// Returns an iterator over the manifest entries.
@@ -426,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_produces_valid_ipc_streams() {
+    fn into_parts_produces_valid_accumulators() {
         let mut seg = OpenSegment::new();
         let schema = test_schema();
         let fp0 = [0x44u8; 32];
@@ -448,15 +437,23 @@ mod tests {
         let _ = seg.append(&bundle1).unwrap();
         let _ = seg.append(&bundle2).unwrap();
 
-        let (streams, manifest) = seg.finalize().expect("finalize should succeed");
+        let (mut accumulators, manifest) = seg.into_parts().expect("into_parts should succeed");
 
-        assert_eq!(streams.len(), 2);
+        assert_eq!(accumulators.len(), 2);
         assert_eq!(manifest.len(), 2);
 
-        // Streams are sorted by stream_id; stream 0 was created first (slot 0)
+        // Pop accumulators in reverse order (sorted by stream_id)
+        let acc_1 = accumulators.pop().unwrap();
+        let acc_0 = accumulators.pop().unwrap();
+
         // Stream 0: slot 0, 2 chunks, 3 rows total
-        let (ipc_bytes_0, metadata_0) = &streams[0];
-        assert_eq!(metadata_0.slot_id, SlotId::new(0));
+        assert_eq!(acc_0.slot_id(), SlotId::new(0));
+        assert_eq!(acc_0.chunk_count(), 2);
+        assert_eq!(acc_0.row_count(), 3);
+
+        // Write accumulator to bytes and validate IPC format
+        let mut ipc_bytes_0 = Vec::new();
+        let metadata_0 = acc_0.write_to(&mut ipc_bytes_0, 0).unwrap();
         assert_eq!(metadata_0.chunk_count, 2);
         assert_eq!(metadata_0.row_count, 3);
 
@@ -468,8 +465,12 @@ mod tests {
         assert_eq!(batches_0[1].num_rows(), 1);
 
         // Stream 1: slot 1, 1 chunk, 4 rows
-        let (ipc_bytes_1, metadata_1) = &streams[1];
-        assert_eq!(metadata_1.slot_id, SlotId::new(1));
+        assert_eq!(acc_1.slot_id(), SlotId::new(1));
+        assert_eq!(acc_1.chunk_count(), 1);
+        assert_eq!(acc_1.row_count(), 4);
+
+        let mut ipc_bytes_1 = Vec::new();
+        let metadata_1 = acc_1.write_to(&mut ipc_bytes_1, 0).unwrap();
         assert_eq!(metadata_1.chunk_count, 1);
         assert_eq!(metadata_1.row_count, 4);
 
@@ -481,9 +482,9 @@ mod tests {
     }
 
     #[test]
-    fn finalize_empty_segment_fails() {
+    fn into_parts_empty_segment_fails() {
         let seg = OpenSegment::new();
-        let result = seg.finalize();
+        let result = seg.into_parts();
         assert!(matches!(result, Err(SegmentError::EmptySegment)));
     }
 

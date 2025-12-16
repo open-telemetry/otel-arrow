@@ -982,12 +982,8 @@ mod tests {
             let stream_count = open_segment.stream_count();
             let bundle_count = open_segment.bundle_count();
 
-            let (streams, manifest) = open_segment.finalize().expect("finalize");
-
             let writer = SegmentWriter::new(SegmentSeq::new(1));
-            let _ = writer
-                .write_to_file(&path, streams, manifest)
-                .expect("write");
+            let _ = writer.write_segment(&path, open_segment).expect("write");
 
             Self {
                 dir,
@@ -1225,12 +1221,8 @@ mod tests {
         let mut open_segment = OpenSegment::new();
         let _ = open_segment.append(&bundle);
 
-        let (streams, manifest) = open_segment.finalize().expect("finalize");
-
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer
-            .write_to_file(&path, streams, manifest)
-            .expect("write");
+        let _ = writer.write_segment(&path, open_segment).expect("write");
 
         // Read back and verify
         let reader = SegmentReader::open(&path).expect("open");
@@ -1328,12 +1320,8 @@ mod tests {
 
         let _ = open_segment.append(&bundle);
 
-        let (streams, manifest) = open_segment.finalize().expect("finalize");
-
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer
-            .write_to_file(&path, streams, manifest)
-            .expect("write");
+        let _ = writer.write_segment(&path, open_segment).expect("write");
 
         // Read back
         let reader = SegmentReader::open(&path).expect("open");
@@ -1436,12 +1424,8 @@ mod tests {
 
         let _ = open_segment.append(&bundle);
 
-        let (streams, manifest) = open_segment.finalize().expect("finalize");
-
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer
-            .write_to_file(&path, streams, manifest)
-            .expect("write");
+        let _ = writer.write_segment(&path, open_segment).expect("write");
 
         // Read back with mmap
         let reader = SegmentReader::open_mmap(&path).expect("open_mmap");

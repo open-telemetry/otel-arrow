@@ -4,16 +4,18 @@
 //! Accumulates Arrow `RecordBatch`es for a single stream within a segment.
 //!
 //! A `StreamAccumulator` buffers batches in memory during segment accumulation.
-//! When the segment is finalized, the accumulator produces Arrow IPC file bytes
-//! that can be memory-mapped for zero-copy reads.
+//! When the segment is written to disk, the accumulator streams Arrow IPC file
+//! bytes that can be memory-mapped for zero-copy reads.
 //!
 //! # Lifecycle
 //!
 //! 1. Create with [`StreamAccumulator::new`], providing the stream's schema.
 //! 2. Append batches via [`StreamAccumulator::append`]; each call returns the
 //!    chunk index for manifest bookkeeping.
-//! 3. Call [`StreamAccumulator::finalize`] to produce the serialized Arrow IPC
-//!    file bytes and stream metadata.
+//! 3. The accumulator is consumed by [`SegmentWriter::write_segment`] which
+//!    streams the IPC data directly to disk.
+//!
+//! [`SegmentWriter::write_segment`]: super::SegmentWriter::write_segment
 //!
 //! # Dictionary Handling
 //!
@@ -36,8 +38,6 @@
 //!
 //! This design decision may be revisited if future performance measurements
 //! indicate that the size/memory overhead is a significant concern.
-
-use std::io::Cursor;
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
@@ -208,22 +208,30 @@ impl StreamAccumulator {
         Ok(chunk_index)
     }
 
-    /// Finalizes the stream, producing Arrow IPC file bytes and metadata.
+    /// Writes all accumulated batches directly to a writer in Arrow IPC file format.
     ///
-    /// After finalization, no more batches can be appended. The returned
-    /// bytes are in Arrow IPC **file** format, suitable for memory-mapped
-    /// reads via `arrow_ipc::reader::FileReader`.
+    /// Streams IPC bytes directly to the destination without buffering the entire
+    /// serialized output in memory. After this call, the accumulator is consumed.
     ///
     /// # Arguments
     ///
-    /// * `byte_offset` - The byte offset where this stream will be written
-    ///   in the segment file. Used for metadata only.
+    /// * `writer` - Destination for the Arrow IPC bytes.
+    /// * `byte_offset` - The byte offset where this stream starts in the segment
+    ///   file. Used for metadata only.
+    ///
+    /// # Returns
+    ///
+    /// The stream metadata including the actual byte length written.
     ///
     /// # Errors
     ///
     /// Returns [`SegmentError::AccumulatorFinalized`] if already finalized.
     /// Returns [`SegmentError::Arrow`] if IPC serialization fails.
-    pub fn finalize(mut self, byte_offset: u64) -> Result<(Vec<u8>, StreamMetadata), SegmentError> {
+    pub fn write_to<W: std::io::Write>(
+        mut self,
+        writer: &mut W,
+        byte_offset: u64,
+    ) -> Result<StreamMetadata, SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
         }
@@ -232,11 +240,12 @@ impl StreamAccumulator {
         let chunk_count = self.chunk_count();
         let row_count = self.row_count;
 
-        // Serialize batches to Arrow IPC file format
-        let ipc_bytes = self.write_ipc_file()?;
-        let byte_length = ipc_bytes.len() as u64;
+        // Wrap in CountingWriter to track bytes written
+        let mut counting = CountingWriter::new(writer);
+        self.write_ipc_to(&mut counting)?;
+        let byte_length = counting.bytes_written() as u64;
 
-        let metadata = StreamMetadata::new(
+        Ok(StreamMetadata::new(
             self.stream_id,
             self.slot_id,
             self.schema_fingerprint,
@@ -244,29 +253,54 @@ impl StreamAccumulator {
             byte_length,
             row_count,
             chunk_count,
-        );
-
-        Ok((ipc_bytes, metadata))
+        ))
     }
 
     /// Writes all accumulated batches to Arrow IPC file format.
-    fn write_ipc_file(&self) -> Result<Vec<u8>, SegmentError> {
-        let mut buffer = Cursor::new(Vec::new());
-
+    fn write_ipc_to<W: std::io::Write>(&self, writer: &mut W) -> Result<(), SegmentError> {
         // Use default IPC write options
         let options = IpcWriteOptions::default();
 
-        {
-            let mut writer = FileWriter::try_new_with_options(&mut buffer, &self.schema, options)?;
+        let mut ipc_writer = FileWriter::try_new_with_options(writer, &self.schema, options)?;
 
-            for batch in &self.batches {
-                writer.write(batch)?;
-            }
-
-            writer.finish()?;
+        for batch in &self.batches {
+            ipc_writer.write(batch)?;
         }
 
-        Ok(buffer.into_inner())
+        ipc_writer.finish()?;
+
+        Ok(())
+    }
+}
+
+/// A writer wrapper that counts bytes written.
+struct CountingWriter<W> {
+    inner: W,
+    bytes_written: usize,
+}
+
+impl<W> CountingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            bytes_written: 0,
+        }
+    }
+
+    fn bytes_written(&self) -> usize {
+        self.bytes_written
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.bytes_written += n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -356,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_produces_valid_arrow_ipc() {
+    fn write_to_produces_valid_arrow_ipc() {
         let schema = test_schema();
         let mut acc = StreamAccumulator::new(
             StreamId::new(5),
@@ -371,7 +405,9 @@ mod tests {
         let _ = acc.append(batch1).unwrap();
         let _ = acc.append(batch2).unwrap();
 
-        let (ipc_bytes, metadata) = acc.finalize(1024).unwrap();
+        // Write to a buffer using write_to
+        let mut buffer = Vec::new();
+        let metadata = acc.write_to(&mut buffer, 1024).unwrap();
 
         // Verify metadata
         assert_eq!(metadata.id, StreamId::new(5));
@@ -383,7 +419,7 @@ mod tests {
         assert_eq!(metadata.chunk_count, 2);
 
         // Verify IPC bytes are readable
-        let cursor = Cursor::new(ipc_bytes);
+        let cursor = Cursor::new(buffer);
         let reader = FileReader::try_new(cursor, None).expect("valid IPC file");
 
         // Schema should match
@@ -399,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_empty_accumulator_produces_valid_ipc() {
+    fn write_to_empty_accumulator_produces_valid_ipc() {
         let schema = test_schema();
         let acc = StreamAccumulator::new(
             StreamId::new(0),
@@ -408,13 +444,14 @@ mod tests {
             schema.clone(),
         );
 
-        let (ipc_bytes, metadata) = acc.finalize(0).unwrap();
+        let mut buffer = Vec::new();
+        let metadata = acc.write_to(&mut buffer, 0).unwrap();
 
         assert_eq!(metadata.chunk_count, 0);
         assert_eq!(metadata.row_count, 0);
 
         // Empty IPC file should still be readable
-        let cursor = Cursor::new(ipc_bytes);
+        let cursor = Cursor::new(buffer);
         let reader = FileReader::try_new(cursor, None).expect("valid IPC file");
         assert_eq!(reader.schema(), schema);
 

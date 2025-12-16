@@ -219,13 +219,10 @@ impl QuiverEngine {
         // Assign a segment sequence number
         let seq = SegmentSeq::new(self.next_segment_seq.fetch_add(1, Ordering::SeqCst));
 
-        // Finalize the segment to get stream data and manifest
-        let (streams, manifest) = segment.finalize()?;
-
-        // Write the segment file
+        // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
-        let (_bytes_written, _checksum) = writer.write_to_file(&segment_path, streams, manifest)?;
+        let (_bytes_written, _checksum) = writer.write_segment(&segment_path, segment)?;
 
         // Step 5: Advance WAL cursor now that segment is durable
         {
