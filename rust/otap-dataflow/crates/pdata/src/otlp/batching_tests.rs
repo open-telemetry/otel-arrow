@@ -18,10 +18,7 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
     let inputs_otlp: Vec<_> = inputs_otlp.collect();
     let signal_type = inputs_otlp.get(0).expect("ok").signal_type();
 
-    let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp
-        .iter()
-        .map(|m| otlp_message_to_bytes(m.clone()))
-        .collect();
+    let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp.iter().map(otlp_message_to_bytes).collect();
 
     let total_input_bytes: usize = inputs_bytes.iter().map(|b| b.byte_size()).sum();
 

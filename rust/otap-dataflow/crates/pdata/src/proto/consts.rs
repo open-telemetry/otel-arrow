@@ -15,12 +15,13 @@ pub mod wire_types {
     /// Length-delimited (string, bytes, embedded messages)
     pub const LEN: u64 = 2;
 
-    /// Tags 3 and 4 have an obsolete definition, will never be seen.
+    // Tags 3 and 4 have an obsolete definition, will never be seen.
 
     /// 32-bit (fixed32, sfixed32, float)
     pub const FIXED32: u64 = 5;
 
-    /// Tags 6 and 7 have never been defined in protobuf.
+    /// INVALID maybe used to signal errors. Tags 6 and 7 were never
+    /// defined in protobuf.
     pub const INVALID: u64 = 7;
 
     /// The bitmask of a protobuf tag encoding.

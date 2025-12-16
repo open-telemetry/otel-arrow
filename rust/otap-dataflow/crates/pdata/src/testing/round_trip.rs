@@ -29,7 +29,7 @@ pub fn otlp_to_otap(msg: &OtlpProtoMessage) -> OtapArrowRecords {
 
 /// Transcode a protocol message object to OTLP bytes.
 #[must_use]
-pub fn otlp_message_to_bytes(msg: OtlpProtoMessage) -> OtlpProtoBytes {
+pub fn otlp_message_to_bytes(msg: &OtlpProtoMessage) -> OtlpProtoBytes {
     let mut buf = Vec::new();
     msg.encode(&mut buf).expect("encoding should not fail");
 

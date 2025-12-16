@@ -597,7 +597,7 @@ impl BatchProcessor {
             .map(|signals| BatchProcessorFormat {
                 fmtcfg: &self.config.otap,
                 config: &self.config,
-                signals: signals,
+                signals,
                 metrics: &mut self.metrics,
             })
     }
@@ -608,7 +608,7 @@ impl BatchProcessor {
             .map(|signals| BatchProcessorFormat {
                 fmtcfg: &self.config.otlp,
                 config: &self.config,
-                signals: signals,
+                signals,
                 metrics: &mut self.metrics,
             })
     }
@@ -1341,7 +1341,7 @@ mod tests {
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::fixtures::DataGenerator;
-    use otap_df_pdata::testing::round_trip::otap_to_otlp;
+    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use serde_json::json;
     use std::collections::HashSet;
@@ -1595,6 +1595,11 @@ mod tests {
         }
     }
 
+    fn otap_pdata_to_message(data: &OtapPdata) -> OtlpProtoMessage {
+        let rec: OtapArrowRecords = data.clone().payload().try_into().unwrap();
+        otap_to_otlp(&rec)
+    }
+
     fn run_batch_processor_test<F, P>(
         events: impl Iterator<Item = TestEvent>,
         subscribe: bool,
@@ -1791,12 +1796,7 @@ mod tests {
                 // Verify all outputs are equivalent to inputs
                 let outputs: Vec<OtlpProtoMessage> = event_outputs
                     .iter()
-                    .flat_map(|out| {
-                        out.outputs.iter().map(|p| {
-                            let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
-                            otap_to_otlp(&rec)
-                        })
-                    })
+                    .flat_map(|out| out.outputs.iter().map(otap_pdata_to_message))
                     .collect();
 
                 let output_item_count: usize = outputs.iter().map(|m| m.num_items()).sum();
@@ -2331,5 +2331,105 @@ mod tests {
     #[test]
     fn test_logs_nack_ordering_position_3() {
         test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 3);
+    }
+
+    /// Test Preserve mode: this can't use the same test harness used above because it
+    /// arranges mixed-format inputs.
+    #[test]
+    fn test_preserve_mode_mixed_formats() {
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "preserve",
+            "otap": {
+                "min_size": 100,  // Won't trigger size flush
+                "max_size": 100,
+                "sizer": "items",
+            },
+            "otlp": {
+                "min_size": 10000,  // Won't trigger size flush
+                "max_size": 20000,
+                "sizer": "bytes",
+            },
+            "flush_timeout": "50ms"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+
+                // Create test data
+                let mut datagen = DataGenerator::new(1);
+                let logs1: OtlpProtoMessage = datagen.generate_logs().into();
+                let logs2: OtlpProtoMessage = datagen.generate_logs().into();
+
+                // Convert to OTAP format
+                let otlp_message1 = otlp_message_to_bytes(&logs1);
+                let otap_message2 = otlp_to_otap(&logs2);
+
+                let mut outputs = Vec::new();
+                let mut pending_delays: Vec<(Instant, Box<OtapPdata>)> = Vec::new();
+
+                // Send both
+                ctx.process(Message::PData(OtapPdata::new_default(otlp_message1.into())))
+                    .await
+                    .expect("process otap");
+
+                ctx.process(Message::PData(OtapPdata::new_default(otap_message2.into())))
+                    .await
+                    .expect("process otlp");
+
+                // Drain control channel for DelayData
+                while let Ok(PipelineControlMsg::DelayData { when, data, .. }) =
+                    pipeline_rx.try_recv()
+                {
+                    pending_delays.push((when, data));
+                }
+
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "no outputs before timeout"
+                );
+
+                // Trigger timeout
+                for (when, data) in pending_delays {
+                    ctx.process(Message::Control(NodeControlMsg::DelayedData { when, data }))
+                        .await
+                        .expect("process delayed");
+                }
+
+                // Drain outputs after timeout
+                let mut drained_outputs = ctx.drain_pdata().await;
+                outputs.append(&mut drained_outputs);
+                assert!(!outputs.is_empty(), "should have outputs after timeout");
+
+                // Verify both formats
+                let mut has_otap = false;
+                let mut has_otlp = false;
+                for output in &outputs {
+                    match output.signal_format() {
+                        SignalFormat::OtapRecords => has_otap = true,
+                        SignalFormat::OtlpBytes => has_otlp = true,
+                    }
+                }
+
+                assert!(has_otap, "should have OTAP output");
+                assert!(has_otlp, "should have OTLP output");
+
+                // Test equivalence.
+                let outputs: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
+
+                assert_equivalent(&[logs1, logs2], &outputs);
+
+                // Collect telemetry for verify_item_metrics.
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&metrics_registry, SignalType::Logs, 6);
+            });
     }
 }

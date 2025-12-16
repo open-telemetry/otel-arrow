@@ -43,7 +43,7 @@ fn finalize_batch(
     outputs: &mut Vec<OtlpProtoBytes>,
 ) {
     // Calculate exact size needed
-    let size = batch_bytes(&start_pos, &end_pos, inputs);
+    let size = batch_bytes(start_pos, end_pos, inputs);
 
     if size == 0 {
         return;
@@ -62,8 +62,8 @@ fn finalize_batch(
         let buf = inputs[start_pos.input_idx].as_bytes();
         batch.extend_from_slice(&buf[start_pos.offset..]);
 
-        for idx in (start_pos.input_idx + 1)..end_pos.input_idx {
-            batch.extend_from_slice(inputs[idx].as_bytes());
+        for req in &inputs[(start_pos.input_idx + 1)..end_pos.input_idx] {
+            batch.extend_from_slice(req.as_bytes());
         }
 
         if end_pos.offset != 0 {
