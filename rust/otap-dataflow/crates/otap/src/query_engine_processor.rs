@@ -7,7 +7,7 @@
 //! [`otap_df_query_engine`] crate.
 //!
 //! Note: this processor and the query engine that it uses are still under active development.
-//! The configuration may change in the future and support for various transformation programs is
+//! The configuration may change in the future and support for various transformation query is
 //! still being developed.
 //!
 //! ToDo: Handle Ack and Nack
@@ -72,18 +72,18 @@ impl TryFrom<&PipelineExpression> for SignalScope {
         //
         // TODO the logic here wouldn't be safe for languages other than Kql. We might want to have
         //  the pipeline expression be able to return name of the source
-        let program = pipeline_expr.get_query_slice(pipeline_expr.get_query_location());
-        Ok(if program.starts_with("logs") {
+        let query = pipeline_expr.get_query_slice(pipeline_expr.get_query_location());
+        Ok(if query.starts_with("logs") {
             Self::Signal(SignalType::Logs)
-        } else if program.starts_with("traces") {
+        } else if query.starts_with("traces") {
             Self::Signal(SignalType::Traces)
-        } else if program.starts_with("metrics") {
+        } else if query.starts_with("metrics") {
             Self::Signal(SignalType::Metrics)
-        } else if program.starts_with("signal") {
+        } else if query.starts_with("signal") {
             Self::All
         } else {
             return Err(ConfigError::InvalidUserConfig {
-                error: "could not determine signal type from program".into(),
+                error: "could not determine signal type from query".into(),
             });
         })
     }
@@ -102,7 +102,7 @@ impl QueryEngineProcessor {
         // https://github.com/open-telemetry/otel-arrow/issues/1530
         let pipeline_expr = KqlParser::parse(&config.query)
             .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Could not parse QueryEngineProcessor program: {e:?}"),
+                error: format!("Could not parse QueryEngineProcessor query: {e:?}"),
             })?
             .pipeline;
 
@@ -240,13 +240,13 @@ mod test {
 
     use crate::pdata::OtapPdata;
 
-    fn try_create_with_program(
-        program: &str,
+    fn try_create_with_query(
+        query: &str,
         runtime: &TestRuntime<OtapPdata>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(QUERY_ENGINE_PROCESSOR_URN);
         node_config.config = json!({
-            "program": program
+            "query": query
         });
 
         let metrics_registry_handle = runtime.metrics_registry();
@@ -263,13 +263,13 @@ mod test {
     }
 
     #[test]
-    fn test_unparsable_program_is_config_time_error() {
+    fn test_unparsable_query_is_config_time_error() {
         let runtime = TestRuntime::<OtapPdata>::new();
-        match try_create_with_program("logs | invalid operator", &runtime) {
+        match try_create_with_query("logs | invalid operator", &runtime) {
             Err(e) => {
                 assert!(
                     e.to_string()
-                        .contains("Could not parse QueryEngineProcessor program")
+                        .contains("Could not parse QueryEngineProcessor query")
                 )
             }
             Ok(_) => {
@@ -283,8 +283,8 @@ mod test {
         let runtime = TestRuntime::<OtapPdata>::new();
         let registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
-        let program = "logs | where severity_text == \"ERROR\"";
-        let processor = try_create_with_program(program, &runtime).expect("created processor");
+        let query = "logs | where severity_text == \"ERROR\"";
+        let processor = try_create_with_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -375,7 +375,7 @@ mod test {
     }
 
     /// Send one traces batch and one metrics batch with signals that have the same "name" values
-    /// Used to test that the program selects the right signal type
+    /// Used to test that the query selects the right signal type
     async fn send_one_traces_one_metrics_same_names(ctx: &mut TestContext<OtapPdata>) {
         let spans = vec![
             Span::build().name("foo").finish(),
@@ -424,8 +424,8 @@ mod test {
     fn test_signal_scope() {
         // test ensure it will only operate on traces, but ignores other signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let program = "traces | where name == \"foo\"";
-        let processor = try_create_with_program(program, &runtime).expect("created processor");
+        let query = "traces | where name == \"foo\"";
+        let processor = try_create_with_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -459,8 +459,8 @@ mod test {
     fn test_signal_scope_all() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let program = "signals | where name == \"foo\"";
-        let processor = try_create_with_program(program, &runtime).expect("created processor");
+        let query = "signals | where name == \"foo\"";
+        let processor = try_create_with_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
