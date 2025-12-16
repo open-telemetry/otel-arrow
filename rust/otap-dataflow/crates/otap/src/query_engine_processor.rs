@@ -6,10 +6,12 @@
 //! This processor performs transformations on the OTAP batches using the
 //! [`otap_df_query_engine`] crate.
 //!
-//! TODO (docs):
-//! - example
-//! - notes about how this is experimental and APIs/config structure are subject to change
-//! - todo about supporting additional languages?
+//! Note: this processor and the query engine that it uses are still under active development.
+//! The configuration may change in the future and support for various transformation programs is
+//! still being developed.
+//!
+//! ToDo: Handle Ack and Nack
+//! ToDo: Detect unsupported pipelines at config time instead of run time.
 
 use std::sync::Arc;
 
@@ -29,7 +31,7 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_query_engine::pipeline::Pipeline;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
@@ -48,18 +50,16 @@ pub const QUERY_ENGINE_PROCESSOR_URN: &str = "urn:otel:processor:query_engine";
 /// Opentelemetry Processing Language Processor
 pub struct QueryEngineProcessor {
     pipeline: Pipeline,
-
     signal_scope: SignalScope,
-
     metrics: MetricSet<Metrics>,
 }
 
 /// Identifier for which signal types the transformation pipeline should be applied.
 enum SignalScope {
-    // apply transformation to all signal types
+    // Apply transformation to all signal types
     All,
 
-    // apply transformation to telemetry of one particular signal type
+    // Apply transformation to telemetry of one particular signal type
     Signal(SignalType),
 }
 
@@ -106,19 +106,19 @@ impl QueryEngineProcessor {
             })?
             .pipeline;
 
-        let signal_scope = SignalScope::try_from(&pipeline_expr)?;
-
-        let metrics = pipeline_ctx.register_metrics::<Metrics>();
+        // TODO: it would be nice if we could validate that the pipeline expr is supported by the
+        // query engine here. Currently, validation happens lazily when the first batch is seen.
+        // https://github.com/open-telemetry/otel-arrow/issues/1634
 
         Ok(Self {
+            signal_scope: SignalScope::try_from(&pipeline_expr)?,
             pipeline: Pipeline::new(pipeline_expr),
-            signal_scope,
-            metrics,
+            metrics: pipeline_ctx.register_metrics::<Metrics>(),
         })
     }
 
     /// determine if the transformation should be applied to this pdata, or if it should be skipped
-    fn should_process(&self, pdata: &OtapPdata) -> bool {
+    fn should_process(&self, pdata: &OtapPayload) -> bool {
         match self.signal_scope {
             SignalScope::All => true,
             SignalScope::Signal(signal_type) => signal_type == pdata.signal_type(),
@@ -163,7 +163,9 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
                     mut metrics_reporter,
                 } => {
                     if let Err(e) = metrics_reporter.report(&mut self.metrics) {
-                        // TODO handle the error?
+                        return Err(EngineError::InternalError {
+                            message: e.to_string(),
+                        });
                     }
                 }
                 _ => {
@@ -172,27 +174,20 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
             },
             Message::PData(pdata) => {
                 self.metrics.msgs_consumed.inc();
-                let pdata_to_forward = if !self.should_process(&pdata) {
+                let (context, payload) = pdata.into_parts();
+                let payload = if !self.should_process(&payload) {
                     // skip handling this pdata
-                    pdata
+                    payload
                 } else {
-                    let (context, payload) = pdata.into_parts();
-                    let otap_batch: OtapArrowRecords = match payload.try_into() {
-                        Ok(o) => o,
-                        Err(e) => {
-                            // TODO - update metrics here?
-                            return Err(e.into());
-                        }
-                    };
-
-                    // TODO - need to remove transport optimized encoding?
-                    // (this might be something we should do in the pipeline engine)
-                    // (TODO check if filter processor is doing this ...)
-
+                    let mut otap_batch: OtapArrowRecords = payload.try_into()?;
+                    otap_batch.decode_transport_optimized_ids()?;
                     match self.pipeline.execute(otap_batch).await {
-                        Ok(otap_batch) => OtapPdata::new(context, otap_batch.into()),
+                        Ok(otap_batch) => {
+                            self.metrics.msgs_transformed.inc();
+                            otap_batch.into()
+                        }
                         Err(e) => {
-                            // TODO - update metrics here?
+                            self.metrics.msgs_transform_failed.inc();
                             return Err(EngineError::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
@@ -204,14 +199,10 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
                 };
 
                 // TODO Ack/Nack?
-
-                match effect_handler.send_message(pdata_to_forward).await {
-                    Ok(_) => self.metrics.msgs_forwarded.inc(),
-                    Err(_e) => {
-                        // TODO update metrics?
-                        // TODO something observable with error?
-                    }
-                }
+                effect_handler
+                    .send_message(OtapPdata::new(context, payload))
+                    .await
+                    .inspect(|_| self.metrics.msgs_forwarded.inc())?;
             }
         };
 
@@ -227,44 +218,73 @@ mod test {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::{
         context::ControllerContext,
-        testing::{processor::TestRuntime, test_node},
+        testing::{
+            processor::{TestContext, TestRuntime},
+            test_node,
+        },
     };
     use otap_df_pdata::{
         proto::{
             OtlpProtoMessage,
             opentelemetry::{
+                arrow::v1::ArrowPayloadType,
                 common::v1::InstrumentationScope,
                 logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                metrics::v1::{Metric, MetricsData, ResourceMetrics, ScopeMetrics},
                 resource::v1::Resource,
+                trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
             },
         },
         testing::round_trip::{otap_to_otlp, otlp_to_otap},
     };
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
 
     use crate::pdata::OtapPdata;
 
-    #[test]
-    fn test_simple_transform_pipeline() {
-        let runtime = TestRuntime::<OtapPdata>::new();
+    fn try_create_with_program(
+        program: &str,
+        runtime: &TestRuntime<OtapPdata>,
+    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(QUERY_ENGINE_PROCESSOR_URN);
         node_config.config = json!({
-            "program": "logs | where severity_text == \"ERROR\""
+            "program": program
         });
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(metrics_registry_handle);
         let pipeline_context =
             controller_context.pipeline_context_with("group_id".into(), "pipeline_id".into(), 0, 0);
         let node_id = test_node("query-engine-processor");
-        let processor = create_query_engine_processor(
+        create_query_engine_processor(
             pipeline_context,
             node_id,
             Arc::new(node_config),
             runtime.config(),
         )
-        .expect("no error");
+    }
 
+    #[test]
+    fn test_unparsable_program_is_config_time_error() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        match try_create_with_program("logs | invalid operator", &runtime) {
+            Err(e) => {
+                assert!(
+                    e.to_string()
+                        .contains("Could not parse QueryEngineProcessor program")
+                )
+            }
+            Ok(_) => {
+                panic!("expected pipeline create error")
+            }
+        }
+    }
+
+    #[test]
+    fn test_simple_transform_pipeline() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
+        let program = "logs | where severity_text == \"ERROR\"";
+        let processor = try_create_with_program(program, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -288,15 +308,18 @@ mod test {
                     .await
                     .expect("no process error");
 
-                let out = ctx.drain_pdata().await;
+                let out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
                 let result = out
                     .into_iter()
                     .next()
-                    .map(OtapPdata::payload)
-                    .map(OtapArrowRecords::try_from)
-                    .expect("one result")
                     .map(|otap_batch| otap_to_otlp(&otap_batch))
-                    .expect("result");
+                    .expect("one result");
 
                 match result {
                     OtlpProtoMessage::Logs(logs_data) => {
@@ -313,7 +336,157 @@ mod test {
                         )
                     }
                 }
+
+                // Trigger telemetry snapshot
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect");
             })
-            .validate(|_ctx| async move {});
+            .validate(|_ctx| async move {
+                // Allow the collector to pull from the channel
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                let mut msgs_consumed = 0;
+                let mut msgs_forwarded = 0;
+                let mut msgs_transformed = 0;
+                let mut msgs_transform_failed = 0;
+                registry.visit_current_metrics(|desc, _attrs, iter| {
+                    if desc.name == "queryengine.processor.metrics" {
+                        for (field, v) in iter {
+                            let val = v.to_u64_lossy();
+                            match field.name {
+                                "msgs.consumed" => msgs_consumed += val,
+                                "msgs.forwarded" => msgs_forwarded += val,
+                                "msgs.transformed" => msgs_transformed += val,
+                                "msgs.transform.failed" => msgs_transform_failed += val,
+                                _ => {}
+                            }
+                        }
+                    }
+                });
+
+                assert_eq!(msgs_consumed, 1);
+                assert_eq!(msgs_forwarded, 1);
+                assert_eq!(msgs_transformed, 1);
+                assert_eq!(msgs_transform_failed, 0)
+            });
+    }
+
+    /// Send one traces batch and one metrics batch with signals that have the same "name" values
+    /// Used to test that the program selects the right signal type
+    async fn send_one_traces_one_metrics_same_names(ctx: &mut TestContext<OtapPdata>) {
+        let spans = vec![
+            Span::build().name("foo").finish(),
+            Span::build().name("bar").finish(),
+        ];
+
+        let trace_otap_batch = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData::new(vec![
+            ResourceSpans::new(
+                Resource::default(),
+                vec![ScopeSpans::new(
+                    InstrumentationScope::default(),
+                    spans.clone(),
+                )],
+            ),
+        ])));
+
+        ctx.process(Message::PData(OtapPdata::new_default(
+            trace_otap_batch.into(),
+        )))
+        .await
+        .expect("no process error");
+
+        let metrics = vec![
+            Metric::build().name("foo").finish(),
+            Metric::build().name("bar").finish(),
+        ];
+
+        let metrics_otap_batch = otlp_to_otap(&OtlpProtoMessage::Metrics(MetricsData::new(vec![
+            ResourceMetrics::new(
+                Resource::default(),
+                vec![ScopeMetrics::new(
+                    InstrumentationScope::default(),
+                    metrics.clone(),
+                )],
+            ),
+        ])));
+
+        ctx.process(Message::PData(OtapPdata::new_default(
+            metrics_otap_batch.into(),
+        )))
+        .await
+        .expect("no process error")
+    }
+
+    #[test]
+    fn test_signal_scope() {
+        // test ensure it will only operate on traces, but ignores other signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let program = "traces | where name == \"foo\"";
+        let processor = try_create_with_program(program, &runtime).expect("created processor");
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                send_one_traces_one_metrics_same_names(&mut ctx).await;
+                let mut processed_pdata = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let traces_batch = processed_pdata.next().expect("sent traces batch");
+                let metrics_batch = processed_pdata.next().expect("sent metrics batch");
+
+                // assert one of the spans got filtered out
+                let spans = traces_batch
+                    .get(ArrowPayloadType::Spans)
+                    .expect("spans present");
+                assert_eq!(spans.num_rows(), 1);
+
+                // assert the metric did not get filtered out
+                let metrics = metrics_batch
+                    .get(ArrowPayloadType::UnivariateMetrics)
+                    .expect("metrics present");
+                assert_eq!(metrics.num_rows(), 2);
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_signal_scope_all() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let program = "signals | where name == \"foo\"";
+        let processor = try_create_with_program(program, &runtime).expect("created processor");
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                send_one_traces_one_metrics_same_names(&mut ctx).await;
+                let mut processed_pdata = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let traces_batch = processed_pdata.next().expect("sent traces batch");
+                let metrics_batch = processed_pdata.next().expect("sent metrics batch");
+
+                // assert one of the spans got filtered out
+                let spans = traces_batch
+                    .get(ArrowPayloadType::Spans)
+                    .expect("spans present");
+                assert_eq!(spans.num_rows(), 1);
+
+                // assert it also filtered out one of the metrics
+                let metrics = metrics_batch
+                    .get(ArrowPayloadType::UnivariateMetrics)
+                    .expect("metrics present");
+                assert_eq!(metrics.num_rows(), 1);
+            })
+            .validate(|_ctx| async move {})
     }
 }

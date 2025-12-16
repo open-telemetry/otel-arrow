@@ -18,7 +18,11 @@ pub struct Metrics {
     #[metric(unit = "{msg}")]
     pub msgs_forwarded: Counter<u64>,
 
+    /// Number of messages successfully transformed.
+    #[metric(unit = "{msg}")]
+    pub msgs_transformed: Counter<u64>,
+
     /// Number of failed transform attempts.
-    #[metric(unit = "{op}")]
-    pub transform_failed: Counter<u64>,
+    #[metric(unit = "{msg}")]
+    pub msgs_transform_failed: Counter<u64>,
 }
