@@ -246,14 +246,11 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
-                    match processor.process(msg, &mut effect_handler).await {
-                        Err(error) => {
-                            otap_df_telemetry::otel_error!(
-                                "Procsesor.Error",
-                                message = error.to_string(),
-                            );
-                        }
-                        Ok(_) => {}
+                    if let Err(error) = processor.process(msg, &mut effect_handler).await {
+                        otap_df_telemetry::otel_error!(
+                            "Procsesor.Error",
+                            message = error.to_string(),
+                        );
                     }
                 }
                 // Cancel periodic collection
@@ -281,14 +278,11 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
-                    match processor.process(msg, &mut effect_handler).await {
-                        Err(error) => {
-                            otap_df_telemetry::otel_error!(
-                                "Procsesor.Error",
-                                message = error.to_string(),
-                            );
-                        }
-                        Ok(_) => {}
+                    if let Err(error) = processor.process(msg, &mut effect_handler).await {
+                        otap_df_telemetry::otel_error!(
+                            "Procsesor.Error",
+                            message = error.to_string(),
+                        );
                     }
                 }
                 // Cancel periodic collection
