@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use arrow_schema::ArrowError;
 use thiserror::Error;
 
-use super::types::{SegmentSeq, StreamId};
+use super::types::StreamId;
 use crate::record_bundle::SlotId;
 
 /// Errors that can occur during segment operations.
@@ -42,11 +42,11 @@ pub enum SegmentError {
 
     /// Checksum mismatch indicating data corruption.
     #[error(
-        "checksum mismatch in segment {segment_seq:?}: expected {expected:#010x}, got {actual:#010x}"
+        "checksum mismatch in segment {path:?}: expected {expected:#010x}, got {actual:#010x}"
     )]
     ChecksumMismatch {
-        /// Segment where corruption was detected.
-        segment_seq: Option<SegmentSeq>,
+        /// Path to the corrupted segment file, if known.
+        path: Option<PathBuf>,
         /// Expected CRC32 value.
         expected: u32,
         /// Actual computed CRC32 value.
@@ -155,14 +155,14 @@ mod tests {
     #[test]
     fn checksum_mismatch_displays_hex_values() {
         let err = SegmentError::ChecksumMismatch {
-            segment_seq: Some(SegmentSeq::new(42)),
+            path: Some(PathBuf::from("/data/segments/seg-042.qseg")),
             expected: 0xDEADBEEF,
             actual: 0xCAFEBABE,
         };
         let msg = err.to_string();
         assert!(msg.contains("0xdeadbeef"));
         assert!(msg.contains("0xcafebabe"));
-        assert!(msg.contains("42"));
+        assert!(msg.contains("seg-042.qseg"));
     }
 
     #[test]

@@ -340,7 +340,7 @@ impl SegmentReader {
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
         let buffer = Buffer::from(data);
-        Self::from_buffer(buffer)
+        Self::from_buffer_with_path(buffer, Some(path.to_path_buf()))
     }
 
     /// Opens a segment file with memory mapping for zero-copy access.
@@ -378,11 +378,11 @@ impl SegmentReader {
         let bytes = bytes::Bytes::from_owner(mmap);
         let buffer = Buffer::from(bytes);
 
-        Self::from_buffer(buffer)
+        Self::from_buffer_with_path(buffer, Some(path.to_path_buf()))
     }
 
-    /// Creates a reader from a pre-loaded buffer.
-    fn from_buffer(buffer: Buffer) -> Result<Self, SegmentError> {
+    /// Creates a reader from a pre-loaded buffer with an optional path for error messages.
+    fn from_buffer_with_path(buffer: Buffer, path: Option<std::path::PathBuf>) -> Result<Self, SegmentError> {
         let file_size = buffer.len();
 
         // Need at least trailer size
@@ -414,7 +414,7 @@ impl SegmentReader {
         let computed_crc = Self::compute_crc(&buffer);
         if computed_crc != stored_crc {
             return Err(SegmentError::ChecksumMismatch {
-                segment_seq: None,
+                path,
                 expected: stored_crc,
                 actual: computed_crc,
             });
