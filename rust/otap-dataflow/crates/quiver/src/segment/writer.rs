@@ -90,6 +90,16 @@ use super::types::{
 };
 use crate::record_bundle::{ArrowPrimitive, SlotId};
 
+/// Alignment boundary for stream data within a segment file.
+///
+/// 64-byte alignment provides:
+/// - Cache-line alignment on modern CPUs (x86, ARM)
+/// - Optimal access patterns for AVX-512 SIMD operations
+/// - Efficient memory-mapped I/O for zero-copy reads
+/// 
+/// See also: https://arrow.apache.org/docs/format/Columnar.html#buffer-alignment-and-padding
+const STREAM_ALIGNMENT: u64 = 64;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SegmentWriter
 // ─────────────────────────────────────────────────────────────────────────────
@@ -231,8 +241,8 @@ impl SegmentWriter {
         let mut stream_metadata_list: Vec<StreamMetadata> = Vec::with_capacity(accumulators.len());
 
         for accumulator in accumulators {
-            // Align stream start to 8-byte boundary for zero-copy mmap reads.
-            let padding = (8 - (offset % 8)) % 8;
+            // Align stream start for optimal SIMD/cache access when memory-mapping.
+            let padding = (STREAM_ALIGNMENT - (offset % STREAM_ALIGNMENT)) % STREAM_ALIGNMENT;
             if padding > 0 {
                 let pad_bytes = vec![0u8; padding as usize];
                 writer
