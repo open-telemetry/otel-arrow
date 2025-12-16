@@ -64,8 +64,11 @@ use std::time::{Duration, Instant};
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
 
-/// Default configuration values (parity-aligned as we confirm Go defaults)
-pub const DEFAULT_MIN_SIZE_ITEMS: usize = 8192;
+/// Default configuration item min-size (OTAP default)
+pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: usize = 8192;
+
+/// Default configuration item min-size (OTLP default)
+pub const DEFAULT_OTLP_MIN_SIZE_BYTES: usize = 262144;
 
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
@@ -91,14 +94,35 @@ pub enum Sizer {
     Bytes,
 }
 
+/// Min/max size for a specific format
+#[derive(Debug, Clone, Deserialize)]
+pub struct FormatConfig {
+    /// Flush current batch when this count is reached, as a
+    /// minimum. Measures the quantity indicated by `sizer`. When
+    /// pending data reaches this threshold a new batch will form and
+    /// be sent.
+    pub min_size: Option<NonZeroUsize>,
+
+    /// Optionally limit batch sizes to an upper bound. Measured in
+    /// the quantity indicated by `sizer`, as described for min_size.
+    /// This limit is passed to the lower-level batching logic as a
+    /// not-to-exceed maximum.
+    pub max_size: Option<NonZeroUsize>,
+
+    /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
+    pub sizer: Sizer,
+}
+
 /// Batching format option.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum BatchingFormat {
     /// Force to OTAP (default).
     Otap,
+
     /// Force to OTLP.
     Otlp,
+
     /// Preserve format, support both independently.
     Preserve,
 }
@@ -106,7 +130,7 @@ pub enum BatchingFormat {
 /// The common signature of the batching methods
 trait Batcher<T: OtapPayloadHelpers> {
     fn make_batches(
-        cfg: &Config,
+        fmtcfg: &FormatConfig,
         signal: SignalType,
         records: Vec<T>,
     ) -> Result<Vec<T>, PDataError>;
@@ -120,23 +144,13 @@ trait Batcher<T: OtapPayloadHelpers> {
 /// Batch processor configuration.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    /// Flush current batch when this count is reached, as a
-    /// minimum. Measures the quantity indicated by `sizer`. When
-    /// pending data reaches this threshold a new batch will form and
-    /// be sent.
-    #[serde(default = "default_min_size_items")]
-    pub min_size: Option<NonZeroUsize>,
+    /// The OTAP configuration.
+    #[serde(default = "default_otap")]
+    pub otap: FormatConfig,
 
-    /// Optionally limit batch sizes to an upper bound. Measured in
-    /// the quantity indicated by `sizer`, as described for min_size.
-    /// This limit is passed to the lower-level batching logic as a
-    /// not-to-exceed maximum.
-    #[serde(default = "default_max_size_items")]
-    pub max_size: Option<NonZeroUsize>,
-
-    /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
-    #[serde(default = "default_sizer_items")]
-    pub sizer: Sizer,
+    /// The OTLP configuration.
+    #[serde(default = "default_otlp")]
+    pub otlp: FormatConfig,
 
     /// Flush non-empty batches on this interval, which may be 0 for
     /// immediate flush or None for no timeout.
@@ -156,17 +170,30 @@ pub struct Config {
     pub format: BatchingFormat,
 }
 
-const fn default_min_size_items() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(DEFAULT_MIN_SIZE_ITEMS)
+const fn default_otap_min_size_items() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(DEFAULT_OTAP_MIN_SIZE_ITEMS)
 }
 
-const fn default_sizer_items() -> Sizer {
-    Sizer::Items
-}
-
-const fn default_max_size_items() -> Option<NonZeroUsize> {
+const fn default_otap_max_size_items() -> Option<NonZeroUsize> {
     // No upper-bound
     None
+}
+
+const fn default_otap_sizer_items() -> Sizer {
+    Sizer::Bytes
+}
+
+const fn default_otlp_min_size_bytes() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(DEFAULT_OTLP_MIN_SIZE_BYTES)
+}
+
+const fn default_otlp_max_size_bytes() -> Option<NonZeroUsize> {
+    // No upper-bound
+    None
+}
+
+const fn default_otlp_sizer_bytes() -> Sizer {
+    Sizer::Bytes
 }
 
 const fn default_flush_timeout() -> Duration {
@@ -185,12 +212,27 @@ const fn default_batching_format() -> BatchingFormat {
     BatchingFormat::Otap
 }
 
+const fn default_otap() -> FormatConfig {
+    FormatConfig {
+        min_size: default_otap_min_size_items(),
+        max_size: default_otap_max_size_items(),
+        sizer: default_otap_sizer_items(),
+    }
+}
+
+const fn default_otlp() -> FormatConfig {
+    FormatConfig {
+        min_size: default_otlp_min_size_bytes(),
+        max_size: default_otlp_max_size_bytes(),
+        sizer: default_otlp_sizer_bytes(),
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            min_size: default_min_size_items(),
-            max_size: default_max_size_items(),
-            sizer: default_sizer_items(),
+            otap: default_otap(),
+            otlp: default_otlp(),
             flush_timeout: default_flush_timeout(),
             inbound_request_limit: default_inbound_request_limit(),
             outbound_request_limit: default_outbound_request_limit(),
@@ -200,12 +242,53 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Validates the configuration.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let no_timeout = self.flush_timeout == Duration::ZERO;
+        match self.format {
+            BatchingFormat::Otap => {
+                self.otap.validate(SignalFormat::OtapRecords, no_timeout)?;
+            }
+            BatchingFormat::Otlp => {
+                self.otlp.validate(SignalFormat::OtlpBytes, no_timeout)?;
+            }
+            BatchingFormat::Preserve => {
+                self.otap.validate(SignalFormat::OtapRecords, no_timeout)?;
+                self.otlp.validate(SignalFormat::OtlpBytes, no_timeout)?;
+            }
+        };
+
+        Ok(())
+    }
+}
+
+impl FormatConfig {
+    #[cfg(test)]
+    fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
+        FormatConfig {
+            min_size: NonZeroUsize::new(min_size),
+            max_size: NonZeroUsize::new(max_size),
+            sizer: Sizer::Items,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
+        FormatConfig {
+            min_size: NonZeroUsize::new(min_size),
+            max_size: NonZeroUsize::new(max_size),
+            sizer: Sizer::Bytes,
+        }
+    }
+
+    /// The lower of the two size limits.
     fn lower_limit(&self) -> usize {
         self.min_size.or(self.max_size).expect("valid").get()
     }
 
-    /// Validates the configuration.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    /// Validate the config, given its format. `no_timeout` indicates the
+    /// parent Config has flush_timeout == 0.
+    pub fn validate(&self, format: SignalFormat, no_timeout: bool) -> Result<(), ConfigError> {
         // At least one size is set.
         if self.min_size.or(self.max_size).is_none() {
             return Err(ConfigError::InvalidUserConfig {
@@ -214,10 +297,9 @@ impl Config {
         }
 
         // Presently we have only the OTAP mode of batching, which supports only Items.
-        let (expect_sizer, with_msg) = match self.format {
-            BatchingFormat::Otap => (Sizer::Items, "OTAP batch sizer: must be items"),
-            BatchingFormat::Otlp => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
-            BatchingFormat::Preserve => (self.sizer.clone(), ""),
+        let (expect_sizer, with_msg) = match format {
+            SignalFormat::OtapRecords => (Sizer::Items, "OTAP batch sizer: must be items"),
+            SignalFormat::OtlpBytes => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
         };
         if self.sizer != expect_sizer {
             return Err(ConfigError::InvalidUserConfig {
@@ -237,8 +319,8 @@ impl Config {
             }
         }
 
-        // Zero-timeout is a valid split-only configuration.
-        if self.flush_timeout == Duration::ZERO {
+        // Zero-timeout is a valid split-only configuration, but must have
+        if no_timeout {
             if let Some(batch_size) = self.min_size {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!("min_size ({}) requires a timeout", batch_size),
@@ -322,6 +404,7 @@ pub struct BatchProcessor {
 
 struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
     config: &'a Config,
+    fmtcfg: &'a FormatConfig,
     signals: &'a mut SignalBatches<T>,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
@@ -332,6 +415,7 @@ where
 {
     signal: SignalType,
     config: &'a Config,
+    fmtcfg: &'a FormatConfig,
     buffer: &'a mut SignalBuffer<T>,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
@@ -498,6 +582,7 @@ impl BatchProcessor {
         self.otap_signals
             .as_mut()
             .map(|signals| BatchProcessorFormat {
+                fmtcfg: &self.config.otap,
                 config: &self.config,
                 signals: signals,
                 metrics: &mut self.metrics,
@@ -508,6 +593,7 @@ impl BatchProcessor {
         self.otlp_signals
             .as_mut()
             .map(|signals| BatchProcessorFormat {
+                fmtcfg: &self.config.otlp,
                 config: &self.config,
                 signals: signals,
                 metrics: &mut self.metrics,
@@ -593,6 +679,7 @@ where
         BatchProcessorSignal {
             signal,
             config: self.config,
+            fmtcfg: self.fmtcfg,
             buffer: match signal {
                 SignalType::Logs => &mut self.signals.logs,
                 SignalType::Traces => &mut self.signals.traces,
@@ -605,13 +692,13 @@ where
 
 impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
     fn make_batches(
-        cfg: &Config,
+        fmtcfg: &FormatConfig,
         signal: SignalType,
         pending: Vec<OtapArrowRecords>,
     ) -> Result<Vec<OtapArrowRecords>, PDataError> {
-        // OTAP only supports Sizer::Items
-        debug_assert_eq!(cfg.sizer, Sizer::Items);
-        make_item_batches(signal, nzu_to_nz64(cfg.max_size), pending)
+        // OTAP only supports Sizer::Items (checked in validate)
+        debug_assert_eq!(fmtcfg.sizer, Sizer::Items);
+        make_item_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
     }
 
     fn wakeup(signal: SignalType) -> OtapArrowRecords {
@@ -627,13 +714,13 @@ impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
 
 impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
     fn make_batches(
-        cfg: &Config,
+        fmtcfg: &FormatConfig,
         signal: SignalType,
         pending: Vec<OtlpProtoBytes>,
     ) -> Result<Vec<OtlpProtoBytes>, PDataError> {
-        // OTLP only supports Sizer::Bytes
-        debug_assert_eq!(cfg.sizer, Sizer::Bytes);
-        make_bytes_batches(signal, nzu_to_nz64(cfg.max_size), pending)
+        // OTLP only supports Sizer::Bytes (checked in validate)
+        debug_assert_eq!(fmtcfg.sizer, Sizer::Bytes);
+        make_bytes_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
     }
 
     fn wakeup(signal: SignalType) -> OtlpProtoBytes {
@@ -694,7 +781,7 @@ where
             .accept(payload, BatchPortion::new(inkey, items));
 
         // Flush based on size when the batch reaches the lower limit.
-        if timeout != Duration::ZERO && self.buffer.inputs.items < self.config.lower_limit() {
+        if timeout != Duration::ZERO && self.buffer.inputs.items < self.fmtcfg.lower_limit() {
             Ok(())
         } else {
             self.flush_signal_impl(
@@ -746,7 +833,7 @@ where
         let pending = inputs.take_pending();
 
         let mut output_batches =
-            match SignalBuffer::<T>::make_batches(self.config, self.signal, pending) {
+            match SignalBuffer::<T>::make_batches(self.fmtcfg, self.signal, pending) {
                 Ok(v) => v,
                 Err(e) => {
                     self.metrics.batching_errors.add(count as u64);
@@ -765,13 +852,13 @@ where
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
         if self.config.flush_timeout != Duration::ZERO
             && reason == FlushReason::Size
-            && self.config.max_size.is_some()
+            && self.fmtcfg.max_size.is_some()
             && output_batches.len() > 1
         {
-            debug_assert!(output_batches[0].num_items() >= self.config.lower_limit());
+            debug_assert!(output_batches[0].num_items() >= self.fmtcfg.lower_limit());
 
             if let Some(last_items) = output_batches.last().map(|last| last.num_items()) {
-                if last_items < self.config.lower_limit() {
+                if last_items < self.fmtcfg.lower_limit() {
                     self.buffer
                         .take_remaining(&mut inputs, &mut output_batches, last_items);
 
@@ -1327,7 +1414,10 @@ mod tests {
             NodeKind::Processor,
             OTAP_BATCH_PROCESSOR_URN.into(),
             serde_json::json!({
-                "batch_send_size": "1000",
+                "otap": {
+                    "sizer": "items",
+                    "min_size": "1000"
+                },
             }),
         );
         let mut dests: HashSet<otap_df_config::NodeId> = HashSet::new();
@@ -1362,26 +1452,35 @@ mod tests {
     fn test_config_validation() {
         // Both sizes set, max >= batch: OK
         let cfg = Config {
-            min_size: NonZeroUsize::new(100),
-            max_size: NonZeroUsize::new(200),
+            otap: FormatConfig::new_items(100, 200),
+            otlp: FormatConfig::new_bytes(10000, 20000),
             flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
-        // Only batch size: OK
+        // Only batch size: OTLP OK (OTLP invalid OK)
         let cfg = Config {
-            min_size: NonZeroUsize::new(100),
-            max_size: None,
+            otap: FormatConfig::new_items(100, 0),
+            otlp: FormatConfig::new_items(0, 0),
+            flush_timeout: Duration::from_millis(100),
+            format: BatchingFormat::Otap,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+
+        // Only max size: OK (OTLP default)
+        let cfg = Config {
+            otap: FormatConfig::new_items(0, 200),
             flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
-        // Only max size: OK
+        // All formats
         let cfg = Config {
-            min_size: None,
-            max_size: NonZeroUsize::new(200),
+            otap: FormatConfig::new_items(0, 200),
+            otlp: FormatConfig::new_bytes(20000, 0),
             flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1389,17 +1488,26 @@ mod tests {
 
         // Split-only: OK
         let cfg = Config {
-            min_size: None,
-            max_size: NonZeroUsize::new(100),
+            otlp: FormatConfig::new_bytes(0, 100),
+            otap: FormatConfig::new_items(0, 0),
             flush_timeout: Duration::ZERO,
+            format: BatchingFormat::Otlp,
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
+        // Format: preserve, 1 invalid
+        let cfg = Config {
+            otlp: FormatConfig::new_bytes(0, 0),
+            format: BatchingFormat::Preserve,
+            ..Default::default()
+        };
+        assert!(!cfg.validate().is_ok());
+
         // Both None: ERROR
         let cfg = Config {
-            min_size: None,
-            max_size: None,
+            otap: FormatConfig::new_bytes(0, 0),
+            format: BatchingFormat::Otap,
             flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1407,8 +1515,7 @@ mod tests {
 
         // Max < batch: ERROR
         let cfg = Config {
-            min_size: NonZeroUsize::new(200),
-            max_size: NonZeroUsize::new(100),
+            otap: FormatConfig::new_items(200, 100),
             flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
@@ -1416,8 +1523,7 @@ mod tests {
 
         // lower-bound without timeout: ERROR
         let cfg = Config {
-            min_size: NonZeroUsize::new(200),
-            max_size: NonZeroUsize::new(100),
+            otap: FormatConfig::new_items(100, 200),
             flush_timeout: Duration::ZERO,
             ..Default::default()
         };
@@ -1691,9 +1797,12 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "min_size": 4,
-                "max_size": 5,
-                "flush_timeout": "1s"
+                "otap": {
+                    "min_size": 4,
+                    "max_size": 5,
+                    "sizer": "items",
+                    "flush_timeout": "1s"
+                }
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1745,9 +1854,12 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "min_size": 10,  // Higher than input (3 items), so won't trigger size flush
-                "max_size": 10,
-                "flush_timeout": "50ms"
+                "otap": {
+                    "min_size": 10,  // Higher than input (3 items), so won't trigger size flush
+                    "max_size": 10,
+                    "sizer": "items",
+                    "flush_timeout": "50ms"
+                }
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1803,9 +1915,12 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "min_size": 3,
-                "max_size": 3,
-                "flush_timeout": "1s"
+                "otap": {
+                    "min_size": 3,
+                    "max_size": 3,
+                    "sizer": "items",
+                    "flush_timeout": "1s"
+                }
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1854,9 +1969,12 @@ mod tests {
         events.push(TestEvent::Elapsed);
 
         let cfg = json!({
-            "min_size": 5,
-            "max_size": 10,
-            "flush_timeout": "1s"
+            "otap": {
+                "min_size": 5,
+                "max_size": 10,
+                "sizer": "items",
+                "flush_timeout": "1s"
+            }
         });
 
         run_batch_processor_test(
@@ -1909,9 +2027,12 @@ mod tests {
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
 
         let cfg = json!({
-            "min_size": null,
-            "max_size": 2,
-            "flush_timeout": "0s",
+            "otap": {
+                "min_size": null,
+                "max_size": 2,
+                "sizer": "items",
+                "flush_timeout": "0s",
+            }
         });
 
         run_batch_processor_test(
@@ -1967,9 +2088,12 @@ mod tests {
         nack_position: usize,
     ) {
         let cfg = json!({
-            "min_size": 4,
-            "max_size": 5,
-            "flush_timeout": "1s",
+            "otap": {
+                "min_size": 4,
+                "max_size": 5,
+                "sizer": "items",
+                "flush_timeout": "1s",
+            }
         });
 
         // Use inputs with unique markers
