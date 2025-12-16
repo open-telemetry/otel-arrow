@@ -340,7 +340,7 @@ impl SegmentReader {
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
         let buffer = Buffer::from(data);
-        Self::from_buffer(buffer, path)
+        Self::from_buffer(buffer)
     }
 
     /// Opens a segment file with memory mapping for zero-copy access.
@@ -378,11 +378,11 @@ impl SegmentReader {
         let bytes = bytes::Bytes::from_owner(mmap);
         let buffer = Buffer::from(bytes);
 
-        Self::from_buffer(buffer, path)
+        Self::from_buffer(buffer)
     }
 
     /// Creates a reader from a pre-loaded buffer.
-    fn from_buffer(buffer: Buffer, _path: &Path) -> Result<Self, SegmentError> {
+    fn from_buffer(buffer: Buffer) -> Result<Self, SegmentError> {
         let file_size = buffer.len();
 
         // Need at least trailer size

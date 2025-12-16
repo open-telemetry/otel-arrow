@@ -433,7 +433,6 @@ impl Footer {
 
         // Manifest length (4 bytes)
         buf[pos..pos + 4].copy_from_slice(&self.manifest_length.to_le_bytes());
-        // pos += 4;
 
         buf
     }
