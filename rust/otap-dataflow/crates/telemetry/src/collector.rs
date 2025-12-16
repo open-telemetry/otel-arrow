@@ -63,7 +63,7 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::service::telemetry::LogsConfig;
+    use otap_df_config::pipeline::service::telemetry::logs::LogsConfig;
     use otap_df_config::pipeline::service::telemetry::metrics::MetricsConfig;
 
     use super::*;
