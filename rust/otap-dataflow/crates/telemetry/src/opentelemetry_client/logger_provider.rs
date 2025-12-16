@@ -52,6 +52,9 @@ impl LoggerProvider {
     ///
     /// The TODO here is to evaluate these options and implement one of them.
     /// As of now, this causes contention, and we just need to accept temporarily.
+    ///
+    /// TODO: Evaluate also alternatives for the contention caused by the global
+    /// OpenTelemetry logger provider added as layer.
     pub fn configure(
         sdk_resource: Resource,
         logger_config: &LogsConfig,
