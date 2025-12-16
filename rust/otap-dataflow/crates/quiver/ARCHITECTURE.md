@@ -614,8 +614,9 @@ This immutability guarantee is critical for:
 
 - **CRC integrity**: Any modification would invalidate the file's checksum
 - **mmap safety**: Memory-mapped reads assume file contents don't change
-- **Compaction**: Background processes could safely read segments while new
-  data is written to other files
+- **Concurrent readers**: Background processes can safely read segments without
+  coordination (though additional work is needed for safe deletion of segments
+  that may still be in use)
 
 #### Slot Reference Encoding
 
