@@ -25,14 +25,14 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - query_engine
+          - transform
         dispatch_strategy: round_robin
     config:
       verbosity: detailed
       output: /tmp/debug1.log
-  query_engine:
+  transform:
     kind: processor
-    plugin_urn: urn:otel:queryengine:processor
+    plugin_urn: urn:otel:transform:processor
     out_ports:
       out_port:
         destinations:
