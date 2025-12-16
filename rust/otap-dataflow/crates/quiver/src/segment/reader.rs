@@ -50,9 +50,9 @@ use crc32fast::Hasher;
 
 use super::error::SegmentError;
 use super::types::{
-    ChunkIndex, Footer, ManifestEntry, StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
-    MAX_BUNDLES_PER_SEGMENT, MAX_CHUNKS_PER_STREAM, MAX_DICTIONARIES_PER_STREAM,
-    MAX_SLOTS_PER_BUNDLE,
+    ChunkIndex, Footer, MAX_BUNDLES_PER_SEGMENT, MAX_CHUNKS_PER_STREAM,
+    MAX_DICTIONARIES_PER_STREAM, MAX_SLOTS_PER_BUNDLE, ManifestEntry, StreamId, StreamMetadata,
+    TRAILER_SIZE, Trailer,
 };
 use crate::record_bundle::SlotId;
 
@@ -143,14 +143,15 @@ impl StreamDecoder {
         })?)
         .map_err(|e| SegmentError::Arrow { source: e })?;
 
-        let footer_start = trailer_start.checked_sub(footer_len).ok_or_else(|| {
-            SegmentError::InvalidFormat {
-                message: format!(
-                    "IPC footer length {} exceeds available space {}",
-                    footer_len, trailer_start
-                ),
-            }
-        })?;
+        let footer_start =
+            trailer_start
+                .checked_sub(footer_len)
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: format!(
+                        "IPC footer length {} exceeds available space {}",
+                        footer_len, trailer_start
+                    ),
+                })?;
         let footer = root_as_footer(&buffer[footer_start..trailer_start]).map_err(|e| {
             SegmentError::InvalidFormat {
                 message: format!("invalid IPC footer: {}", e),
@@ -183,16 +184,19 @@ impl StreamDecoder {
                 .ok_or_else(|| SegmentError::InvalidFormat {
                     message: "dictionary block length overflow".to_string(),
                 })?;
-            let block_end = block_offset.checked_add(block_len).ok_or_else(|| {
-                SegmentError::InvalidFormat {
-                    message: "dictionary block offset+length overflow".to_string(),
-                }
-            })?;
+            let block_end =
+                block_offset
+                    .checked_add(block_len)
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: "dictionary block offset+length overflow".to_string(),
+                    })?;
             if block_end > buffer.len() {
                 return Err(SegmentError::InvalidFormat {
                     message: format!(
                         "dictionary block extends beyond buffer: offset={}, len={}, buffer_len={}",
-                        block_offset, block_len, buffer.len()
+                        block_offset,
+                        block_len,
+                        buffer.len()
                     ),
                 });
             }
@@ -225,16 +229,20 @@ impl StreamDecoder {
                 .ok_or_else(|| SegmentError::InvalidFormat {
                     message: format!("batch {} block length overflow", i),
                 })?;
-            let block_end = block_offset.checked_add(block_len).ok_or_else(|| {
-                SegmentError::InvalidFormat {
-                    message: format!("batch {} block offset+length overflow", i),
-                }
-            })?;
+            let block_end =
+                block_offset
+                    .checked_add(block_len)
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: format!("batch {} block offset+length overflow", i),
+                    })?;
             if block_end > buffer.len() {
                 return Err(SegmentError::InvalidFormat {
                     message: format!(
                         "batch {} block extends beyond buffer: offset={}, len={}, buffer_len={}",
-                        i, block_offset, block_len, buffer.len()
+                        i,
+                        block_offset,
+                        block_len,
+                        buffer.len()
                     ),
                 });
             }
@@ -614,9 +622,14 @@ impl SegmentReader {
         length: u64,
         region_name: &str,
     ) -> Result<(), SegmentError> {
-        let end = offset.checked_add(length).ok_or_else(|| SegmentError::InvalidFormat {
-            message: format!("{} offset+length overflow: offset={}, length={}", region_name, offset, length),
-        })?;
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "{} offset+length overflow: offset={}, length={}",
+                    region_name, offset, length
+                ),
+            })?;
         if end > buffer_len as u64 {
             return Err(SegmentError::InvalidFormat {
                 message: format!(
@@ -794,15 +807,30 @@ impl SegmentReader {
                         });
                     }
 
-                    let slot = parts[0].parse::<u16>().map_err(|_| SegmentError::InvalidFormat {
-                        message: format!("invalid slot_id in bundle {}: {:?}", i, parts[0]),
-                    })?;
-                    let stream = parts[1].parse::<u32>().map_err(|_| SegmentError::InvalidFormat {
-                        message: format!("invalid stream_id in bundle {}: {:?}", i, parts[1]),
-                    })?;
-                    let chunk = parts[2].parse::<u32>().map_err(|_| SegmentError::InvalidFormat {
-                        message: format!("invalid chunk_index in bundle {}: {:?}", i, parts[2]),
-                    })?;
+                    let slot =
+                        parts[0]
+                            .parse::<u16>()
+                            .map_err(|_| SegmentError::InvalidFormat {
+                                message: format!("invalid slot_id in bundle {}: {:?}", i, parts[0]),
+                            })?;
+                    let stream =
+                        parts[1]
+                            .parse::<u32>()
+                            .map_err(|_| SegmentError::InvalidFormat {
+                                message: format!(
+                                    "invalid stream_id in bundle {}: {:?}",
+                                    i, parts[1]
+                                ),
+                            })?;
+                    let chunk =
+                        parts[2]
+                            .parse::<u32>()
+                            .map_err(|_| SegmentError::InvalidFormat {
+                                message: format!(
+                                    "invalid chunk_index in bundle {}: {:?}",
+                                    i, parts[2]
+                                ),
+                            })?;
 
                     entry.add_slot(
                         SlotId::new(slot),

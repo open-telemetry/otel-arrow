@@ -79,8 +79,8 @@ use crc32fast::Hasher;
 
 use super::error::SegmentError;
 use super::types::{
-    Footer, ManifestEntry, SEGMENT_VERSION, SegmentSeq, StreamMetadata, TRAILER_SIZE, Trailer,
-    MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT,
+    Footer, MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
+    SEGMENT_VERSION, SegmentSeq, StreamMetadata, TRAILER_SIZE, Trailer,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

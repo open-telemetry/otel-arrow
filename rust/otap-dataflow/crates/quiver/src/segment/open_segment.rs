@@ -26,8 +26,8 @@ use arrow_schema::SchemaRef;
 use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
 use super::types::{
-    ManifestEntry, StreamId, StreamKey, StreamMetadata,
-    MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT,
+    MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT, ManifestEntry, StreamId, StreamKey,
+    StreamMetadata,
 };
 use crate::record_bundle::RecordBundle;
 
