@@ -45,7 +45,7 @@ mod config;
 mod metrics;
 
 /// URN for the QueryEngineProcessor
-pub const QUERY_ENGINE_PROCESSOR_URN: &str = "urn:otel:processor:query_engine";
+pub const QUERY_ENGINE_PROCESSOR_URN: &str = "urn:otel:queryengine:processor";
 
 /// Opentelemetry Processing Language Processor
 pub struct QueryEngineProcessor {
