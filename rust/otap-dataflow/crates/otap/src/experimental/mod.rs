@@ -14,3 +14,7 @@ pub mod geneva_exporter;
 /// Azure Monitor Exporter for Azure Logs Ingestion API
 #[cfg(feature = "azure-monitor-exporter")]
 pub mod azure_monitor_exporter;
+
+/// KQL Query Processor for filtering and transforming telemetry data
+#[cfg(feature = "kql-processor")]
+pub mod kql_processor;

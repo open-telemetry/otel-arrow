@@ -185,6 +185,8 @@ experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
+# Experimental processors (opt-in)
+kql-processor = ["otap-df-otap/kql-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints

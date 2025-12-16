@@ -52,8 +52,8 @@ pub mod noop_exporter;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
-/// Experimental exporters
-#[cfg(feature = "experimental-exporters")]
+/// Experimental exporters and processors
+#[cfg(any(feature = "experimental-exporters", feature = "kql-processor"))]
 pub mod experimental;
 
 /// testing utilities
