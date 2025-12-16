@@ -8,7 +8,7 @@
 //!
 //! TODO (docs):
 //! - example
-//! - notes about how this is experimental and APIs are subject to change
+//! - notes about how this is experimental and APIs/config structure are subject to change
 //! - todo about supporting additional languages?
 
 use std::sync::Arc;
@@ -23,7 +23,6 @@ use otap_df_engine::{
     config::ProcessorConfig,
     context::PipelineContext,
     control::NodeControlMsg,
-    effect_handler,
     error::{Error as EngineError, ProcessorErrorKind},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -35,7 +34,7 @@ use otap_df_query_engine::pipeline::Pipeline;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
-use crate::{OTAP_PROCESSOR_FACTORIES, otap_grpc::OtapArrowBytes, pdata::OtapPdata};
+use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
 use self::config::Config;
 use self::metrics::Metrics;
@@ -186,6 +185,10 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
                         }
                     };
 
+                    // TODO - need to remove transport optimized encoding?
+                    // (this might be something we should do in the pipeline engine)
+                    // (TODO check if filter processor is doing this ...)
+
                     match self.pipeline.execute(otap_batch).await {
                         Ok(otap_batch) => OtapPdata::new(context, otap_batch.into()),
                         Err(e) => {
@@ -200,9 +203,11 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
                     }
                 };
 
+                // TODO Ack/Nack?
+
                 match effect_handler.send_message(pdata_to_forward).await {
                     Ok(_) => self.metrics.msgs_forwarded.inc(),
-                    Err(e) => {
+                    Err(_e) => {
                         // TODO update metrics?
                         // TODO something observable with error?
                     }
@@ -211,5 +216,104 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
         };
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use serde_json::json;
+
+    use otap_df_config::node::NodeUserConfig;
+    use otap_df_engine::{
+        context::ControllerContext,
+        testing::{processor::TestRuntime, test_node},
+    };
+    use otap_df_pdata::{
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::{
+                common::v1::InstrumentationScope,
+                logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                resource::v1::Resource,
+            },
+        },
+        testing::round_trip::{otap_to_otlp, otlp_to_otap},
+    };
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+
+    use crate::pdata::OtapPdata;
+
+    #[test]
+    fn test_simple_transform_pipeline() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let mut node_config = NodeUserConfig::new_processor_config(QUERY_ENGINE_PROCESSOR_URN);
+        node_config.config = json!({
+            "program": "logs | where severity_text == \"ERROR\""
+        });
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_context = ControllerContext::new(metrics_registry_handle);
+        let pipeline_context =
+            controller_context.pipeline_context_with("group_id".into(), "pipeline_id".into(), 0, 0);
+        let node_id = test_node("query-engine-processor");
+        let processor = create_query_engine_processor(
+            pipeline_context,
+            node_id,
+            Arc::new(node_config),
+            runtime.config(),
+        )
+        .expect("no error");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build().severity_text("INFO").finish(),
+                    LogRecord::build().severity_text("ERROR").finish(),
+                ];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx.drain_pdata().await;
+                let result = out
+                    .into_iter()
+                    .next()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .expect("one result")
+                    .map(|otap_batch| otap_to_otlp(&otap_batch))
+                    .expect("result");
+
+                match result {
+                    OtlpProtoMessage::Logs(logs_data) => {
+                        assert_eq!(logs_data.resource_logs.len(), 1);
+                        assert_eq!(logs_data.resource_logs[0].scope_logs.len(), 1);
+                        assert_eq!(
+                            &logs_data.resource_logs[0].scope_logs[0].log_records,
+                            &log_records[1..2]
+                        )
+                    }
+                    invalid => {
+                        panic!(
+                            "invalid signal type from output. Expected logs, received {invalid:?}"
+                        )
+                    }
+                }
+            })
+            .validate(|_ctx| async move {});
     }
 }
