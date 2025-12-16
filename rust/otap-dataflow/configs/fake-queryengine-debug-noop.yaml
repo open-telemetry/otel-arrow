@@ -39,7 +39,7 @@ nodes:
         - debug2
         dispatch_strategy: round_robin
     config:
-      program: logs | where event_name == "gen_ai.system.message"
+      query: logs | where event_name == "gen_ai.system.message"
   debug2:
       kind: processor
       plugin_urn: "urn:otel:debug:processor"

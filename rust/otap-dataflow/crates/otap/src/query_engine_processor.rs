@@ -100,7 +100,7 @@ impl QueryEngineProcessor {
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
         // https://github.com/open-telemetry/otel-arrow/issues/1530
-        let pipeline_expr = KqlParser::parse(&config.program)
+        let pipeline_expr = KqlParser::parse(&config.query)
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Could not parse QueryEngineProcessor program: {e:?}"),
             })?
