@@ -7,6 +7,7 @@
 //! dynamic dispatch.
 
 use crate::attributes::AttributeSetHandler;
+use crate::descriptor::Temporality;
 use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField};
 use crate::metrics::{MetricSet, MetricSetHandler, MetricValue};
 use crate::semconv::SemConvRegistry;
@@ -219,16 +220,25 @@ impl MetricsRegistry {
                         // Gauges report absolute values; replace.
                         *current = *incoming;
                     }
-                    Instrument::DeltaCounter
-                    | Instrument::DeltaUpDownCounter
-                    | Instrument::Histogram => {
-                        // Delta instruments report per-interval changes; accumulate.
+                    Instrument::Histogram => {
+                        // Histograms (currently represented as numeric aggregates) report per-interval changes.
                         current.add_in_place(*incoming);
                     }
-                    Instrument::ObserveCounter | Instrument::ObserveUpDownCounter => {
-                        // Observe instruments report the current value; replace.
-                        *current = *incoming;
-                    }
+                    Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
+                        Some(Temporality::Delta) => {
+                            // Delta sums report per-interval changes => accumulate.
+                            current.add_in_place(*incoming);
+                        }
+                        Some(Temporality::Cumulative) => {
+                            // Cumulative sums report the current value => replace.
+                            *current = *incoming;
+                        }
+                        None => {
+                            debug_assert!(false, "sum-like instrument must have a temporality");
+                            // Prefer replacing to avoid runaway accumulation if misconfigured.
+                            *current = *incoming;
+                        }
+                    },
                 });
         } else {
             // TODO: consider logging missing key
@@ -382,6 +392,7 @@ mod tests {
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
+        Temporality,
     };
     use std::fmt::Debug;
 
@@ -412,14 +423,16 @@ mod tests {
                 name: "counter1",
                 unit: "1",
                 brief: "Test counter 1",
-                instrument: Instrument::DeltaCounter,
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "counter2",
                 unit: "1",
                 brief: "Test counter 2",
-                instrument: Instrument::DeltaCounter,
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ],
@@ -641,14 +654,16 @@ mod tests {
                 name: "metric1",
                 unit: "1",
                 brief: "Test metric 1",
-                instrument: Instrument::DeltaCounter,
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "metric2",
                 unit: "1",
                 brief: "Test metric 2",
-                instrument: Instrument::DeltaCounter,
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ];
@@ -679,7 +694,8 @@ mod tests {
             name: "metric1",
             unit: "1",
             brief: "Test metric 1",
-            instrument: Instrument::DeltaCounter,
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }];
 
@@ -697,7 +713,8 @@ mod tests {
             name: "metric1",
             unit: "1",
             brief: "Test metric 1",
-            instrument: Instrument::DeltaCounter,
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }];
 
@@ -786,13 +803,15 @@ mod tests {
                     unit: "1",
                     brief: "Test gauge 1",
                     instrument: Instrument::Gauge,
+                    temporality: None,
                     value_type: MetricValueType::U64,
                 },
                 MetricsField {
                     name: "counter1",
                     unit: "1",
                     brief: "Test counter 1",
-                    instrument: Instrument::DeltaCounter,
+                    instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Delta),
                     value_type: MetricValueType::U64,
                 },
             ],
@@ -860,7 +879,8 @@ mod tests {
                 name: "counter1",
                 unit: "1",
                 brief: "Test counter 1",
-                instrument: Instrument::ObserveCounter,
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
                 value_type: MetricValueType::U64,
             }],
         };

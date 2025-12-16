@@ -9,18 +9,24 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
-    /// A sum-like instrument reporting deltas over an interval (to be accumulated).
-    DeltaCounter,
-    /// A sum-like instrument reporting a current (observed) value (to be replaced).
-    ObserveCounter,
-    /// A sum-like instrument reporting signed deltas over an interval (to be accumulated).
-    DeltaUpDownCounter,
-    /// A sum-like instrument reporting a current (observed) signed value (to be replaced).
-    ObserveUpDownCounter,
+    /// A monotonic sum.
+    Counter,
+    /// A signed sum that can go up and down.
+    UpDownCounter,
     /// A value that can arbitrarily go up and down, used for temperature or current memory usage
     Gauge,
     /// Distribution of recorded values, used for latencies or request sizes
     Histogram,
+}
+
+/// Aggregation temporality for sum-like instruments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Temporality {
+    /// Each snapshot represents a delta over the reporting interval.
+    Delta,
+    /// Each snapshot represents the cumulative value at the time of reporting.
+    Cumulative,
 }
 
 /// Numeric representation used by a metric field.
@@ -45,6 +51,9 @@ pub struct MetricsField {
     pub brief: &'static str,
     /// The type of instrument used to record the metric.
     pub instrument: Instrument,
+    /// Aggregation temporality (only meaningful for sum-like instruments).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporality: Option<Temporality>,
     /// The numeric representation for the metric values.
     pub value_type: MetricValueType,
 }

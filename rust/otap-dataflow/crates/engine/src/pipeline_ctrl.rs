@@ -1,4 +1,4 @@
- // Copyright The OpenTelemetry Authors
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline control message manager for handling timer-based operations.
@@ -22,6 +22,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
+use otap_df_telemetry::otel_warn;
 
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
@@ -309,7 +310,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         self.metrics_reporter.report(pipeline_metrics_monitor.metrics_mut())
                     {
                         // Metric reporting failures are non-fatal; continue loop.
-                        let _ = err;
+                        otel_warn!("metric.reporting.fail", error = err.to_string());
                     }
 
                     // Deliver all accumulated control messages (best-effort)

@@ -157,11 +157,11 @@ impl DeltaCounter<f64> {
 impl<T> DeltaUpDownCounter<T>
 where
     T: Copy
-    + Default
-    + std::ops::Add<Output = T>
-    + std::ops::Sub<Output = T>
-    + AddAssign
-    + SubAssign,
+        + Default
+        + std::ops::Add<Output = T>
+        + std::ops::Sub<Output = T>
+        + AddAssign
+        + SubAssign,
 {
     /// Creates a new delta up/down counter with the provided initial value.
     #[inline]

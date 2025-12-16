@@ -30,7 +30,7 @@
 //!   share of that core; summing `cpu_utilization` across co-pinned pipelines
 //!   approximates total core load.
 //!
-//! - `memory_usage` (`Gauge<u64>`, `{By}`, jemalloc only):
+//! - `memory_usage` (`ObserveUpDownCounter<u64>`, `{By}`, jemalloc only):
 //!   Current heap bytes in use by the pipeline thread:
 //!   `memory_allocated - memory_freed`. A rising long-term trend indicates a leak
 //!   or persistent buffering growth inside this pipeline.
@@ -133,7 +133,7 @@
 
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
-use otap_df_telemetry::instrument::{DeltaCounter, Gauge, ObserveCounter};
+use otap_df_telemetry::instrument::{DeltaCounter, Gauge, ObserveCounter, ObserveUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
@@ -161,7 +161,7 @@ pub struct PipelineMetrics {
 
     /// The amount of heap memory in use by the pipeline instance running on a specific core.
     #[metric(unit = "{By}")]
-    pub memory_usage: Gauge<u64>,
+    pub memory_usage: ObserveUpDownCounter<u64>,
 
     /// Memory allocated to the heap by the pipeline instance since start.
     #[metric(unit = "{By}")]
@@ -331,7 +331,7 @@ impl PipelineMetricsMonitor {
                 self.metrics.memory_freed_delta.add(delta_dealloc);
                 self.metrics
                     .memory_usage
-                    .set(cur_alloc.saturating_sub(cur_dealloc));
+                    .observe(cur_alloc.saturating_sub(cur_dealloc));
             }
         }
 

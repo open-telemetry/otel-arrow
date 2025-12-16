@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     attributes::{AttributeSetHandler, AttributeValue},
-    descriptor::{Instrument, MetricValueType, MetricsField},
+    descriptor::{Instrument, MetricValueType, MetricsField, Temporality},
     error::Error,
     metrics::MetricValue,
     registry::MetricsRegistryHandle,
@@ -101,23 +101,35 @@ impl MetricsDispatcher {
         meter: &Meter,
     ) {
         match field.instrument {
-            Instrument::DeltaCounter => {
-                self.add_opentelemetry_counter(field, value, attributes, meter)
-            }
-            Instrument::ObserveCounter => {
-                // Observed counters are exported as gauges to avoid double-counting.
-                self.add_opentelemetry_gauge(field, value, attributes, meter)
-            }
+            Instrument::Counter => match field.temporality {
+                Some(Temporality::Delta) => {
+                    self.add_opentelemetry_counter(field, value, attributes, meter)
+                }
+                Some(Temporality::Cumulative) | None => {
+                    debug_assert!(
+                        field.temporality.is_some(),
+                        "sum-like instrument must have a temporality"
+                    );
+                    // Cumulative counters are exported as gauges to avoid double-counting.
+                    self.add_opentelemetry_gauge(field, value, attributes, meter)
+                }
+            },
+            Instrument::UpDownCounter => match field.temporality {
+                Some(Temporality::Delta) => {
+                    self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
+                }
+                Some(Temporality::Cumulative) | None => {
+                    debug_assert!(
+                        field.temporality.is_some(),
+                        "sum-like instrument must have a temporality"
+                    );
+                    // Cumulative up-down counters are exported as gauges to avoid double-counting.
+                    self.add_opentelemetry_gauge(field, value, attributes, meter)
+                }
+            },
             Instrument::Gauge => self.add_opentelemetry_gauge(field, value, attributes, meter),
             Instrument::Histogram => {
                 self.add_opentelemetry_histogram(field, value, attributes, meter)
-            }
-            Instrument::DeltaUpDownCounter => {
-                self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
-            }
-            Instrument::ObserveUpDownCounter => {
-                // Observed up-down counters are exported as gauges to avoid double-counting.
-                self.add_opentelemetry_gauge(field, value, attributes, meter)
             }
         }
     }
@@ -374,7 +386,8 @@ mod tests {
             name: "test_counter",
             brief: "A test counter",
             unit: "1",
-            instrument: Instrument::DeltaCounter,
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -395,6 +408,7 @@ mod tests {
             brief: "A test gauge",
             unit: "1",
             instrument: Instrument::Gauge,
+            temporality: None,
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -415,6 +429,7 @@ mod tests {
             brief: "A test histogram",
             unit: "1",
             instrument: Instrument::Histogram,
+            temporality: None,
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -434,7 +449,8 @@ mod tests {
             name: "test_up_down_counter",
             brief: "A test up_down_counter",
             unit: "1",
-            instrument: Instrument::DeltaUpDownCounter,
+            instrument: Instrument::UpDownCounter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
