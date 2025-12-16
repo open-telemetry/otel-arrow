@@ -1116,7 +1116,7 @@ mod telemetry_tests {
                 registry.visit_current_metrics(|desc, _attrs, iter| {
                     if desc.name == "attributes.processor.metrics" {
                         for (field, v) in iter {
-                            match (field.name, v) {
+                            match (field.name, v.to_u64_lossy()) {
                                 ("msgs.consumed", x) if x >= 1 => found_consumed = true,
                                 ("msgs.forwarded", x) if x >= 1 => found_forwarded = true,
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,

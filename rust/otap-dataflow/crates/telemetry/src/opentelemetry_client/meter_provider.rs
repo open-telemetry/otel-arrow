@@ -3,17 +3,22 @@
 
 //! Configures the OpenTelemetry meter provider based on the provided configuration.
 
+pub mod views_provider;
+
 use opentelemetry::global;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{
     Resource,
     metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider},
 };
-use otap_df_config::pipeline::service::telemetry::metrics::readers::{
-    MetricsReaderConfig, Temporality,
-    periodic::{
-        MetricsPeriodicExporterConfig,
-        otlp::{OtlpExporterConfig, OtlpProtocol},
+use otap_df_config::pipeline::service::telemetry::metrics::{
+    MetricsConfig,
+    readers::{
+        MetricsReaderConfig, Temporality,
+        periodic::{
+            MetricsPeriodicExporterConfig,
+            otlp::{OtlpExporterConfig, OtlpProtocol},
+        },
     },
 };
 
@@ -29,7 +34,7 @@ impl MeterProvider {
     /// Configures the OpenTelemetry meter provider based on the provided configuration.
     pub fn configure(
         sdk_resource: Resource,
-        metric_readers: &[MetricsReaderConfig],
+        metrics_config: &MetricsConfig,
         initial_runtime: Option<tokio::runtime::Runtime>,
     ) -> Result<MeterProvider, Error> {
         let mut sdk_meter_builder = SdkMeterProvider::builder();
@@ -37,10 +42,16 @@ impl MeterProvider {
 
         let mut runtime: Option<tokio::runtime::Runtime> = initial_runtime;
 
+        let metric_readers = &metrics_config.readers;
+
         for reader in metric_readers {
             (sdk_meter_builder, runtime) =
                 Self::configure_metric_reader(sdk_meter_builder, reader, runtime)?;
         }
+
+        let views_config = &metrics_config.views;
+        sdk_meter_builder =
+            views_provider::ViewsProvider::configure(sdk_meter_builder, views_config.clone())?;
 
         let sdk_meter_provider = sdk_meter_builder.build();
 
@@ -179,9 +190,8 @@ impl MeterProvider {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::service::telemetry::metrics::readers::MetricsReaderPeriodicConfig;
-
     use super::*;
+    use otap_df_config::pipeline::service::telemetry::metrics::readers::MetricsReaderPeriodicConfig;
 
     #[test]
     fn test_meter_provider_configure_with_non_runtime_readers() -> Result<(), Error> {
@@ -208,7 +218,13 @@ mod tests {
                 }),
             }),
         ];
-        let meter_provider = MeterProvider::configure(resource, &metric_readers, None)?;
+
+        let metrics_config = MetricsConfig {
+            readers: metric_readers,
+            views: Vec::new(),
+        };
+
+        let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
         let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
         assert!(runtime.is_none());
         Ok(())
@@ -231,7 +247,11 @@ mod tests {
                 }),
             }),
         ];
-        let meter_provider = MeterProvider::configure(resource, &metric_readers, None)?;
+        let metrics_config = MetricsConfig {
+            readers: metric_readers,
+            views: Vec::new(),
+        };
+        let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
         let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
         assert!(runtime.is_some());
         Ok(())
@@ -240,8 +260,9 @@ mod tests {
     #[test]
     fn test_meter_provider_configure_empty() -> Result<(), Error> {
         let resource = Resource::builder().build();
-        let metric_readers = vec![];
-        let meter_provider = MeterProvider::configure(resource, &metric_readers, None)?;
+        let metrics_config = MetricsConfig::default();
+
+        let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
         let (_sdk_meter_provider, runtime) = meter_provider.into_parts();
         assert!(runtime.is_none());
         Ok(())

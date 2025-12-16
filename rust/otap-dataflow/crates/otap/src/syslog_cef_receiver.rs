@@ -1222,9 +1222,9 @@ mod telemetry_tests {
             let snapshot = metrics_rx.recv_async().await.unwrap();
             let m = snapshot.get_metrics();
             // Order: forwarded, invalid, forward_failed, total, tcp_connections_active
-            assert_eq!(m[3], 2, "total == 2");
-            assert_eq!(m[0], 1, "forwarded == 1");
-            assert_eq!(m[1], 1, "invalid == 1");
+            assert_eq!(m[3].to_u64_lossy(), 2, "total == 2");
+            assert_eq!(m[0].to_u64_lossy(), 1, "forwarded == 1");
+            assert_eq!(m[1].to_u64_lossy(), 1, "invalid == 1");
         }));
     }
 
@@ -1304,7 +1304,7 @@ mod telemetry_tests {
 
             let snap = metrics_rx.recv_async().await.unwrap();
             let m = snap.get_metrics();
-            assert_eq!(m[2], 1, "forward_failed == 1");
+            assert_eq!(m[2].to_u64_lossy(), 1, "forward_failed == 1");
         }));
     }
 }

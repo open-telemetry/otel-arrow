@@ -24,6 +24,7 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
 mod filter;
+mod functions;
 mod planner;
 
 /// A stage in the pipeline.

@@ -10,9 +10,10 @@ ci-repo:
 query-engine:
 - changed-files:
   - any-glob-to-any-file: 'rust/experimental/query_engine/**/*'
+  - any-glob-to-any-file: 'rust/otap-dataflow/crates/query-engine/**/*'
 query-engine-columnar:
 - changed-files:
-  - any-glob-to-any-file: 'rust/experimental/query_engine/engine-columnar*/**/*'
+  - any-glob-to-any-file: 'rust/otap-dataflow/crates/query-engine/**/*'
 query-engine-recordset:
 - changed-files:
   - any-glob-to-any-file: 'rust/experimental/query_engine/engine-recordset*/**/*'

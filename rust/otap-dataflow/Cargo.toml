@@ -37,7 +37,8 @@ thiserror.workspace = true
 quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
-mimalloc-rust.workspace = true
+mimalloc.workspace = true
+tikv-jemallocator.workspace = true
 rustls = { workspace = true, optional = true }
 
 [workspace.dependencies]
@@ -72,7 +73,7 @@ criterion = "0.8.0"
 data-encoding = "2.9.0"
 datafusion = { version = "51.0.0", default-features = false }
 fluke-hpack = "0.3.1"
-flume = { version = "0.11.1", default-features = false, features = ["async"] }
+flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.31"
 futures-core = "0.3"
 futures-channel = "0.3"
@@ -85,12 +86,17 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 log = "0.4"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc-rust = "0.2.1"
+mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
+libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
+tikv-jemallocator = { version = "0.6.1" }
+tikv-jemalloc-ctl = { version = "0.6.1" }
 nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
+notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
 object_store = {version = "0.12.3", default-features = false}
 once_cell = "1.20.2"
 opentelemetry = "0.31.0"
+opentelemetry-appender-tracing = "0.31.1"
 opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"]} #TODO - use it from submodule instead of crate(?)
 opentelemetry_sdk = "0.31.0"
 opentelemetry-stdout = "0.31.0"
@@ -104,7 +110,7 @@ proc-macro2 = "1.0"
 prost = "0.14"
 quote = "1.0"
 rand = "0.9.2"
-rcgen = "0.13"
+rcgen = "0.14"
 roaring = "0.11.2"
 rustls = { version = "0.23.22", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1.11", features = ["std"] }
@@ -124,6 +130,8 @@ socket2 = { version = "0.6.1", features = ["all"] }
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 tempfile = "3"
 thiserror = "2.0.17"
+tracing = { version = ">=0.1.40", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
 tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process"] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
@@ -153,6 +161,7 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
 byte-unit = "5.2.0"
+cpu-time = "1.0.0"
 
 # Azure Monnitor Exporter
 azure_core = {version = "0.30.1", default-features = false }

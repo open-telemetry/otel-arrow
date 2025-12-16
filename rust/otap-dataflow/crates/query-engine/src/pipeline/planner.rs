@@ -4,11 +4,12 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DoubleValue, Expression, IntegerValue, LogicalExpression,
-    PipelineExpression, ScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
+    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
+    LogicalExpression, PipelineExpression, ScalarExpression, StaticScalarExpression, StringValue,
+    ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
@@ -246,7 +247,59 @@ pub enum AttributesIdentifier {
     NonRoot(ArrowPayloadType),
 }
 
-pub fn try_static_scalar_to_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
+pub fn try_static_scalar_to_literal_for_column(
+    column_name: &str,
+    static_scalar: &StaticScalarExpression,
+) -> Result<Expr> {
+    Ok(match static_scalar {
+        // for integers, we need to choose the correct type of literal for the field
+        // note: this currently contains fields only on the root record batches as we don't
+        // yet support traversing into the OTAP batch to filter by nested fields like span
+        // events/links, metrics data points, etc.
+        StaticScalarExpression::Integer(int_val) => {
+            let val = int_val.get_value();
+            match column_name {
+                consts::AGGREGATION_TEMPORALITY
+                | consts::SEVERITY_NUMBER
+                | consts::KIND
+                | consts::EXP_HISTOGRAM_OFFSET => lit(val as i32),
+
+                consts::METRIC_TYPE => lit(val as u8),
+
+                consts::DROPPED_ATTRIBUTES_COUNT
+                | consts::FLAGS
+                | consts::DROPPED_EVENTS_COUNT
+                | consts::DROPPED_LINKS_COUNT => lit(val as u32),
+
+                // other columns for which filtering is currently supported are i64
+                _ => lit(val),
+            }
+        }
+        StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
+        StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
+        StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
+        StaticScalarExpression::DateTime(dt_val) => {
+            let val =
+                dt_val
+                    .get_value()
+                    .timestamp_nanos_opt()
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!("failed to convert {dt_val:?} to nanosecond timestamp"),
+                    })?;
+            lit_timestamp_nano(val)
+        }
+        _ => {
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "literal from scalar expression. received {:?}",
+                    static_scalar
+                ),
+            });
+        }
+    })
+}
+
+pub fn try_static_scalar_to_attr_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
     let lit_expr = match static_scalar {
         StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
         StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
@@ -299,6 +352,6 @@ pub fn try_attrs_value_filter_from_literal(
     Ok(BinaryExpr::new(
         Box::new(col(try_static_scalar_to_any_val_column(scalar_lit)?)),
         binary_op,
-        Box::new(try_static_scalar_to_literal(scalar_lit)?),
+        Box::new(try_static_scalar_to_attr_literal(scalar_lit)?),
     ))
 }

@@ -26,6 +26,13 @@ service:
         - periodic:
             exporter:
               console:
+    logs:
+      level: "debug"
+      processors:
+        - batch:
+            exporter:
+              console:
     resource:
       service.name: "test_service"
       service.version: "1.0.0"
+      instance.id: 10

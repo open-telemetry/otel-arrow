@@ -11,6 +11,10 @@ use std::hint::black_box;
 use otap_df_pdata::proto::opentelemetry::common::v1::*;
 use otap_df_pdata::proto::opentelemetry::logs::v1::*;
 use otap_df_pdata::proto::opentelemetry::resource::v1::*;
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn create_logs_data() -> LogsData {
     let mut rl: Vec<ResourceLogs> = vec![];

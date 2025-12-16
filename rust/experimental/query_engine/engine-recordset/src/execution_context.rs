@@ -3,20 +3,19 @@
 
 use std::{cell::*, collections::HashMap};
 
-use crate::*;
-
-use data_engine_expressions::*;
-
-#[cfg(test)]
-use crate::TestRecord;
-#[cfg(test)]
 use crate::{
     scalars::{
         execute_argument_scalar_expression, execute_scalar_expression,
         execute_source_scalar_expression, execute_variable_scalar_expression,
     },
     value_expressions::execute_mutable_value_expression,
+    *,
 };
+
+use data_engine_expressions::*;
+
+#[cfg(test)]
+use crate::TestRecord;
 
 pub(crate) struct ExecutionContext<'a, 'b, TRecord>
 where
@@ -54,7 +53,6 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         }
     }
 
-    #[cfg(test)]
     pub fn create_scope(
         &self,
         arguments: Option<&'b dyn ExecutionContextArguments>,
@@ -122,6 +120,13 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
 
     pub fn get_arguments(&self) -> Option<&dyn ExecutionContextArguments> {
         self.arguments
+    }
+
+    pub(crate) fn get_external_function_implementation(
+        &self,
+        _name: &str,
+    ) -> &dyn RecordSetEngineFunctionCallback {
+        todo!()
     }
 
     pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
@@ -198,7 +203,6 @@ pub trait ExecutionContextArguments {
     ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError>;
 }
 
-#[cfg(test)]
 pub struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
 where
     TRecord: Record + 'static,
@@ -207,7 +211,6 @@ where
     pub arguments: &'a [InvokeFunctionArgument],
 }
 
-#[cfg(test)]
 impl<'a, 'b, 'c, TRecord> ExecutionContextArguments
     for ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
 where
@@ -290,6 +293,14 @@ where
             }
         }
     }
+}
+
+pub trait RecordSetEngineFunctionCallback: Send + Sync {
+    fn invoke<'a, 'b>(
+        &self,
+        expression: &'a dyn Expression,
+        execution_context: &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError>;
 }
 
 #[cfg(test)]

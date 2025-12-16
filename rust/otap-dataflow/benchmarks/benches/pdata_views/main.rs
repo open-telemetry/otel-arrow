@@ -12,6 +12,10 @@ use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
 use otap_df_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_ordered};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 /// creates a log data with every field present in the proto message
 fn create_logs_data() -> LogsData {

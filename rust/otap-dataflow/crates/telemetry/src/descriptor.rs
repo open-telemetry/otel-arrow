@@ -19,6 +19,16 @@ pub enum Instrument {
     Histogram,
 }
 
+/// Numeric representation used by a metric field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricValueType {
+    /// Unsigned 64-bit integer.
+    U64,
+    /// 64-bit floating point.
+    F64,
+}
+
 /// Metadata describing a single field inside a metrics struct.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct MetricsField {
@@ -31,6 +41,8 @@ pub struct MetricsField {
     pub brief: &'static str,
     /// The type of instrument used to record the metric.
     pub instrument: Instrument,
+    /// The numeric representation for the metric values.
+    pub value_type: MetricValueType,
 }
 
 /// Descriptor for a multivariate metrics.

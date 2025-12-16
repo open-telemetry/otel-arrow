@@ -12,7 +12,10 @@ use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
 use arrow::datatypes::{Schema, UInt16Type, UInt32Type};
 use async_trait::async_trait;
-use data_engine_expressions::{LogicalExpression, ScalarExpression};
+use data_engine_expressions::{
+    ContainsLogicalExpression, Expression, LogicalExpression, MatchesLogicalExpression,
+    ScalarExpression, StaticScalarExpression,
+};
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{DFSchema, HashMap, HashSet};
@@ -24,6 +27,7 @@ use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
+use datafusion::prelude::binary_expr;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::MaybeDictArrayAccessor;
@@ -35,9 +39,10 @@ use roaring::RoaringBitmap;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
-    try_static_scalar_to_literal,
+    try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
 };
 
 pub mod optimize;
@@ -227,10 +232,12 @@ impl FilterPlan {
                 ColumnAccessor::ColumnName(left_col_name) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
                         // left = column & right = literal
+                        let right_expr =
+                            try_static_scalar_to_literal_for_column(&left_col_name, &right_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
                             Box::new(col(left_col_name)),
                             binary_op,
-                            Box::new(try_static_scalar_to_literal(&right_lit)?),
+                            Box::new(right_expr),
                         ))))
                     }
                     BinaryArg::Null => {
@@ -244,10 +251,14 @@ impl FilterPlan {
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
                         // left = struct col & right = literal
+                        let right_expr = try_static_scalar_to_literal_for_column(
+                            &left_struct_field,
+                            &right_lit,
+                        )?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
                             Box::new(col(left_struct_name).field(left_struct_field)),
                             binary_op,
-                            Box::new(try_static_scalar_to_literal(&right_lit)?),
+                            Box::new(right_expr),
                         ))))
                     }
                     BinaryArg::Null => {
@@ -295,16 +306,22 @@ impl FilterPlan {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
                         // left = literal & right = column
+                        let left_expr =
+                            try_static_scalar_to_literal_for_column(&right_col_name, &left_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(try_static_scalar_to_literal(&left_lit)?),
+                            Box::new(left_expr),
                             binary_op,
                             Box::new(col(right_col_name)),
                         ))))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
                         // left = literal & right = struct col
+                        let left_expr = try_static_scalar_to_literal_for_column(
+                            &right_struct_field,
+                            &left_lit,
+                        )?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(try_static_scalar_to_literal(&left_lit)?),
+                            Box::new(left_expr),
                             binary_op,
                             Box::new(col(right_struct_name).field(right_struct_field)),
                         ))))
@@ -363,6 +380,31 @@ impl FilterPlan {
             },
         }
     }
+
+    /// constructs the Expr that will get passed to the "contains" function for a column
+    /// e.g. the first argument in an expression like contains(attributes["x"], "hello")
+    ///
+    /// The second return value contains which attribute we're passing to contains. This
+    /// can be used by the caller to construct the appropriate logical expr for checking
+    /// if attribute value contains some text
+    fn contains_column_arg(
+        column_accessor: ColumnAccessor,
+    ) -> (Expr, Option<(AttributesIdentifier, String)>) {
+        let mut attrs = None;
+        let expr = match column_accessor {
+            ColumnAccessor::ColumnName(col_name) => col(col_name),
+            ColumnAccessor::StructCol(struct_name, struct_field) => {
+                col(struct_name).field(struct_field)
+            }
+            ColumnAccessor::Attributes(attrs_identifier, attrs_key) => {
+                attrs = Some((attrs_identifier, attrs_key));
+                // for now we assume that text contains is always applied to the str column
+                col(consts::ATTRIBUTE_STR)
+            }
+        };
+
+        (expr, attrs)
+    }
 }
 
 impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
@@ -402,12 +444,136 @@ impl TryFrom<&LogicalExpression> for Composite<FilterPlan> {
                 let inner = Self::try_from(not_expr.get_inner_expression())?;
                 Ok(Self::not(inner))
             }
+            LogicalExpression::Contains(contains_expr) => {
+                Ok(Self::from(FilterPlan::try_from(contains_expr)?))
+            }
+            LogicalExpression::Matches(matches_expr) => {
+                Ok(Self::from(FilterPlan::try_from(matches_expr)?))
+            }
 
             // TODO add support for these expressions eventually
-            LogicalExpression::Matches(_)
-            | LogicalExpression::Contains(_)
-            | LogicalExpression::Scalar(_) => Err(Error::NotYetSupportedError {
+            LogicalExpression::Scalar(_) => Err(Error::NotYetSupportedError {
                 message: format!("Logical expression not yet supported {logical_expr:?}"),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
+    type Error = Error;
+
+    fn try_from(contains_expr: &ContainsLogicalExpression) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(contains_expr.get_haystack())?;
+        let right_arg = BinaryArg::try_from(contains_expr.get_needle())?;
+
+        match left_arg {
+            BinaryArg::Column(left_column) => {
+                let (left_expr, attrs) = Self::contains_column_arg(left_column);
+                let right_expr = match right_arg {
+                    BinaryArg::Literal(right_lit) => try_static_scalar_to_attr_literal(&right_lit)?,
+                    _ => {
+                        return Err(Error::NotYetSupportedError {
+                            message:
+                                "text contains predicate comparing column left to non literal right"
+                                    .into(),
+                        });
+                    }
+                };
+
+                let contains_expr = contains(left_expr, right_expr);
+                Ok(match attrs {
+                    None => FilterPlan::from(contains_expr),
+                    Some((attrs_identifier, attrs_key)) => {
+                        FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(contains_expr),
+                            attrs_identifier,
+                        ))
+                    }
+                })
+            }
+            BinaryArg::Literal(left_lit) => {
+                let left_expr = try_static_scalar_to_attr_literal(&left_lit)?;
+                let (right_expr, attrs) = match right_arg {
+                    BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
+                    _ => {
+                        return Err(Error::NotYetSupportedError {
+                            message: "contains with left literal and right non-column".into(),
+                        });
+                    }
+                };
+
+                let contains_expr = contains(left_expr, right_expr);
+                Ok(match attrs {
+                    None => FilterPlan::from(contains_expr),
+                    Some((attrs_identifier, attrs_key)) => {
+                        FilterPlan::from(AttributesFilterPlan::new(
+                            col(consts::ATTRIBUTE_KEY)
+                                .eq(lit(attrs_key))
+                                .and(contains_expr),
+                            attrs_identifier,
+                        ))
+                    }
+                })
+            }
+            BinaryArg::Null => Err(Error::NotYetSupportedError {
+                message: "contains with left literal null".into(),
+            }),
+        }
+    }
+}
+
+impl TryFrom<&MatchesLogicalExpression> for FilterPlan {
+    type Error = Error;
+
+    fn try_from(matches_expr: &MatchesLogicalExpression) -> Result<Self> {
+        let left_arg = BinaryArg::try_from(matches_expr.get_haystack())?;
+        let pattern = match matches_expr.get_pattern() {
+            ScalarExpression::Static(StaticScalarExpression::Regex(regex)) => {
+                lit(regex.get_value().as_str().to_string())
+            }
+            _ => {
+                return Err(Error::InvalidPipelineError {
+                    cause: "expected pattern to be a static regex".into(),
+                    query_location: Some(matches_expr.get_query_location().clone()),
+                });
+            }
+        };
+
+        match left_arg {
+            BinaryArg::Column(left_column) => Ok(match left_column {
+                ColumnAccessor::ColumnName(left_col_name) => FilterPlan::from(binary_expr(
+                    col(left_col_name),
+                    Operator::RegexMatch,
+                    pattern,
+                )),
+                ColumnAccessor::StructCol(struct_name, struct_field) => {
+                    FilterPlan::from(binary_expr(
+                        col(struct_name).field(struct_field),
+                        Operator::RegexMatch,
+                        pattern,
+                    ))
+                }
+                ColumnAccessor::Attributes(attrs_identifier, attr_key) => {
+                    FilterPlan::from(AttributesFilterPlan::new(
+                        col(consts::ATTRIBUTE_KEY)
+                            .eq(lit(attr_key))
+                            .and(binary_expr(
+                                col(consts::ATTRIBUTE_STR),
+                                Operator::RegexMatch,
+                                pattern,
+                            )),
+                        attrs_identifier,
+                    ))
+                }
+            }),
+            BinaryArg::Literal(_) => Err(Error::NotYetSupportedError {
+                message: "literal matches regex".into(),
+            }),
+            BinaryArg::Null => Err(Error::InvalidPipelineError {
+                cause: "cannot match null against regex".into(),
+                query_location: Some(matches_expr.get_query_location().clone()),
             }),
         }
     }
@@ -1642,37 +1808,88 @@ mod test {
 
     #[tokio::test]
     async fn test_simple_filter() {
-        let otap_batch = to_otap_logs(vec![
+        let ns_per_second: u64 = 1000 * 1000 * 1000;
+        let log_records = vec![
             LogRecord::build()
                 .severity_text("TRACE")
+                .severity_number(1)
+                .time_unix_nano(ns_per_second)
                 .event_name("1")
                 .finish(),
             LogRecord::build()
                 .severity_text("INFO")
+                .severity_number(9)
                 .event_name("2")
+                .time_unix_nano(2 * ns_per_second)
                 .finish(),
             LogRecord::build()
                 .severity_text("ERROR")
+                .severity_number(17)
+                .time_unix_nano(3 * ns_per_second)
                 .event_name("3")
                 .finish(),
-        ]);
+        ];
 
-        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch.clone()).await.unwrap();
-        let expected = to_otap_logs(vec![
-            LogRecord::build()
-                .severity_text("ERROR")
-                .event_name("3")
-                .finish(),
-        ]);
-        assert_eq!(result, expected);
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == \"ERROR\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
 
         // test same filter where the literal is on the left and column name on the right
-        let parser_result = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch.clone()).await.unwrap();
-        assert_eq!(result, expected);
+        let result = exec_logs_pipeline(
+            "logs | where \"ERROR\" == severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+
+        // test filtering by some other field types (u32, int32, timestamp)
+        let result = exec_logs_pipeline(
+            "logs | where severity_number == 17",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+        let result = exec_logs_pipeline(
+            "logs | where severity_number == 17",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+
+        let result = exec_logs_pipeline(
+            "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()]
+        );
+
+        let result = exec_logs_pipeline(
+            "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
     }
 
     #[tokio::test]
@@ -1717,6 +1934,217 @@ mod test {
             &result_otlp.resource_logs[0].scope_logs[0].log_records,
             &expected,
         )
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_contains() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("error happen")
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("bert"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("username", AnyValue::new_string("tim"))])
+                .event_name("the error was caught")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("terry"),
+                )])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where event_name contains \"error\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[1].clone()]
+        );
+
+        // check we could specify the column on the right
+        let result = exec_logs_pipeline(
+            "logs | where \"1234\" contains event_name",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+
+        // also check we can filter by attributes using contains
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"username\"] contains \"y\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()],
+        );
+
+        // check that we could also specify the column on the right for attributes
+        let result = exec_logs_pipeline(
+            "logs | where \"albert\" contains attributes[\"username\"]",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_contains_struct_cols() {
+        let input = LogsData {
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "version1".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("a"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+                ResourceLogs {
+                    schema_url: "experimental".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("b"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r2.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+            ],
+        };
+        let result = exec_logs_pipeline(
+            "logs | where resource.schema_url contains \"version\"",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![input.resource_logs[0].clone()],
+            }
+        );
+
+        // test same as above, but with literal contains the column value
+        let result = exec_logs_pipeline(
+            "logs | where \"experimental version\" contains resource.schema_url",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![input.resource_logs[1].clone()],
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_regex() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("error happen")
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("bert"),
+                )])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("username", AnyValue::new_string("tim"))])
+                .event_name("the error was caught")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "username",
+                    AnyValue::new_string("terry"),
+                )])
+                .event_name("3")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where event_name matches regex \"^err.*\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
+
+        // also check we can filter by attributes using contains
+        let result = exec_logs_pipeline(
+            "logs | where attributes[\"username\"] matches regex \"^t.*\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_matches_regex_struct_cols() {
+        let input = LogsData {
+            resource_logs: vec![
+                ResourceLogs {
+                    schema_url: "version1".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("a"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r1.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+                ResourceLogs {
+                    schema_url: "experimental".into(),
+                    resource: Some(Resource {
+                        attributes: vec![KeyValue::new("x", AnyValue::new_string("b"))],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope::default()),
+                        log_records: vec![LogRecord::build().event_name("r2.e1").finish()],
+                        ..Default::default()
+                    }],
+                },
+            ],
+        };
+        let result = exec_logs_pipeline(
+            "logs | where resource.schema_url matches regex \"v.*1\"",
+            input.clone(),
+        )
+        .await;
+        assert_eq!(
+            result,
+            LogsData {
+                resource_logs: vec![input.resource_logs[0].clone()],
+            }
+        );
     }
 
     #[tokio::test]

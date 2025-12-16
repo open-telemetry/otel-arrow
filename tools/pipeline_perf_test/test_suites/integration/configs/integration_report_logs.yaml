@@ -244,6 +244,17 @@ queries:
           (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'failed') AS failed,
           (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'logs') AS logs;
 
+  - name: Calculate log throughput rates
+    sql: |
+      CREATE TABLE log_throughput_rates AS
+      SELECT
+        asr.metric_name,
+        asr.total_increase,
+        asr.total_increase / NULLIF(EXTRACT(EPOCH FROM (ow.stop_ts - ow.start_ts)), 0) AS logs_per_second
+      FROM aggregate_send_receive_rates asr
+      CROSS JOIN observation_window ow
+      WHERE asr.metric_name IN ('logs_produced', 'logs');
+
   - name: Create Final Github Actions Format table
     sql: |
       CREATE TABLE gh_actions_benchmark AS
@@ -329,11 +340,27 @@ queries:
 
           UNION ALL
 
-          SELECT 'received_log_rate_avg' AS name, 'logs/sec' AS unit, average_rate AS value,
+          SELECT 'logs_produced_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
-          FROM aggregate_send_receive_rates
+          FROM log_throughput_rates
           CROSS JOIN metadata_row
-          WHERE metric_name = 'received_log_rate_avg'
+          WHERE metric_name = 'logs_produced'
+
+          UNION ALL
+
+          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
+          FROM log_throughput_rates
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'logs'
+
+          UNION ALL
+
+          SELECT 'test_duration' AS name, 'seconds' AS unit,
+                EXTRACT(EPOCH FROM (stop_ts - start_ts)) AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Test Duration' AS extra
+          FROM observation_window
+          CROSS JOIN metadata_row
 
           UNION ALL
 
@@ -362,6 +389,8 @@ result_tables:
     description: CPU and Memory metrics for the components in the Test Suite during the test.
   - name: log_loss
     description: Lost logs (failed or sent but not received) total and as a percentage
+  - name: log_throughput_rates
+    description: Log throughput rates (logs/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
     #display: False

@@ -18,6 +18,10 @@ use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, Resourc
 use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use roaring::RoaringBitmap;
+use tikv_jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn generate_logs_batch(batch_size: usize) -> OtapArrowRecords {
     let logs_data = logs_with_varying_attributes_and_properties(batch_size);

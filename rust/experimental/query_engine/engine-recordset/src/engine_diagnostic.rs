@@ -53,6 +53,7 @@ pub struct RecordSetEngineDiagnostic<'a> {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     expression: &'a dyn Expression,
     message: String,
+    nested_diagnostics: Option<Vec<RecordSetEngineDiagnostic<'a>>>,
 }
 
 impl<'a> RecordSetEngineDiagnostic<'a> {
@@ -65,7 +66,16 @@ impl<'a> RecordSetEngineDiagnostic<'a> {
             diagnostic_level,
             expression,
             message,
+            nested_diagnostics: None,
         }
+    }
+
+    pub(crate) fn with_nested_diagnostics(
+        mut self,
+        nested_diagnostics: Vec<RecordSetEngineDiagnostic<'a>>,
+    ) -> RecordSetEngineDiagnostic<'a> {
+        self.nested_diagnostics = Some(nested_diagnostics);
+        self
     }
 
     pub fn get_diagnostic_level(&self) -> RecordSetEngineDiagnosticLevel {
@@ -78,5 +88,9 @@ impl<'a> RecordSetEngineDiagnostic<'a> {
 
     pub fn get_message(&self) -> &str {
         &self.message
+    }
+
+    pub fn get_nested_diagnostics(&self) -> Option<&[RecordSetEngineDiagnostic<'a>]> {
+        self.nested_diagnostics.as_ref().map(|v| &v[..])
     }
 }
