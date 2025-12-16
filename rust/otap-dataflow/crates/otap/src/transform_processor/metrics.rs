@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Metrics for the AttributesProcessor node.
+//! Metrics for the TransformProcessor node.
 
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;

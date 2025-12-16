@@ -192,7 +192,6 @@ impl Processor<OtapPdata> for TransformProcessor {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
                                 error: format!("Error executing query engine pipeline {e}"),
-,
                                 source_detail: e.to_string(),
                             });
                         }
