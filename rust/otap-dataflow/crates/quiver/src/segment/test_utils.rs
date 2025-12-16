@@ -47,12 +47,42 @@ pub fn make_batch(schema: &SchemaRef, ids: &[i32], names: &[&str]) -> RecordBatc
     .expect("valid batch")
 }
 
-/// Returns standard slot descriptors for testing (Logs at slot 0, LogAttrs at slot 1).
+/// Returns standard slot descriptors for testing.
+///
+/// Creates 20 slots matching typical OTAP metrics payloads:
+/// - Resource, Scope, and metric type tables
+/// - Attribute tables for each level
+/// - Exemplar tables
+///
+/// This exercises realistic slot counts that will be common in production.
 #[must_use]
 pub fn slot_descriptors() -> Vec<SlotDescriptor> {
     vec![
-        SlotDescriptor::new(SlotId::new(0), "Logs"),
-        SlotDescriptor::new(SlotId::new(1), "LogAttrs"),
+        // Core metric tables
+        SlotDescriptor::new(SlotId::new(0), "ResourceMetrics"),
+        SlotDescriptor::new(SlotId::new(1), "Resource"),
+        SlotDescriptor::new(SlotId::new(2), "ResourceAttrs"),
+        SlotDescriptor::new(SlotId::new(3), "ScopeMetrics"),
+        SlotDescriptor::new(SlotId::new(4), "Scope"),
+        SlotDescriptor::new(SlotId::new(5), "ScopeAttrs"),
+        // Gauge
+        SlotDescriptor::new(SlotId::new(6), "Gauge"),
+        SlotDescriptor::new(SlotId::new(7), "GaugeDataPoints"),
+        SlotDescriptor::new(SlotId::new(8), "GaugeAttrs"),
+        SlotDescriptor::new(SlotId::new(9), "GaugeExemplars"),
+        // Sum
+        SlotDescriptor::new(SlotId::new(10), "Sum"),
+        SlotDescriptor::new(SlotId::new(11), "SumDataPoints"),
+        SlotDescriptor::new(SlotId::new(12), "SumAttrs"),
+        SlotDescriptor::new(SlotId::new(13), "SumExemplars"),
+        // Histogram
+        SlotDescriptor::new(SlotId::new(14), "Histogram"),
+        SlotDescriptor::new(SlotId::new(15), "HistogramDataPoints"),
+        SlotDescriptor::new(SlotId::new(16), "HistogramAttrs"),
+        SlotDescriptor::new(SlotId::new(17), "HistogramExemplars"),
+        // ExpHistogram
+        SlotDescriptor::new(SlotId::new(18), "ExpHistogram"),
+        SlotDescriptor::new(SlotId::new(19), "ExpHistogramDataPoints"),
     ]
 }
 
