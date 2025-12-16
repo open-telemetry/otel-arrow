@@ -89,14 +89,19 @@ use super::types::{
 };
 use crate::record_bundle::{ArrowPrimitive, SlotId};
 
-/// Alignment boundary for stream data within a segment file.
+/// Alignment boundary for stream data within a segment file (in bytes).
 ///
-/// 64-byte alignment provides:
-/// - Cache-line alignment on modern CPUs (x86, ARM)
-/// - Optimal access patterns for AVX-512 SIMD operations
-/// - Efficient memory-mapped I/O for zero-copy reads
+/// Each stream's Arrow IPC data starts at a 64-byte aligned offset. This provides:
 ///
-/// See also: https://arrow.apache.org/docs/format/Columnar.html#buffer-alignment-and-padding
+/// - **Cache-line alignment**: Modern x86 and ARM CPUs use 64-byte cache lines.
+///   Aligned access avoids cache-line splits and improves prefetching.
+/// - **SIMD optimization**: AVX-512 operates on 64-byte vectors. Aligned data
+///   enables use of aligned load/store instructions.
+/// - **Memory-mapped I/O**: Aligned regions work better with page boundaries
+///   and enable efficient zero-copy access via `mmap`.
+///
+/// This matches Arrow's recommended buffer alignment. See:
+/// <https://arrow.apache.org/docs/format/Columnar.html#buffer-alignment-and-padding>
 const STREAM_ALIGNMENT: u64 = 64;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -341,13 +346,13 @@ impl SegmentWriter {
     /// - chunk_count: UInt32
     fn encode_stream_directory(&self, streams: &[StreamMetadata]) -> Result<Vec<u8>, SegmentError> {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("stream_id", DataType::UInt32, false),
-            Field::new("slot_id", DataType::UInt16, false),
+            Field::new("stream_id", StreamId::arrow_data_type(), false),
+            Field::new("slot_id", SlotId::arrow_data_type(), false),
             Field::new("schema_fingerprint", DataType::FixedSizeBinary(32), false),
             Field::new("byte_offset", DataType::UInt64, false),
             Field::new("byte_length", DataType::UInt64, false),
             Field::new("row_count", DataType::UInt64, false),
-            Field::new("chunk_count", DataType::UInt32, false),
+            Field::new("chunk_count", ChunkIndex::arrow_data_type(), false),
         ]));
 
         let mut stream_id_builder = UInt32Builder::with_capacity(streams.len());
@@ -389,12 +394,24 @@ impl SegmentWriter {
 
     /// Encodes the batch manifest as Arrow IPC.
     ///
-    /// Schema:
-    /// - bundle_index: UInt32
-    /// - slot_refs: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
+    /// # Schema
+    ///
+    /// - `bundle_index`: UInt32 — ordinal of the bundle within the segment
+    /// - `slot_refs`: List<Struct<...>> — references to stream chunks
+    ///   - `slot_id`: UInt16 — which payload slot this reference is for
+    ///   - `stream_id`: UInt32 — index into the stream directory
+    ///   - `chunk_index`: UInt32 — which Arrow RecordBatch within the stream
     ///
     /// Using Arrow's native List and Struct types enables zero-copy decoding
-    /// and avoids string parsing overhead.
+    /// and avoids string parsing overhead compared to the previous JSON encoding.
+    ///
+    /// This is decoded by [`SegmentReader::read_manifest`](super::SegmentReader).
+    ///
+    /// # Panics
+    ///
+    /// The `expect()` calls in this function cannot panic because the field
+    /// builders are created with the exact same types in the same order as
+    /// the indices used to access them.
     fn encode_manifest(&self, entries: &[ManifestEntry]) -> Result<Vec<u8>, SegmentError> {
         // Define the inner struct type for slot references.
         // Uses ArrowPrimitive::arrow_data_type() to ensure the Arrow schema stays

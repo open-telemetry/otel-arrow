@@ -735,6 +735,18 @@ impl SegmentReader {
         Ok(streams)
     }
 
+    /// Decodes the batch manifest from Arrow IPC bytes.
+    ///
+    /// Inverse of [`SegmentWriter::encode_manifest`]. Reads a single-batch
+    /// Arrow IPC file with schema:
+    ///
+    /// - `bundle_index`: UInt32
+    /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
+    ///
+    /// Each row represents one [`ManifestEntry`] describing which stream chunks
+    /// comprise a bundle.
+    ///
+    /// [`SegmentWriter::encode_manifest`]: super::SegmentWriter
     fn read_manifest(
         buffer: &Buffer,
         offset: usize,

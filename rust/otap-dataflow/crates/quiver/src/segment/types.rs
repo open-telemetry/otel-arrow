@@ -83,7 +83,11 @@ pub(super) const MAX_CHUNKS_PER_STREAM: usize = 10_000_000;
 /// contribute chunks (Arrow `RecordBatch`es) to the same stream if they
 /// share the same slot and schema.
 ///
+/// Implements [`ArrowPrimitive`] with `ArrowType = UInt32Type` for use in
+/// the segment manifest's Arrow schema.
+///
 /// [`RecordBundle`]: crate::record_bundle::RecordBundle
+/// [`ArrowPrimitive`]: crate::record_bundle::ArrowPrimitive
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StreamId(u32);
 
@@ -199,7 +203,11 @@ impl StreamMetadata {
 /// the resulting chunk index is recorded in the batch manifest so the
 /// original bundle can be reconstructed during reads.
 ///
+/// Implements [`ArrowPrimitive`] with `ArrowType = UInt32Type` for use in
+/// the segment manifest's Arrow schema.
+///
 /// [`RecordBundle`]: crate::record_bundle::RecordBundle
+/// [`ArrowPrimitive`]: crate::record_bundle::ArrowPrimitive
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ChunkIndex(u32);
 
