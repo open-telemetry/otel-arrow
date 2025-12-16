@@ -67,16 +67,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_log_processor_config_deserialize() {
+    fn test_log_processor_config_console_deserialize() {
         let yaml_str = r#"
             batch:
               exporter:
                 console:
             "#;
         let config: LogProcessorConfig = serde_yaml::from_str(yaml_str).unwrap();
+
         match config {
             LogProcessorConfig::Batch(batch_config) => match batch_config.exporter {
                 LogBatchProcessorExporterConfig::Console => {}
+                LogBatchProcessorExporterConfig::Otlp(_) => {
+                    panic!("Expected Console exporter, got OTLP.");
+                }
+            },
+        }
+    }
+
+    #[test]
+    fn test_log_processor_config_otlp_deserialize() {
+        let yaml_str = r#"
+            batch:
+              exporter:
+                otlp:
+                  endpoint: "http://localhost:4317"
+            "#;
+        let config: LogProcessorConfig = serde_yaml::from_str(yaml_str).unwrap();
+        match config {
+            LogProcessorConfig::Batch(batch_config) => match batch_config.exporter {
+                LogBatchProcessorExporterConfig::Console => {
+                    panic!("Expected OTLP exporter, got Console.");
+                }
+                LogBatchProcessorExporterConfig::Otlp(_) => {}
             },
         }
     }
