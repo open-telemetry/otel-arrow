@@ -136,7 +136,7 @@ impl OtlpProtoMessage {
         }
     }
 
-    /// Encode this messaeg as bytes.
+    /// Encode this message as bytes.
     pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
         use prost::Message;
         match self {

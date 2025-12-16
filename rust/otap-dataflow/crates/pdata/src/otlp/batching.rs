@@ -26,9 +26,9 @@ fn batch_bytes(start_pos: &Position, end_pos: &Position, inputs: &[OtlpProtoByte
     if start_pos.input_idx == end_pos.input_idx {
         end_pos.offset - start_pos.offset
     } else {
-        (inputs[start_pos.input_idx].byte_size() - start_pos.offset)
+        (inputs[start_pos.input_idx].num_bytes() - start_pos.offset)
             + (start_pos.input_idx + 1..end_pos.input_idx)
-                .map(|i| inputs[i].byte_size())
+                .map(|i| inputs[i].num_bytes())
                 .sum::<usize>()
             + end_pos.offset
     }
@@ -86,7 +86,7 @@ pub fn make_bytes_batches(
     if inputs.is_empty() {
         return Err(Error::EmptyBatch);
     }
-    let total_size: usize = inputs.iter().map(|i| i.byte_size()).sum();
+    let total_size: usize = inputs.iter().map(|i| i.num_bytes()).sum();
     if total_size == 0 {
         return Err(Error::EmptyBatch);
     }

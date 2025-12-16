@@ -20,12 +20,12 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
 
     let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp.iter().map(otlp_message_to_bytes).collect();
 
-    let total_input_bytes: usize = inputs_bytes.iter().map(|b| b.byte_size()).sum();
+    let total_input_bytes: usize = inputs_bytes.iter().map(|b| b.num_bytes()).sum();
 
     // Run a single equivalence test
     let test_config = |limit: Option<NonZeroU64>, label: &str| {
         let outputs = make_bytes_batches(signal_type, limit, inputs_bytes.clone()).expect("ok");
-        let total: usize = outputs.iter().map(|b| b.byte_size()).sum();
+        let total: usize = outputs.iter().map(|b| b.num_bytes()).sum();
         assert_eq!(total_input_bytes, total, "{}: byte count mismatch", label);
 
         // Convert outputs back to OtlpProtoMessage and verify equivalence
@@ -108,7 +108,7 @@ fn test_corrupted_protobuf_handling() {
     // Convert both to bytes
     let good_bytes1 = otlp_message_to_bytes(&logs1.clone().into());
     let good_bytes2 = otlp_message_to_bytes(&logs2.clone().into());
-    let good_size = good_bytes1.byte_size() + good_bytes2.byte_size();
+    let good_size = good_bytes1.num_bytes() + good_bytes2.num_bytes();
 
     // Create a third input that's corrupted
     let mut corrupted_bytes = Vec::new();
@@ -120,7 +120,7 @@ fn test_corrupted_protobuf_handling() {
     corrupted_bytes.extend_from_slice(&garbage);
 
     let corrupted_input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, corrupted_bytes);
-    let corrupted_size = corrupted_input.byte_size();
+    let corrupted_size = corrupted_input.num_bytes();
 
     let total_size = good_size + corrupted_size;
 
@@ -139,11 +139,11 @@ fn test_corrupted_protobuf_handling() {
     assert_eq!(outputs.len(), 2);
 
     // First batch should contain the good data
-    let first_size = outputs[0].byte_size();
+    let first_size = outputs[0].num_bytes();
     assert_eq!(first_size, good_size);
 
     // Second batch should contain the garbage
-    let second_size = outputs[1].byte_size();
+    let second_size = outputs[1].num_bytes();
     assert_eq!(second_size, corrupted_size);
     assert_eq!(outputs[1].as_bytes(), garbage);
 

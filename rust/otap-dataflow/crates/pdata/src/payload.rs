@@ -158,7 +158,7 @@ impl OtapPayload {
     #[must_use]
     pub fn num_bytes(&self) -> Option<usize> {
         match self {
-            Self::OtlpBytes(value) => value.num_bytes(),
+            Self::OtlpBytes(value) => Some(value.num_bytes()),
             Self::OtapArrowRecords(value) => value.num_bytes(),
         }
     }
@@ -244,7 +244,7 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        Some(self.as_bytes().len())
+        Some(self.num_bytes())
     }
 
     fn is_empty(&self) -> bool {

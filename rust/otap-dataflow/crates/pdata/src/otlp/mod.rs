@@ -78,9 +78,9 @@ impl OtlpProtoBytes {
         }
     }
 
-    /// Constructs a new message from bytes and signal type.
+    /// Return the byte-size of this message.
     #[must_use]
-    pub fn byte_size(&self) -> usize {
+    pub fn num_bytes(&self) -> usize {
         self.as_bytes().len()
     }
 }
