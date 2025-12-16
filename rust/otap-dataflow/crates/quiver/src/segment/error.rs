@@ -82,6 +82,17 @@ pub enum SegmentError {
     #[error("stream accumulator already finalized")]
     AccumulatorFinalized,
 
+    /// Batch schema does not match the stream's expected schema.
+    #[error("schema mismatch in stream {stream_id:?}: expected schema {expected}, got {actual}")]
+    SchemaMismatch {
+        /// The stream where the mismatch occurred.
+        stream_id: StreamId,
+        /// String representation of the expected schema.
+        expected: String,
+        /// String representation of the actual batch schema.
+        actual: String,
+    },
+
     /// Open segment has no data to finalize.
     #[error("cannot finalize empty segment")]
     EmptySegment,

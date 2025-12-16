@@ -161,11 +161,8 @@ impl StreamAccumulator {
     /// has already been finalized.
     /// Returns [`SegmentError::InvalidFormat`] if adding this batch would
     /// exceed the chunk limit.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the batch schema doesn't match the stream schema. Callers
-    /// must ensure schema compatibility via the routing layer.
+    /// Returns [`SegmentError::SchemaMismatch`] if the batch schema doesn't
+    /// match the stream's expected schema.
     pub fn append(&mut self, batch: RecordBatch) -> Result<ChunkIndex, SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
@@ -182,11 +179,14 @@ impl StreamAccumulator {
             });
         }
 
-        debug_assert_eq!(
-            batch.schema(),
-            self.schema,
-            "batch schema must match stream schema"
-        );
+        // Validate schema matches - this catches routing bugs or data corruption
+        if batch.schema() != self.schema {
+            return Err(SegmentError::SchemaMismatch {
+                stream_id: self.stream_id,
+                expected: format!("{:?}", self.schema),
+                actual: format!("{:?}", batch.schema()),
+            });
+        }
 
         let chunk_index = ChunkIndex::new(self.batches.len() as u32);
         self.row_count += batch.num_rows() as u64;
@@ -274,7 +274,9 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
     use arrow_ipc::reader::FileReader;
+    use arrow_schema::{DataType, Field, Schema};
 
     use super::*;
     use crate::segment::test_utils::{make_batch, test_fingerprint, test_schema};
@@ -440,5 +442,50 @@ mod tests {
         let debug_str = format!("{:?}", acc);
         assert!(debug_str.contains("StreamAccumulator"));
         assert!(debug_str.contains("stream_id"));
+    }
+
+    #[test]
+    fn append_rejects_schema_mismatch() {
+        let schema1 = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let schema2 = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("extra", DataType::Utf8, true),
+        ]));
+
+        let mut acc = StreamAccumulator::new(
+            StreamId::new(0),
+            SlotId::new(0),
+            test_fingerprint(),
+            Arc::clone(&schema1),
+        );
+
+        // Create a batch with a different schema
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema2),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let result = acc.append(batch);
+
+        match result {
+            Err(SegmentError::SchemaMismatch {
+                stream_id,
+                expected,
+                actual,
+            }) => {
+                assert_eq!(stream_id, StreamId::new(0));
+                // Expected schema has 1 field, actual has 2
+                assert!(expected.contains("id"));
+                assert!(!expected.contains("extra"));
+                assert!(actual.contains("id"));
+                assert!(actual.contains("extra"));
+            }
+            other => panic!("Expected SchemaMismatch error, got: {:?}", other),
+        }
     }
 }
