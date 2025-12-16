@@ -51,7 +51,6 @@ impl<'de> Deserialize<'de> for LogBatchProcessorExporterConfig {
                         Ok(LogBatchProcessorExporterConfig::Console)
                     }
                     "otlp" => {
-                        // Console has no configuration, just consume the value (empty or null)
                         let otlp_config: OtlpExporterConfig = map.next_value()?;
                         Ok(LogBatchProcessorExporterConfig::Otlp(otlp_config))
                     }
