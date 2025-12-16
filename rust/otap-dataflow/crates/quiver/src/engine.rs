@@ -858,7 +858,10 @@ mod tests {
     /// - Large total row counts (100K+ rows)
     /// - WAL rotation and cursor advancement
     /// - Data integrity across all segments
+    ///
+    /// Run manually with: `cargo test stress_high_volume_ingestion -- --ignored`
     #[test]
+    #[ignore]
     fn stress_high_volume_ingestion() {
         use crate::config::WalConfig;
         use crate::segment::SegmentReader;
