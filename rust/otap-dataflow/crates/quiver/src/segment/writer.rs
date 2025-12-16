@@ -152,6 +152,15 @@ impl SegmentWriter {
 
         let result = self.write_streaming(&mut writer, accumulators, manifest, path)?;
 
+        // Ensure durability: fsync the file to guarantee data is persisted to disk.
+        // This is critical for crash recovery - without fsync, data may be lost
+        // if the system crashes before the OS flushes its caches.
+        let file = writer
+            .into_inner()
+            .map_err(|e| SegmentError::io(path.to_path_buf(), e.into_error()))?;
+        file.sync_all()
+            .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+
         Self::set_readonly(path)?;
 
         Ok(result)
