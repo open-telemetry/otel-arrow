@@ -654,11 +654,7 @@ impl SegmentReader {
     }
 
     fn read_footer(buffer: &Buffer, offset: usize, length: usize) -> Result<Footer, SegmentError> {
-        if offset + length > buffer.len() {
-            return Err(SegmentError::InvalidFormat {
-                message: "footer extends beyond buffer".to_string(),
-            });
-        }
+        Self::validate_region(buffer.len(), offset as u64, length as u64, "footer")?;
         Footer::decode(&buffer[offset..offset + length])
     }
 
