@@ -217,6 +217,29 @@ impl StreamDecoder {
             });
         }
 
+        // Eagerly validate all batch block offsets and lengths
+        for (i, block) in batches.iter().enumerate() {
+            let block_offset = block.offset() as usize;
+            let block_len = (block.bodyLength() as usize)
+                .checked_add(block.metaDataLength() as usize)
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: format!("batch {} block length overflow", i),
+                })?;
+            let block_end = block_offset.checked_add(block_len).ok_or_else(|| {
+                SegmentError::InvalidFormat {
+                    message: format!("batch {} block offset+length overflow", i),
+                }
+            })?;
+            if block_end > buffer.len() {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!(
+                        "batch {} block extends beyond buffer: offset={}, len={}, buffer_len={}",
+                        i, block_offset, block_len, buffer.len()
+                    ),
+                });
+            }
+        }
+
         Ok(Self {
             buffer,
             decoder,
@@ -242,7 +265,13 @@ impl StreamDecoder {
         }
 
         let block = &self.batches[index];
-        let block_len = block.bodyLength() as usize + block.metaDataLength() as usize;
+        // Note: block bounds were validated in new(), but we still use checked_add
+        // for defense-in-depth and to avoid issues if blocks are modified.
+        let block_len = (block.bodyLength() as usize)
+            .checked_add(block.metaDataLength() as usize)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!("batch {} block length overflow", index),
+            })?;
         let data = self
             .buffer
             .slice_with_length(block.offset() as usize, block_len);
