@@ -187,7 +187,7 @@ impl OpenSegment {
         let (slot_id, schema_fingerprint) = key;
         if !self.streams.contains_key(&key) {
             let stream_id = StreamId::new(self.next_stream_id);
-            self.next_stream_id += 1;
+            self.next_stream_id = self.next_stream_id.saturating_add(1);
 
             let accumulator =
                 StreamAccumulator::new(stream_id, slot_id, schema_fingerprint, schema);
