@@ -9,7 +9,7 @@ without data loss.
 ## Proposed Solution: Quiver
 
 We propose building Quiver: a standalone, embeddable Arrow-based segment store
-packaged as a reusable Rust crate. Quiver *does not exist yet*; this document
+packaged as a reusable Rust crate. Quiver *is not fully implemented yet*; this document
 defines its initial design, scope, and open questions. While it will be
 developed first for `otap-dataflow`, we intend to keep it decoupled so it can
 integrate into other telemetry pipelines or streaming systems that need durable
@@ -22,8 +22,9 @@ value: a fixed set of payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`,
 
 ### Core Concepts
 
-**Segment Store**: Immutable Arrow IPC files containing batches of telemetry.
-Each segment:
+**Segment Store**: Immutable files containing multiple Arrow IPC file streams
+with batches of telemetry.
+Each segment file:
 
 - Groups multiple `RecordBundle` arrivals (8-64MB target size) and persists the
   per-slot Arrow streams they reference.
@@ -457,6 +458,48 @@ original `RecordBundle` values.
 Quiver segments are containers around Arrow IPC streams plus a manifest
 that describes how those streams reassemble back into the `RecordBundle`
 abstraction used by the embedding pipeline.
+
+#### Why a Custom Format Instead of Plain Arrow IPC?
+
+Arrow IPC (both streaming and file formats) requires all `RecordBatch`es in a
+single stream to share the same schema. This constraint conflicts with OTAP's
+data model in several ways:
+
+1. **Multiple payload types per bundle**: Each `RecordBundle` (OTAP batch)
+   contains multiple payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`,
+   `ResourceAttrs`, etc.), each with a completely different schema. These
+   cannot coexist in a single Arrow IPC stream.
+
+2. **Schema evolution within a payload type**: Even for a single payload slot,
+   the schema can change from one bundle to the next:
+   - Optional columns may appear or disappear (e.g., `str` attribute column
+     omitted when no string attributes are present)
+   - Dictionary-encoded columns may switch between `Dictionary<u8, Utf8>`,
+     `Dictionary<u16, Utf8>`, or native `Utf8` based on cardinality
+
+3. **Optional payloads**: Some slots may be absent entirely for a given bundle
+   (e.g., no `ScopeAttrs` when scope attributes are empty).
+
+Alternative approaches considered:
+
+- **One Arrow IPC file per payload type**: Simple format, but explodes the
+  number of files to manage (one per slot × schema variation × segment).
+- **One Arrow IPC stream per `RecordBatch`**: Maximum flexibility, but repeats
+  schema metadata for every batch and prevents dictionary delta encoding.
+
+The Quiver segment format takes a middle path: interleave multiple Arrow IPC
+*file* streams (one per `(slot, schema_fingerprint)` pair) inside a single
+container file, with a manifest that records how to reconstruct each original
+`RecordBundle`. This preserves:
+
+- **Standard Arrow IPC reading**: Each stream is a valid Arrow IPC file that
+  can be handed directly to `arrow_ipc::FileReader` (via memory-mapped slice).
+- **Efficient storage**: Batches with the same schema share a stream, enabling
+  dictionary delta encoding and avoiding repeated schema metadata.
+- **Zero-copy access**: The entire segment can be memory-mapped; readers seek
+  to stream offsets without copying data.
+- **Bundle reconstruction**: The batch manifest records `(stream_id, chunk_index)`
+  per slot, allowing readers to reassemble the original `RecordBundle` ordering.
 
 #### Envelope Overview
 

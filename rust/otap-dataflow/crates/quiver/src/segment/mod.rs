@@ -9,6 +9,36 @@
 //! the embedding application. Segments are immutable once finalized and support
 //! zero-copy memory-mapped reads.
 //!
+//! # Why a Custom Format Instead of Plain Arrow IPC?
+//!
+//! Arrow IPC (both streaming and file formats) requires all `RecordBatch`es in
+//! a single stream to share the same schema. This conflicts with OTAP's data
+//! model:
+//!
+//! 1. **Multiple payload types per bundle**: Each `RecordBundle` contains
+//!    multiple payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`, etc.), each
+//!    with a completely different schema.
+//!
+//! 2. **Schema evolution within a payload type**: Even for a single slot, the
+//!    schema can change between bundles—optional columns may appear/disappear,
+//!    and dictionary-encoded columns may switch between `Dictionary<u8, Utf8>`,
+//!    `Dictionary<u16, Utf8>`, or native `Utf8` based on cardinality.
+//!
+//! 3. **Optional payloads**: Some slots may be absent entirely for a given
+//!    bundle (e.g., no `ScopeAttrs` when scope attributes are empty).
+//!
+//! The Quiver segment format addresses this by interleaving multiple Arrow IPC
+//! *file* streams (one per `(slot, schema_fingerprint)` pair) inside a single
+//! container, with a manifest recording how to reconstruct each original
+//! `RecordBundle`. This preserves:
+//!
+//! - **Standard Arrow IPC reading**: Each stream is a valid Arrow IPC file
+//!   readable via `arrow_ipc::reader::FileReader` (on a memory-mapped slice).
+//! - **Efficient storage**: Batches with the same schema share a stream,
+//!   enabling dictionary delta encoding and avoiding repeated schema metadata.
+//! - **Zero-copy access**: The entire segment can be memory-mapped; readers
+//!   seek to stream offsets without copying data.
+//!
 //! # Terminology
 //!
 //! The following terms are used throughout this module. See also the
