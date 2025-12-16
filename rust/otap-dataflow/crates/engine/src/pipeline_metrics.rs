@@ -58,13 +58,13 @@
 //!   indicates a core shared by multiple pipeline threads (multiple specs per CPU)
 //!   or interference from other system work on that core.
 //!
-//! - `page_faults_minor_delta` / `page_faults_major_delta`
-//!   (`DeltaCounter<u64>`, `{1}`; OS-dependent):
-//!   Per-interval minor/major page faults (`ru_minflt`/`ru_majflt` deltas).
-//!   Minor faults indicate working-set or locality churn. Spikes can also occur
-//!   during first-touch of large buffers, and can highlight uneven sharding across
-//!   NUMA nodes. Major faults indicate disk I/O due to swapping and almost always
-//!   imply severe performance degradation.
+//! - `page_faults_minor` / `page_faults_major`
+//!   (`ObserveCounter<u64>`, `{1}`; OS-dependent):
+//!   Cumulative minor/major page faults for the pipeline thread since start
+//!   (`ru_minflt`/`ru_majflt`, normalized to start at 0). For diagnosis, look at the
+//!   rate between samples. Minor faults indicate working-set or locality
+//!   churn. Major faults indicate disk I/O due to swapping and almost always imply
+//!   severe performance degradation.
 //!
 //! **Derived signals (not emitted explicitly)**
 //! - `net_allocated_delta = memory_allocated_delta - memory_freed_delta` `{By}`
@@ -110,12 +110,12 @@
 //!   pipeline rather than the whole process.
 //!
 //! - *Poor locality / working-set thrash*:
-//!   rising `page_faults_minor_delta` together with churn and/or falling
+//!   rising `page_faults_minor` (steep slope) together with churn and/or falling
 //!   `cpu_utilization`. Example: large hash tables or random access patterns
 //!   exceeding CPU caches. If localized to one NUMA node, revisit shard placement.
 //!
 //! - *Swap-induced instability*:
-//!   non-zero or spiking `page_faults_major_delta` almost always aligns with
+//!   non-zero or spiking `page_faults_major` (steep slope) almost always aligns with
 //!   dramatic latency spikes or stalls. Action: reduce memory footprint,
 //!   increase RAM, or isolate workloads.
 //!
@@ -141,7 +141,7 @@ use tikv_jemalloc_ctl::thread;
 use tikv_jemalloc_ctl::thread::ThreadLocal;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
-use nix::sys::resource::{UsageWho, getrusage};
+use nix::sys::resource::{getrusage, UsageWho};
 
 /// Per-pipeline instance general metrics.
 ///
@@ -202,19 +202,19 @@ pub struct PipelineMetrics {
     #[metric(unit = "{1}")]
     pub context_switches_involuntary: ObserveCounter<u64>,
 
-    /// Number of minor page faults (served without disk I/O) since the last update.
+    /// Number of minor page faults (served without disk I/O) since start.
     ///
     /// A rising rate indicates memory access pain (poor locality, working-set churn),
     /// even if heap bytes are stable.
     #[metric(unit = "{1}")]
-    pub page_faults_minor_delta: DeltaCounter<u64>,
+    pub page_faults_minor: ObserveCounter<u64>,
 
-    /// Number of major page faults (requiring disk I/O) since the last update.
+    /// Number of major page faults (requiring disk I/O) since start.
     ///
     /// Any non-trivial rate typically indicates severe memory pressure or swapping,
     /// and correlates strongly with pipeline latency spikes.
     #[metric(unit = "{1}")]
-    pub page_faults_major_delta: DeltaCounter<u64>,
+    pub page_faults_major: ObserveCounter<u64>,
     // ToDo Add pipeline_network_io_received
     // ToDo Add pipeline_network_io_sent
 }
@@ -230,8 +230,6 @@ pub(crate) struct PipelineMetricsMonitor {
     last_deallocated: u64,
 
     rusage_thread_supported: bool,
-    last_minor_page_faults: u64,
-    last_major_page_faults: u64,
 
     // These timestamps mark the beginning of the current measurement interval
     wall_start: Instant,
@@ -273,11 +271,7 @@ impl PipelineMetricsMonitor {
                 (false, None, None, 0, 0)
             };
 
-        let (
-            rusage_thread_supported,
-            last_minor_page_faults,
-            last_major_page_faults,
-        ) = Self::init_rusage_baseline();
+        let rusage_thread_supported = Self::init_rusage_baseline();
 
         Self {
             start_time: now,
@@ -287,8 +281,6 @@ impl PipelineMetricsMonitor {
             last_allocated,
             last_deallocated,
             rusage_thread_supported,
-            last_minor_page_faults,
-            last_major_page_faults,
             wall_start: now,
             cpu_start: ThreadTime::now(),
             metrics: pipeline_ctx.register_metrics::<PipelineMetrics>(),
@@ -365,16 +357,14 @@ impl PipelineMetricsMonitor {
         self.cpu_start = now_cpu;
     }
 
-    fn init_rusage_baseline() -> (bool, u64, u64) {
+    fn init_rusage_baseline() -> bool {
         #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
         {
-            if let Ok(usage) = getrusage(UsageWho::RUSAGE_THREAD) {
-                let minor_faults = u64::try_from(usage.minor_page_faults()).unwrap_or_default();
-                let major_faults = u64::try_from(usage.major_page_faults()).unwrap_or_default();
-                return (true, minor_faults, major_faults);
+            if let Ok(_usage) = getrusage(UsageWho::RUSAGE_THREAD) {
+                return true;
             }
         }
-        (false, 0, 0)
+        false
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
@@ -392,20 +382,12 @@ impl PipelineMetricsMonitor {
                 let minor_faults = u64::try_from(usage.minor_page_faults()).unwrap_or_default();
                 let major_faults = u64::try_from(usage.major_page_faults()).unwrap_or_default();
 
-                let delta_minor_faults = minor_faults.wrapping_sub(self.last_minor_page_faults);
-                let delta_major_faults = major_faults.wrapping_sub(self.last_major_page_faults);
-
-                self.last_minor_page_faults = minor_faults;
-                self.last_major_page_faults = major_faults;
-
-                self.metrics
-                    .context_switches_voluntary
-                    .observe(voluntary);
+                self.metrics.context_switches_voluntary.observe(voluntary);
                 self.metrics
                     .context_switches_involuntary
                     .observe(involuntary);
-                self.metrics.page_faults_minor_delta.add(delta_minor_faults);
-                self.metrics.page_faults_major_delta.add(delta_major_faults);
+                self.metrics.page_faults_minor.observe(minor_faults);
+                self.metrics.page_faults_major.observe(major_faults);
             }
             Err(_) => {
                 self.rusage_thread_supported = false;
@@ -446,8 +428,8 @@ mod jemalloc_tests {
         let cpu0 = monitor.metrics.cpu_time.get();
         let cs_vol0 = monitor.metrics.context_switches_voluntary.get();
         let cs_invol0 = monitor.metrics.context_switches_involuntary.get();
-        let pf_min0 = monitor.metrics.page_faults_minor_delta.get();
-        let pf_maj0 = monitor.metrics.page_faults_major_delta.get();
+        let pf_min0 = monitor.metrics.page_faults_minor.get();
+        let pf_maj0 = monitor.metrics.page_faults_major.get();
         let mem0 = monitor.metrics.memory_allocated.get();
 
         // Allocate some memory on this thread.
@@ -477,16 +459,16 @@ mod jemalloc_tests {
         if monitor.rusage_thread_supported {
             assert!(monitor.metrics.context_switches_voluntary.get() >= cs_vol0);
             assert!(monitor.metrics.context_switches_involuntary.get() >= cs_invol0);
-            assert!(monitor.metrics.page_faults_minor_delta.get() >= pf_min0);
-            assert!(monitor.metrics.page_faults_major_delta.get() >= pf_maj0);
+            assert!(monitor.metrics.page_faults_minor.get() >= pf_min0);
+            assert!(monitor.metrics.page_faults_major.get() >= pf_maj0);
         } else {
             assert_eq!(monitor.metrics.context_switches_voluntary.get(), cs_vol0);
             assert_eq!(
                 monitor.metrics.context_switches_involuntary.get(),
                 cs_invol0
             );
-            assert_eq!(monitor.metrics.page_faults_minor_delta.get(), pf_min0);
-            assert_eq!(monitor.metrics.page_faults_major_delta.get(), pf_maj0);
+            assert_eq!(monitor.metrics.page_faults_minor.get(), pf_min0);
+            assert_eq!(monitor.metrics.page_faults_major.get(), pf_maj0);
         }
     }
 }
@@ -511,8 +493,8 @@ mod non_jemalloc_tests {
         let cpu0 = monitor.metrics.cpu_time.get();
         let cs_vol0 = monitor.metrics.context_switches_voluntary.get();
         let cs_invol0 = monitor.metrics.context_switches_involuntary.get();
-        let pf_min0 = monitor.metrics.page_faults_minor_delta.get();
-        let pf_maj0 = monitor.metrics.page_faults_major_delta.get();
+        let pf_min0 = monitor.metrics.page_faults_minor.get();
+        let pf_maj0 = monitor.metrics.page_faults_major.get();
 
         // Allocate and burn CPU.
         let mut v = Vec::with_capacity(10_000);
@@ -537,16 +519,16 @@ mod non_jemalloc_tests {
         if monitor.rusage_thread_supported {
             assert!(monitor.metrics.context_switches_voluntary.get() >= cs_vol0);
             assert!(monitor.metrics.context_switches_involuntary.get() >= cs_invol0);
-            assert!(monitor.metrics.page_faults_minor_delta.get() >= pf_min0);
-            assert!(monitor.metrics.page_faults_major_delta.get() >= pf_maj0);
+            assert!(monitor.metrics.page_faults_minor.get() >= pf_min0);
+            assert!(monitor.metrics.page_faults_major.get() >= pf_maj0);
         } else {
             assert_eq!(monitor.metrics.context_switches_voluntary.get(), cs_vol0);
             assert_eq!(
                 monitor.metrics.context_switches_involuntary.get(),
                 cs_invol0
             );
-            assert_eq!(monitor.metrics.page_faults_minor_delta.get(), pf_min0);
-            assert_eq!(monitor.metrics.page_faults_major_delta.get(), pf_maj0);
+            assert_eq!(monitor.metrics.page_faults_minor.get(), pf_min0);
+            assert_eq!(monitor.metrics.page_faults_major.get(), pf_maj0);
         }
 
         // Memory-related metrics should remain unchanged (zero) without jemalloc.
