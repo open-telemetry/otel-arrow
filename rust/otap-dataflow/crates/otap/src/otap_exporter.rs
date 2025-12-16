@@ -634,7 +634,10 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let config = json!({
             "grpc_endpoint": grpc_endpoint,
-            "compression_method": "none"
+            "compression_method": "none",
+            "tls": {
+                "insecure": true
+            }
         });
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
@@ -807,7 +810,10 @@ mod tests {
                 pipeline_ctx,
                 &serde_json::json!({
                     "grpc_endpoint": grpc_endpoint,
-                    "compression_method": "none"
+                    "compression_method": "none",
+                    "tls": {
+                        "insecure": true
+                    }
                 }),
             )
             .unwrap(),

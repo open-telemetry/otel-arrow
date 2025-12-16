@@ -72,7 +72,23 @@ pub struct TlsClientConfig {
     ///
     /// This is typically needed when connecting by IP address or when the endpoint hostname
     /// does not match the certificate.
-    pub server_name_override: Option<String>,
+    #[serde(rename = "server_name_override")]
+    pub server_name: Option<String>,
+
+    /// Insecure disables TLS.
+    #[serde(default)]
+    pub insecure: Option<bool>,
+
+    /// InsecureSkipVerify would enable TLS but skip server certificate verification.
+    ///
+    /// NOTE: This is currently **not supported** in the Rust collector implementation.
+    /// If set to `true`, startup will fail with a clear error instead of silently
+    /// proceeding with normal certificate verification.
+    ///
+    /// TODO: Implement this behind a clearly-labeled "dangerous" option once the
+    /// tonic/rustls client stack supports plugging in a custom verifier.
+    #[serde(default)]
+    pub insecure_skip_verify: Option<bool>,
 }
 
 /// TLS configuration specific to server connections (terminating TLS/mTLS).

@@ -139,7 +139,8 @@ async fn otlp_exporter_connects_with_mtls() {
             ca_file: None,
             ca_pem: Some(ca_pem),
             include_system_ca_certs_pool: Some(false),
-            server_name_override: Some("localhost".to_string()),
+            server_name: Some("localhost".to_string()),
+            ..TlsClientConfig::default()
         }),
         ..GrpcClientSettings::default()
     };
@@ -211,7 +212,8 @@ async fn otlp_exporter_fails_with_invalid_ca_pem() {
             ca_file: None,
             ca_pem: Some("not a pem bundle".to_string()),
             include_system_ca_certs_pool: Some(false),
-            server_name_override: Some("localhost".to_string()),
+            server_name: Some("localhost".to_string()),
+            ..TlsClientConfig::default()
         }),
         ..GrpcClientSettings::default()
     };
@@ -224,7 +226,7 @@ async fn otlp_exporter_fails_with_invalid_ca_pem() {
 }
 
 #[tokio::test]
-async fn otlp_exporter_fails_http_with_tls_config() {
+async fn otlp_exporter_allows_http_with_tls_config() {
     let settings = GrpcClientSettings {
         grpc_endpoint: "http://localhost:4317".to_string(),
         tls: Some(TlsClientConfig {
@@ -232,19 +234,14 @@ async fn otlp_exporter_fails_http_with_tls_config() {
             ca_file: None,
             ca_pem: Some("fake pem".to_string()),
             include_system_ca_certs_pool: None,
-            server_name_override: None,
+            server_name: None,
+            ..TlsClientConfig::default()
         }),
         ..GrpcClientSettings::default()
     };
 
     let result = settings.build_endpoint_with_tls().await;
-    assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("TLS is configured for a non-https endpoint")
-    );
+    assert!(result.is_ok());
 }
 
 #[tokio::test]
@@ -260,7 +257,8 @@ async fn otlp_exporter_fails_partial_mtls() {
             ca_file: None,
             ca_pem: None,
             include_system_ca_certs_pool: None,
-            server_name_override: None,
+            server_name: None,
+            ..TlsClientConfig::default()
         }),
         ..GrpcClientSettings::default()
     };
@@ -321,7 +319,8 @@ async fn otlp_exporter_connects_with_tls_only() {
             ca_file: None,
             ca_pem: Some(ca_pem),
             include_system_ca_certs_pool: Some(false),
-            server_name_override: Some("localhost".to_string()),
+            server_name: Some("localhost".to_string()),
+            ..TlsClientConfig::default()
         }),
         ..GrpcClientSettings::default()
     };

@@ -94,16 +94,6 @@ fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult
     pem_data
 }
 
-/// Returns true if the given URI uses the HTTPS scheme.
-///
-/// Trims leading whitespace before checking to handle common configuration errors.
-/// Performs case-insensitive comparison per RFC 3986 (scheme is case-insensitive).
-pub(crate) fn is_https_endpoint(uri: &str) -> bool {
-    uri.trim_start()
-        .get(..8)
-        .is_some_and(|s| s.eq_ignore_ascii_case("https://"))
-}
-
 /// Loads TLS configuration for a server.
 ///
 /// Returns `Ok(None)` when no cert/key material is provided, indicating TLS is disabled.
@@ -187,17 +177,43 @@ pub(crate) async fn load_client_tls_config(
     config: Option<&TlsClientConfig>,
     endpoint_uri: &str,
 ) -> Result<Option<ClientTlsConfig>, io::Error> {
-    let endpoint_uses_tls = is_https_endpoint(endpoint_uri);
+    let wants_tls = endpoint_uri.starts_with("https://");
 
     let Some(config) = config else {
-        if !endpoint_uses_tls {
+        // Go collector behavior: absence of a TLS block means "use scheme defaults".
+        // - https:// => TLS enabled with default trust anchors
+        // - http://  => plaintext
+        if !wants_tls {
             return Ok(None);
         }
-        // HTTPS endpoints need a TLS connector. Build one with system roots.
+
         let mut tls = ClientTlsConfig::new();
         tls = add_system_trust_anchors_if_enabled(tls, true).await?;
         return Ok(Some(tls));
     };
+
+    let insecure = config.insecure.unwrap_or(false);
+    let custom_ca_configured = config.ca_file.is_some()
+        || config
+            .ca_pem
+            .as_ref()
+            .is_some_and(|pem| !pem.trim().is_empty());
+
+    // Align with Go configtls.ClientConfig.LoadTLSConfig:
+    // when insecure=true and no custom CA is configured, return None and let the
+    // endpoint scheme decide whether the connection is plaintext or TLS.
+    if insecure && !custom_ca_configured {
+        return Ok(None);
+    }
+
+    if let Some(true) = config.insecure_skip_verify {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TLS configuration error: insecure_skip_verify=true is not supported by the current Rust OTLP client implementation (tonic/rustls). \
+             Remove insecure_skip_verify or set it to false.\n\n\
+             TODO: Implement this only with an explicit, clearly-labeled dangerous verifier override.",
+        ));
+    }
 
     let client_cert_configured = config.config.cert_file.is_some()
         || config
@@ -211,33 +227,13 @@ pub(crate) async fn load_client_tls_config(
             .key_pem
             .as_ref()
             .is_some_and(|pem| !pem.trim().is_empty());
-    let has_ca_setting = config.ca_file.is_some()
-        || config
-            .ca_pem
-            .as_ref()
-            .is_some_and(|pem| !pem.trim().is_empty());
-    let server_name_configured = config.server_name_override.is_some();
-    let tls_configured = client_cert_configured
-        || client_key_configured
-        || has_ca_setting
-        || server_name_configured
-        || config.include_system_ca_certs_pool.is_some();
 
-    if !endpoint_uses_tls && !tls_configured {
-        return Ok(None);
-    }
-
-    if !endpoint_uses_tls && tls_configured {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "TLS is configured for a non-https endpoint; use an https:// endpoint when enabling TLS/mTLS",
-        ));
-    }
+    // Note: Providing a TLS config block forces TLS regardless of scheme.
 
     let mut tls = ClientTlsConfig::new();
 
     // Domain name / SNI.
-    if let Some(domain) = &config.server_name_override {
+    if let Some(domain) = &config.server_name {
         tls = tls.domain_name(domain.clone());
     }
 
