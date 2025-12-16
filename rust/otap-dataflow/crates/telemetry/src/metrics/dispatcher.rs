@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     attributes::{AttributeSetHandler, AttributeValue},
-    descriptor::{Instrument, MetricValueType, MetricsField, Temporality},
+    descriptor::{Instrument, MetricsField, Temporality},
     error::Error,
     metrics::MetricValue,
     registry::MetricsRegistryHandle,

@@ -92,23 +92,23 @@ impl otap_df_telemetry::metrics::MetricSetHandler for PerfExporterPdataMetrics {
     fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
         static DESCRIPTOR: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
             name: "perf.exporter.pdata.metrics",
-	            metrics: &[
-	                otap_df_telemetry::descriptor::MetricsField {
-	                    name: "batches",
-	                    unit: "{msg}",
-	                    brief: "Number of pdata batches received.",
-	                    instrument: otap_df_telemetry::descriptor::Instrument::Counter,
-	                    temporality: Some(otap_df_telemetry::descriptor::Temporality::Delta),
-	                    value_type: otap_df_telemetry::descriptor::MetricValueType::U64,
-	                },
-	                otap_df_telemetry::descriptor::MetricsField {
-	                    name: "invalid.batches",
-	                    unit: "{msg}",
-	                    brief: "Number of invalid pdata batches received.",
-	                    instrument: otap_df_telemetry::descriptor::Instrument::Counter,
-	                    temporality: Some(otap_df_telemetry::descriptor::Temporality::Delta),
-	                    value_type: otap_df_telemetry::descriptor::MetricValueType::U64,
-	                },
+                metrics: &[
+                    otap_df_telemetry::descriptor::MetricsField {
+                        name: "batches",
+                        unit: "{msg}",
+                        brief: "Number of pdata batches received.",
+                        instrument: otap_df_telemetry::descriptor::Instrument::Counter,
+                        temporality: Some(otap_df_telemetry::descriptor::Temporality::Delta),
+                        value_type: otap_df_telemetry::descriptor::MetricValueType::U64,
+                    },
+                    otap_df_telemetry::descriptor::MetricsField {
+                        name: "invalid.batches",
+                        unit: "{msg}",
+                        brief: "Number of invalid pdata batches received.",
+                        instrument: otap_df_telemetry::descriptor::Instrument::Counter,
+                        temporality: Some(otap_df_telemetry::descriptor::Temporality::Delta),
+                        value_type: otap_df_telemetry::descriptor::MetricValueType::U64,
+                    },
                 // ... other fields
             ],
         };
