@@ -18,11 +18,11 @@ use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
-use otap_df_telemetry::otel_warn;
 
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
