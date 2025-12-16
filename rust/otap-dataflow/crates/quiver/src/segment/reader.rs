@@ -52,8 +52,8 @@ use crc32fast::Hasher;
 use super::error::SegmentError;
 use super::types::{
     ChunkIndex, Footer, MAX_BUNDLES_PER_SEGMENT, MAX_CHUNKS_PER_STREAM,
-    MAX_DICTIONARIES_PER_STREAM, MAX_SLOTS_PER_BUNDLE, ManifestEntry, StreamId, StreamMetadata,
-    TRAILER_SIZE, Trailer,
+    MAX_DICTIONARIES_PER_STREAM, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
+    StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
 };
 use crate::record_bundle::SlotId;
 
@@ -383,7 +383,10 @@ impl SegmentReader {
     }
 
     /// Creates a reader from a pre-loaded buffer with an optional path for error messages.
-    fn from_buffer_with_path(buffer: Buffer, path: Option<std::path::PathBuf>) -> Result<Self, SegmentError> {
+    fn from_buffer_with_path(
+        buffer: Buffer,
+        path: Option<std::path::PathBuf>,
+    ) -> Result<Self, SegmentError> {
         let file_size = buffer.len();
 
         // Need at least trailer size
@@ -702,6 +705,17 @@ impl SegmentReader {
         let chunk_counts =
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "chunk_count")?;
 
+        // Validate stream count to prevent resource exhaustion from malicious files
+        if batch.num_rows() > MAX_STREAMS_PER_SEGMENT {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "stream directory has {} streams, exceeds limit of {}",
+                    batch.num_rows(),
+                    MAX_STREAMS_PER_SEGMENT
+                ),
+            });
+        }
+
         let mut streams = Vec::with_capacity(batch.num_rows());
         for i in 0..batch.num_rows() {
             let mut fingerprint = [0u8; 32];
@@ -746,20 +760,22 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
 
         // Get the slot_refs list column
-        let slot_refs_col = batch
-            .column_by_name("slot_refs")
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: "missing column: slot_refs".to_string(),
-            })?;
+        let slot_refs_col =
+            batch
+                .column_by_name("slot_refs")
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: "missing column: slot_refs".to_string(),
+                })?;
 
-        let slot_refs_list = slot_refs_col
-            .as_list_opt::<i32>()
-            .ok_or_else(|| SegmentError::InvalidFormat {
-                message: format!(
-                    "slot_refs column has type {:?}, expected List",
-                    slot_refs_col.data_type()
-                ),
-            })?;
+        let slot_refs_list =
+            slot_refs_col
+                .as_list_opt::<i32>()
+                .ok_or_else(|| SegmentError::InvalidFormat {
+                    message: format!(
+                        "slot_refs column has type {:?}, expected List",
+                        slot_refs_col.data_type()
+                    ),
+                })?;
 
         if batch.num_rows() > MAX_BUNDLES_PER_SEGMENT {
             return Err(SegmentError::InvalidFormat {
@@ -772,19 +788,19 @@ impl SegmentReader {
         }
 
         let mut entries = Vec::with_capacity(batch.num_rows());
-        for i in 0..batch.num_rows() {
-            let mut entry = ManifestEntry::new(bundle_indices[i]);
+        for (i, &bundle_index) in bundle_indices.iter().enumerate() {
+            let mut entry = ManifestEntry::new(bundle_index);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);
-            let struct_array = slot_refs_for_bundle
-                .as_struct_opt()
-                .ok_or_else(|| SegmentError::InvalidFormat {
+            let struct_array = slot_refs_for_bundle.as_struct_opt().ok_or_else(|| {
+                SegmentError::InvalidFormat {
                     message: format!(
                         "slot_refs list item has type {:?}, expected Struct",
                         slot_refs_for_bundle.data_type()
                     ),
-                })?;
+                }
+            })?;
 
             let slot_count = struct_array.len();
             if slot_count > MAX_SLOTS_PER_BUNDLE {

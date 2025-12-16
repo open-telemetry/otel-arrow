@@ -41,9 +41,7 @@ pub enum SegmentError {
     },
 
     /// Checksum mismatch indicating data corruption.
-    #[error(
-        "checksum mismatch in segment {path:?}: expected {expected:#010x}, got {actual:#010x}"
-    )]
+    #[error("checksum mismatch in segment {path:?}: expected {expected:#010x}, got {actual:#010x}")]
     ChecksumMismatch {
         /// Path to the corrupted segment file, if known.
         path: Option<PathBuf>,

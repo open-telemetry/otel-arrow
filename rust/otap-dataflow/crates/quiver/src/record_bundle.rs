@@ -39,6 +39,7 @@ pub trait ArrowPrimitive {
     /// Returns the Arrow `DataType` for schema construction.
     ///
     /// This delegates to `<Self::ArrowType as ArrowPrimitiveType>::DATA_TYPE`.
+    #[must_use]
     fn arrow_data_type() -> DataType {
         Self::ArrowType::DATA_TYPE
     }
@@ -76,7 +77,10 @@ macro_rules! assert_arrow_type_matches {
                     "ArrowType::Native alignment doesn't match inner type"
                 );
             }
-            check_same_type::<<$arrow_type as arrow_array::types::ArrowPrimitiveType>::Native, $inner>();
+            check_same_type::<
+                <$arrow_type as arrow_array::types::ArrowPrimitiveType>::Native,
+                $inner,
+            >();
         };
     };
 }

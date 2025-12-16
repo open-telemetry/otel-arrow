@@ -76,8 +76,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_array::builder::{
-    FixedSizeBinaryBuilder, ListBuilder, StructBuilder, UInt16Builder, UInt32Builder,
-    UInt64Builder,
+    FixedSizeBinaryBuilder, ListBuilder, StructBuilder, UInt16Builder, UInt32Builder, UInt64Builder,
 };
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Fields, Schema};
@@ -96,7 +95,7 @@ use crate::record_bundle::{ArrowPrimitive, SlotId};
 /// - Cache-line alignment on modern CPUs (x86, ARM)
 /// - Optimal access patterns for AVX-512 SIMD operations
 /// - Efficient memory-mapped I/O for zero-copy reads
-/// 
+///
 /// See also: https://arrow.apache.org/docs/format/Columnar.html#buffer-alignment-and-padding
 const STREAM_ALIGNMENT: u64 = 64;
 
@@ -411,7 +410,11 @@ impl SegmentWriter {
             Field::new("bundle_index", DataType::UInt32, false),
             Field::new(
                 "slot_refs",
-                DataType::List(Arc::new(Field::new_struct("item", slot_ref_fields.clone(), true))),
+                DataType::List(Arc::new(Field::new_struct(
+                    "item",
+                    slot_ref_fields.clone(),
+                    true,
+                ))),
                 false,
             ),
         ]));
@@ -432,18 +435,20 @@ impl SegmentWriter {
             let struct_builder = slot_refs_builder.values();
 
             for (slot_id, chunk_ref) in entry.slots() {
-                // Append values to each field builder within the struct
+                // Append values to each field builder within the struct.
+                // These expect() calls cannot fail because we created the StructBuilder
+                // with exactly these field types in the same order.
                 struct_builder
                     .field_builder::<UInt16Builder>(0)
-                    .unwrap()
+                    .expect("slot_id field at index 0")
                     .append_value(slot_id.raw());
                 struct_builder
                     .field_builder::<UInt32Builder>(1)
-                    .unwrap()
+                    .expect("stream_id field at index 1")
                     .append_value(chunk_ref.stream_id.raw());
                 struct_builder
                     .field_builder::<UInt32Builder>(2)
-                    .unwrap()
+                    .expect("chunk_index field at index 2")
                     .append_value(chunk_ref.chunk_index.raw());
                 struct_builder.append(true);
             }
