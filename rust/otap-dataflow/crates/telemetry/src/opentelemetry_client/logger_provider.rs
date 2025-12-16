@@ -4,10 +4,17 @@
 //! Configures the OpenTelemetry logger provider based on the provided configuration.
 
 use opentelemetry_appender_tracing::layer;
+use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
-use otap_df_config::pipeline::service::telemetry::logs::{
-    LogLevel, LogsConfig,
-    processors::{BatchLogProcessorConfig, batch::LogBatchProcessorExporterConfig},
+use otap_df_config::pipeline::service::telemetry::{
+    logs::{
+        LogLevel, LogsConfig,
+        processors::{
+            BatchLogProcessorConfig,
+            batch::{LogBatchProcessorExporterConfig, otlp::OtlpExporterConfig},
+        },
+    },
+    metrics::readers::periodic::otlp::OtlpProtocol,
 };
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -140,7 +147,7 @@ impl LoggerProvider {
     fn configure_batch_log_processor(
         mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
         batch_config: &BatchLogProcessorConfig,
-        runtime: Option<tokio::runtime::Runtime>,
+        mut runtime: Option<tokio::runtime::Runtime>,
     ) -> Result<
         (
             opentelemetry_sdk::logs::LoggerProviderBuilder,
@@ -150,18 +157,93 @@ impl LoggerProvider {
     > {
         match batch_config.exporter {
             LogBatchProcessorExporterConfig::Console => {
-                sdk_logger_builder = Self::configure_console_exporter(sdk_logger_builder)?
+                sdk_logger_builder = Self::configure_console_logs_exporter(sdk_logger_builder)?
+            }
+            LogBatchProcessorExporterConfig::Otlp(ref otlp_config) => {
+                let (builder, rt) =
+                    Self::configure_otlp_logs_exporter(sdk_logger_builder, otlp_config, runtime)?;
+                sdk_logger_builder = builder;
+                runtime = rt;
             }
         }
         Ok((sdk_logger_builder, runtime))
     }
 
-    fn configure_console_exporter(
+    fn configure_console_logs_exporter(
         mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
     ) -> Result<opentelemetry_sdk::logs::LoggerProviderBuilder, Error> {
         let exporter = opentelemetry_stdout::LogExporter::default();
         sdk_logger_builder = sdk_logger_builder.with_batch_exporter(exporter);
         Ok(sdk_logger_builder)
+    }
+
+    fn configure_otlp_logs_exporter(
+        mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
+        otlp_config: &OtlpExporterConfig,
+        mut runtime: Option<tokio::runtime::Runtime>,
+    ) -> Result<
+        (
+            opentelemetry_sdk::logs::LoggerProviderBuilder,
+            Option<tokio::runtime::Runtime>,
+        ),
+        Error,
+    > {
+        let exporter;
+        match &otlp_config.protocol {
+            OtlpProtocol::Grpc => {
+                (exporter, runtime) = Self::configure_grpc_otlp_exporter(otlp_config, runtime)?
+            }
+            OtlpProtocol::HttpBinary => {
+                exporter = Self::configure_http_exporter(otlp_config, Protocol::HttpBinary)?
+            }
+            OtlpProtocol::HttpJson => {
+                exporter = Self::configure_http_exporter(otlp_config, Protocol::HttpJson)?
+            }
+        };
+        sdk_logger_builder = sdk_logger_builder.with_batch_exporter(exporter);
+
+        Ok((sdk_logger_builder, runtime))
+    }
+
+    fn configure_grpc_otlp_exporter(
+        otlp_config: &OtlpExporterConfig,
+        runtime: Option<tokio::runtime::Runtime>,
+    ) -> Result<
+        (
+            opentelemetry_otlp::LogExporter,
+            Option<tokio::runtime::Runtime>,
+        ),
+        Error,
+    > {
+        // If there is a tokio runtime already, use it. Otherwise, create a new one.
+        let tokio_runtime = match runtime {
+            Some(rt) => rt,
+            None => tokio::runtime::Runtime::new()
+                .map_err(|e| Error::ConfigurationError(e.to_string()))?,
+        };
+
+        let exporter = tokio_runtime
+            .block_on(async {
+                opentelemetry_otlp::LogExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(&otlp_config.endpoint)
+                    .build()
+            })
+            .map_err(|e| Error::ConfigurationError(e.to_string()))?;
+        Ok((exporter, Some(tokio_runtime)))
+    }
+
+    fn configure_http_exporter(
+        otlp_config: &OtlpExporterConfig,
+        protocol: Protocol,
+    ) -> Result<opentelemetry_otlp::LogExporter, Error> {
+        let exporter = opentelemetry_otlp::LogExporter::builder()
+            .with_http()
+            .with_protocol(protocol)
+            .with_endpoint(&otlp_config.endpoint)
+            .build()
+            .map_err(|e| Error::ConfigurationError(e.to_string()))?;
+        Ok(exporter)
     }
 }
 
