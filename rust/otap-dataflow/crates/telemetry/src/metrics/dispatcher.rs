@@ -111,6 +111,8 @@ impl MetricsDispatcher {
                         "sum-like instrument must have a temporality"
                     );
                     // Cumulative counters are exported as gauges to avoid double-counting.
+                    // Note for reviewers: This is a temporary workaround until we figure out a
+                    // better way to handle cumulative sums via the Rust Client SDK.
                     self.add_opentelemetry_gauge(field, value, attributes, meter)
                 }
             },
@@ -124,6 +126,8 @@ impl MetricsDispatcher {
                         "sum-like instrument must have a temporality"
                     );
                     // Cumulative up-down counters are exported as gauges to avoid double-counting.
+                    // Note for reviewers: This is a temporary workaround until we figure out a
+                    // better way to handle cumulative sums via the Rust Client SDK.
                     self.add_opentelemetry_gauge(field, value, attributes, meter)
                 }
             },
