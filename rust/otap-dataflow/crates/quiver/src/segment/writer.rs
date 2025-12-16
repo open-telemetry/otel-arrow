@@ -370,11 +370,12 @@ impl SegmentWriter {
     ///
     /// Schema:
     /// - bundle_index: UInt32
-    /// - slot_bitmap: UInt64 (which slots are populated)
-    /// - slot_refs: UTF-8 (JSON-encoded sparse map of slot_id -> {stream_id, chunk_index})
+    /// - slot_bitmap: UInt64 (which slots are populated, for fast filtering)
+    /// - slot_refs: UTF-8 (comma-separated "slot:stream:chunk" triplets)
     ///
-    /// We use a JSON string for slot_refs to handle the sparse nature of bundles
-    /// without requiring a fixed-width schema for all possible slots.
+    /// We use a compact string encoding for slot_refs to handle the sparse
+    /// nature of bundles without requiring a fixed-width schema for all
+    /// possible slots.
     fn encode_manifest(&self, entries: &[ManifestEntry]) -> Result<Vec<u8>, SegmentError> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("bundle_index", DataType::UInt32, false),
