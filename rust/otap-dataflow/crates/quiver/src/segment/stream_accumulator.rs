@@ -44,7 +44,7 @@ use arrow_ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow_schema::SchemaRef;
 
 use super::error::SegmentError;
-use super::types::{ChunkIndex, StreamId, StreamKey, StreamMetadata};
+use super::types::{ChunkIndex, StreamId, StreamKey, StreamMetadata, MAX_CHUNKS_PER_STREAM};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 /// Accumulates `RecordBatch`es for a single `(slot, schema)` stream.
@@ -159,6 +159,8 @@ impl StreamAccumulator {
     ///
     /// Returns [`SegmentError::AccumulatorFinalized`] if the accumulator
     /// has already been finalized.
+    /// Returns [`SegmentError::InvalidFormat`] if adding this batch would
+    /// exceed the chunk limit.
     ///
     /// # Panics
     ///
@@ -167,6 +169,17 @@ impl StreamAccumulator {
     pub fn append(&mut self, batch: RecordBatch) -> Result<ChunkIndex, SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
+        }
+
+        if self.batches.len() >= MAX_CHUNKS_PER_STREAM {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "stream {:?} already has {} chunks, cannot exceed limit of {}",
+                    self.stream_id,
+                    self.batches.len(),
+                    MAX_CHUNKS_PER_STREAM
+                ),
+            });
         }
 
         debug_assert_eq!(

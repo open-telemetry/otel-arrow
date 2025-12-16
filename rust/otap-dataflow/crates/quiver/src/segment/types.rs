@@ -209,9 +209,12 @@ impl ChunkIndex {
     }
 
     /// Returns the next sequential chunk index.
+    ///
+    /// Uses saturating addition to prevent overflow. In practice, chunk indices
+    /// are bounded by [`MAX_CHUNKS_PER_STREAM`] which is well below u32::MAX.
     #[must_use]
     pub const fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(self.0.saturating_add(1))
     }
 }
 
@@ -342,9 +345,12 @@ impl SegmentSeq {
     }
 
     /// Returns the next sequential segment number.
+    ///
+    /// Uses saturating addition to prevent overflow. In practice, u64 overflow
+    /// is not a realistic concern (would require 18 quintillion segments).
     #[must_use]
     pub const fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(self.0.saturating_add(1))
     }
 
     /// Formats the sequence number for use in filenames.
