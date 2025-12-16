@@ -239,6 +239,11 @@ const fn default_tcp_keepalive() -> Option<Duration> {
     Some(Duration::from_secs(45))
 }
 
+#[cfg(not(feature = "experimental-tls"))]
+fn is_https_endpoint(endpoint: &str) -> bool {
+    endpoint.trim_start().starts_with("https://")
+}
+
 const fn default_initial_stream_window_size() -> Option<u32> {
     Some(8 * 1024 * 1024)
 }
