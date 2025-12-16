@@ -602,8 +602,8 @@ The `SegmentSeq::to_filename_component()` method generates this format.
 #### Read-Only Enforcement
 
 Finalized segment files are immutable by design. After writing completes,
-`SegmentWriter` sets restrictive file permissions to prevent accidental
-modification:
+`SegmentWriter` calls `sync_all()` (fsync) to ensure data is persisted to
+disk, then sets restrictive file permissions to prevent accidental modification:
 
 - **Unix**: Permissions are set to `0o440` (read-only for owner and group,
   no access for others). This provides defense-in-depth against accidental
@@ -619,24 +619,33 @@ This immutability guarantee is critical for:
 
 #### Slot Reference Encoding
 
-The batch manifest stores slot references as a compact string format in the
-`slot_refs` column. Each manifest entry can reference multiple slots, and
-each slot maps to a specific chunk within a stream:
+The batch manifest stores slot references using Arrow's native `List<Struct>`
+type. Each manifest entry has a `slot_refs` column containing a list of
+structs, where each struct maps a slot to a specific chunk within a stream:
 
 ```text
-slot_id:stream_id:chunk_index[,slot_id:stream_id:chunk_index,...]
+slot_refs: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
 ```
 
-Example: `"1:0:0,2:1:0,30:2:0,31:3:0"` represents a bundle with 4 slots:
+Each struct in the list contains:
 
-- Slot 1 → Stream 0, chunk 0
-- Slot 2 → Stream 1, chunk 0
-- Slot 30 → Stream 2, chunk 0
-- Slot 31 → Stream 3, chunk 0
+- `slot_id` (UInt16): The logical payload slot (e.g., Logs=1, LogAttrs=2)
+- `stream_id` (UInt32): Index into the stream directory
+- `chunk_index` (UInt32): Which Arrow RecordBatch within that stream
 
-This encoding is space-efficient for the common case where bundles have
-only a few slots, while remaining human-readable for debugging. The reader
-parses this string to reconstruct the mapping from slot IDs to stream chunks.
+Example: A bundle with 4 slots would have a `slot_refs` list containing:
+
+| slot_id | stream_id | chunk_index |
+|---------|-----------|-------------|
+| 1       | 0         | 0           |
+| 2       | 1         | 0           |
+| 30      | 2         | 0           |
+| 31      | 3         | 0           |
+
+Using Arrow's nested types avoids string parsing and leverages the existing
+IPC decoder. The struct field types use the `ArrowPrimitive` trait to ensure
+type synchronization between the Rust newtypes (`SlotId`, `StreamId`,
+`ChunkIndex`) and their Arrow schema representation.
 
 #### Error Handling and Recovery
 
