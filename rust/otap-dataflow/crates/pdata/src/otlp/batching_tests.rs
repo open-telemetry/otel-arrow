@@ -95,3 +95,67 @@ fn test_simple_batch_metrics() {
         }
     }
 }
+
+/// Test that the batcher handles corrupted protobuf data
+#[test]
+fn test_corrupted_protobuf_handling() {
+    use otap_df_config::SignalType;
+
+    let mut datagen = DataGenerator::new(1);
+    let logs1 = datagen.generate_logs();
+    let logs2 = datagen.generate_logs();
+
+    // Convert both to bytes
+    let good_bytes1 = otlp_message_to_bytes(&logs1.clone().into());
+    let good_bytes2 = otlp_message_to_bytes(&logs2.clone().into());
+    let good_size = good_bytes1.byte_size() + good_bytes2.byte_size();
+
+    // Create a third input that's corrupted
+    let mut corrupted_bytes = Vec::new();
+    // Create a malformed field: valid tag (field 1, wire type 2=LEN_DELIM)
+    let garbage = vec![
+        0x0A, // field 1, wire type 2 (LEN_DELIM)
+        0xFF, 0xFF, 0xFF, 0xFF, 0x0F, // varint: huge length that will fail
+    ];
+    corrupted_bytes.extend_from_slice(&garbage);
+
+    let corrupted_input = OtlpProtoBytes::new_from_bytes(SignalType::Logs, corrupted_bytes);
+    let corrupted_size = corrupted_input.byte_size();
+
+    let total_size = good_size + corrupted_size;
+
+    // Batch with max_size between good_size and total_size
+    // This should produce 2 outputs: good content batched together, then corrupt content
+    let max_size = good_size + 2; // > good_size but < total_size
+
+    let outputs = make_bytes_batches(
+        SignalType::Logs,
+        NonZeroU64::new(max_size as u64),
+        vec![good_bytes1, good_bytes2, corrupted_input.clone()],
+    )
+    .expect("batching should succeed");
+
+    // Should get 2 batches: good data together, then corrupt data
+    assert_eq!(outputs.len(), 2);
+
+    // First batch should contain the good data
+    let first_size = outputs[0].byte_size();
+    assert_eq!(first_size, good_size);
+
+    // Second batch should contain the garbage
+    let second_size = outputs[1].byte_size();
+    assert_eq!(second_size, corrupted_size);
+    assert_eq!(outputs[1].as_bytes(), garbage);
+
+    // Total size should be preserved
+    let total_output = first_size + second_size;
+    assert_eq!(total_output, total_size);
+
+    // First batch should decode successfully
+    let first_decoded = otlp_bytes_to_message(outputs[0].clone());
+    assert_eq!(first_decoded.num_items(), 6);
+
+    // Verify first batch is equivalent to original good data
+    let expected: Vec<OtlpProtoMessage> = vec![logs1.into(), logs2.into()];
+    assert_equivalent(&expected, &[first_decoded]);
+}
