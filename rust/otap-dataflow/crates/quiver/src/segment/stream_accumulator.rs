@@ -65,6 +65,8 @@ pub struct StreamAccumulator {
     batches: Vec<RecordBatch>,
     /// Running count of rows across all batches.
     row_count: u64,
+    /// Running total of buffer memory used by accumulated batches.
+    buffer_size: usize,
     /// Whether finalize() has been called.
     finalized: bool,
 }
@@ -92,6 +94,7 @@ impl StreamAccumulator {
             schema,
             batches: Vec::new(),
             row_count: 0,
+            buffer_size: 0,
             finalized: false,
         }
     }
@@ -136,6 +139,15 @@ impl StreamAccumulator {
     #[must_use]
     pub fn row_count(&self) -> u64 {
         self.row_count
+    }
+
+    /// Returns the total buffer memory used by accumulated batches.
+    ///
+    /// This is the sum of `get_array_memory_size()` for all appended batches,
+    /// representing the actual Arrow buffer memory consumption.
+    #[must_use]
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
     }
 
     /// Returns true if this accumulator has no batches.
@@ -190,6 +202,7 @@ impl StreamAccumulator {
 
         let chunk_index = ChunkIndex::new(self.batches.len() as u32);
         self.row_count += batch.num_rows() as u64;
+        self.buffer_size += batch.get_array_memory_size();
         self.batches.push(batch);
 
         Ok(chunk_index)

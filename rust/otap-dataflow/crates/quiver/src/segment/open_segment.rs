@@ -93,22 +93,18 @@ impl OpenSegment {
         self.opened_at
     }
 
-    /// Estimates the current in-memory size of accumulated data.
+    /// Returns the current in-memory size of accumulated Arrow buffers.
     ///
-    /// This is a rough estimate based on the number of rows and streams,
-    /// suitable for triggering finalization decisions. It does not account
-    /// for Arrow buffer overhead or manifest size.
+    /// This is the sum of `get_array_memory_size()` for all accumulated
+    /// `RecordBatch`es across all streams. It represents the actual Arrow
+    /// buffer memory consumption, suitable for triggering size-based
+    /// finalization decisions.
+    ///
+    /// Note: This does not include manifest overhead or IPC encoding overhead,
+    /// so the final segment file size may differ slightly.
     #[must_use]
     pub fn estimated_size_bytes(&self) -> usize {
-        // TODO: Track actual byte sizes as batches are appended.
-        // For now, return a placeholder based on row counts.
-        self.streams
-            .values()
-            .map(|acc| {
-                // Rough estimate: assume 100 bytes per row as a placeholder
-                acc.row_count() as usize * 100
-            })
-            .sum()
+        self.streams.values().map(|acc| acc.buffer_size()).sum()
     }
 
     /// Appends a `RecordBundle` to this open segment.
