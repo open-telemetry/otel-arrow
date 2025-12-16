@@ -6,8 +6,8 @@
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
-/// Metrics for the QueryEngineProcessor node.
-#[metric_set(name = "queryengine.processor.metrics")]
+/// Metrics for the TransformProcessor node.
+#[metric_set(name = "transform.processor.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
     /// PData messages consumed by this processor.

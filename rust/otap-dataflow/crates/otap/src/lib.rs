@@ -74,7 +74,7 @@ pub mod signal_type_router;
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
 
-pub mod query_engine_processor;
+pub mod transform_processor;
 
 /// compression formats
 pub mod compression;

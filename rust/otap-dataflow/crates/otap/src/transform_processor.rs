@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Query Engine Processor for OTAP pipelines.
+//! Transform Processor for OTAP pipelines.
 //!
 //! This processor performs transformations on the OTAP batches using the
 //! [`otap_df_query_engine`] crate.
@@ -44,11 +44,11 @@ use self::metrics::Metrics;
 mod config;
 mod metrics;
 
-/// URN for the QueryEngineProcessor
-pub const QUERY_ENGINE_PROCESSOR_URN: &str = "urn:otel:queryengine:processor";
+/// URN for the TransformProcessor
+pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:transform:processor";
 
 /// Opentelemetry Processing Language Processor
-pub struct QueryEngineProcessor {
+pub struct TransformProcessor {
     pipeline: Pipeline,
     signal_scope: SignalScope,
     metrics: MetricSet<Metrics>,
@@ -89,12 +89,12 @@ impl TryFrom<&PipelineExpression> for SignalScope {
     }
 }
 
-impl QueryEngineProcessor {
+impl TransformProcessor {
     /// Create new instance from serialized configuration
     fn from_config(pipeline_ctx: &PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse QueryEngineProcessor config: {e}"),
+                error: format!("Failed to parse TransformProcessor config: {e}"),
             })?;
 
         // TODO we should pass some context to the parser so we can determine if there are valid
@@ -102,7 +102,7 @@ impl QueryEngineProcessor {
         // https://github.com/open-telemetry/otel-arrow/issues/1530
         let pipeline_expr = KqlParser::parse(&config.query)
             .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Could not parse QueryEngineProcessor query: {e:?}"),
+                error: format!("Could not parse TransformProcessor query: {e:?}"),
             })?
             .pipeline;
 
@@ -126,14 +126,14 @@ impl QueryEngineProcessor {
     }
 }
 
-/// Factory for creating QueryEngineProcessor during plugin registration
-fn create_query_engine_processor(
+/// Factory for creating [`TransformProcessor`] during plugin registration
+fn create_transform_processor(
     pipeline_ctx: PipelineContext,
     node_id: NodeId,
     user_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let processor = QueryEngineProcessor::from_config(&pipeline_ctx, &user_config.config)?;
+    let processor = TransformProcessor::from_config(&pipeline_ctx, &user_config.config)?;
     Ok(ProcessorWrapper::local(
         processor,
         node_id,
@@ -142,16 +142,16 @@ fn create_query_engine_processor(
     ))
 }
 
-/// Register QueryEngineProcessor
+/// Register TransformProcessor
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static QUERY_ENGINE_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    name: QUERY_ENGINE_PROCESSOR_URN,
-    create: create_query_engine_processor,
+pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+    name: TRANSFORM_PROCESSOR_URN,
+    create: create_transform_processor,
 };
 
 #[async_trait(?Send)]
-impl Processor<OtapPdata> for QueryEngineProcessor {
+impl Processor<OtapPdata> for TransformProcessor {
     async fn process(
         &mut self,
         message: Message<OtapPdata>,
@@ -198,7 +198,6 @@ impl Processor<OtapPdata> for QueryEngineProcessor {
                     }
                 };
 
-                // TODO Ack/Nack?
                 effect_handler
                     .send_message(OtapPdata::new(context, payload))
                     .await
@@ -244,7 +243,7 @@ mod test {
         query: &str,
         runtime: &TestRuntime<OtapPdata>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-        let mut node_config = NodeUserConfig::new_processor_config(QUERY_ENGINE_PROCESSOR_URN);
+        let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
         node_config.config = json!({
             "query": query
         });
@@ -253,8 +252,8 @@ mod test {
         let controller_context = ControllerContext::new(metrics_registry_handle);
         let pipeline_context =
             controller_context.pipeline_context_with("group_id".into(), "pipeline_id".into(), 0, 0);
-        let node_id = test_node("query-engine-processor");
-        create_query_engine_processor(
+        let node_id = test_node("transform-processor");
+        create_transform_processor(
             pipeline_context,
             node_id,
             Arc::new(node_config),
@@ -269,7 +268,7 @@ mod test {
             Err(e) => {
                 assert!(
                     e.to_string()
-                        .contains("Could not parse QueryEngineProcessor query")
+                        .contains("Could not parse TransformProcessor query")
                 )
             }
             Ok(_) => {
@@ -353,7 +352,7 @@ mod test {
                 let mut msgs_transformed = 0;
                 let mut msgs_transform_failed = 0;
                 registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "queryengine.processor.metrics" {
+                    if desc.name == "transform.processor.metrics" {
                         for (field, v) in iter {
                             let val = v.to_u64_lossy();
                             match field.name {
