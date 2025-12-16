@@ -343,6 +343,21 @@ mod tests {
 
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
+    async fn client_tls_defaults_are_scheme_driven_when_tls_block_absent() {
+        // No tls: block => scheme decides
+        let http = tls_utils::load_client_tls_config(None, "http://localhost:4317")
+            .await
+            .unwrap();
+        assert!(http.is_none());
+
+        let https = tls_utils::load_client_tls_config(None, "https://localhost:4317")
+            .await
+            .unwrap();
+        assert!(https.is_some());
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
     async fn build_endpoint_with_tls_insecure_does_not_rewrite_scheme() {
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
@@ -355,6 +370,55 @@ mod tests {
 
         let endpoint = settings.build_endpoint_with_tls().await.unwrap();
         assert_eq!(endpoint.uri().scheme_str(), Some("https"));
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn client_tls_insecure_true_without_custom_ca_returns_no_explicit_tls_config() {
+        let cfg = TlsClientConfig {
+            insecure: Some(true),
+            ..TlsClientConfig::default()
+        };
+
+        let tls = tls_utils::load_client_tls_config(Some(&cfg), "https://localhost:4317")
+            .await
+            .unwrap();
+        assert!(tls.is_none());
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn client_tls_insecure_true_with_custom_ca_still_builds_tls_config() {
+        let cfg = TlsClientConfig {
+            insecure: Some(true),
+            ca_pem: Some(
+                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n".to_string(),
+            ),
+            include_system_ca_certs_pool: Some(false),
+            ..TlsClientConfig::default()
+        };
+
+        let tls = tls_utils::load_client_tls_config(Some(&cfg), "http://localhost:4317")
+            .await
+            .unwrap();
+        assert!(tls.is_some());
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[tokio::test]
+    async fn client_tls_insecure_skip_verify_true_fails_fast() {
+        let cfg = TlsClientConfig {
+            insecure_skip_verify: Some(true),
+            ..TlsClientConfig::default()
+        };
+
+        let err = tls_utils::load_client_tls_config(Some(&cfg), "https://localhost:4317")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("insecure_skip_verify=true is not supported")
+        );
     }
 
     #[cfg(feature = "experimental-tls")]
