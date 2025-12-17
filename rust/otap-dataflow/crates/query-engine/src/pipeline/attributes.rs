@@ -16,6 +16,8 @@ use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 
+/// This pipeline stage can be used to rename and delete attributes according to the transformation
+/// specified by the [`AttributesTransform`]
 pub struct AttributeTransformPipelineStage {
     attrs_id: AttributesIdentifier,
     transform: AttributesTransform,
