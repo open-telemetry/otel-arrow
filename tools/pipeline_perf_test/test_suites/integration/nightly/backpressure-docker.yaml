@@ -92,7 +92,7 @@ tests:
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
         observation_interval: 60
-  # TODO: Enable when wait_for_result support is added to otap receiver  
+  # TODO: Enable when wait_for_result support is added to otap receiver
   # - name: OTLP-ATTR-OTAP
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
