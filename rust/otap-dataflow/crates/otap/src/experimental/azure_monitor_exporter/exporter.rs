@@ -209,11 +209,8 @@ impl AzureMonitorExporter {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, payload);
         } else {
-            self.state.add_msg_to_data(
-                msg_id,
-                context,
-                OtapPayload::empty(SignalType::Logs),
-            );
+            self.state
+                .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
         }
 
         // Use a generic transformer method that accepts LogsDataView
