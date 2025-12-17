@@ -73,13 +73,21 @@ impl PipelineStage for AttributeTransformPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use otap_df_pdata::proto::opentelemetry::{
-        common::v1::{AnyValue, InstrumentationScope, KeyValue},
-        logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
-        resource::v1::Resource,
+    use data_engine_kql_parser::{KqlParser, Parser};
+    use otap_df_pdata::{
+        OtapArrowRecords,
+        otap::Logs,
+        proto::opentelemetry::{
+            common::v1::{AnyValue, InstrumentationScope, KeyValue},
+            logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+            resource::v1::Resource,
+        },
     };
 
-    use crate::pipeline::test::{exec_logs_pipeline, to_logs_data};
+    use crate::pipeline::{
+        Pipeline,
+        test::{exec_logs_pipeline, to_logs_data},
+    };
 
     fn generate_logs_test_data() -> LogsData {
         LogsData::new(vec![ResourceLogs::new(
@@ -249,5 +257,25 @@ mod test {
         .await;
 
         assert_eq!(result.resource_logs[0].scope_logs[0].log_records, input);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_renames_are_errors() {
+        let invalid_renames = [
+            "logs | project-rename attributes[\"y\"] = attributes[\"y\"]",
+            "logs | project-rename attributes[\"y\"] = attributes[\"x\"], attributes[\"y\"] = attributes[\"z\"]",
+        ];
+
+        for query in invalid_renames {
+            let mut pipeline = Pipeline::new(KqlParser::parse(query).unwrap().pipeline);
+            let result = pipeline
+                .execute(OtapArrowRecords::Logs(Logs::default()))
+                .await;
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("Invalid attribute transform: Duplicate key in rename target")
+            )
+        }
     }
 }

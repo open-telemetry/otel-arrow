@@ -148,6 +148,12 @@ impl PipelinePlanner {
                             let transform = AttributesTransform::default().with_rename(
                                 RenameTransform::new([(src_key, dest_key)].into_iter().collect()),
                             );
+                            transform
+                                .validate()
+                                .map_err(|e| Error::InvalidPipelineError {
+                                    cause: format!("invalid attribute rename transform {e}"),
+                                    query_location: Some(move_expr.get_query_location().clone()),
+                                })?;
                             Ok(vec![Box::new(AttributeTransformPipelineStage::new(
                                 src_attrs_id,
                                 transform,
@@ -236,10 +242,15 @@ impl PipelinePlanner {
         ] {
             if !renames.is_empty() {
                 let rename_transform = RenameTransform::new(renames.into_iter().collect());
-                let pipeline_stage = AttributeTransformPipelineStage::new(
-                    attrs_id,
-                    AttributesTransform::default().with_rename(rename_transform),
-                );
+                let transform = AttributesTransform::default().with_rename(rename_transform);
+                transform
+                    .validate()
+                    .map_err(|e| Error::InvalidPipelineError {
+                        cause: format!("invalid attribute rename transform {e}"),
+                        query_location: Some(rename_map_keys_expr.get_query_location().clone()),
+                    })?;
+
+                let pipeline_stage = AttributeTransformPipelineStage::new(attrs_id, transform);
                 pipeline_stages.push(Box::new(pipeline_stage));
             }
         }
