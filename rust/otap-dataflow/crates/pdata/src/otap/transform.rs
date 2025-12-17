@@ -540,7 +540,7 @@ impl AttributesTransform {
         self
     }
 
-    /// Set the rename transform
+    /// Set the delete transform
     #[must_use]
     pub fn with_delete(mut self, delete: DeleteTransform) -> Self {
         self.delete = Some(delete);
