@@ -33,7 +33,7 @@ use otap_df_engine::{
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_query_engine::pipeline::Pipeline;
-use otap_df_telemetry::{metrics::MetricSet, otel_info};
+use otap_df_telemetry::{metrics::MetricSet, otel_debug};
 use serde_json::Value;
 
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
@@ -177,10 +177,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                 self.metrics.items_received.add(payload.num_items() as u64);
                 let payload = if !self.should_process(&payload) {
                     // skip handling this pdata
-                    otel_info!(
-                        "Skipping.transform",
-                        message = "Skipping TransformProcessor for signal type"
-                    );
+                    otel_debug!("transform.skipped");
                     payload
                 } else {
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
