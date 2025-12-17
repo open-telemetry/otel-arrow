@@ -317,9 +317,15 @@ pub struct SegmentReader {
 impl SegmentReader {
     /// Opens a segment file by reading it into memory.
     ///
-    /// This allocates a buffer and reads the entire file. For zero-copy
-    /// memory-mapped access, use [`open_mmap`](Self::open_mmap) instead
-    /// (requires the `mmap` feature).
+    /// This allocates a buffer and reads the entire file.
+    #[cfg_attr(
+        feature = "mmap",
+        doc = " For zero-copy memory-mapped access, use [`open_mmap`](Self::open_mmap) instead."
+    )]
+    #[cfg_attr(
+        not(feature = "mmap"),
+        doc = " For zero-copy memory-mapped access, use `open_mmap` instead (requires the `mmap` feature)."
+    )]
     ///
     /// # Errors
     ///
