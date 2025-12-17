@@ -8,7 +8,7 @@ use crate::{
         execute_argument_scalar_expression, execute_scalar_expression,
         execute_source_scalar_expression, execute_variable_scalar_expression,
     },
-    value_expressions::execute_mutable_value_expression,
+    value_expressions::{execute_mutable_value_expression, get_borrow_source},
     *,
 };
 
@@ -205,14 +205,20 @@ impl<'a> ExecutionContextVariables<'a> {
 }
 
 pub trait ExecutionContextArguments {
-    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource>;
-
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError>;
+
+    fn get_argument_mut_borrow_source(&self, id: usize) -> Option<BorrowSource>;
 
     fn get_argument_mut(
         &self,
         id: usize,
     ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError>;
+
+    fn copy_value_if_required_for_write(
+        &self,
+        value: &mut ResolvedValue<'_>,
+        target_argument_mut_id: usize,
+    );
 }
 
 pub(crate) struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
@@ -228,35 +234,6 @@ impl<'a, 'b, 'c, TRecord> ExecutionContextArguments
 where
     TRecord: Record + 'static,
 {
-    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource> {
-        let argument = self
-            .arguments
-            .get(id)
-            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
-
-        match argument {
-            InvokeFunctionArgument::Scalar(s) => match s {
-                ScalarExpression::Source(_) => Some(BorrowSource::Source),
-                ScalarExpression::Variable(_) => Some(BorrowSource::Variable),
-                ScalarExpression::Argument(a) => self
-                    .parent_execution_context
-                    .get_arguments()
-                    .expect("Arguments were not found")
-                    .get_argument_borrow_source(a.get_argument_id()),
-                _ => None,
-            },
-            InvokeFunctionArgument::MutableValue(m) => match m {
-                MutableValueExpression::Source(_) => Some(BorrowSource::Source),
-                MutableValueExpression::Variable(_) => Some(BorrowSource::Variable),
-                MutableValueExpression::Argument(a) => self
-                    .parent_execution_context
-                    .get_arguments()
-                    .expect("Arguments were not found")
-                    .get_argument_borrow_source(a.get_argument_id()),
-            },
-        }
-    }
-
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError> {
         let argument = self
             .arguments
@@ -284,6 +261,20 @@ where
         }
     }
 
+    fn get_argument_mut_borrow_source(&self, id: usize) -> Option<BorrowSource> {
+        let argument = self
+            .arguments
+            .get(id)
+            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
+
+        match argument {
+            InvokeFunctionArgument::Scalar(_) => None,
+            InvokeFunctionArgument::MutableValue(m) => {
+                get_borrow_source(self.parent_execution_context, m)
+            }
+        }
+    }
+
     fn get_argument_mut(
         &self,
         id: usize,
@@ -301,8 +292,23 @@ where
             InvokeFunctionArgument::MutableValue(m) => {
                 let value = execute_mutable_value_expression(self.parent_execution_context, m)?;
 
-                Ok(ResolvedMutableArgument { source: m, value })
+                Ok(ResolvedMutableArgument { value })
             }
+        }
+    }
+
+    fn copy_value_if_required_for_write(
+        &self,
+        value: &mut ResolvedValue<'_>,
+        target_argument_mut_id: usize,
+    ) {
+        let argument = self
+            .arguments
+            .get(target_argument_mut_id)
+            .unwrap_or_else(|| panic!("Argument for id '{target_argument_mut_id}' was not found"));
+
+        if let InvokeFunctionArgument::MutableValue(m) = argument {
+            value.copy_if_borrowed_from_target(self.parent_execution_context, m);
         }
     }
 }

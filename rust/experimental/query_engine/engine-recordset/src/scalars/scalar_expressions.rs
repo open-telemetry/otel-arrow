@@ -2454,16 +2454,15 @@ mod tests {
                     RecordSetEngineFunctionClosureCallback::new(|_, ec| {
                         let arguments = ec.get_arguments().unwrap();
 
+                        let mut value1 = arguments.get_argument(0)?;
+
+                        arguments.copy_value_if_required_for_write(&mut value1, 1);
+
                         {
                             let mut mut_value2 = arguments.get_argument_mut(1)?;
                             match mut_value2.to_static_value_mut() {
                                 Some(StaticValueMut::Map(m)) => {
-                                    let old = m.set(
-                                        "subkey1",
-                                        ResolvedValue::Computed(OwnedValue::String(
-                                            StringValueStorage::new("val".into()),
-                                        )),
-                                    );
+                                    let old = m.set("subkey1", value1);
                                     match old {
                                         ValueMutWriteResult::Updated(old) => {
                                             assert_eq!("subvalue1", old.to_value().to_string())
@@ -2475,20 +2474,19 @@ mod tests {
                             }
                         }
 
-                        let value1 = arguments.get_argument(0)?;
                         let value2 = arguments.get_argument(1)?;
                         match value2.to_value() {
                             Value::Map(m) => {
                                 assert_eq!(1, m.len());
                                 assert_eq!(
-                                    Some("val".into()),
+                                    Some("value1".into()),
                                     m.get("subkey1").map(|v| v.to_value().to_string())
                                 );
                             }
                             _ => panic!("value2 wasn't a map"),
                         }
 
-                        Ok(value1)
+                        arguments.get_argument(0)
                     }),
                 );
 
