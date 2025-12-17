@@ -137,7 +137,10 @@ use otap_df_telemetry::instrument::{DeltaCounter, Gauge, ObserveCounter, Observe
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
+
+#[cfg(not(windows))]
 use tikv_jemalloc_ctl::thread;
+#[cfg(not(windows))]
 use tikv_jemalloc_ctl::thread::ThreadLocal;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
@@ -224,7 +227,10 @@ pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
 
     jemalloc_supported: bool,
+
+    #[cfg(not(windows))]
     allocated: Option<ThreadLocal<u64>>,
+    #[cfg(not(windows))]
     deallocated: Option<ThreadLocal<u64>>,
     last_allocated: u64,
     last_deallocated: u64,
@@ -242,22 +248,23 @@ impl PipelineMetricsMonitor {
     pub(crate) fn new(pipeline_ctx: PipelineContext) -> Self {
         let now = Instant::now();
 
-        // Try to initialize jemalloc thread-local stats. If the global allocator is not jemalloc,
-        // these calls will fail and memory-related metrics will remain unchanged.
-        let jemalloc_init = (|| {
-            let alloc_mib = thread::allocatedp::mib().ok()?;
-            let dealloc_mib = thread::deallocatedp::mib().ok()?;
+        #[cfg(not(windows))]
+        let (jemalloc_supported, allocated, deallocated, last_allocated, last_deallocated) = {
+            // Try to initialize jemalloc thread-local stats. If the global allocator is not
+            // jemalloc, these calls will fail and memory-related metrics will remain unchanged.
+            let jemalloc_init = (|| {
+                let alloc_mib = thread::allocatedp::mib().ok()?;
+                let dealloc_mib = thread::deallocatedp::mib().ok()?;
 
-            let allocated = alloc_mib.read().ok()?;
-            let deallocated = dealloc_mib.read().ok()?;
+                let allocated = alloc_mib.read().ok()?;
+                let deallocated = dealloc_mib.read().ok()?;
 
-            let last_allocated = allocated.get();
-            let last_deallocated = deallocated.get();
+                let last_allocated = allocated.get();
+                let last_deallocated = deallocated.get();
 
-            Some((allocated, deallocated, last_allocated, last_deallocated))
-        })();
+                Some((allocated, deallocated, last_allocated, last_deallocated))
+            })();
 
-        let (jemalloc_supported, allocated, deallocated, last_allocated, last_deallocated) =
             if let Some((allocated, deallocated, last_allocated, last_deallocated)) = jemalloc_init
             {
                 (
@@ -269,14 +276,20 @@ impl PipelineMetricsMonitor {
                 )
             } else {
                 (false, None, None, 0, 0)
-            };
+            }
+        };
+
+        #[cfg(windows)]
+        let (jemalloc_supported, last_allocated, last_deallocated) = (false, 0, 0);
 
         let rusage_thread_supported = Self::init_rusage_baseline();
 
         Self {
             start_time: now,
             jemalloc_supported,
+            #[cfg(not(windows))]
             allocated,
+            #[cfg(not(windows))]
             deallocated,
             last_allocated,
             last_deallocated,
@@ -294,6 +307,7 @@ impl PipelineMetricsMonitor {
 
     pub fn update_metrics(&mut self) {
         // === Update thread memory allocation metrics (jemalloc only) ===
+        #[cfg(not(windows))]
         if self.jemalloc_supported {
             if let (Some(allocated), Some(deallocated)) =
                 (self.allocated.as_ref(), self.deallocated.as_ref())
@@ -399,7 +413,7 @@ impl PipelineMetricsMonitor {
     fn update_rusage_metrics(&mut self) {}
 }
 
-#[cfg(all(test, feature = "jemalloc-testing"))]
+#[cfg(all(test, not(windows), feature = "jemalloc-testing"))]
 mod jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;

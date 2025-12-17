@@ -38,8 +38,10 @@ quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
-tikv-jemallocator = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}

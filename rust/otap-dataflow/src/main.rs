@@ -11,7 +11,7 @@ use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 
-#[cfg(all(feature = "jemalloc", feature = "mimalloc", not(clippy)))]
+#[cfg(all(not(windows), feature = "jemalloc", feature = "mimalloc", not(clippy)))]
 compile_error!(
     "Features `jemalloc` and `mimalloc` are mutually exclusive. \
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
@@ -20,14 +20,14 @@ compile_error!(
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 
-#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 use tikv_jemallocator::Jemalloc;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
@@ -184,7 +184,7 @@ fn system_info() -> String {
 
     let memory_allocator = if cfg!(feature = "mimalloc") {
         "mimalloc"
-    } else if cfg!(feature = "jemalloc") {
+    } else if cfg!(all(feature = "jemalloc", not(windows))) {
         "jemalloc"
     } else {
         "system"
