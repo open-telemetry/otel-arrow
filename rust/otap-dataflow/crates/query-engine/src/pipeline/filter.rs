@@ -1766,45 +1766,18 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
         Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
+        HistogramDataPoint, Metric,  NumberDataPoint, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status, TracesData};
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use prost::Message;
 
-    use crate::pipeline::test::{to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces};
-
-    /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
-    pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        LogsData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
-    pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        TracesData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
-    pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let parser_result = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch).await.unwrap();
-        otap_to_logs_data(result)
-    }
+    use crate::pipeline::test::{exec_logs_pipeline, 
+        otap_to_logs_data,
+        otap_to_metrics_data,
+        otap_to_traces_data,
+        to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces};
 
     #[tokio::test]
     async fn test_simple_filter() {
