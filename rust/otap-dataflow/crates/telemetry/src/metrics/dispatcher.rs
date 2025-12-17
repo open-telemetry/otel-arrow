@@ -57,7 +57,7 @@ impl MetricsDispatcher {
 
     fn dispatch_metrics(&self) -> Result<(), Error> {
         self.metrics_handler
-            .visit_current_metrics(|descriptor, attributes, metrics_iter| {
+            .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
                 let meter = global::meter(descriptor.name);
 
                 // There is no support for metric level attributes currently. Attaching resource level attributes to every metric.
