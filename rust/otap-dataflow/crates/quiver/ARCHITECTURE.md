@@ -483,7 +483,7 @@ data model in several ways:
 Alternative approaches considered:
 
 - **One Arrow IPC file per payload type**: Simple format, but explodes the
-  number of files to manage (one per slot × schema variation × segment).
+  number of files to manage (one per slot x schema variation x segment).
 - **One Arrow IPC stream per `RecordBatch`**: Maximum flexibility, but repeats
   schema metadata for every batch and prevents dictionary delta encoding.
 
@@ -537,38 +537,38 @@ A segment file uses a variable-size footer with a fixed-size trailer, enabling
 future versions to extend the footer without breaking backwards compatibility:
 
 ```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         Stream Data Region                              │
-│  Stream 0: Arrow IPC File bytes                                         │
-│  Stream 1: Arrow IPC File bytes                                         │
-│  ...                                                                    │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         Stream Directory                                │
-│  Encoded as Arrow IPC (self-describing schema)                          │
-│  Columns: stream_id, slot_id, schema_fingerprint, byte_offset,          │
-│           byte_length, row_count, chunk_count                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         Batch Manifest                                  │
-│  Encoded as Arrow IPC (self-describing schema)                          │
-│  Columns: bundle_index, slot_refs (List<Struct>)                        │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         Footer (variable size, version-dependent)       │
-│  Version 1 (34 bytes):                                                  │
-│    - version: u16                                                       │
-│    - stream_count: u32                                                  │
-│    - bundle_count: u32                                                  │
-│    - directory_offset: u64                                              │
-│    - directory_length: u32                                              │
-│    - manifest_offset: u64                                               │
-│    - manifest_length: u32                                               │
-│  (Future versions may add fields here)                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│                         Trailer (fixed 16 bytes)                        │
-│    - footer_size: u32 (size of footer, not including trailer)           │
-│    - magic: b"QUIVER\0S" (8 bytes)                                      │
-│    - crc32: u32 (covers entire file from start through trailer,         │
-│                  except the CRC field itself)                           │
-└─────────────────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------------+
+|                         Stream Data Region                              |
+|  Stream 0: Arrow IPC File bytes                                         |
+|  Stream 1: Arrow IPC File bytes                                         |
+|  ...                                                                    |
++-------------------------------------------------------------------------+
+|                         Stream Directory                                |
+|  Encoded as Arrow IPC (self-describing schema)                          |
+|  Columns: stream_id, slot_id, schema_fingerprint, byte_offset,          |
+|           byte_length, row_count, chunk_count                           |
++-------------------------------------------------------------------------+
+|                         Batch Manifest                                  |
+|  Encoded as Arrow IPC (self-describing schema)                          |
+|  Columns: bundle_index, slot_refs (List<Struct>)                        |
++-------------------------------------------------------------------------+
+|                         Footer (variable size, version-dependent)       |
+|  Version 1 (34 bytes):                                                  |
+|    - version: u16                                                       |
+|    - stream_count: u32                                                  |
+|    - bundle_count: u32                                                  |
+|    - directory_offset: u64                                              |
+|    - directory_length: u32                                              |
+|    - manifest_offset: u64                                               |
+|    - manifest_length: u32                                               |
+|  (Future versions may add fields here)                                  |
++-------------------------------------------------------------------------+
+|                         Trailer (fixed 16 bytes)                        |
+|    - footer_size: u32 (size of footer, not including trailer)           |
+|    - magic: b"QUIVER\0S" (8 bytes)                                      |
+|    - crc32: u32 (covers entire file from start through trailer,         |
+|                  except the CRC field itself)                           |
++-------------------------------------------------------------------------+
 ```
 
 **Reading a segment file:**
@@ -656,7 +656,7 @@ Segment files are designed to be safely detectable as corrupt or incomplete:
 |-----------------|---------------------|-----------------|
 | Truncated file | File too short for trailer (< 16 bytes) | `SegmentError::Truncated` - skip file |
 | Invalid magic | Trailer magic bytes mismatch | `SegmentError::InvalidFormat` - skip file |
-| CRC mismatch | Computed CRC ≠ stored CRC | `SegmentError::ChecksumMismatch` - skip file |
+| CRC mismatch | Computed CRC != stored CRC | `SegmentError::ChecksumMismatch` - skip file |
 | Partial write | CRC mismatch (write interrupted) | `SegmentError::ChecksumMismatch` - skip file |
 | Invalid IPC | Arrow decoder failure | `SegmentError::Arrow` - skip file |
 | Missing stream | Stream ID not in directory | `SegmentError::StreamNotFound` |
@@ -665,9 +665,9 @@ Segment files are designed to be safely detectable as corrupt or incomplete:
 **Partial write safety**: The CRC32 at the end of the file is written last.
 If a write is interrupted (crash, power loss), one of three outcomes occurs:
 
-1. File is too short to contain a valid trailer → detected as truncated
-2. File has garbage at the end → CRC mismatch
-3. File was written completely → CRC validates
+1. File is too short to contain a valid trailer -> detected as truncated
+2. File has garbage at the end -> CRC mismatch
+3. File was written completely -> CRC validates
 
 This design ensures that partially written segment files are never mistaken
 for valid data. The engine can safely skip corrupt segments during startup
