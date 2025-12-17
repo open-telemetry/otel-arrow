@@ -3,15 +3,19 @@
 
 //! OpenTelemetry SDK integration for telemetry collection and reporting as a client.
 
+pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
+use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
 };
 
-use crate::{error::Error, opentelemetry_client::meter_provider::MeterProvider};
+use crate::{
+    error::Error,
+    opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
+};
 
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
@@ -19,7 +23,8 @@ pub struct OpentelemetryClient {
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
-    // TODO: Add traces and logs providers.
+    logger_provider: SdkLoggerProvider,
+    // TODO: Add traces providers.
 }
 
 impl OpentelemetryClient {
@@ -29,16 +34,22 @@ impl OpentelemetryClient {
 
         let runtime = None;
 
-        let meter_provider = MeterProvider::configure(sdk_resource, &config.metrics, runtime)?;
+        let meter_provider =
+            MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?;
 
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        //TODO: Configure traces and logs providers.
+        let logger_provider = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
+
+        let (logger_provider, runtime) = logger_provider.into_parts();
+
+        //TODO: Configure traces provider.
 
         Ok(Self {
             _runtime: runtime,
             meter_provider,
+            logger_provider,
         })
     }
 
@@ -86,10 +97,25 @@ impl OpentelemetryClient {
         &self.meter_provider
     }
 
+    /// Get a reference to the logger provider.
+    #[must_use]
+    pub fn logger_provider(&self) -> &SdkLoggerProvider {
+        &self.logger_provider
+    }
+
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
-        meter_shutdown_result.map_err(|e| Error::ShutdownError(e.to_string()))
+        let logger_provider_shutdown_result = self.logger_provider().shutdown();
+
+        if let Err(e) = meter_shutdown_result {
+            return Err(Error::ShutdownError(e.to_string()));
+        }
+
+        if let Err(e) = logger_provider_shutdown_result {
+            return Err(Error::ShutdownError(e.to_string()));
+        }
+        Ok(())
     }
 }
 
@@ -97,7 +123,8 @@ impl OpentelemetryClient {
 mod tests {
     use opentelemetry::global;
     use otap_df_config::pipeline::service::telemetry::{
-        AttributeValue, LogsConfig,
+        AttributeValue,
+        logs::LogsConfig,
         metrics::{
             MetricsConfig,
             readers::{
