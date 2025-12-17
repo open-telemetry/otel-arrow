@@ -5,9 +5,8 @@ use std::cmp::max;
 
 use async_trait::async_trait;
 use azure_core::credentials::AccessToken;
-use bytes::Bytes;
-use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use otap_df_channel::error::RecvError;
+use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
@@ -15,8 +14,10 @@ use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_pdata::otlp::OtlpProtoBytes;
+use otap_df_pdata::views::logs::LogsDataView;
+use otap_df_pdata::views::otap::OtapLogsView;
+use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use prost::Message as _;
 
 use super::auth::Auth;
 use super::client::LogsIngestionClientPool;
@@ -115,12 +116,9 @@ impl AzureMonitorExporter {
         self.stats.add_batch();
         self.stats.add_client_latency(duration.as_secs_f64());
 
-        for (_, context, bytes) in completed_messages {
+        for (_, context, payload) in completed_messages {
             effect_handler
-                .notify_ack(AckMsg::new(OtapPdata::new(
-                    context,
-                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
-                )))
+                .notify_ack(AckMsg::new(OtapPdata::new(context, payload)))
                 .await?;
         }
         Ok(())
@@ -144,15 +142,9 @@ impl AzureMonitorExporter {
             batch_id, error
         );
 
-        for (_, context, bytes) in failed_messages {
+        for (_, context, payload) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(
-                    &error,
-                    OtapPdata::new(
-                        context,
-                        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
-                    ),
-                ))
+                .notify_nack(NackMsg::new(&error, OtapPdata::new(context, payload)))
                 .await?;
         }
         Ok(())
@@ -206,23 +198,25 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
-    async fn handle_pdata(
+    async fn handle_logs_view<T: LogsDataView>(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-        request: ExportLogsServiceRequest,
         context: Context,
-        bytes: Bytes,
+        payload: OtapPayload,
+        logs_view: &T,
         msg_id: u64,
     ) -> Result<(), Error> {
         if context.may_return_payload() {
-            self.state.add_msg_to_data(msg_id, context, bytes.clone());
+            self.state.add_msg_to_data(msg_id, context, payload);
         } else {
-            self.state.add_msg_to_data(msg_id, context, Bytes::new());
+            self.state
+                .add_msg_to_data(msg_id, context, OtapPayload::empty(SignalType::Logs));
         }
 
-        let log_entries_iterator = self.transformer.convert_to_log_analytics(&request);
+        // Use a generic transformer method that accepts LogsDataView
+        let log_entries = self.transformer.convert_to_log_analytics(logs_view);
 
-        for log_entry in log_entries_iterator {
+        for log_entry in log_entries {
             match self.gzip_batcher.push(&log_entry) {
                 Ok(gzip_batcher::PushResult::Ok(batch_id)) => {
                     // current batch id is being associated with the current message
@@ -234,14 +228,11 @@ impl AzureMonitorExporter {
                     self.queue_pending_batch(effect_handler).await?;
                 }
                 Ok(gzip_batcher::PushResult::TooLarge) => {
-                    if let Some((context, data)) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
                                 "Log entry too large to export",
-                                OtapPdata::new(
-                                    context,
-                                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(data)),
-                                ),
+                                OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
@@ -250,14 +241,11 @@ impl AzureMonitorExporter {
                     });
                 }
                 Err(e) => {
-                    if let Some((context, data)) = self.state.remove_msg_to_data(msg_id) {
+                    if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
                                 "Failed to add log entry to batch",
-                                OtapPdata::new(
-                                    context,
-                                    OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(data)),
-                                ),
+                                OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
@@ -268,14 +256,11 @@ impl AzureMonitorExporter {
             }
         }
 
-        if let Some((context, bytes)) = self.state.delete_msg_data_if_orphaned(msg_id) {
+        if let Some((context, payload)) = self.state.delete_msg_data_if_orphaned(msg_id) {
             effect_handler
                 .notify_nack(NackMsg::new(
                     "No valid log entries produced",
-                    OtapPdata::new(
-                        context,
-                        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
-                    ),
+                    OtapPdata::new(context, payload),
                 ))
                 .await?;
         }
@@ -317,16 +302,12 @@ impl AzureMonitorExporter {
         self.queue_current_batch(effect_handler).await?;
         self.drain_in_flight_exports(effect_handler).await?;
 
-        for (msg_id, context, bytes) in self.state.drain_all() {
+        for (msg_id, context, payload) in self.state.drain_all() {
             print!("Found orphaned message {msg_id} in shutdown");
-
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",
-                    OtapPdata::new(
-                        context,
-                        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)),
-                    ),
+                    OtapPdata::new(context, payload),
                 ))
                 .await?;
         }
@@ -344,47 +325,46 @@ impl AzureMonitorExporter {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
                 let (context, payload) = pdata.into_parts();
+                let payload_to_match = payload.clone();
 
-                match payload {
-                    OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
-                        OtapArrowRecords::Logs(otap_records) => {
-                            let otlp_bytes: OtlpProtoBytes =
-                                OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(otap_records))
-                                    .try_into()
+                match payload_to_match {
+                    OtapPayload::OtapArrowRecords(otap_records) => {
+                        match otap_records {
+                            OtapArrowRecords::Logs(otap_records) => {
+                                let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
+
+                                let logs_view = OtapLogsView::try_from(&otap_arrow_records)
                                     .map_err(|e| Error::InternalError {
-                                        message: format!("Failed to convert OTAP to OTLP: {:?}", e),
+                                        message: format!("Failed to create OtapLogsView: {:?}", e),
                                     })?;
 
-                            let OtlpProtoBytes::ExportLogsRequest(bytes) = otlp_bytes else {
-                                return Err(Error::InternalError {
-                                    message: "Expected ExportLogsRequest bytes".to_string(),
-                                });
-                            };
-
-                            let request =
-                                ExportLogsServiceRequest::decode(&bytes[..]).map_err(|e| {
-                                    Error::InternalError {
-                                        message: format!("Failed to decode logs request: {}", e),
-                                    }
-                                })?;
-
-                            self.handle_pdata(effect_handler, request, context, bytes, *msg_id)
+                                self.handle_logs_view(
+                                    effect_handler,
+                                    context,
+                                    payload,
+                                    &logs_view,
+                                    *msg_id,
+                                )
                                 .await?;
+                            }
+                            OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
+                                // Unsupported signal types - silently drop
+                            }
                         }
-                        OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
-                            // Unsupported signal types - silently drop
-                        }
-                    },
+                    }
 
                     OtapPayload::OtlpBytes(otlp_bytes) => match otlp_bytes {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                            let request = ExportLogsServiceRequest::decode(bytes.as_ref())
-                                .map_err(|e| Error::InternalError {
-                                    message: format!("Failed to decode OTLP logs request: {e}"),
-                                })?;
+                            let logs_view = RawLogsData::new(bytes.as_ref());
 
-                            self.handle_pdata(effect_handler, request, context, bytes, *msg_id)
-                                .await?;
+                            self.handle_logs_view(
+                                effect_handler,
+                                context,
+                                payload,
+                                &logs_view,
+                                *msg_id,
+                            )
+                            .await?;
                         }
                         OtlpProtoBytes::ExportMetricsRequest(_)
                         | OtlpProtoBytes::ExportTracesRequest(_) => {
@@ -570,6 +550,7 @@ mod tests {
     use super::*;
     use crate::pdata::Context;
     use azure_core::time::OffsetDateTime;
+    use bytes::Bytes;
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -661,11 +642,12 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let bytes = Bytes::from("test");
+        let payload =
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
         exporter
             .state
-            .add_msg_to_data(msg_id, context.clone(), bytes.clone());
+            .add_msg_to_data(msg_id, context.clone(), payload);
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         // This might fail due to missing sender in effect_handler, but state should be updated
@@ -703,11 +685,12 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let bytes = Bytes::from("test");
+        let payload =
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
         exporter
             .state
-            .add_msg_to_data(msg_id, context.clone(), bytes.clone());
+            .add_msg_to_data(msg_id, context.clone(), payload);
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
         let _ = exporter
