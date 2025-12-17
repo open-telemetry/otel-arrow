@@ -560,4 +560,37 @@ mod tests {
         let seg = OpenSegment::default();
         assert!(seg.is_empty());
     }
+
+    #[test]
+    fn append_exceeds_max_slots_per_bundle_fails() {
+        use crate::record_bundle::SlotDescriptor;
+
+        let mut seg = OpenSegment::new();
+        let schema = test_schema();
+        let fp = [0x77u8; 32];
+
+        // Create a bundle with MAX_SLOTS_PER_BUNDLE + 1 slots
+        let slot_count = MAX_SLOTS_PER_BUNDLE + 1;
+        let slots: Vec<SlotDescriptor> = (0..slot_count)
+            .map(|i| SlotDescriptor::new(SlotId::new(i as u16), format!("Slot{}", i)))
+            .collect();
+
+        let batch = make_batch(&schema, &[1], &["a"]);
+        let bundle = TestBundle::new(slots).with_payload(SlotId::new(0), fp, batch);
+
+        let result = seg.append(&bundle);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        match err {
+            SegmentError::InvalidFormat { message } => {
+                assert!(
+                    message.contains("slots") && message.contains("exceeds limit"),
+                    "unexpected error message: {}",
+                    message
+                );
+            }
+            other => panic!("expected InvalidFormat, got {:?}", other),
+        }
+    }
 }
