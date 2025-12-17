@@ -28,7 +28,8 @@ use arrow_schema::SchemaRef;
 use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
 use super::types::{
-    MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT, ManifestEntry, StreamId, StreamKey,
+    MAX_BUNDLES_PER_SEGMENT, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
+    StreamId, StreamKey,
 };
 use crate::record_bundle::RecordBundle;
 
@@ -132,6 +133,17 @@ impl OpenSegment {
                     "segment already has {} bundles, cannot exceed limit of {}",
                     self.manifest.len(),
                     MAX_BUNDLES_PER_SEGMENT
+                ),
+            });
+        }
+
+        // Check slot limit before appending
+        let slot_count = bundle.descriptor().slots.len();
+        if slot_count > MAX_SLOTS_PER_BUNDLE {
+            return Err(SegmentError::InvalidFormat {
+                message: format!(
+                    "bundle has {} slots, exceeds limit of {}",
+                    slot_count, MAX_SLOTS_PER_BUNDLE
                 ),
             });
         }
