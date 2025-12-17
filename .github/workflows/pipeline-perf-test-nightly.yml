@@ -7,11 +7,6 @@ on:
       - cron: '0 10 * * *'  # runs every day at 10 AM UTC
     workflow_dispatch:
 
-# Cancel in-progress runs on new commits to same PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
