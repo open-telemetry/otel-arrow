@@ -117,12 +117,8 @@ impl AzureMonitorExporter {
         self.stats.add_client_latency(duration.as_secs_f64());
 
         for (_, context, payload) in completed_messages {
-            let payload_to_notify = payload.unwrap_or_else(|| {
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
-            });
-
             effect_handler
-                .notify_ack(AckMsg::new(OtapPdata::new(context, payload_to_notify)))
+                .notify_ack(AckMsg::new(OtapPdata::new(context, payload)))
                 .await?;
         }
         Ok(())
@@ -146,15 +142,11 @@ impl AzureMonitorExporter {
             batch_id, error
         );
 
-        for (_, context, bytes) in failed_messages {
-            let payload_to_notify = bytes.unwrap_or_else(|| {
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
-            });
-
+        for (_, context, payload) in failed_messages {
             effect_handler
                 .notify_nack(NackMsg::new(
                     &error,
-                    OtapPdata::new(context, payload_to_notify),
+                    OtapPdata::new(context, payload),
                 ))
                 .await?;
         }
@@ -218,9 +210,9 @@ impl AzureMonitorExporter {
         msg_id: u64,
     ) -> Result<(), Error> {
         if context.may_return_payload() {
-            self.state.add_msg_to_data(msg_id, context, Some(payload));
+            self.state.add_msg_to_data(msg_id, context, payload);
         } else {
-            self.state.add_msg_to_data(msg_id, context, None);
+            self.state.add_msg_to_data(msg_id, context, OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())));
         }
 
         // Use a generic transformer method that accepts LogsDataView
@@ -239,14 +231,10 @@ impl AzureMonitorExporter {
                 }
                 Ok(gzip_batcher::PushResult::TooLarge) => {
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
-                        let payload_to_notify = payload.unwrap_or_else(|| {
-                            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
-                        });
-
                         effect_handler
                             .notify_nack(NackMsg::new(
                                 "Log entry too large to export",
-                                OtapPdata::new(context, payload_to_notify),
+                                OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
@@ -256,14 +244,10 @@ impl AzureMonitorExporter {
                 }
                 Err(e) => {
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
-                        let payload_to_notify = payload.unwrap_or_else(|| {
-                            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
-                        });
-
                         effect_handler
                             .notify_nack(NackMsg::new(
                                 "Failed to add log entry to batch",
-                                OtapPdata::new(context, payload_to_notify),
+                                OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
@@ -275,14 +259,10 @@ impl AzureMonitorExporter {
         }
 
         if let Some((context, payload)) = self.state.delete_msg_data_if_orphaned(msg_id) {
-            let payload_to_notify = payload.unwrap_or_else(|| {
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
-            });
-
             effect_handler
                 .notify_nack(NackMsg::new(
                     "No valid log entries produced",
-                    OtapPdata::new(context, payload_to_notify),
+                    OtapPdata::new(context, payload),
                 ))
                 .await?;
         }
@@ -326,15 +306,10 @@ impl AzureMonitorExporter {
 
         for (msg_id, context, payload) in self.state.drain_all() {
             print!("Found orphaned message {msg_id} in shutdown");
-
-            let payload_to_notify = payload.unwrap_or_else(|| {
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
-            });
-
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",
-                    OtapPdata::new(context, payload_to_notify),
+                    OtapPdata::new(context, payload),
                 ))
                 .await?;
         }
@@ -668,9 +643,9 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let payload = Some(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
             Bytes::from("test"),
-        )));
+        ));
 
         exporter
             .state
@@ -712,9 +687,9 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let payload = Some(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
+        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
             Bytes::from("test"),
-        )));
+        ));
 
         exporter
             .state

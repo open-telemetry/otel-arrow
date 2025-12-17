@@ -15,7 +15,7 @@ pub struct AzureMonitorExporterState {
     pub msg_to_batch: HashMap<u64, HashSet<u64>>,
 
     /// msg_id → (context, optional payload for ack/nack)
-    pub msg_to_data: HashMap<u64, (Context, Option<OtapPayload>)>,
+    pub msg_to_data: HashMap<u64, (Context, OtapPayload)>,
 }
 
 impl AzureMonitorExporterState {
@@ -51,7 +51,7 @@ impl AzureMonitorExporterState {
     pub fn delete_msg_data_if_orphaned(
         &mut self,
         msg_id: u64,
-    ) -> Option<(Context, Option<OtapPayload>)> {
+    ) -> Option<(Context, OtapPayload)> {
         match self.msg_to_batch.get(&msg_id) {
             Some(batches) if !batches.is_empty() => None, // Has batches, not orphaned
             _ => {
@@ -66,7 +66,7 @@ impl AzureMonitorExporterState {
         &mut self,
         msg_id: u64,
         context: Context,
-        otap_payload: Option<OtapPayload>,
+        otap_payload: OtapPayload,
     ) {
         _ = self
             .msg_to_data
@@ -75,7 +75,7 @@ impl AzureMonitorExporterState {
     }
 
     #[inline]
-    pub fn remove_msg_to_data(&mut self, msg_id: u64) -> Option<(Context, Option<OtapPayload>)> {
+    pub fn remove_msg_to_data(&mut self, msg_id: u64) -> Option<(Context, OtapPayload)> {
         self.msg_to_data.remove(&msg_id)
     }
 
@@ -83,7 +83,7 @@ impl AzureMonitorExporterState {
     pub fn remove_batch_success(
         &mut self,
         batch_id: u64,
-    ) -> Vec<(u64, Context, Option<OtapPayload>)> {
+    ) -> Vec<(u64, Context, OtapPayload)> {
         let mut orphaned = Vec::new();
 
         if let Some(msgs) = self.batch_to_msg.remove(&batch_id) {
@@ -110,7 +110,7 @@ impl AzureMonitorExporterState {
     pub fn remove_batch_failure(
         &mut self,
         batch_id: u64,
-    ) -> Vec<(u64, Context, Option<OtapPayload>)> {
+    ) -> Vec<(u64, Context, OtapPayload)> {
         let mut failed = Vec::new();
 
         if let Some(msgs) = self.batch_to_msg.remove(&batch_id) {
@@ -140,7 +140,7 @@ impl AzureMonitorExporterState {
 
     /// Drain all remaining message data (for shutdown cleanup).
     /// Returns all messages that still have data, regardless of batch associations.
-    pub fn drain_all(&mut self) -> Vec<(u64, Context, Option<OtapPayload>)> {
+    pub fn drain_all(&mut self) -> Vec<(u64, Context, OtapPayload)> {
         // Clear batch relationships
         self.batch_to_msg.clear();
         self.msg_to_batch.clear();
@@ -161,10 +161,13 @@ mod tests {
     use otap_df_pdata::otlp::OtlpProtoBytes;
 
     /// Helper to create a test OtapPayload from bytes
-    fn test_payload(data: &'static [u8]) -> Option<OtapPayload> {
-        Some(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
-            Bytes::from_static(data),
-        )))
+    fn test_payload(data: &'static [u8]) -> OtapPayload {
+        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from_static(data)))
+    }
+
+    /// Helper to create an empty OtapPayload
+    fn empty_payload() -> OtapPayload {
+        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
     }
 
     #[test]
@@ -206,10 +209,10 @@ mod tests {
         // Verify the payload matches
         let (_, payload) = removed.unwrap();
         match payload {
-            Some(OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes))) => {
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
                 assert_eq!(bytes.as_ref(), b"test");
             }
-            _ => panic!("Expected Some(OtlpBytes::ExportLogsRequest)"),
+            _ => panic!("Expected OtlpBytes::ExportLogsRequest"),
         }
         assert!(!state.msg_to_data.contains_key(&msg_id));
 
@@ -223,16 +226,21 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_msg_data_if_orphaned_with_none_payload() {
+    fn test_delete_msg_data_if_orphaned_with_empty_payload() {
         let mut state = AzureMonitorExporterState::new();
         let msg_id = 1;
 
-        // Test with None payload (when may_return_payload is false)
-        state.add_msg_to_data(msg_id, Context::default(), None);
+        // Test with empty payload
+        state.add_msg_to_data(msg_id, Context::default(), empty_payload());
         let removed = state.delete_msg_data_if_orphaned(msg_id);
         assert!(removed.is_some());
         let (_, payload) = removed.unwrap();
-        assert!(payload.is_none());
+        match payload {
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(bytes)) => {
+                assert!(bytes.is_empty());
+            }
+            _ => panic!("Expected OtlpBytes::ExportLogsRequest"),
+        }
     }
 
     #[test]
@@ -319,7 +327,7 @@ mod tests {
     fn test_drain_all() {
         let mut state = AzureMonitorExporterState::new();
         state.add_msg_to_data(1, Context::default(), test_payload(b"1"));
-        state.add_msg_to_data(2, Context::default(), None); // Test with None payload
+        state.add_msg_to_data(2, Context::default(), empty_payload()); // Test with empty payload
 
         let drained = state.drain_all();
         assert_eq!(drained.len(), 2);
