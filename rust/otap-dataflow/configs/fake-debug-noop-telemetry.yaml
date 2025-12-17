@@ -41,7 +41,9 @@ service:
       processors:
         - batch:
             exporter:
-              console:
+              otlp:
+                protocol: "grpc/protobuf"
+                endpoint: "http://127.0.0.1:43480"
     metrics:
       readers:
         - periodic:
