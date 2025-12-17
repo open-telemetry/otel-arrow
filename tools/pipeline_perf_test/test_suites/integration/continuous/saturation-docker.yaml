@@ -84,7 +84,7 @@ tests:
         backend_receiver_type: otlp
         observation_interval: 60
         signals_per_second: null # Using null means loadgen don't self-cap the rate.
-        max_batch_size: 240
+        max_batch_size: 200
   - name: OTAP-ATTR-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
@@ -95,7 +95,7 @@ tests:
         backend_receiver_type: otlp
         observation_interval: 60
         signals_per_second: null # Using null means loadgen don't self-cap the rate.
-        max_batch_size: 240
+        max_batch_size: 200
   # - name: OTLP-ATTR-OTAP
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
