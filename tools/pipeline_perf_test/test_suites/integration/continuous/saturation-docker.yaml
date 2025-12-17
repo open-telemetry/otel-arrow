@@ -84,8 +84,18 @@ tests:
         backend_receiver_type: otlp
         observation_interval: 60
         signals_per_second: null # Using null means loadgen don't self-cap the rate.
-        max_batch_size: 250
-
+        max_batch_size: 240
+  - name: OTAP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: "continuous_saturation"
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp
+        observation_interval: 60
+        signals_per_second: null # Using null means loadgen don't self-cap the rate.
+        max_batch_size: 240
   # - name: OTLP-ATTR-OTAP
   #   from_template:
   #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
@@ -105,13 +115,4 @@ tests:
   #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otap.yaml
   #       loadgen_exporter_type: otap
   #       backend_receiver_type: otap
-  #       observation_interval: 60
-  # - name: OTAP-ATTR-OTLP
-  #   from_template:
-  #     path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-  #     variables:
-  #       result_dir: "continuous_saturation"
-  #       engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otap-attr-otlp.yaml
-  #       loadgen_exporter_type: otap
-  #       backend_receiver_type: otlp
   #       observation_interval: 60
