@@ -1019,6 +1019,24 @@ impl WalCoordinator {
 
         let new_rotated_path = rotated_wal_path(&self.options.path, rotation_id);
         std::fs::rename(&self.options.path, &new_rotated_path)?;
+
+        // Set rotated file to read-only to prevent accidental corruption.
+        // Rotated WAL files should never be modified.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // 0o440 = r--r----- (read-only for owner and group)
+            let permissions = std::fs::Permissions::from_mode(0o440);
+            std::fs::set_permissions(&new_rotated_path, permissions)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut permissions = std::fs::metadata(&new_rotated_path)?.permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&new_rotated_path, permissions)?;
+        }
+
         sync_parent_dir(&self.options.path)?;
 
         let data_bytes = old_len.saturating_sub(self.active_header_size);
@@ -1057,6 +1075,15 @@ impl WalCoordinator {
     fn purge_rotated_files(&mut self) -> WalResult<()> {
         while let Some(front) = self.rotated_files.front() {
             if front.wal_position_end <= self.cursor_state.wal_position {
+                // On non-Unix platforms, read-only files cannot be deleted directly.
+                // We need to make them writable first.
+                #[cfg(not(unix))]
+                {
+                    let mut permissions = std::fs::metadata(&front.path)?.permissions();
+                    permissions.set_readonly(false);
+                    std::fs::set_permissions(&front.path, permissions)?;
+                }
+
                 std::fs::remove_file(&front.path)?;
                 self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
                 self.purge_count = self.purge_count.saturating_add(1);
