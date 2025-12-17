@@ -534,12 +534,14 @@ pub struct AttributesTransform {
 
 impl AttributesTransform {
     /// Set the rename transform
+    #[must_use]
     pub fn with_rename(mut self, rename: RenameTransform) -> Self {
         self.rename = Some(rename);
         self
     }
 
     /// Set the rename transform
+    #[must_use]
     pub fn with_delete(mut self, delete: DeleteTransform) -> Self {
         self.delete = Some(delete);
         self

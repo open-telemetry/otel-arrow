@@ -74,71 +74,180 @@ impl PipelineStage for AttributeTransformPipelineStage {
 #[cfg(test)]
 mod test {
     use otap_df_pdata::proto::opentelemetry::{
-        common::v1::{AnyValue, KeyValue},
-        logs::v1::LogRecord,
+        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+        resource::v1::Resource,
     };
 
     use crate::pipeline::test::{exec_logs_pipeline, to_logs_data};
 
+    fn generate_logs_test_data() -> LogsData {
+        LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![
+                    KeyValue::new("xr1", AnyValue::new_string("a")),
+                    KeyValue::new("xr2", AnyValue::new_string("a")),
+                ])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes(vec![
+                        KeyValue::new("xs1", AnyValue::new_string("a")),
+                        KeyValue::new("xs2", AnyValue::new_string("a")),
+                    ])
+                    .finish(),
+                vec![
+                    LogRecord::build()
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
+                        .finish(),
+                    LogRecord::build()
+                        .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                        .finish(),
+                ],
+            )],
+        )])
+    }
+
     #[tokio::test]
     async fn test_rename_single_attributes() {
-        let input = vec![
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
-                .finish(),
-        ];
-
         let result = exec_logs_pipeline(
             "logs | project-rename attributes[\"y\"] = attributes[\"x\"]",
-            to_logs_data(input),
+            generate_logs_test_data(),
         )
         .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
 
-        let expected = vec![
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
-                .finish(),
-        ];
+        // test renaming resource attributes:
+        let result = exec_logs_pipeline(
+            "logs | project-rename resource.attributes[\"yr1\"] = resource.attributes[\"xr1\"]",
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("yr1", AnyValue::new_string("a")),
+                KeyValue::new("xr2", AnyValue::new_string("a")),
+            ]
+        );
 
-        assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+        // test renaming scope attributes:
+        let result = exec_logs_pipeline(
+            "logs | project-rename instrumentation_scope.attributes[\"ys1\"] = instrumentation_scope.attributes[\"xs1\"]",
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("ys1", AnyValue::new_string("a")),
+                KeyValue::new("xs2", AnyValue::new_string("a")),
+            ]
+        );
     }
 
     #[tokio::test]
     async fn test_rename_multiple_attributes() {
-        let input = vec![
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
-                .finish(),
-        ];
-
+        // test renaming multiple attributes from same batch
         let result = exec_logs_pipeline(
             "logs | 
                 project-rename 
                     attributes[\"y\"] = attributes[\"x\"], 
                     attributes[\"y2\"] = attributes[\"x2\"]",
-            to_logs_data(input),
+            generate_logs_test_data(),
         )
         .await;
 
-        let expected = vec![
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
-                .finish(),
-            LogRecord::build()
-                .attributes(vec![KeyValue::new("y2", AnyValue::new_string("b"))])
-                .finish(),
-        ];
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
 
-        assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+        // test renaming multiple attributes from many batches
+        let result = exec_logs_pipeline(
+            "logs | 
+                project-rename 
+                    attributes[\"y\"] = attributes[\"x\"], 
+                    resource.attributes[\"yr1\"] = resource.attributes[\"xr1\"],
+                    instrumentation_scope.attributes[\"ys1\"] = instrumentation_scope.attributes[\"xs1\"]",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("y", AnyValue::new_string("a"))])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+
+        assert_eq!(
+            result.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("yr1", AnyValue::new_string("a")),
+                KeyValue::new("xr2", AnyValue::new_string("a")),
+            ]
+        );
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[
+                KeyValue::new("ys1", AnyValue::new_string("a")),
+                KeyValue::new("xs2", AnyValue::new_string("a")),
+            ]
+        );
     }
 
+    #[tokio::test]
+    async fn test_filtering_when_no_attrs_batch_present() {
+        let input = vec![LogRecord::build().event_name("test").finish()];
+        let result = exec_logs_pipeline(
+            "logs | 
+                project-rename 
+                    attributes[\"y\"] = attributes[\"x\"], 
+                    attributes[\"y2\"] = attributes[\"x2\"]",
+            to_logs_data(input.clone()),
+        )
+        .await;
+
+        assert_eq!(result.resource_logs[0].scope_logs[0].log_records, input);
+    }
 }

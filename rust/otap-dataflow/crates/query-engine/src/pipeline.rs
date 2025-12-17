@@ -333,7 +333,7 @@ mod test {
         otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)))
     }
 
-        /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
+    /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
     pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
         let otap_payload: OtapPayload = otap_batch.into();
         let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
