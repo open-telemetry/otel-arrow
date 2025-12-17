@@ -144,10 +144,7 @@ impl AzureMonitorExporter {
 
         for (_, context, payload) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(
-                    &error,
-                    OtapPdata::new(context, payload),
-                ))
+                .notify_nack(NackMsg::new(&error, OtapPdata::new(context, payload)))
                 .await?;
         }
         Ok(())
@@ -212,7 +209,11 @@ impl AzureMonitorExporter {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, payload);
         } else {
-            self.state.add_msg_to_data(msg_id, context, OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())));
+            self.state.add_msg_to_data(
+                msg_id,
+                context,
+                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+            );
         }
 
         // Use a generic transformer method that accepts LogsDataView
@@ -643,9 +644,8 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
-            Bytes::from("test"),
-        ));
+        let payload =
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
         exporter
             .state
@@ -687,9 +687,8 @@ mod tests {
         let batch_id = 1;
         let msg_id = 100;
         let context = Context::default();
-        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
-            Bytes::from("test"),
-        ));
+        let payload =
+            OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::from("test")));
 
         exporter
             .state

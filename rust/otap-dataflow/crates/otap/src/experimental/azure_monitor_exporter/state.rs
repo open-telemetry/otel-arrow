@@ -48,10 +48,7 @@ impl AzureMonitorExporterState {
     }
 
     #[inline]
-    pub fn delete_msg_data_if_orphaned(
-        &mut self,
-        msg_id: u64,
-    ) -> Option<(Context, OtapPayload)> {
+    pub fn delete_msg_data_if_orphaned(&mut self, msg_id: u64) -> Option<(Context, OtapPayload)> {
         match self.msg_to_batch.get(&msg_id) {
             Some(batches) if !batches.is_empty() => None, // Has batches, not orphaned
             _ => {
@@ -62,12 +59,7 @@ impl AzureMonitorExporterState {
     }
 
     #[inline]
-    pub fn add_msg_to_data(
-        &mut self,
-        msg_id: u64,
-        context: Context,
-        otap_payload: OtapPayload,
-    ) {
+    pub fn add_msg_to_data(&mut self, msg_id: u64, context: Context, otap_payload: OtapPayload) {
         _ = self
             .msg_to_data
             .entry(msg_id)
@@ -80,10 +72,7 @@ impl AzureMonitorExporterState {
     }
 
     /// Remove a batch on SUCCESS - only returns messages with no remaining batches.
-    pub fn remove_batch_success(
-        &mut self,
-        batch_id: u64,
-    ) -> Vec<(u64, Context, OtapPayload)> {
+    pub fn remove_batch_success(&mut self, batch_id: u64) -> Vec<(u64, Context, OtapPayload)> {
         let mut orphaned = Vec::new();
 
         if let Some(msgs) = self.batch_to_msg.remove(&batch_id) {
@@ -107,10 +96,7 @@ impl AzureMonitorExporterState {
 
     /// Remove a batch on FAILURE - returns ALL messages in batch, removing them entirely.
     /// Messages are removed from all their batch associations.
-    pub fn remove_batch_failure(
-        &mut self,
-        batch_id: u64,
-    ) -> Vec<(u64, Context, OtapPayload)> {
+    pub fn remove_batch_failure(&mut self, batch_id: u64) -> Vec<(u64, Context, OtapPayload)> {
         let mut failed = Vec::new();
 
         if let Some(msgs) = self.batch_to_msg.remove(&batch_id) {
