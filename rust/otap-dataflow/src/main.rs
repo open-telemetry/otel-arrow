@@ -11,7 +11,7 @@ use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
 
-#[cfg(all(feature = "jemalloc", feature = "mimalloc"))]
+#[cfg(all(feature = "jemalloc", feature = "mimalloc", not(clippy)))]
 compile_error!(
     "Features `jemalloc` and `mimalloc` are mutually exclusive. \
      To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
@@ -19,7 +19,8 @@ compile_error!(
 
 #[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
-#[cfg(feature = "jemalloc")]
+
+#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
 use tikv_jemallocator::Jemalloc;
 
 #[cfg(feature = "mimalloc")]
