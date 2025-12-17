@@ -19,7 +19,7 @@ where
                 .try_resolve_array()
             {
                 Ok(a) => {
-                    let values = a.to_vec((..).into(), |i, r| {
+                    let values = a.into_vec((..).into(), |i, r| {
                         match r.try_resolve_array() {
                             Ok(v) => Ok(v),
                             Err(v) => {
