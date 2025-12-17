@@ -153,7 +153,7 @@ mod tests {
 
     /// Helper to create an empty OtapPayload
     fn empty_payload() -> OtapPayload {
-        OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new()))
+        OtapPayload::empty(otap_df_config::SignalType::Logs)
     }
 
     #[test]

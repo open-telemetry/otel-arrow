@@ -5,8 +5,8 @@ use std::cmp::max;
 
 use async_trait::async_trait;
 use azure_core::credentials::AccessToken;
-use bytes::Bytes;
 use otap_df_channel::error::RecvError;
+use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error;
@@ -212,7 +212,7 @@ impl AzureMonitorExporter {
             self.state.add_msg_to_data(
                 msg_id,
                 context,
-                OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(Bytes::new())),
+                OtapPayload::empty(SignalType::Logs),
             );
         }
 
@@ -553,6 +553,7 @@ mod tests {
     use super::*;
     use crate::pdata::Context;
     use azure_core::time::OffsetDateTime;
+    use bytes::Bytes;
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_telemetry::reporter::MetricsReporter;
