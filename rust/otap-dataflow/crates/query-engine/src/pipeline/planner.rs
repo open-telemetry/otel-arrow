@@ -133,15 +133,13 @@ impl PipelinePlanner {
                 let dest = ColumnAccessor::try_from(dest.get_value_accessor())?;
 
                 match (source, dest) {
-                    // currently the only type of move transform supported is
-                    // renaming attributes
+                    // currently the only type of move transform supported is renaming attributes
                     (
                         ColumnAccessor::Attributes(src_attrs_id, src_key),
                         ColumnAccessor::Attributes(dest_attrs_id, dest_key),
                     ) => {
-                        // the attributes being renamed must be in the same map.
-                        // e.g., doing attributes["x"] = resource.attributes["y"]
-                        // is not yet supported
+                        // the attributes being renamed must be in the same map. for example doing
+                        // `attributes["x"] = resource.attributes["y"]` is not yet supported
                         if src_attrs_id != dest_attrs_id {
                             Err(Error::NotYetSupportedError {
                                 message: "renaming attributes from different maps".into(),
@@ -157,7 +155,6 @@ impl PipelinePlanner {
                         }
                     }
 
-                    // TODO support other types of moves
                     (source, dest) => Err(Error::NotYetSupportedError {
                         message: format!(
                             "move expression for column source = {source:?}, dest = {dest:?}"
@@ -184,15 +181,13 @@ impl PipelinePlanner {
             let dest = ColumnAccessor::try_from(key_rename.get_destination())?;
 
             match (source, dest) {
-                // currently the only type of move transform supported is
-                // renaming attributes
+                // currently the only type of move transform supported is renaming attributes
                 (
                     ColumnAccessor::Attributes(src_attrs_id, src_key),
                     ColumnAccessor::Attributes(dest_attrs_id, dest_key),
                 ) => {
-                    // the attributes being renamed must be in the same map.
-                    // e.g., doing attributes["x"] = resource.attributes["y"]
-                    // is not yet supported
+                    // the attributes being renamed must be in the same map. for example doing
+                    // `attributes["x"] = resource.attributes["y"]` is not yet supported
                     if src_attrs_id != dest_attrs_id {
                         return Err(Error::NotYetSupportedError {
                             message: "renaming attributes from different maps".into(),
@@ -215,7 +210,6 @@ impl PipelinePlanner {
                     }
                 }
 
-                // TODO support other types of moves
                 (source, dest) => {
                     return Err(Error::NotYetSupportedError {
                         message: format!(
