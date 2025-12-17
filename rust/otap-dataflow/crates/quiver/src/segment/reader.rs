@@ -55,7 +55,7 @@ use super::types::{
     MAX_DICTIONARIES_PER_STREAM, MAX_SLOTS_PER_BUNDLE, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
     StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
 };
-use crate::record_bundle::SlotId;
+use crate::record_bundle::{ArrowPrimitive, SlotId};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ReconstructedBundle
@@ -697,10 +697,12 @@ impl SegmentReader {
             })?;
 
         // Parse stream directory columns
-        let stream_ids =
-            Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "stream_id")?;
+        let stream_ids = Self::get_primitive_column::<<StreamId as ArrowPrimitive>::ArrowType>(
+            &batch,
+            "stream_id",
+        )?;
         let slot_ids =
-            Self::get_primitive_column::<arrow_array::types::UInt16Type>(&batch, "slot_id")?;
+            Self::get_primitive_column::<<SlotId as ArrowPrimitive>::ArrowType>(&batch, "slot_id")?;
         let fingerprints = Self::get_fixed_binary_column(&batch, "schema_fingerprint", 32)?;
         let byte_offsets =
             Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_offset")?;
@@ -708,8 +710,10 @@ impl SegmentReader {
             Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "byte_length")?;
         let row_counts =
             Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "row_count")?;
-        let chunk_counts =
-            Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "chunk_count")?;
+        let chunk_counts = Self::get_primitive_column::<<ChunkIndex as ArrowPrimitive>::ArrowType>(
+            &batch,
+            "chunk_count",
+        )?;
 
         // Validate stream count to prevent resource exhaustion from malicious files
         if batch.num_rows() > MAX_STREAMS_PER_SEGMENT {
@@ -836,21 +840,21 @@ impl SegmentReader {
                 .ok_or_else(|| SegmentError::InvalidFormat {
                     message: "slot_refs struct missing slot_id field".to_string(),
                 })?
-                .as_primitive::<arrow_array::types::UInt16Type>();
+                .as_primitive::<<SlotId as ArrowPrimitive>::ArrowType>();
 
             let stream_ids = struct_array
                 .column_by_name("stream_id")
                 .ok_or_else(|| SegmentError::InvalidFormat {
                     message: "slot_refs struct missing stream_id field".to_string(),
                 })?
-                .as_primitive::<arrow_array::types::UInt32Type>();
+                .as_primitive::<<StreamId as ArrowPrimitive>::ArrowType>();
 
             let chunk_indices = struct_array
                 .column_by_name("chunk_index")
                 .ok_or_else(|| SegmentError::InvalidFormat {
                     message: "slot_refs struct missing chunk_index field".to_string(),
                 })?
-                .as_primitive::<arrow_array::types::UInt32Type>();
+                .as_primitive::<<ChunkIndex as ArrowPrimitive>::ArrowType>();
 
             for j in 0..slot_count {
                 entry.add_slot(
