@@ -92,6 +92,7 @@ pub struct Config {
     /// Authentication configuration
     pub auth: AuthConfig,
     /// Maximum buffer size before forcing flush (default: 1000)
+    /// Note: This field is currently reserved for future use and does not affect runtime behavior.
     #[serde(default = "default_buffer_size")]
     pub max_buffer_size: usize,
     /// Maximum concurrent uploads (default: 4)
