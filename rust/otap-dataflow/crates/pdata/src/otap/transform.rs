@@ -523,6 +523,7 @@ impl DeleteTransform {
     }
 }
 /// Specification for transformations to make to a collection of OTel Attributes
+#[derive(Default)]
 pub struct AttributesTransform {
     /// map of old -> new attribute keys
     pub rename: Option<RenameTransform>,
@@ -532,6 +533,20 @@ pub struct AttributesTransform {
 }
 
 impl AttributesTransform {
+    /// Set the rename transform
+    #[must_use]
+    pub fn with_rename(mut self, rename: RenameTransform) -> Self {
+        self.rename = Some(rename);
+        self
+    }
+
+    /// Set the delete transform
+    #[must_use]
+    pub fn with_delete(mut self, delete: DeleteTransform) -> Self {
+        self.delete = Some(delete);
+        self
+    }
+
     /// Validates the attribute transform operation. The current rule is that no key can be
     /// duplicated in any of the passed values. This is done to avoid any ambiguity about how
     /// to apply the transformation. For example, if the following passed

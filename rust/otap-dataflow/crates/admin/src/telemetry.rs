@@ -964,7 +964,7 @@ fn escape_prom_help(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::descriptor::{Instrument, MetricsField};
+    use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -973,6 +973,7 @@ mod tests {
                 name: "requests_total",
                 unit: "1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 brief: "Total number of requests",
                 value_type: MetricValueType::U64,
             },
@@ -980,6 +981,7 @@ mod tests {
                 name: "errors_total",
                 unit: "1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 brief: "Total number of errors",
                 value_type: MetricValueType::U64,
             },
@@ -992,6 +994,7 @@ mod tests {
             name: "connections_active",
             unit: "1",
             instrument: Instrument::Gauge,
+            temporality: None,
             brief: "Active database connections",
             value_type: MetricValueType::U64,
         }],
