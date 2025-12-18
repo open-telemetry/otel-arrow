@@ -20,6 +20,7 @@ unchecked-arithmetic = []
 
 [dependencies]
 otap-df-config = { workspace = true }
+otap-df-pdata = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -36,3 +37,4 @@ opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "l
 opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
+prost = { workspace = true }

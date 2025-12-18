@@ -14,7 +14,7 @@
 //! See the corresponding Golang implementation in go/pkg/otel/assert/equiv.go
 
 mod canonical;
-mod logs;
+pub mod logs;
 mod metrics;
 mod traces;
 

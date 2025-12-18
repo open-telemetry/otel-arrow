@@ -4,12 +4,12 @@
 //! Stateful OTLP encoder for streaming single log records with automatic batching.
 //!
 //! This encoder maintains open `ResourceLogs` and `ScopeLogs` messages, appending individual
-//! `LogRecord`s as they arrive. When the InstrumentationScope changes (via scope ID), it automatically
+//! `LogRecord`s as they arrive. When the InstrumentationScope changes (via scope name), it automatically
 //! closes the previous scope and starts a new one. The Resource is pre-encoded and copied once.
 //!
 //! # Design
 //! - **Resource**: Pre-encoded as `OtlpBytes` (includes protobuf field tag + length + content)
-//! - **Scope**: Pre-encoded with unique ID for fast comparison
+//! - **Scope**: Encoded on-the-fly using scope name (InstrumentationScope.name only)
 //! - **LogRecord**: Accepted as `LogRecordView` trait, encoded on-the-fly
 
 use crate::error::Result;
@@ -23,24 +23,6 @@ use bytes::Bytes;
 /// These bytes are ready to be copied directly into the output buffer without further processing.
 pub type OtlpBytes = Vec<u8>;
 /// @@@ Remove me, use super::OtlpProtoBytes
-
-/// Unique identifier for a scope encoding
-///
-/// This is typically a static reference to a constant or a pre-allocated ID.
-pub type ScopeId = usize;
-/// @@@ Encapsulate, not alias: pub struct ScopeId(usize)
-
-/// Pre-encoded scope information with unique identifier
-///
-/// Each effect handler registers its scope once and receives a unique ID.
-/// The encoder compares scope IDs (not hashes) for fast equality checking.
-#[derive(Debug, Clone)]
-pub struct ScopeEncoding {
-    /// Unique identifier for this scope (used for fast comparison)
-    pub id: ScopeId,
-    /// Pre-encoded ScopeLogs.scope field (protobuf tag + length + InstrumentationScope message)
-    pub encoded_bytes: OtlpBytes, // @@@ should be super::OtlpProtoBytes expecting ::ExportLogsRequest
-}
 
 /// Position marker for a length-delimited field that needs patching
 ///
@@ -87,15 +69,12 @@ enum EncoderState {
 /// // Pre-encode resource once
 /// let resource_bytes = encode_resource_to_otlp_bytes(&resource);
 ///
-/// // Register scope once per effect handler
-/// let scope_encoding = ScopeEncoding {
-///     id: 42, // Unique ID for this scope
-///     encoded_bytes: encode_scope_to_otlp_bytes(&scope),
-/// };
+/// // Scope name is typically the module path or instrumentation library name
+/// let scope_name = "my_module::component";
 ///
-/// // Encode multiple log records - automatically batched if scope ID matches
-/// encoder.encode_log_record(&log_record_view, &resource_bytes, &scope_encoding)?;
-/// encoder.encode_log_record(&log_record_view2, &resource_bytes, &scope_encoding)?;  // Batched
+/// // Encode multiple log records - automatically batched if scope name matches
+/// encoder.encode_log_record(&log_record_view, &resource_bytes, scope_name)?;
+/// encoder.encode_log_record(&log_record_view2, &resource_bytes, scope_name)?;  // Batched
 ///
 /// // Flush to get OTLP bytes
 /// let otlp_bytes = encoder.flush();
@@ -113,8 +92,8 @@ pub struct StatefulOtlpEncoder {
     /// Length placeholder for the current ScopeLogs message
     scope_logs_placeholder: Option<LengthPlaceholder>,
 
-    /// ID of the current scope for fast comparison
-    current_scope_id: Option<ScopeId>,
+    /// Name of the current scope for comparison
+    current_scope_name: Option<String>,
 }
 
 impl StatefulOtlpEncoder {
@@ -125,7 +104,7 @@ impl StatefulOtlpEncoder {
             state: EncoderState::Idle,
             resource_logs_placeholder: None,
             scope_logs_placeholder: None,
-            current_scope_id: None,
+            current_scope_name: None,
         }
     }
 
@@ -141,46 +120,44 @@ impl StatefulOtlpEncoder {
         self.buf.is_empty()
     }
 
-    /// Encode a single log record with its pre-encoded Resource and Scope context.
+    /// Encode a single log record with its Resource and Scope context.
     ///
     /// This method automatically handles batching:
-    /// - If Scope ID matches the current batch, the LogRecord is appended
-    /// - If Scope ID differs, the current ScopeLogs is closed and a new one started
+    /// - If scope name matches the current batch, the LogRecord is appended
+    /// - If scope name differs, the current ScopeLogs is closed and a new one started
     ///
     /// # Parameters
     /// - `log_record`: View of the log record to encode
     /// - `resource_bytes`: Pre-encoded Resource (includes protobuf field tag + length + content)
-    /// - `scope_encoding`: Pre-encoded Scope with unique ID
+    /// - `scope_name`: InstrumentationScope name (typically tracing target/module path)
     pub fn encode_log_record(
         &mut self,
         log_record: &impl LogRecordView,
         resource_bytes: &[u8], // @@@ Make super::OtlpProtoBytes, expecting ::ExportLogsRequest
-        scope_encoding: &ScopeEncoding,
+        scope_name: &str,
     ) -> Result<()> {
-        let scope_id = scope_encoding.id;
-
         match self.state {
             EncoderState::Idle => {
                 // Start new batch with Resource and Scope
                 self.start_resource_logs(resource_bytes)?;
-                self.start_scope_logs(scope_encoding)?;
+                self.start_scope_logs(scope_name)?;
                 self.append_log_record(log_record)?;
             }
 
             EncoderState::ResourceOpen => {
                 // Resource already open, start scope
-                self.start_scope_logs(scope_encoding)?;
+                self.start_scope_logs(scope_name)?;
                 self.append_log_record(log_record)?;
             }
 
             EncoderState::ScopeOpen => {
-                if Some(scope_id) == self.current_scope_id {
+                if self.current_scope_name.as_deref() == Some(scope_name) {
                     // Same scope - just append LogRecord
                     self.append_log_record(log_record)?;
                 } else {
                     // Different scope - close current and start new
                     self.close_scope_logs()?;
-                    self.start_scope_logs(scope_encoding)?;
+                    self.start_scope_logs(scope_name)?;
                     self.append_log_record(log_record)?;
                 }
             }
@@ -208,7 +185,7 @@ impl StatefulOtlpEncoder {
         self.state = EncoderState::Idle;
         self.resource_logs_placeholder = None;
         self.scope_logs_placeholder = None;
-        self.current_scope_id = None;
+        self.current_scope_name = None;
 
         // Ensure capacity is preserved for next use
         self.buf.ensure_capacity(capacity);
@@ -237,7 +214,7 @@ impl StatefulOtlpEncoder {
         Ok(())
     }
 
-    fn start_scope_logs(&mut self, scope_encoding: &ScopeEncoding) -> Result<()> {
+    fn start_scope_logs(&mut self, scope_name: &str) -> Result<()> {
         // Encode ResourceLogs.scope_logs field (tag 2, length-delimited)
         self.buf
             .encode_field_tag(RESOURCE_LOGS_SCOPE_LOGS, wire_types::LEN);
@@ -246,12 +223,12 @@ impl StatefulOtlpEncoder {
         let placeholder = LengthPlaceholder::new(self.buf.len());
         encode_len_placeholder(&mut self.buf);
 
-        // Copy pre-encoded Scope bytes (includes ScopeLogs.scope field)
-        self.buf.extend_from_slice(&scope_encoding.encoded_bytes);
+        // Encode ScopeLogs.scope field (tag 1, InstrumentationScope message)
+        self.encode_instrumentation_scope(scope_name)?;
 
         // Update state
         self.scope_logs_placeholder = Some(placeholder);
-        self.current_scope_id = Some(scope_encoding.id);
+        self.current_scope_name = Some(scope_name.to_string());
         self.state = EncoderState::ScopeOpen;
 
         Ok(())
@@ -279,7 +256,7 @@ impl StatefulOtlpEncoder {
         if let Some(placeholder) = self.scope_logs_placeholder.take() {
             placeholder.patch(&mut self.buf);
             self.state = EncoderState::ResourceOpen;
-            self.current_scope_id = None;
+            self.current_scope_name = None;
         }
         Ok(())
     }
@@ -291,9 +268,37 @@ impl StatefulOtlpEncoder {
         }
         Ok(())
     }
+
+    /// Encode an InstrumentationScope with just the name field
+    fn encode_instrumentation_scope(&mut self, scope_name: &str) -> Result<()> {
+        use crate::proto::consts::field_num::common::INSTRUMENTATION_SCOPE_NAME;
+
+        // Encode ScopeLogs.scope field (tag 1, length-delimited)
+        self.buf.encode_field_tag(SCOPE_LOG_SCOPE, wire_types::LEN);
+        let scope_placeholder = LengthPlaceholder::new(self.buf.len());
+        encode_len_placeholder(&mut self.buf);
+
+        // Encode InstrumentationScope.name field (tag 1, string)
+        self.buf.encode_string(INSTRUMENTATION_SCOPE_NAME, scope_name);
+
+        // Patch InstrumentationScope length
+        scope_placeholder.patch(&mut self.buf);
+
+        Ok(())
+    }
 }
 
 // === Helper functions for encoding LogRecordView ===
+
+// TODO(consolidation): The OTAP batch encoder in `logs.rs` (~110 lines in encode_log_record())
+// duplicates the field encoding logic below. Since OTAP implements LogRecordView (via
+// OtapLogRecordView in views/otap/logs.rs), we could refactor logs.rs to:
+//   1. Keep its batching/sorting/cursor logic (OTAP-specific)
+//   2. Delegate LogRecord field encoding to this function via the view trait
+// This would eliminate ~150 lines of duplicated code across encode_log_record, encode_any_value,
+// and encode_key_value, making the view-based encoder the canonical implementation for all
+// LogRecord encoding. The view trait methods are #[inline] so there's no performance impact.
+// Same opportunity exists for traces.rs and metrics.rs encoders.
 
 /// Encode all fields of a LogRecordView
 fn encode_log_record_view(log_record: &impl LogRecordView, buf: &mut ProtoBuffer) -> Result<()> {
@@ -490,7 +495,7 @@ fn encode_any_value_view_content<'a>(
 mod tests {
     use super::*;
     use crate::proto::opentelemetry::common::v1::{
-        AnyValue, InstrumentationScope, KeyValue, any_value,
+        AnyValue, KeyValue, any_value,
     };
     use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::schema::{SpanId, TraceId};
@@ -667,32 +672,7 @@ mod tests {
         buf.into_bytes().to_vec()
     }
 
-    // Helper: Pre-encode a Scope as OtlpBytes
-    fn encode_scope_bytes(scope: &InstrumentationScope) -> OtlpBytes {
-        use crate::proto::consts::field_num::common::*;
-        let mut buf = ProtoBuffer::with_capacity(256);
 
-        // Encode ScopeLogs.scope field (tag 1)
-        buf.encode_field_tag(1, wire_types::LEN);
-        let start = buf.len();
-        encode_len_placeholder(&mut buf);
-
-        // Encode name
-        if !scope.name.is_empty() {
-            buf.encode_string(INSTRUMENTATION_SCOPE_NAME, &scope.name);
-        }
-
-        // Encode version
-        if !scope.version.is_empty() {
-            buf.encode_string(INSTRUMENTATION_SCOPE_VERSION, &scope.version);
-        }
-
-        // Patch length
-        let content_len = buf.len() - start - 4;
-        patch_len_placeholder(&mut buf, 4, content_len, start);
-
-        buf.into_bytes().to_vec()
-    }
 
     // Helper to encode protobuf KeyValue (for test helpers)
     fn encode_attribute_proto(field_tag: u64, attr: &KeyValue, buf: &mut ProtoBuffer) {
@@ -738,14 +718,10 @@ mod tests {
         assert_eq!(encoder.state, EncoderState::Idle);
         assert!(encoder.is_empty());
 
-        // Pre-encode resource and scope
+        // Pre-encode resource
         let resource = Resource::default();
-        let scope = InstrumentationScope::default();
         let resource_bytes = encode_resource_bytes(&resource);
-        let scope_encoding = ScopeEncoding {
-            id: 1,
-            encoded_bytes: encode_scope_bytes(&scope),
-        };
+        let scope_name = "test_module";
 
         // Simple log record
         let log_record = SimpleLogRecord {
@@ -758,7 +734,7 @@ mod tests {
         };
 
         encoder
-            .encode_log_record(&log_record, &resource_bytes, &scope_encoding)
+            .encode_log_record(&log_record, &resource_bytes, scope_name)
             .unwrap();
 
         // Should have data now
@@ -776,12 +752,8 @@ mod tests {
         let mut encoder = StatefulOtlpEncoder::new(1024);
 
         let resource = Resource::default();
-        let scope = InstrumentationScope::default();
         let resource_bytes = encode_resource_bytes(&resource);
-        let scope_encoding = ScopeEncoding {
-            id: 1,
-            encoded_bytes: encode_scope_bytes(&scope),
-        };
+        let scope_name = "test_module";
 
         // Encode three records with same scope
         for i in 0..3 {
@@ -794,7 +766,7 @@ mod tests {
                 span_id: None,
             };
             encoder
-                .encode_log_record(&log_record, &resource_bytes, &scope_encoding)
+                .encode_log_record(&log_record, &resource_bytes, scope_name)
                 .unwrap();
         }
 
@@ -812,29 +784,8 @@ mod tests {
         let resource = Resource::default();
         let resource_bytes = encode_resource_bytes(&resource);
 
-        let scope1 = InstrumentationScope {
-            name: "scope1".into(),
-            version: "1.0".into(),
-            attributes: vec![],
-            dropped_attributes_count: 0,
-        };
-
-        let scope2 = InstrumentationScope {
-            name: "scope2".into(),
-            version: "1.0".into(),
-            attributes: vec![],
-            dropped_attributes_count: 0,
-        };
-
-        let scope1_encoding = ScopeEncoding {
-            id: 1,
-            encoded_bytes: encode_scope_bytes(&scope1),
-        };
-
-        let scope2_encoding = ScopeEncoding {
-            id: 2,
-            encoded_bytes: encode_scope_bytes(&scope2),
-        };
+        let scope1_name = "scope1";
+        let scope2_name = "scope2";
 
         let log_record = SimpleLogRecord {
             time_unix_nano: Some(1000),
@@ -847,13 +798,13 @@ mod tests {
 
         // Encode with scope1
         encoder
-            .encode_log_record(&log_record, &resource_bytes, &scope1_encoding)
+            .encode_log_record(&log_record, &resource_bytes, scope1_name)
             .unwrap();
         assert_eq!(encoder.state, EncoderState::ScopeOpen);
 
         // Encode with scope2 - should close scope1 and start scope2
         encoder
-            .encode_log_record(&log_record, &resource_bytes, &scope2_encoding)
+            .encode_log_record(&log_record, &resource_bytes, scope2_name)
             .unwrap();
         assert_eq!(encoder.state, EncoderState::ScopeOpen);
 
