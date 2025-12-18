@@ -62,3 +62,8 @@ nodes:
       compression_method: zstd
       arrow:
         payload_compression: none
+
+service:
+  telemetry:
+    logs:
+      level: "info"

@@ -167,3 +167,5 @@ steps:
                   destination:
                     file:
                       directory: results/{{result_dir | default('integration')}}/gh-actions-benchmark
+          # Print all Docker container logs at the end
+          - print_container_logs: {}
