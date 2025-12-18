@@ -153,6 +153,8 @@ steps:
     hooks:
       run:
         post:
+          # Print all Docker container logs
+          - print_container_logs: {}
           - sql_report:
               name: Integration Report - Logs
               report_config_file: ./test_suites/integration/configs/integration_report_logs.yaml
@@ -167,5 +169,3 @@ steps:
                   destination:
                     file:
                       directory: results/{{result_dir | default('integration')}}/gh-actions-benchmark
-          # Print all Docker container logs at the end
-          - print_container_logs: {}
