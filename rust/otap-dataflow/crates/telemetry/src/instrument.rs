@@ -64,17 +64,13 @@ impl<T: Copy + Default> Counter<T> {
 
 impl Debug for Counter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeltaCounter")
-            .field("value", &self.0)
-            .finish()
+        f.debug_struct("Counter").field("value", &self.0).finish()
     }
 }
 
 impl Debug for Counter<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeltaCounter")
-            .field("value", &self.0)
-            .finish()
+        f.debug_struct("Counter").field("value", &self.0).finish()
     }
 }
 
@@ -196,7 +192,7 @@ where
 
 impl Debug for UpDownCounter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeltaUpDownCounter")
+        f.debug_struct("UpDownCounter")
             .field("value", &self.0)
             .finish()
     }
@@ -204,7 +200,7 @@ impl Debug for UpDownCounter<u64> {
 
 impl Debug for UpDownCounter<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeltaUpDownCounter")
+        f.debug_struct("UpDownCounter")
             .field("value", &self.0)
             .finish()
     }

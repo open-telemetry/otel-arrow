@@ -136,7 +136,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                                     if ab.args.len() != 1 {
                                         return syn::Error::new(
                                         seg.ident.span(),
-                                        "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, DeltaUpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
+                                        "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, UpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
                                     )
                                     .to_compile_error()
                                     .into();
@@ -159,7 +159,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                                         _ => {
                                             return syn::Error::new(
                                             seg.ident.span(),
-                                            "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, DeltaUpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
+                                            "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, UpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
                                         )
                                         .to_compile_error()
                                         .into();
@@ -169,7 +169,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                                 _ => {
                                     return syn::Error::new(
                                     seg.ident.span(),
-                                    "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, DeltaUpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
+                                    "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, UpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
                                 )
                                 .to_compile_error()
                                 .into();

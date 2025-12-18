@@ -139,9 +139,9 @@ pub enum AuthConfig {
 struct ExporterMetrics {
     // TODO: Add actual metrics counters later
     // Examples:
-    // - batches_uploaded: DeltaCounter<u64>
-    // - batches_failed: DeltaCounter<u64>
-    // - bytes_sent: DeltaCounter<u64>
+    // - batches_uploaded: Counter<u64>
+    // - batches_failed: Counter<u64>
+    // - bytes_sent: Counter<u64>
 }
 
 /// Geneva exporter that sends OTAP data to Geneva backend

@@ -246,10 +246,10 @@ impl OTLPReceiver {
 //
 // /// Number of bytes received.
 // #[metric(unit = "By")]
-// pub bytes_received: DeltaCounter<u64>,
+// pub bytes_received: Counter<u64>,
 // /// Number of messages received.
 // #[metric(unit = "{msg}")]
-// pub messages_received: DeltaCounter<u64>,
+// pub messages_received: Counter<u64>,
 #[metric_set(name = "otlp.receiver.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct OtlpReceiverMetrics {

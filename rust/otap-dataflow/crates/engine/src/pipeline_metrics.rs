@@ -18,7 +18,7 @@
 //!   Wall-clock time since this pipeline instance started. Useful for detecting
 //!   restarts, warm-up effects, and aligning deltas to a known lifetime.
 //!
-//! - `cpu_time` (`DeltaCounter<f64>`, `{s}`):
+//! - `cpu_time` (`Counter<f64>`, `{s}`):
 //!   Cumulative CPU seconds consumed by the pipeline thread since start.
 //!   It advances only when the thread is scheduled on a CPU.
 //!   The per-interval increase (`cpu_time_delta`) is the CPU budget actually used.
@@ -39,7 +39,7 @@
 //!   Cumulative heap bytes allocated/freed by this pipeline since start.
 //!   These are baselines for long-term trends and sanity checks.
 //!
-//! - `memory_allocated_delta` / `memory_freed_delta` (`DeltaCounter<u64>`, `{By}`; jemalloc only):
+//! - `memory_allocated_delta` / `memory_freed_delta` (`Counter<u64>`, `{By}`; jemalloc only):
 //!   Per-interval heap bytes allocated/freed. They capture allocation churn
 //!   even when `memory_usage` is stable. High churn increases allocator and cache
 //!   pressure and often correlates with latency variance.
