@@ -4,7 +4,10 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression, PipelineExpression, ReduceMapTransformExpression, RemoveTransformExpression, RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue, TransformExpression, ValueAccessor
+    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
+    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    PipelineExpression, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
+    ScalarExpression, StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -264,43 +267,62 @@ impl PipelinePlanner {
         Ok(pipeline_stages)
     }
 
-    fn plan_reduce_map(reduce_map_expr: &ReduceMapTransformExpression) -> Result<Vec<Box<dyn PipelineStage>>> {
+    fn plan_reduce_map(
+        reduce_map_expr: &ReduceMapTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
         let mut root_attrs_deletes = vec![];
         let mut scope_attrs_deletes = vec![];
         let mut resource_attrs_deletes = vec![];
 
         match reduce_map_expr {
             ReduceMapTransformExpression::Remove(remove_expr) => {
-                for map_selector  in remove_expr.get_selectors() {
+                for map_selector in remove_expr.get_selectors() {
                     match map_selector {
                         MapSelector::ValueAccessor(val) => match ColumnAccessor::try_from(val)? {
-                            ColumnAccessor::Attributes(attrs_ident, attrs_key) => match attrs_ident {
+                            // currently the only kind of remove operation we support is on attributes
+                            ColumnAccessor::Attributes(attrs_ident, attrs_key) => match attrs_ident
+                            {
                                 AttributesIdentifier::Root => root_attrs_deletes.push(attrs_key),
                                 AttributesIdentifier::NonRoot(payload_type) => match payload_type {
-                                    ArrowPayloadType::ResourceAttrs => resource_attrs_deletes.push(attrs_key),
-                                    ArrowPayloadType::ScopeAttrs => scope_attrs_deletes.push(attrs_key),
-                                    _ => {
-                                        // invalid attributes payload type
-                                        todo!()
+                                    ArrowPayloadType::ResourceAttrs => {
+                                        resource_attrs_deletes.push(attrs_key)
                                     }
-                                }
+                                    ArrowPayloadType::ScopeAttrs => {
+                                        scope_attrs_deletes.push(attrs_key)
+                                    }
+                                    payload_type => {
+                                        return Err(Error::NotYetSupportedError {
+                                            message: format!(
+                                                "removing map keys from payload type {payload_type:?} not yet supported"
+                                            ),
+                                        });
+                                    }
+                                },
                             },
-                            _=> {
-                                // invalid columna ccessor
-                                todo!()
+                            column => {
+                                return Err(Error::InvalidPipelineError {
+                                    cause: format!(
+                                        "reduce map remove specified non map column. found {column:?}"
+                                    ),
+                                    query_location: Some(remove_expr.get_query_location().clone()),
+                                });
                             }
-                        }
+                        },
                         MapSelector::KeyOrKeyPattern(_) => {
-                            // TODO error about how remove using map key pattern not supported
-                            todo!()
+                            return Err(Error::NotYetSupportedError {
+                                message:
+                                    "specifying map removes by key or key pattern not yet supported"
+                                        .into(),
+                            });
                         }
                     }
                 }
-            },
-            ReduceMapTransformExpression::Retain(retain_expr) => {
-                // return an error here
-                // write a test case that we return an error here
-                todo!()
+            }
+            ReduceMapTransformExpression::Retain(_) => {
+                return Err(Error::NotYetSupportedError {
+                    message: "reducing map using by specifying retain keys not yet supported"
+                        .into(),
+                });
             }
         }
 
