@@ -29,8 +29,6 @@ nodes:
         include:
           match_type: strict
           record_attributes:
-            - key: gen_ai.system
-              value: openai
             - key: ios.app.state
               value: active
 
