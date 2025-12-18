@@ -432,23 +432,8 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
-                        let batches_encoded = batches.len();
-                        self.metrics.batches_encoded.add(batches_encoded as u64);
-
-                        // Upload batches concurrently (bounded).
-                        let max_concurrent = self.config.max_concurrent_uploads.max(1);
-                        let client = &self.geneva_client;
-                        futures::stream::iter(batches.iter())
-                            .map(Ok::<_, String>)
-                            .try_for_each_concurrent(max_concurrent, |batch| async move {
-                                client
-                                    .upload_batch(batch)
-                                    .await
-                                    .map_err(|e| format!("Failed to upload trace batch: {e}"))
-                            })
-                            .await?;
-
-                        self.metrics.batches_uploaded.add(batches_encoded as u64);
+                        let batches_encoded =
+                            self.upload_batches_concurrent(&batches, "trace").await?;
 
                         effect_handler
                             .info(&format!(
