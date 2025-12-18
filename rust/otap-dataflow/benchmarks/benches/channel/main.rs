@@ -12,9 +12,12 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
 use std::rc::Rc;
-use tikv_jemallocator::Jemalloc;
 use tokio::task::LocalSet;
 
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
