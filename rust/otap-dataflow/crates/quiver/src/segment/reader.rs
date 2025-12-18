@@ -373,12 +373,17 @@ impl SegmentReader {
         let path = path.as_ref();
         let file = File::open(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
-        // SAFETY: We require the `mmap` feature to be explicitly enabled.
-        // The caller accepts responsibility for ensuring the file is not
-        // modified while mapped.
+        // SAFETY: We use map_copy_read_only() which creates a private (copy-on-write)
+        // mapping. If another process modifies the underlying file, our view remains
+        // stable. The kernel provides us with a private copy of the original data.
+        // This mitigates the UB risk from concurrent file modification, although
+        // we would still be vulnerable to truncation (leading to SIGBUS) if the file
+        // is shrunk while mapped.
         #[allow(unsafe_code)]
         let mmap = unsafe {
-            memmap2::Mmap::map(&file).map_err(|e| SegmentError::io(path.to_path_buf(), e))?
+            memmap2::MmapOptions::new()
+                .map_copy_read_only(&file)
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?
         };
 
         // Convert mmap -> Bytes -> Buffer (all zero-copy)
