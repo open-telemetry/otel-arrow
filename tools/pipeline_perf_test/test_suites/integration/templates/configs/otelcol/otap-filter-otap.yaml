@@ -18,23 +18,8 @@ processors:
   filter:
     error_mode: ignore
     logs:
-      exclude:
-        match_type: strict
-        resource_attributes:
-          - key: fake_data_generator
-            value: v0
-        record_attributes:
-          - key: fake_data_generator
-            value: v0
-        severity_texts:
-          - WARN
-        bodies:
-          - body_text
       include:
         match_type: strict
-        resource_attributes:
-          - key: fake_data_generator
-            value: v1
         record_attributes:
           - key: gen_ai.system
             value: openai
