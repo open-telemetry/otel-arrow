@@ -27,7 +27,7 @@ use tokio_util::bytes::Bytes;
 
 use crate::error::Error;
 use crate::tracing_integration::{
-    OtlpTracingLayer, OtlpBytesFormattingLayer, OtlpBytesChannel, OtlpBytesConsumerConfig
+    OtlpTracingLayer, OtlpBytesFormattingLayer, OtlpBytesChannel
 };
 use otap_df_pdata::otlp::stateful_encoder::StatefulOtlpEncoder;
 
@@ -365,6 +365,10 @@ impl LoggerProvider {
             }
         }).await;
     }
+
+    // Note: Support for OpenTelemetry SDK exporters (run_otel_sdk_exporter_task) has been
+    // removed temporarily. It required decoding OTLP bytes back to SdkLogRecord, which had
+    // type compatibility issues. This can be added back in the future if needed.
 
     /// Initialize channel-based tracing with default filter.
     ///

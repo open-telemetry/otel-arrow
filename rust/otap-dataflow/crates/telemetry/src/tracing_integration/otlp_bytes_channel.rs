@@ -19,9 +19,22 @@ use bytes::Bytes;
 use std::sync::mpsc;
 
 /// Configuration for how to consume OTLP bytes from the channel.
+///
+/// All 3rd party logging goes through our custom subscriber → OTLP bytes → channel.
+/// This enum determines how those bytes are consumed in the admin runtime:
+///
+/// - **Console**: Human-readable formatting (our builtin formatter)
+/// - **InternalReceiver**: Forward to OTAP pipeline (our builtin OTLP path)
+/// - **OtelSdkExporter**: Use any OpenTelemetry SDK exporter (stdout, OTLP, custom)
+///
+/// This unified architecture means:
+/// 1. ALL 3rd party logs use the same channel-based path
+/// 2. No need for OpenTelemetryTracingBridge (we decode OTLP → OTel format if needed)
+/// 3. Flexible backend choice while keeping single-threaded consumption
 #[derive(Debug, Clone)]
 pub enum OtlpBytesConsumerConfig {
-    /// Format and write to console (stdout/stderr based on level)
+    /// Format and write to console (stdout/stderr based on level).
+    /// Uses our builtin formatter for human-readable output.
     Console {
         /// Enable ANSI color codes
         ansi: bool,
@@ -37,16 +50,22 @@ pub enum OtlpBytesConsumerConfig {
         thread_names: bool,
     },
     
-    /// Forward to OTLP endpoint (uses builtin OTAP OTLP exporter)
-    OtlpExporter {
-        /// OTLP endpoint URL
-        endpoint: String,
-        // Future: add authentication, compression, etc.
-    },
-    
-    /// Forward to internal telemetry receiver (bridges to OTAP pipeline)
+    /// Forward to internal telemetry receiver (bridges to OTAP pipeline).
+    /// Uses our builtin OTLP exporter to send to the internal receiver,
+    /// which then goes through the OTAP pipeline for processing/export.
     InternalReceiver {
         // Future: configuration for the internal receiver
+    },
+    
+    /// Use an OpenTelemetry SDK exporter.
+    /// OTLP bytes are decoded to OpenTelemetry LogData and passed to the SDK exporter.
+    /// This allows using any OTel SDK exporter (stdout, OTLP, custom) while keeping
+    /// our unified channel-based architecture.
+    OtelSdkExporter {
+        /// Exporter type identifier (e.g., "stdout", "otlp-grpc", "otlp-http")
+        exporter_type: String,
+        /// Configuration for the specific exporter (JSON or similar)
+        config: std::collections::HashMap<String, String>,
     },
 }
 

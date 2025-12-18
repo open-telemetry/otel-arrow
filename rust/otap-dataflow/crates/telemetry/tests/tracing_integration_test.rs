@@ -10,7 +10,7 @@
 mod tests {
     use otap_df_pdata::otlp::stateful_encoder::{OtlpBytes, StatefulOtlpEncoder};
     use otap_df_pdata::views::logs::LogRecordView;
-    use otap_df_telemetry::tracing_integration::{OtlpTracingLayer, TracingAttribute, TracingAnyValue};
+    use otap_df_telemetry::tracing_integration::OtlpTracingLayer;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::prelude::*;
 
@@ -70,7 +70,7 @@ mod tests {
 
         // Note: In real usage, metadata comes from tracing::Event
         // For this test, we construct the parts manually
-        let timestamp = 1234567890000000000u64;
+        let _timestamp = 1234567890000000000u64;
 
         // We can't easily construct a real Metadata without tracing internals,
         // so we'll test the attribute and value types directly

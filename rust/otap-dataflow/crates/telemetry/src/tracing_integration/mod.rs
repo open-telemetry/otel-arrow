@@ -16,11 +16,9 @@
 pub mod log_record;
 pub mod subscriber;
 pub mod otlp_bytes_formatter;
-pub mod otlp_event_dispatcher;
 pub mod otlp_bytes_channel;
 
 pub use log_record::{TracingAttribute, TracingAnyValue, TracingLogRecord};
 pub use subscriber::OtlpTracingLayer;
 pub use otlp_bytes_formatter::{OtlpBytesFormattingLayer, FormatError};
-pub use otlp_event_dispatcher::{dispatch_otlp_bytes_as_events, DispatchError};
 pub use otlp_bytes_channel::{OtlpBytesChannel, OtlpBytesConsumerConfig, OtlpBytesChannelStats};
