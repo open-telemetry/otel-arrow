@@ -142,7 +142,10 @@ impl PipelinePlanner {
                         // `attributes["x"] = resource.attributes["y"]` is not yet supported
                         if src_attrs_id != dest_attrs_id {
                             Err(Error::NotYetSupportedError {
-                                message: "renaming attributes from different maps".into(),
+                                message: format!(
+                                    "attribute key rename currently only supports renaming within the same attributes map; found {:?} to {:?}",
+                                    src_attrs_id, dest_attrs_id,
+                                ),
                             })
                         } else {
                             let transform = AttributesTransform::default().with_rename(
@@ -196,7 +199,10 @@ impl PipelinePlanner {
                     // `attributes["x"] = resource.attributes["y"]` is not yet supported
                     if src_attrs_id != dest_attrs_id {
                         return Err(Error::NotYetSupportedError {
-                            message: "renaming attributes from different maps".into(),
+                            message: format!(
+                                "attribute key rename currently only supports renaming within the same attributes map; found {:?} to {:?}",
+                                src_attrs_id, dest_attrs_id,
+                            ),
                         });
                     }
 
