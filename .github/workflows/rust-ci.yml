@@ -30,6 +30,7 @@ jobs:
           - experimental/query_engine
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - windows-latest
           - macos-latest
     runs-on: ${{ matrix.os }}
