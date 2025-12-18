@@ -26,6 +26,7 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
@@ -45,6 +46,7 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -152,7 +154,7 @@ struct ExporterMetrics {
     #[metric(unit = "{batch}")]
     pub batches_uploaded: Counter<u64>,
 
-    /// Total number of export attempts that failed (per message).
+    /// Total number of export attempts that failed (per PData message).
     #[metric(unit = "{msg}")]
     pub exports_failed: Counter<u64>,
 }
@@ -243,7 +245,7 @@ impl GenevaExporter {
     async fn upload_batches_concurrent(
         &mut self,
         batches: &[EncodedBatch],
-        signal_label: &str,
+        signal_type: SignalType,
     ) -> Result<usize, String> {
         let batches_encoded = batches.len();
         self.metrics.batches_encoded.add(batches_encoded as u64);
@@ -257,7 +259,7 @@ impl GenevaExporter {
                 client
                     .upload_batch(batch)
                     .await
-                    .map_err(|e| format!("Failed to upload {} batch: {e}", signal_label))
+                    .map_err(|e| format!("Failed to upload {:?} batch: {e}", signal_type))
             })
             .await?;
 
@@ -277,14 +279,15 @@ impl GenevaExporter {
     async fn export_payload(
         &mut self,
         payload: OtapPayload,
-        effect_handler: &EffectHandler<OtapPdata>,
+        _effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<usize, String> {
         if payload.is_empty() {
             // Empty payloads are a no-op but should still be acked.
             // Avoids unnecessary encoding/upload work.
-            effect_handler
-                .info("Geneva exporter skipping empty payload")
-                .await;
+            otel_info!(
+                "GenevaExporter.Skip",
+                message = "Geneva exporter skipping empty payload"
+            );
             return Ok(0);
         }
 
@@ -308,9 +311,10 @@ impl GenevaExporter {
                         //     .map_err(|e| format!("Failed to encode logs from view: {}", e))?;
 
                         // Fallback path: Convert OTAP Arrow → OTLP bytes
-                        effect_handler
-                            .info("Converting OTAP logs to OTLP bytes (fallback path)")
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Convert",
+                            message = "Converting OTAP logs to OTLP bytes (fallback path)"
+                        );
 
                         let otlp_bytes: OtlpProtoBytes =
                             OtapPayload::OtapArrowRecords(OtapArrowRecords::Logs(otap_records))
@@ -331,15 +335,15 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
-                        let batches_encoded =
-                            self.upload_batches_concurrent(&batches, "log").await?;
+                        let batches_encoded = self
+                            .upload_batches_concurrent(&batches, SignalType::Logs)
+                            .await?;
 
-                        effect_handler
-                            .info(&format!(
-                                "Successfully uploaded {} log batches to Geneva (OTAP fallback)",
-                                batches.len()
-                            ))
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Upload",
+                            count = batches.len(),
+                            message = "Successfully uploaded log batches to Geneva (OTAP fallback)"
+                        );
 
                         Ok(batches_encoded)
                     }
@@ -347,9 +351,10 @@ impl GenevaExporter {
                         // TODO: Zero-copy view path for future optimization (when TracesView is ready)
 
                         // Fallback path: Convert OTAP Arrow → OTLP bytes
-                        effect_handler
-                            .info("Converting OTAP traces to OTLP bytes (fallback path)")
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Convert",
+                            message = "Converting OTAP traces to OTLP bytes (fallback path)"
+                        );
 
                         let otlp_bytes: OtlpProtoBytes =
                             OtapPayload::OtapArrowRecords(OtapArrowRecords::Traces(otap_records))
@@ -370,15 +375,16 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
-                        let batches_encoded =
-                            self.upload_batches_concurrent(&batches, "trace").await?;
+                        let batches_encoded = self
+                            .upload_batches_concurrent(&batches, SignalType::Traces)
+                            .await?;
 
-                        effect_handler
-                            .info(&format!(
-                                "Successfully uploaded {} trace batches to Geneva (OTAP fallback)",
-                                batches.len()
-                            ))
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Upload",
+                            count = batches.len(),
+                            message =
+                                "Successfully uploaded trace batches to Geneva (OTAP fallback)"
+                        );
 
                         Ok(batches_encoded)
                     }
@@ -392,9 +398,10 @@ impl GenevaExporter {
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
-                        effect_handler
-                            .info("Uploading logs to Geneva using OTLP fallback path")
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Upload",
+                            message = "Uploading logs to Geneva using OTLP fallback path"
+                        );
 
                         // Decode OTLP bytes to ResourceLogs
                         let logs_request = ExportLogsServiceRequest::decode(&bytes[..])
@@ -406,22 +413,23 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
-                        let batches_encoded =
-                            self.upload_batches_concurrent(&batches, "log").await?;
+                        let batches_encoded = self
+                            .upload_batches_concurrent(&batches, SignalType::Logs)
+                            .await?;
 
-                        effect_handler
-                            .info(&format!(
-                                "Successfully uploaded {} log batches to Geneva (OTLP fallback)",
-                                batches.len()
-                            ))
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Upload",
+                            count = batches.len(),
+                            message = "Successfully uploaded log batches to Geneva (OTLP fallback)"
+                        );
 
                         Ok(batches_encoded)
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
-                        effect_handler
-                            .info("Uploading traces to Geneva using OTLP fallback path")
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Upload",
+                            message = "Uploading traces to Geneva using OTLP fallback path"
+                        );
 
                         // Decode OTLP bytes to ResourceSpans
                         let traces_request = ExportTraceServiceRequest::decode(&bytes[..])
@@ -433,15 +441,16 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
-                        let batches_encoded =
-                            self.upload_batches_concurrent(&batches, "trace").await?;
+                        let batches_encoded = self
+                            .upload_batches_concurrent(&batches, SignalType::Traces)
+                            .await?;
 
-                        effect_handler
-                            .info(&format!(
-                                "Successfully uploaded {} trace batches to Geneva (OTLP fallback)",
-                                batches.len()
-                            ))
-                            .await;
+                        otel_info!(
+                            "GenevaExporter.Upload",
+                            count = batches.len(),
+                            message =
+                                "Successfully uploaded trace batches to Geneva (OTLP fallback)"
+                        );
 
                         Ok(batches_encoded)
                     }
@@ -482,18 +491,22 @@ impl Exporter<OtapPdata> for GenevaExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        effect_handler
-            .info(&format!(
-                "Geneva exporter starting: endpoint={}, namespace={}, account={}",
-                self.config.endpoint, self.config.namespace, self.config.account
-            ))
-            .await;
+        otel_info!(
+            "GenevaExporter.Start",
+            endpoint = self.config.endpoint,
+            namespace = self.config.namespace,
+            account = self.config.account,
+            message = "Geneva exporter starting"
+        );
 
         // Message loop
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    effect_handler.info("Geneva exporter shutting down").await;
+                    otel_info!(
+                        "GenevaExporter.Shutdown",
+                        message = "Geneva exporter shutting down"
+                    );
 
                     return Ok(TerminalState::new(
                         deadline,
@@ -527,9 +540,11 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         Err(e) => {
                             self.pdata_metrics.inc_failed(signal_type);
                             self.metrics.exports_failed.inc();
-                            effect_handler
-                                .info(&format!("ERROR: Failed to export to Geneva: {}", e))
-                                .await;
+                            otel_info!(
+                                "GenevaExporter.Error",
+                                error = e,
+                                message = "Failed to export to Geneva"
+                            );
                             effect_handler
                                 .notify_nack(NackMsg::new(
                                     &e,
