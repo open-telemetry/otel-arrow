@@ -31,7 +31,7 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_telemetry::instrument::DeltaCounter;
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -203,64 +203,64 @@ pub struct RetryProcessorMetrics {
     // RFC-aligned: consumed items by signal and outcome
     /// Number of items consumed (logs) with outcome=success
     #[metric(unit = "{item}")]
-    pub consumed_items_logs_success: DeltaCounter<u64>,
+    pub consumed_items_logs_success: Counter<u64>,
     /// Number of items consumed (metrics) with outcome=success
     #[metric(unit = "{item}")]
-    pub consumed_items_metrics_success: DeltaCounter<u64>,
+    pub consumed_items_metrics_success: Counter<u64>,
     /// Number of items consumed (traces) with outcome=success
     #[metric(unit = "{item}")]
-    pub consumed_items_traces_success: DeltaCounter<u64>,
+    pub consumed_items_traces_success: Counter<u64>,
 
     /// Number of items consumed (logs) with outcome=failure
     #[metric(unit = "{item}")]
-    pub consumed_items_logs_failure: DeltaCounter<u64>,
+    pub consumed_items_logs_failure: Counter<u64>,
     /// Number of items consumed (metrics) with outcome=failure
     #[metric(unit = "{item}")]
-    pub consumed_items_metrics_failure: DeltaCounter<u64>,
+    pub consumed_items_metrics_failure: Counter<u64>,
     /// Number of items consumed (traces) with outcome=failure
     #[metric(unit = "{item}")]
-    pub consumed_items_traces_failure: DeltaCounter<u64>,
+    pub consumed_items_traces_failure: Counter<u64>,
 
     /// Number of items consumed (logs) with outcome=refused
     #[metric(unit = "{item}")]
-    pub consumed_items_logs_refused: DeltaCounter<u64>,
+    pub consumed_items_logs_refused: Counter<u64>,
     /// Number of items consumed (metrics) with outcome=refused
     #[metric(unit = "{item}")]
-    pub consumed_items_metrics_refused: DeltaCounter<u64>,
+    pub consumed_items_metrics_refused: Counter<u64>,
     /// Number of items consumed (traces) with outcome=refused
     #[metric(unit = "{item}")]
-    pub consumed_items_traces_refused: DeltaCounter<u64>,
+    pub consumed_items_traces_refused: Counter<u64>,
 
     // RFC-aligned: produced items by signal and outcome
     /// Number of items produced (logs) with outcome=success
     #[metric(unit = "{item}")]
-    pub produced_items_logs_success: DeltaCounter<u64>,
+    pub produced_items_logs_success: Counter<u64>,
     /// Number of items produced (metrics) with outcome=success
     #[metric(unit = "{item}")]
-    pub produced_items_metrics_success: DeltaCounter<u64>,
+    pub produced_items_metrics_success: Counter<u64>,
     /// Number of items produced (traces) with outcome=success
     #[metric(unit = "{item}")]
-    pub produced_items_traces_success: DeltaCounter<u64>,
+    pub produced_items_traces_success: Counter<u64>,
 
     /// Number of items produced (logs) with outcome=refused (downstream error)
     #[metric(unit = "{item}")]
-    pub produced_items_logs_refused: DeltaCounter<u64>,
+    pub produced_items_logs_refused: Counter<u64>,
     /// Number of items produced (metrics) with outcome=refused (downstream error)
     #[metric(unit = "{item}")]
-    pub produced_items_metrics_refused: DeltaCounter<u64>,
+    pub produced_items_metrics_refused: Counter<u64>,
     /// Number of items produced (traces) with outcome=refused (downstream error)
     #[metric(unit = "{item}")]
-    pub produced_items_traces_refused: DeltaCounter<u64>,
+    pub produced_items_traces_refused: Counter<u64>,
 
     /// Number of retry attempts scheduled as a result of NACKs, logs.
     #[metric(unit = "{event}")]
-    pub retry_attempts_logs: DeltaCounter<u64>,
+    pub retry_attempts_logs: Counter<u64>,
     /// Number of retry attempts scheduled as a result of NACKs, traces.
     #[metric(unit = "{event}")]
-    pub retry_attempts_traces: DeltaCounter<u64>,
+    pub retry_attempts_traces: Counter<u64>,
     /// Number of retry attempts scheduled as a result of NACKs, metrics.
     #[metric(unit = "{event}")]
-    pub retry_attempts_metrics: DeltaCounter<u64>,
+    pub retry_attempts_metrics: Counter<u64>,
 }
 
 impl RetryProcessorMetrics {

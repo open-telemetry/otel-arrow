@@ -133,7 +133,7 @@
 
 use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
-use otap_df_telemetry::instrument::{DeltaCounter, Gauge, ObserveCounter, ObserveUpDownCounter};
+use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
@@ -176,15 +176,15 @@ pub struct PipelineMetrics {
 
     /// Bytes allocated to the heap by this pipeline during the last measurement window.
     #[metric(unit = "{By}")]
-    pub memory_allocated_delta: DeltaCounter<u64>,
+    pub memory_allocated_delta: Counter<u64>,
 
     /// Bytes returned to the heap by this pipeline during the last measurement window.
     #[metric(unit = "{By}")]
-    pub memory_freed_delta: DeltaCounter<u64>,
+    pub memory_freed_delta: Counter<u64>,
 
     /// Total CPU seconds used by the pipeline since start.
     #[metric(unit = "{s}")]
-    pub cpu_time: DeltaCounter<f64>,
+    pub cpu_time: Counter<f64>,
 
     /// Difference in pipeline cpu time since the last measurement, divided by the elapsed time.
     /// Reported as a ratio in the range [0, 1].

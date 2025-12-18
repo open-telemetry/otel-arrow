@@ -22,7 +22,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_telemetry::instrument::DeltaCounter;
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
@@ -45,43 +45,43 @@ pub const PORT_LOGS: &str = "logs";
 pub struct SignalTypeRouterMetrics {
     /// Number of log messages received by the router.
     #[metric(unit = "{msg}")]
-    pub signals_received_logs: DeltaCounter<u64>,
+    pub signals_received_logs: Counter<u64>,
     /// Number of metric messages received by the router.
     #[metric(unit = "{msg}")]
-    pub signals_received_metrics: DeltaCounter<u64>,
+    pub signals_received_metrics: Counter<u64>,
     /// Number of trace messages received by the router.
     #[metric(unit = "{msg}")]
-    pub signals_received_traces: DeltaCounter<u64>,
+    pub signals_received_traces: Counter<u64>,
 
     /// Number of log messages routed to a named port.
     #[metric(unit = "{msg}")]
-    pub signals_routed_named_logs: DeltaCounter<u64>,
+    pub signals_routed_named_logs: Counter<u64>,
     /// Number of metric messages routed to a named port.
     #[metric(unit = "{msg}")]
-    pub signals_routed_named_metrics: DeltaCounter<u64>,
+    pub signals_routed_named_metrics: Counter<u64>,
     /// Number of trace messages routed to a named port.
     #[metric(unit = "{msg}")]
-    pub signals_routed_named_traces: DeltaCounter<u64>,
+    pub signals_routed_named_traces: Counter<u64>,
 
     /// Number of log messages routed via the default port.
     #[metric(unit = "{msg}")]
-    pub signals_routed_default_logs: DeltaCounter<u64>,
+    pub signals_routed_default_logs: Counter<u64>,
     /// Number of metric messages routed via the default port.
     #[metric(unit = "{msg}")]
-    pub signals_routed_default_metrics: DeltaCounter<u64>,
+    pub signals_routed_default_metrics: Counter<u64>,
     /// Number of trace messages routed via the default port.
     #[metric(unit = "{msg}")]
-    pub signals_routed_default_traces: DeltaCounter<u64>,
+    pub signals_routed_default_traces: Counter<u64>,
 
     /// Number of log messages dropped due to routing failure.
     #[metric(unit = "{msg}")]
-    pub signals_dropped_logs: DeltaCounter<u64>,
+    pub signals_dropped_logs: Counter<u64>,
     /// Number of metric messages dropped due to routing failure.
     #[metric(unit = "{msg}")]
-    pub signals_dropped_metrics: DeltaCounter<u64>,
+    pub signals_dropped_metrics: Counter<u64>,
     /// Number of trace messages dropped due to routing failure.
     #[metric(unit = "{msg}")]
-    pub signals_dropped_traces: DeltaCounter<u64>,
+    pub signals_dropped_traces: Counter<u64>,
 }
 
 impl SignalTypeRouterMetrics {

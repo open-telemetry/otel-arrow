@@ -16,7 +16,7 @@ Below is a quick guide for defining and using a metric set.
 - Annotate your struct with `#[metric_set(name = "<metrics.group.name>")]`.
 - For each metric field, choose one of the supported instruments and add
   `#[metric(unit = "{unit}")]`.
-  - Supported instruments: `DeltaCounter<u64|f64>`, `DeltaUpDownCounter<u64|f64>`,
+  - Supported instruments: `Counter<u64|f64>`, `UpDownCounter<u64|f64>`,
     `ObserveCounter<u64|f64>`, `ObserveUpDownCounter<u64|f64>`, `Gauge<u64|f64>`.
   - Units follow a simple string convention (e.g., `{msg}`, `{record}`,
     `{span}`).
@@ -30,7 +30,7 @@ Below is a quick guide for defining and using a metric set.
 Example (from the OTAP Perf Exporter):
 
 ```rust
-use otap_df_telemetry::instrument::{DeltaCounter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP PerfExporter.
@@ -39,27 +39,27 @@ use otap_df_telemetry_macros::metric_set;
 pub struct PerfExporterPdataMetrics {
     /// Number of pdata batches received.
     #[metric(unit = "{msg}")]
-    pub batches: DeltaCounter<u64>,
+    pub batches: Counter<u64>,
 
     /// Number of invalid pdata batches received.
     #[metric(unit = "{msg}")]
-    pub invalid_batches: DeltaCounter<u64>,
+    pub invalid_batches: Counter<u64>,
 
     /// Number of Arrow records received.
     #[metric(unit = "{record}")]
-    pub arrow_records: DeltaCounter<u64>,
+    pub arrow_records: Counter<u64>,
 
     /// Number of logs received.
     #[metric(unit = "{log}")]
-    pub logs: DeltaCounter<u64>,
+    pub logs: Counter<u64>,
 
     /// Number of spans received.
     #[metric(unit = "{span}")]
-    pub spans: DeltaCounter<u64>,
+    pub spans: Counter<u64>,
 
     /// Number of metrics received.
     #[metric(unit = "{metric}")]
-    pub metrics: DeltaCounter<u64>,
+    pub metrics: Counter<u64>,
 }
 ```
 
@@ -83,8 +83,8 @@ implementation roughly like this:
 #[metric_set(name = "perf.exporter.pdata.metrics")]
 pub struct PerfExporterPdataMetrics {
     // same fields as above
-    pub batches: otap_df_telemetry::instrument::DeltaCounter<u64>,
-    pub invalid_batches: otap_df_telemetry::instrument::DeltaCounter<u64>,
+    pub batches: otap_df_telemetry::instrument::Counter<u64>,
+    pub invalid_batches: otap_df_telemetry::instrument::Counter<u64>,
     // ...
 }
 

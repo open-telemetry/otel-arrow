@@ -17,12 +17,12 @@ use std::ops::{AddAssign, SubAssign};
 /// A monotonic sum-like instrument reporting deltas over an interval.
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
-pub struct DeltaCounter<T>(T);
+pub struct Counter<T>(T);
 
 /// A sum-like instrument reporting signed deltas over an interval.
 #[repr(transparent)]
 #[derive(Default, Clone, Copy)]
-pub struct DeltaUpDownCounter<T>(T);
+pub struct UpDownCounter<T>(T);
 
 /// A monotonic sum-like instrument reporting a current observed value.
 #[repr(transparent)]
@@ -39,10 +39,10 @@ pub struct ObserveUpDownCounter<T>(T);
 #[derive(Default, Clone, Copy)]
 pub struct Gauge<T>(T);
 
-// DeltaCounter implementation.
-// ============================
+// Counter implementation.
+// =======================
 
-impl<T: Copy + Default> DeltaCounter<T> {
+impl<T: Copy + Default> Counter<T> {
     /// Creates a new delta counter with the provided initial value.
     #[inline]
     pub const fn new(v: T) -> Self {
@@ -62,7 +62,7 @@ impl<T: Copy + Default> DeltaCounter<T> {
     }
 }
 
-impl Debug for DeltaCounter<u64> {
+impl Debug for Counter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeltaCounter")
             .field("value", &self.0)
@@ -70,7 +70,7 @@ impl Debug for DeltaCounter<u64> {
     }
 }
 
-impl Debug for DeltaCounter<f64> {
+impl Debug for Counter<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeltaCounter")
             .field("value", &self.0)
@@ -78,19 +78,19 @@ impl Debug for DeltaCounter<f64> {
     }
 }
 
-impl From<u64> for DeltaCounter<u64> {
+impl From<u64> for Counter<u64> {
     fn from(value: u64) -> Self {
-        DeltaCounter(value)
+        Counter(value)
     }
 }
 
-impl From<f64> for DeltaCounter<f64> {
+impl From<f64> for Counter<f64> {
     fn from(value: f64) -> Self {
-        DeltaCounter(value)
+        Counter(value)
     }
 }
 
-impl AddAssign<u64> for DeltaCounter<u64> {
+impl AddAssign<u64> for Counter<u64> {
     fn add_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
@@ -103,13 +103,13 @@ impl AddAssign<u64> for DeltaCounter<u64> {
     }
 }
 
-impl AddAssign<f64> for DeltaCounter<f64> {
+impl AddAssign<f64> for Counter<f64> {
     fn add_assign(&mut self, rhs: f64) {
         self.0 += rhs;
     }
 }
 
-impl DeltaCounter<u64> {
+impl Counter<u64> {
     /// Increments the counter by `1`.
     #[inline]
     pub fn inc(&mut self) {
@@ -137,7 +137,7 @@ impl DeltaCounter<u64> {
     }
 }
 
-impl DeltaCounter<f64> {
+impl Counter<f64> {
     /// Increments the counter by `1.0`.
     #[inline]
     pub fn inc(&mut self) {
@@ -151,10 +151,10 @@ impl DeltaCounter<f64> {
     }
 }
 
-// DeltaUpDownCounter implementation.
-// ==================================
+// UpDownCounter implementation.
+// =============================
 
-impl<T> DeltaUpDownCounter<T>
+impl<T> UpDownCounter<T>
 where
     T: Copy
         + Default
@@ -194,7 +194,7 @@ where
     }
 }
 
-impl Debug for DeltaUpDownCounter<u64> {
+impl Debug for UpDownCounter<u64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeltaUpDownCounter")
             .field("value", &self.0)
@@ -202,7 +202,7 @@ impl Debug for DeltaUpDownCounter<u64> {
     }
 }
 
-impl Debug for DeltaUpDownCounter<f64> {
+impl Debug for UpDownCounter<f64> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeltaUpDownCounter")
             .field("value", &self.0)
@@ -210,19 +210,19 @@ impl Debug for DeltaUpDownCounter<f64> {
     }
 }
 
-impl From<u64> for DeltaUpDownCounter<u64> {
+impl From<u64> for UpDownCounter<u64> {
     fn from(value: u64) -> Self {
-        DeltaUpDownCounter(value)
+        UpDownCounter(value)
     }
 }
 
-impl From<f64> for DeltaUpDownCounter<f64> {
+impl From<f64> for UpDownCounter<f64> {
     fn from(value: f64) -> Self {
-        DeltaUpDownCounter(value)
+        UpDownCounter(value)
     }
 }
 
-impl AddAssign<u64> for DeltaUpDownCounter<u64> {
+impl AddAssign<u64> for UpDownCounter<u64> {
     fn add_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
@@ -235,13 +235,13 @@ impl AddAssign<u64> for DeltaUpDownCounter<u64> {
     }
 }
 
-impl AddAssign<f64> for DeltaUpDownCounter<f64> {
+impl AddAssign<f64> for UpDownCounter<f64> {
     fn add_assign(&mut self, rhs: f64) {
         self.0 += rhs;
     }
 }
 
-impl SubAssign<u64> for DeltaUpDownCounter<u64> {
+impl SubAssign<u64> for UpDownCounter<u64> {
     fn sub_assign(&mut self, rhs: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
@@ -254,13 +254,13 @@ impl SubAssign<u64> for DeltaUpDownCounter<u64> {
     }
 }
 
-impl SubAssign<f64> for DeltaUpDownCounter<f64> {
+impl SubAssign<f64> for UpDownCounter<f64> {
     fn sub_assign(&mut self, rhs: f64) {
         self.0 -= rhs;
     }
 }
 
-impl DeltaUpDownCounter<u64> {
+impl UpDownCounter<u64> {
     /// Increments the counter by `1`.
     #[inline]
     pub fn inc(&mut self) {
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_delta_counter_u64_add_inc() {
-        let mut counter = DeltaCounter::new(10u64);
+        let mut counter = Counter::new(10u64);
         counter.add(5);
         counter.inc();
         assert_eq!(counter.get(), 16);
@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_delta_counter_f64_add_inc() {
-        let mut counter = DeltaCounter::new(0.0f64);
+        let mut counter = Counter::new(0.0f64);
         counter.add(1.5);
         counter.inc();
         assert!((counter.get() - 2.5).abs() < f64::EPSILON);
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_delta_counter_overflow_panics_without_unchecked_arithmetic() {
-        let mut counter = DeltaCounter::new(u64::MAX);
+        let mut counter = Counter::new(u64::MAX);
         counter.inc();
     }
 

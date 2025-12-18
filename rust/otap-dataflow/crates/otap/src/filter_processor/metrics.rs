@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Metrics for the OTAP FilterProcessor node.
-use otap_df_telemetry::instrument::DeltaCounter;
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP FilterProcessor
@@ -11,15 +11,15 @@ use otap_df_telemetry_macros::metric_set;
 pub struct FilterPdataMetrics {
     /// Number of log signals consumed
     #[metric(unit = "{log}")]
-    pub log_signals_consumed: DeltaCounter<u64>,
+    pub log_signals_consumed: Counter<u64>,
     /// Number of span signals consumed
     #[metric(unit = "{span}")]
-    pub span_signals_consumed: DeltaCounter<u64>,
+    pub span_signals_consumed: Counter<u64>,
 
     /// Number of log signals filtered
     #[metric(unit = "{log}")]
-    pub log_signals_filtered: DeltaCounter<u64>,
+    pub log_signals_filtered: Counter<u64>,
     /// Number of span signals filtered
     #[metric(unit = "{span}")]
-    pub span_signals_filtered: DeltaCounter<u64>,
+    pub span_signals_filtered: Counter<u64>,
 }
