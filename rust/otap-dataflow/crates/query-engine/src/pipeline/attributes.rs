@@ -280,4 +280,22 @@ mod test {
             )
         }
     }
+
+    #[tokio::test]
+    async fn test_delete_attributes() {
+        let result = exec_logs_pipeline(
+            "logs | project-away attributes[\"x\"]",
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build() .finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+    }
 }

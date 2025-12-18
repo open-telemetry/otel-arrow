@@ -4,15 +4,12 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
-    LogicalExpression, MoveTransformExpression, MutableValueExpression, PipelineExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue,
-    TransformExpression, ValueAccessor,
+    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression, PipelineExpression, ReduceMapTransformExpression, RemoveTransformExpression, RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue, TransformExpression, ValueAccessor
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, RenameTransform};
+use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -89,6 +86,9 @@ impl PipelinePlanner {
                 TransformExpression::Move(move_expr) => self.plan_move(move_expr),
                 TransformExpression::RenameMapKeys(rename_map_keys_expr) => {
                     self.plan_rename(rename_map_keys_expr)
+                }
+                TransformExpression::ReduceMap(reduce_map_exr) => {
+                    Self::plan_reduce_map(reduce_map_exr)
                 }
                 other => Err(Error::NotYetSupportedError {
                     message: format!(
@@ -254,6 +254,78 @@ impl PipelinePlanner {
                     .map_err(|e| Error::InvalidPipelineError {
                         cause: format!("invalid attribute rename transform {e}"),
                         query_location: Some(rename_map_keys_expr.get_query_location().clone()),
+                    })?;
+
+                let pipeline_stage = AttributeTransformPipelineStage::new(attrs_id, transform);
+                pipeline_stages.push(Box::new(pipeline_stage));
+            }
+        }
+
+        Ok(pipeline_stages)
+    }
+
+    fn plan_reduce_map(reduce_map_expr: &ReduceMapTransformExpression) -> Result<Vec<Box<dyn PipelineStage>>> {
+        let mut root_attrs_deletes = vec![];
+        let mut scope_attrs_deletes = vec![];
+        let mut resource_attrs_deletes = vec![];
+
+        match reduce_map_expr {
+            ReduceMapTransformExpression::Remove(remove_expr) => {
+                for map_selector  in remove_expr.get_selectors() {
+                    match map_selector {
+                        MapSelector::ValueAccessor(val) => match ColumnAccessor::try_from(val)? {
+                            ColumnAccessor::Attributes(attrs_ident, attrs_key) => match attrs_ident {
+                                AttributesIdentifier::Root => root_attrs_deletes.push(attrs_key),
+                                AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+                                    ArrowPayloadType::ResourceAttrs => resource_attrs_deletes.push(attrs_key),
+                                    ArrowPayloadType::ScopeAttrs => scope_attrs_deletes.push(attrs_key),
+                                    _ => {
+                                        // invalid attributes payload type
+                                        todo!()
+                                    }
+                                }
+                            },
+                            _=> {
+                                // invalid columna ccessor
+                                todo!()
+                            }
+                        }
+                        MapSelector::KeyOrKeyPattern(_) => {
+                            // TODO error about how remove using map key pattern not supported
+                            todo!()
+                        }
+                    }
+                }
+            },
+            ReduceMapTransformExpression::Retain(retain_expr) => {
+                // return an error here
+                // write a test case that we return an error here
+                todo!()
+            }
+        }
+
+        let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
+
+        // build up a pipeline stage for each type set of attributes in the expression
+        for (deletes, attrs_id) in [
+            (root_attrs_deletes, AttributesIdentifier::Root),
+            (
+                scope_attrs_deletes,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+            ),
+            (
+                resource_attrs_deletes,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+            ),
+        ] {
+            if !deletes.is_empty() {
+                let delete_transform = DeleteTransform::new(deletes.into_iter().collect());
+                let transform = AttributesTransform::default().with_delete(delete_transform);
+                transform
+                    .validate()
+                    .map_err(|e| Error::InvalidPipelineError {
+                        cause: format!("invalid attribute rename transform {e}"),
+                        query_location: Some(reduce_map_expr.get_query_location().clone()),
                     })?;
 
                 let pipeline_stage = AttributeTransformPipelineStage::new(attrs_id, transform);
