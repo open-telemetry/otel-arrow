@@ -44,18 +44,19 @@ impl TracingLogRecord {
     /// Creates a new TracingLogRecord from tracing event components.
     ///
     /// # Arguments
-    /// * `metadata` - The event's metadata (level, target, etc.)
+    /// * `metadata` - The event's metadata (level, target, name with file:line)
     /// * `attributes` - Key-value pairs extracted from event fields
-    /// * `event_name` - Optional event name from the `name` field
     /// * `timestamp_nanos` - Event timestamp in nanoseconds since Unix epoch
+    ///
+    /// Note: metadata.name() contains both the event location and file:line info,
+    /// e.g., "event src/main.rs:42", so we don't need to separately track file/line.
     pub fn new(
         metadata: &Metadata<'_>,
         attributes: Vec<TracingAttribute>,
-        event_name: Option<String>,
         timestamp_nanos: u64,
     ) -> Self {
         Self {
-            event_name,
+            event_name: Some(metadata.name().to_string()),
             level: *metadata.level(),
             timestamp_nanos,
             target: metadata.target().to_string(),
@@ -73,6 +74,39 @@ impl TracingLogRecord {
     /// Returns the target (typically module path) for this log record.
     pub fn target(&self) -> &str {
         &self.target
+    }
+
+    /// Creates a TracingLogRecord with a custom event name (for span events).
+    pub fn new_with_event_name(
+        metadata: &Metadata<'_>,
+        attributes: Vec<TracingAttribute>,
+        timestamp_nanos: u64,
+        event_name: String,
+    ) -> Self {
+        Self {
+            event_name: Some(event_name),
+            level: *metadata.level(),
+            timestamp_nanos,
+            target: metadata.target().to_string(),
+            attributes,
+            body: None,
+        }
+    }
+
+    /// Creates a minimal TracingLogRecord for span end events.
+    pub fn new_span_end(
+        span_id: u64,
+        attributes: Vec<TracingAttribute>,
+        timestamp_nanos: u64,
+    ) -> Self {
+        Self {
+            event_name: Some(format!("span.end (id:{})", span_id)),
+            level: Level::INFO,
+            timestamp_nanos,
+            target: "tracing::span".to_string(),
+            attributes,
+            body: None,
+        }
     }
 }
 
