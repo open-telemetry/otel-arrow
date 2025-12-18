@@ -57,6 +57,7 @@ ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
 arrow = { version = "57.0", features=["prettyprint"] }
+arrow-buffer = { version = "57.0" }
 arrow-ipc = { version = "57.0", features=["zstd"] }
 arrow-schema = { version = "57.0" }
 arrow-array = { version = "57.0" }
@@ -94,6 +95,7 @@ mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
 tikv-jemallocator = { version = "0.6.1" }
 tikv-jemalloc-ctl = { version = "0.6.1" }
+memmap2 = "0.9"
 nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"

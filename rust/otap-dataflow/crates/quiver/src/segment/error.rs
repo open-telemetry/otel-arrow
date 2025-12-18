@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use arrow_schema::ArrowError;
 use thiserror::Error;
 
-use super::types::{SegmentSeq, StreamId};
+use super::types::StreamId;
 use crate::record_bundle::SlotId;
 
 /// Errors that can occur during segment operations.
@@ -41,12 +41,10 @@ pub enum SegmentError {
     },
 
     /// Checksum mismatch indicating data corruption.
-    #[error(
-        "checksum mismatch in segment {segment_seq:?}: expected {expected:#010x}, got {actual:#010x}"
-    )]
+    #[error("checksum mismatch in segment {path:?}: expected {expected:#010x}, got {actual:#010x}")]
     ChecksumMismatch {
-        /// Segment where corruption was detected.
-        segment_seq: Option<SegmentSeq>,
+        /// Path to the corrupted segment file, if known.
+        path: Option<PathBuf>,
         /// Expected CRC32 value.
         expected: u32,
         /// Actual computed CRC32 value.
@@ -82,6 +80,17 @@ pub enum SegmentError {
     #[error("stream accumulator already finalized")]
     AccumulatorFinalized,
 
+    /// Batch schema does not match the stream's expected schema.
+    #[error("schema mismatch in stream {stream_id:?}: expected schema {expected}, got {actual}")]
+    SchemaMismatch {
+        /// The stream where the mismatch occurred.
+        stream_id: StreamId,
+        /// String representation of the expected schema.
+        expected: String,
+        /// String representation of the actual batch schema.
+        actual: String,
+    },
+
     /// Open segment has no data to finalize.
     #[error("cannot finalize empty segment")]
     EmptySegment,
@@ -101,39 +110,6 @@ impl SegmentError {
     #[must_use]
     pub fn io_no_path(source: io::Error) -> Self {
         Self::Io { path: None, source }
-    }
-
-    /// Creates an invalid format error.
-    #[must_use]
-    pub fn invalid_format(message: impl Into<String>) -> Self {
-        Self::InvalidFormat {
-            message: message.into(),
-        }
-    }
-
-    /// Creates a checksum mismatch error.
-    #[must_use]
-    pub fn checksum_mismatch(segment_seq: Option<SegmentSeq>, expected: u32, actual: u32) -> Self {
-        Self::ChecksumMismatch {
-            segment_seq,
-            expected,
-            actual,
-        }
-    }
-
-    /// Creates a stream not found error.
-    #[must_use]
-    pub fn stream_not_found(stream_id: StreamId) -> Self {
-        Self::StreamNotFound { stream_id }
-    }
-
-    /// Creates a slot not in bundle error.
-    #[must_use]
-    pub fn slot_not_in_bundle(slot_id: SlotId, bundle_index: u32) -> Self {
-        Self::SlotNotInBundle {
-            slot_id,
-            bundle_index,
-        }
     }
 }
 
@@ -176,17 +152,22 @@ mod tests {
 
     #[test]
     fn checksum_mismatch_displays_hex_values() {
-        let err =
-            SegmentError::checksum_mismatch(Some(SegmentSeq::new(42)), 0xDEADBEEF, 0xCAFEBABE);
+        let err = SegmentError::ChecksumMismatch {
+            path: Some(PathBuf::from("/data/segments/seg-042.qseg")),
+            expected: 0xDEADBEEF,
+            actual: 0xCAFEBABE,
+        };
         let msg = err.to_string();
         assert!(msg.contains("0xdeadbeef"));
         assert!(msg.contains("0xcafebabe"));
-        assert!(msg.contains("42"));
+        assert!(msg.contains("seg-042.qseg"));
     }
 
     #[test]
     fn invalid_format_includes_message() {
-        let err = SegmentError::invalid_format("missing magic bytes");
+        let err = SegmentError::InvalidFormat {
+            message: "missing magic bytes".to_string(),
+        };
         assert!(err.to_string().contains("missing magic bytes"));
     }
 
@@ -199,13 +180,18 @@ mod tests {
 
     #[test]
     fn stream_not_found_displays_stream_id() {
-        let err = SegmentError::stream_not_found(StreamId::new(7));
+        let err = SegmentError::StreamNotFound {
+            stream_id: StreamId::new(7),
+        };
         assert!(err.to_string().contains("7"));
     }
 
     #[test]
     fn slot_not_in_bundle_displays_details() {
-        let err = SegmentError::slot_not_in_bundle(SlotId::new(3), 10);
+        let err = SegmentError::SlotNotInBundle {
+            slot_id: SlotId::new(3),
+            bundle_index: 10,
+        };
         let msg = err.to_string();
         assert!(msg.contains("3"));
         assert!(msg.contains("10"));
