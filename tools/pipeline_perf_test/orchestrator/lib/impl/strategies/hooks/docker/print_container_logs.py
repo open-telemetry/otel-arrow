@@ -89,28 +89,28 @@ class PrintContainerLogs(HookStrategy):
         # Get all components from the suite
         suite = ctx.get_suite()
         components = suite.components
-        
+
         # Filter components if specified in config
         if self.config.components:
             components = {
-                name: comp 
-                for name, comp in components.items() 
+                name: comp
+                for name, comp in components.items()
                 if name in self.config.components
             }
-        
+
         # Collect all logs first
         logs_output = []
         logs_output.append(f"\n{self.config.separator}")
         logs_output.append("DOCKER CONTAINER LOGS")
         logs_output.append(f"{self.config.separator}")
-        
+
         printed_any = False
-        
+
         # Iterate through components and collect their logs
         for component_name, component in components.items():
             # Try to get Docker runtime data
             runtime = component.runtime.get(ComponentDockerRuntime.type)
-            
+
             if runtime and isinstance(runtime, ComponentDockerRuntime):
                 if runtime.container_logs:
                     printed_any = True
@@ -118,18 +118,18 @@ class PrintContainerLogs(HookStrategy):
                     logs_output.append(f"Component: {component_name}")
                     logs_output.append(f"Container ID: {runtime.container_id}")
                     logs_output.append(f"{self.config.separator}")
-                    
+
                     # Add the actual logs
                     logs_output.extend(runtime.container_logs)
-        
+
         if not printed_any:
             logs_output.append("\nNo container logs found.")
-        
+
         logs_output.append(f"\n{self.config.separator}")
         logs_output.append("END OF CONTAINER LOGS")
         logs_output.append(f"{self.config.separator}\n")
-        
+
         # Print everything as a single block
         print("\n".join(logs_output))
-        
+
         return ExecutionStatus.SUCCESS
