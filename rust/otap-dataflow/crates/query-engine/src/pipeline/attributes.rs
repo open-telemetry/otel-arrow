@@ -337,13 +337,34 @@ mod test {
 
     #[tokio::test]
     async fn test_delete_when_no_attrs_batch_present() {
-        let input = vec![LogRecord::build().event_name("test").finish()];
+        let input = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().event_name("test").finish()],
+            )],
+        )]);
+
         let result = exec_logs_pipeline(
-            "logs | project-away attributes[\"y\"]",
-            to_logs_data(input.clone()),
+            "logs | 
+                project-away attributes[\"y\"],
+                resource.attributes[\"xr1\"], 
+                instrumentation_scope.attributes[\"xs1\"]",
+            input.clone(),
         )
         .await;
 
-        assert_eq!(result.resource_logs[0].scope_logs[0].log_records, input);
+        assert_eq!(
+            result.resource_logs[0].resource,
+            input.resource_logs[0].resource,
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].scope,
+            input.resource_logs[0].scope_logs[0].scope
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            input.resource_logs[0].scope_logs[0].log_records
+        );
     }
 }
