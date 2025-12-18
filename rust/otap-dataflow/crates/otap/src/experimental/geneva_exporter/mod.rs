@@ -54,7 +54,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use futures::stream::TryStreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{GenevaClient, GenevaClientConfig};
+use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
@@ -238,6 +238,32 @@ impl GenevaExporter {
         &self.config
     }
 
+    /// Upload batches concurrently
+    async fn upload_batches_concurrent(
+        &mut self,
+        batches: &[EncodedBatch],
+        signal_label: &str,
+    ) -> Result<usize, String> {
+        let batches_encoded = batches.len();
+        self.metrics.batches_encoded.add(batches_encoded as u64);
+
+        let max_concurrent = self.config.max_concurrent_uploads.max(1);
+        let client = &self.geneva_client;
+
+        futures::stream::iter(batches.iter())
+            .map(Ok::<_, String>)
+            .try_for_each_concurrent(max_concurrent, |batch| async move {
+                client
+                    .upload_batch(batch)
+                    .await
+                    .map_err(|e| format!("Failed to upload {} batch: {e}", signal_label))
+            })
+            .await?;
+
+        self.metrics.batches_uploaded.add(batches_encoded as u64);
+        Ok(batches_encoded)
+    }
+
     /// Handle PData message with dual-path encoding
     ///
     /// Supports two data paths for Geneva encoding:
@@ -304,24 +330,8 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
-                        let batches_encoded = batches.len();
-                        self.metrics.batches_encoded.add(batches_encoded as u64);
-
-                        // Upload batches concurrently (bounded).
-                        // Note: even on a single pipeline thread, this overlaps network I/O.
-                        let max_concurrent = self.config.max_concurrent_uploads.max(1);
-                        let client = &self.geneva_client;
-                        futures::stream::iter(batches.iter())
-                            .map(Ok::<_, String>)
-                            .try_for_each_concurrent(max_concurrent, |batch| async move {
-                                client
-                                    .upload_batch(batch)
-                                    .await
-                                    .map_err(|e| format!("Failed to upload log batch: {e}"))
-                            })
-                            .await?;
-
-                        self.metrics.batches_uploaded.add(batches_encoded as u64);
+                        let batches_encoded =
+                            self.upload_batches_concurrent(&batches, "log").await?;
 
                         effect_handler
                             .info(&format!(
@@ -359,23 +369,8 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
-                        let batches_encoded = batches.len();
-                        self.metrics.batches_encoded.add(batches_encoded as u64);
-
-                        // Upload batches concurrently (bounded).
-                        let max_concurrent = self.config.max_concurrent_uploads.max(1);
-                        let client = &self.geneva_client;
-                        futures::stream::iter(batches.iter())
-                            .map(Ok::<_, String>)
-                            .try_for_each_concurrent(max_concurrent, |batch| async move {
-                                client
-                                    .upload_batch(batch)
-                                    .await
-                                    .map_err(|e| format!("Failed to upload trace batch: {e}"))
-                            })
-                            .await?;
-
-                        self.metrics.batches_uploaded.add(batches_encoded as u64);
+                        let batches_encoded =
+                            self.upload_batches_concurrent(&batches, "trace").await?;
 
                         effect_handler
                             .info(&format!(
@@ -410,23 +405,8 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
-                        let batches_encoded = batches.len();
-                        self.metrics.batches_encoded.add(batches_encoded as u64);
-
-                        // Upload batches concurrently (bounded).
-                        let max_concurrent = self.config.max_concurrent_uploads.max(1);
-                        let client = &self.geneva_client;
-                        futures::stream::iter(batches.iter())
-                            .map(Ok::<_, String>)
-                            .try_for_each_concurrent(max_concurrent, |batch| async move {
-                                client
-                                    .upload_batch(batch)
-                                    .await
-                                    .map_err(|e| format!("Failed to upload log batch: {e}"))
-                            })
-                            .await?;
-
-                        self.metrics.batches_uploaded.add(batches_encoded as u64);
+                        let batches_encoded =
+                            self.upload_batches_concurrent(&batches, "log").await?;
 
                         effect_handler
                             .info(&format!(
