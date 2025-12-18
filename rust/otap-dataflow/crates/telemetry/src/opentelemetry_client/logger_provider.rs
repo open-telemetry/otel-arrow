@@ -3,7 +3,6 @@
 
 //! Configures the OpenTelemetry logger provider based on the provided configuration.
 
-use opentelemetry_appender_tracing::layer;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
 use otap_df_config::pipeline::service::telemetry::{
@@ -17,10 +16,50 @@ use otap_df_config::pipeline::service::telemetry::{
     metrics::readers::periodic::otlp::OtlpProtocol,
 };
 use tracing::level_filters::LevelFilter;
+use tracing::Level;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
+use std::future::Future;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use tokio_util::bytes::Bytes;
 
 use crate::error::Error;
+use crate::tracing_integration::{
+    OtlpTracingLayer, OtlpBytesFormattingLayer, OtlpBytesChannel, OtlpBytesConsumerConfig
+};
+use otap_df_pdata::otlp::stateful_encoder::StatefulOtlpEncoder;
+
+/// Writer that routes to stdout or stderr based on log level.
+///
+/// This implements the MakeWriter trait to provide different writers
+/// for different severity levels:
+/// - TRACE, DEBUG, INFO → stdout
+/// - WARN, ERROR → stderr
+#[derive(Clone)]
+struct LevelBasedWriter;
+
+impl LevelBasedWriter {
+    fn new() -> Self {
+        LevelBasedWriter
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LevelBasedWriter {
+    type Writer = Box<dyn Write + 'a>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        Box::new(io::stdout())
+    }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
+        match *meta.level() {
+            Level::ERROR | Level::WARN => Box::new(io::stderr()),
+            _ => Box::new(io::stdout()),
+        }
+    }
+}
 
 /// Provider for configuring OpenTelemetry Logger.
 pub struct LoggerProvider {
@@ -96,18 +135,12 @@ impl LoggerProvider {
             EnvFilter::new(format!("{level},h2=off,hyper=off"))
         });
 
-        // Formatting layer
-        let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
+        // Set up our custom OTLP-based tracing (replaces OpenTelemetryTracingBridge)
+        // This uses synchronous OTLP encoding → formatting for console output
+        Self::init_console_tracing_with_filter(filter);
 
-        let sdk_layer = layer::OpenTelemetryTracingBridge::new(&sdk_logger_provider);
-
-        // Try to initialize the global subscriber. In tests, this may fail if already set,
-        // which is acceptable as we're only validating the configuration works.
-        let _ = tracing_subscriber::registry()
-            .with(filter)
-            .with(fmt_layer)
-            .with(sdk_layer)
-            .try_init();
+        // Note: We keep the sdk_logger_provider for applications that want to use
+        // the OpenTelemetry SDK directly (for OTLP/stdout exporters, not for tracing)
 
         Ok(LoggerProvider {
             sdk_logger_provider,
@@ -118,6 +151,239 @@ impl LoggerProvider {
     /// Consume the LoggerProvider and return its components.
     pub fn into_parts(self) -> (SdkLoggerProvider, Option<tokio::runtime::Runtime>) {
         (self.sdk_logger_provider, self.runtime)
+    }
+
+    /// Initialize console tracing with our custom OTLP-based formatter.
+    ///
+    /// This sets up synchronous OTLP encoding → decoding → formatting:
+    /// - All tracing events are encoded to OTLP bytes
+    /// - Immediately decoded and formatted to console
+    /// - INFO/DEBUG/TRACE → stdout, WARN/ERROR → stderr
+    /// - Colorized output with ISO8601 timestamps and thread names
+    ///
+    /// This replaces the OpenTelemetryTracingBridge which would send events
+    /// through the OpenTelemetry SDK's batching/exporting pipeline.
+    fn init_console_tracing_with_filter(filter: EnvFilter) {
+        // Create a stateful encoder (shared across all events)
+        let encoder = Arc::new(Mutex::new(StatefulOtlpEncoder::new(4096)));
+        
+        // Create the formatter that will decode OTLP bytes and write to stdout/stderr
+        let formatter = Arc::new(
+            OtlpBytesFormattingLayer::new(LevelBasedWriter::new())
+                .with_ansi(true)
+                .with_timestamp(true)
+                .with_level(true)
+                .with_target(true)
+                .with_event_name(false) // Don't show event_name by default (less noise)
+                .with_thread_names(true) // Show thread names like the original fmt layer
+        );
+        
+        // Create the OTLP layer that captures events, encodes them, and formats synchronously
+        let encoder_clone = encoder.clone();
+        let formatter_clone = formatter.clone();
+        
+        let otlp_layer = OtlpTracingLayer::new(move |log_record| {
+            // Encode to OTLP bytes (synchronous)
+            let mut enc = encoder_clone.lock().unwrap();
+            let resource_bytes = Vec::new();
+            let target = log_record.target();
+            
+            if let Ok(_) = enc.encode_log_record(&log_record, &resource_bytes, target) {
+                // Flush and get the bytes
+                let otlp_bytes = enc.flush();
+                
+                // Format immediately (synchronous - no channel)
+                let _ = formatter_clone.format_otlp_bytes(otlp_bytes.as_ref());
+            }
+        });
+        
+        // Try to initialize the global subscriber. In tests, this may fail if already set,
+        // which is acceptable as we're only validating the configuration works.
+        let _ = tracing_subscriber::registry()
+            .with(otlp_layer)
+            .with(filter)
+            .try_init();
+    }
+
+    /// Initialize default console tracing for applications.
+    ///
+    /// This is a convenience method for applications that want simple console
+    /// logging without configuring the full OpenTelemetry pipeline.
+    ///
+    /// Uses the same OTLP-based architecture but with a default filter:
+    /// - INFO level for OTAP components
+    /// - WARN level for third-party libraries
+    /// - Respects RUST_LOG environment variable if set
+    pub fn init_default_console_tracing() {
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| {
+                // Default: INFO level for df_engine components, WARN for third-party
+                EnvFilter::new("otap_df=info,warn")
+            });
+        
+        Self::init_console_tracing_with_filter(filter);
+    }
+
+    /// Initialize channel-based tracing for normal operation.
+    ///
+    /// This transitions from synchronous console logging to multi-threaded channel-based logging.
+    /// Call this after initial startup when the admin runtime is ready.
+    ///
+    /// This sets up:
+    /// - Global tracing subscriber that encodes to OTLP bytes and sends to channel
+    /// - Returns OtlpBytesChannel for spawning consumer task in admin runtime
+    ///
+    /// The global subscriber can block the caller when channel is full, providing backpressure.
+    /// This is acceptable for 3rd party instrumentation where threaded logging is the norm.
+    ///
+    /// # Arguments
+    /// * `channel_capacity` - Bounded channel capacity (e.g., 1000)
+    /// * `filter` - Environment filter for log levels
+    ///
+    /// # Returns
+    /// Returns OtlpBytesChannel - split it and spawn consumer task in admin runtime
+    ///
+    /// # Example
+    /// ```ignore
+    /// // IMPORTANT: Log the transition BEFORE init (goes to old synchronous subscriber)
+    /// tracing::info!(
+    ///     mode = "channel-based",
+    ///     capacity = 1000,
+    ///     "Transitioning to multi-threaded channel-based logging for 3rd party instrumentation"
+    /// );
+    /// 
+    /// let channel = LoggerProvider::init_channel_based_tracing(1000, filter);
+    /// let receiver = channel.into_receiver();
+    /// 
+    /// // Spawn consumer in admin runtime (all subsequent events go here)
+    /// runtime.spawn(async move {
+    ///     LoggerProvider::run_console_formatter_task(receiver).await;
+    /// });
+    /// ```
+    pub fn init_channel_based_tracing(
+        channel_capacity: usize,
+        filter: EnvFilter,
+    ) -> OtlpBytesChannel {
+        let channel = OtlpBytesChannel::new(channel_capacity);
+        let sender = channel.sender().clone();
+        
+        // Create encoder (one per global subscriber)
+        let encoder = Arc::new(Mutex::new(StatefulOtlpEncoder::new(4096)));
+        
+        // Create the OTLP layer that captures events, encodes them, and sends to channel
+        let otlp_layer = OtlpTracingLayer::new(move |log_record| {
+            // Encode to OTLP bytes (synchronous)
+            let mut enc = encoder.lock().unwrap();
+            let resource_bytes = Vec::new();
+            let target = log_record.target();
+            
+            if let Ok(_) = enc.encode_log_record(&log_record, &resource_bytes, target) {
+                // Flush and get the bytes
+                let otlp_bytes = enc.flush();
+                
+                // Send to channel (can block caller if channel is full - provides backpressure)
+                let _ = sender.send(otlp_bytes);
+            }
+        });
+        
+        // Initialize the global subscriber
+        let _ = tracing_subscriber::registry()
+            .with(otlp_layer)
+            .with(filter)
+            .try_init();
+        
+        channel
+    }
+
+    /// Run the console formatter task that consumes OTLP bytes from channel.
+    ///
+    /// This should be spawned as a task in the admin runtime:
+    /// ```ignore
+    /// runtime.spawn(async move {
+    ///     LoggerProvider::run_console_formatter_task(receiver).await;
+    /// });
+    /// ```
+    ///
+    /// The task will run until the channel is closed (all senders dropped).
+    /// In production, this runs for the lifetime of the application.
+    ///
+    /// This provides single-threaded formatting in the admin runtime.
+    /// Use this for human-readable console output.
+    pub async fn run_console_formatter_task(receiver: mpsc::Receiver<Bytes>) {
+        let formatter = OtlpBytesFormattingLayer::new(LevelBasedWriter::new())
+            .with_ansi(true)
+            .with_timestamp(true)
+            .with_level(true)
+            .with_target(true)
+            .with_event_name(false)
+            .with_thread_names(true);
+        
+        // Run in a blocking task since mpsc::Receiver::recv() is blocking
+        let _ = tokio::task::spawn_blocking(move || {
+            while let Ok(otlp_bytes) = receiver.recv() {
+                let _ = formatter.format_otlp_bytes(&otlp_bytes);
+            }
+        }).await;
+    }
+
+    /// Run the OTLP bytes forwarder task that consumes from channel.
+    ///
+    /// This should be spawned as a task in the admin runtime:
+    /// ```ignore
+    /// runtime.spawn(async move {
+    ///     LoggerProvider::run_otlp_forwarder_task(receiver, sender).await;
+    /// });
+    /// ```
+    ///
+    /// This forwards OTLP bytes to the internal telemetry receiver which bridges
+    /// to the OTAP pipeline. The internal receiver can then export via the
+    /// built-in OTLP exporter or any other OTAP exporter.
+    ///
+    /// # Arguments
+    /// * `receiver` - Channel receiver from global tracing subscriber
+    /// * `forward_fn` - Async function to forward OTLP bytes (e.g., to internal telemetry receiver)
+    pub async fn run_otlp_forwarder_task<F, Fut>(
+        receiver: mpsc::Receiver<Bytes>,
+        mut forward_fn: F,
+    )
+    where
+        F: FnMut(Bytes) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), Error>> + Send,
+    {
+        // Run in a blocking task since mpsc::Receiver::recv() is blocking
+        let _ = tokio::task::spawn_blocking(move || {
+            while let Ok(otlp_bytes) = receiver.recv() {
+                // We need to block on the async forward_fn from within spawn_blocking
+                // This is acceptable since this is the dedicated logging task
+                let rt = tokio::runtime::Handle::current();
+                let result = rt.block_on(forward_fn(otlp_bytes));
+                if result.is_err() {
+                    // If forwarding fails, we could fall back to stderr or drop
+                    // For now, just continue (dropping the event)
+                    eprintln!("Failed to forward OTLP bytes to telemetry receiver");
+                }
+            }
+        }).await;
+    }
+
+    /// Initialize channel-based tracing with default filter.
+    ///
+    /// Convenience method that uses default filter (INFO for OTAP, WARN for third-party).
+    ///
+    /// # Arguments
+    /// * `channel_capacity` - Bounded channel capacity (e.g., 1000)
+    ///
+    /// # Returns
+    /// Returns OtlpBytesChannel - call `.into_receiver()` and spawn consumer task
+    pub fn init_default_channel_based_tracing(
+        channel_capacity: usize,
+    ) -> OtlpBytesChannel {
+        let filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| {
+                EnvFilter::new("otap_df=info,warn")
+            });
+        
+        Self::init_channel_based_tracing(channel_capacity, filter)
     }
 
     fn configure_log_processor(

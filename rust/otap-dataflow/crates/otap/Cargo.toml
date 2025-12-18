@@ -40,6 +40,8 @@ smallvec = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
+tracing = { workspace = true }
+tracing-core = { workspace = true }
 
 data_engine_kql_parser = { workspace = true }
 data_engine_expressions = { workspace =  true }

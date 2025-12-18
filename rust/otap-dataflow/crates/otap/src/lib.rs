@@ -30,6 +30,9 @@ pub mod retry_processor;
 /// Receiver that reads in syslog data
 pub mod syslog_cef_receiver;
 
+/// Internal telemetry receiver for self-diagnostics
+pub mod internal_telemetry_receiver;
+
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
 

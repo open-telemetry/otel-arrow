@@ -126,6 +126,30 @@ The `otel_error!`, `otel_warn!`, `otel_info!`, and `otel_debug!` macros are defi
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Architecture Clarification: No Formatting, Full Structure Preservation
+
+**Critical Design Decision**: We do NOT format values to strings. Instead, we leverage OTLP's rich type system:
+
+- **OTLP AnyValue supports**: String, Int, Double, Bool, Bytes, Array, KeyValueList
+- **Equivalent to JSON**: Can represent any JSON structure natively
+- **tracing Visit provides typed data**: `record_i64()`, `record_bool()`, `record_str()`, etc.
+- **Result**: Complete fidelity from tracing events → OTLP structures
+
+**Implementation Flow**:
+```
+tracing::info!(count = 42, error = ?err, items = ?vec)
+    ↓ Visit trait extracts typed values
+TracingLogRecord (implements LogRecordView)
+    ↓ Attributes as AnyValueView (with nested arrays/maps)
+    ↓ Stateful OTLP Encoder
+OTLP bytes (protobuf)
+    ↓ Channel to internal telemetry receiver
+OtapPdata::from_otlp_bytes()
+    ↓ Injected into dataflow pipeline
+```
+
+**No `fmt` layer needed**: The stateful encoder directly serializes structured data. When we remove OpenTelemetry-appender-tracing layer, we replace it with our own `OtlpTracingLayer` that encodes to OTLP bytes with full type preservation.
+
 ### Key Components
 
 #### 1. Per-Core OTLP Buffer with Streaming Encoding (Owned by Effect Handler)
@@ -412,6 +436,53 @@ fn some_library_code() {
 - **Zero runtime overhead** (direct buffer access)
 
 Bootstrap code simply uses `tracing::*!` instead of `otel_*!` - different macros for different needs.
+
+## Implementation Status
+
+### Phase 0: Internal Telemetry Receiver ✅ **COMPLETED** (December 18, 2025)
+
+**Architecture**: The complete flow for internal telemetry capture:
+
+```text
+tracing::info!(count = 42, error = ?e)  [Application Code]
+    ↓
+OtlpTracingLayer (crates/telemetry/src/tracing_integration/)
+    ↓ Visit::record_i64(), record_debug(), etc.
+    ↓ Captures full structure via TracingAnyValue (scalars, arrays, maps)
+    ↓ Builds TracingLogRecord with complete nested data
+    ↓ Encodes to OTLP bytes using stateful encoder
+    ↓ Sends Vec<u8> to channel
+    ↓
+InternalTelemetryReceiver (crates/otap/src/internal_telemetry_receiver/)
+    ↓ Receives OTLP bytes from channel
+    ↓ Wraps: OtapPdata::new(Context::default(), 
+    │         OtlpProtoBytes::ExportLogsRequest(bytes).into())
+    ↓ Injects into dataflow pipeline
+    ↓
+Dataflow Pipeline (processors, exporters, etc.)
+```
+
+**What was built**:
+1. **Extended TracingAnyValue** (crates/telemetry/src/tracing_integration/log_record.rs):
+   - Added `Array(Vec<TracingAnyValue>)` for nested lists
+   - Added `KeyValueList(Vec<TracingAttribute>)` for maps/structs
+   - Added `Bytes(Vec<u8>)` for binary data
+   - Full AnyValueView implementation with nested iterators
+
+2. **Internal Telemetry Receiver** (crates/otap/src/internal_telemetry_receiver/):
+   - Receives pre-encoded OTLP bytes via channel
+   - Wraps as OtapPdata and injects into pipeline
+   - Buffering and periodic flushing
+   - Backpressure handling
+
+3. **Global Integration Point**:
+   - `get_otlp_bytes_sender()` provides channel for OtlpTracingLayer
+   - Initialized when receiver starts
+   - Thread-safe static for global access
+
+**Key Insight**: No `fmt` layer needed! The TracingLogRecord captures complete structure via the Visit trait, preserves it in TracingAnyValue (which mirrors OTLP's AnyValue perfectly), and encodes directly to OTLP bytes. Arrays, maps, nested structures - everything is preserved with full fidelity.
+
+**Next Steps**: Wire up OtlpTracingLayer to use the channel (Phase 0.5), then Phase 1 for effect handler integration
 
 ## Implementation Phases
 

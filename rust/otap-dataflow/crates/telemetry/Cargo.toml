@@ -21,6 +21,7 @@ unchecked-arithmetic = []
 [dependencies]
 otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true }
+bytes = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }

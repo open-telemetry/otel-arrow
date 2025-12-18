@@ -224,8 +224,8 @@ impl<'a> Iterator for TracingAttributeIterator<'a> {
 
 /// Represents a value from a tracing event field.
 ///
-/// This is a simplified subset of OTLP AnyValue that covers the most common
-/// types found in tracing events.
+/// This mirrors OTLP's AnyValue type system, supporting full structural fidelity
+/// for nested data from tracing events (arrays, maps, etc.).
 #[derive(Debug, Clone)]
 pub enum TracingAnyValue {
     /// String value
@@ -236,31 +236,65 @@ pub enum TracingAnyValue {
     Bool(bool),
     /// Double-precision floating point value
     Double(f64),
+    /// Bytes value
+    Bytes(Vec<u8>),
+    /// Array of values
+    Array(Vec<TracingAnyValue>),
+    /// Key-value list (like a map/object)
+    KeyValueList(Vec<TracingAttribute>),
 }
 
-/// Dummy AttributeView for composite types (not used in this basic implementation)
-pub struct EmptyAttribute;
+/// Iterator for nested KeyValueList attributes
+pub struct KeyValueListIterator {
+    inner: std::vec::IntoIter<TracingAttribute>,
+}
 
-impl AttributeView for EmptyAttribute {
+impl Iterator for KeyValueListIterator {
+    type Item = TracingAttributeOwned;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|attr| TracingAttributeOwned { attribute: attr })
+    }
+}
+
+/// Owned wrapper for TracingAttribute that implements AttributeView
+pub struct TracingAttributeOwned {
+    attribute: TracingAttribute,
+}
+
+impl AttributeView for TracingAttributeOwned {
     type Val<'val> = TracingAnyValue
     where
         Self: 'val;
 
     fn key(&self) -> Str<'_> {
-        b""
+        self.attribute.key.as_bytes()
     }
 
     fn value(&self) -> Option<Self::Val<'_>> {
-        None
+        Some(self.attribute.value.clone())
+    }
+}
+
+/// Iterator for array values
+pub struct ArrayIterator {
+    inner: std::vec::IntoIter<TracingAnyValue>,
+}
+
+impl Iterator for ArrayIterator {
+    type Item = TracingAnyValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
     }
 }
 
 impl<'a> AnyValueView<'a> for TracingAnyValue {
-    type KeyValue = EmptyAttribute;
-    type ArrayIter<'arr> = std::iter::Empty<Self>
+    type KeyValue = TracingAttributeOwned;
+    type ArrayIter<'arr> = ArrayIterator
     where
         Self: 'arr;
-    type KeyValueIter<'kv> = std::iter::Empty<Self::KeyValue>
+    type KeyValueIter<'kv> = KeyValueListIterator
     where
         Self: 'kv;
 
@@ -270,6 +304,9 @@ impl<'a> AnyValueView<'a> for TracingAnyValue {
             TracingAnyValue::Int(_) => ValueType::Int64,
             TracingAnyValue::Bool(_) => ValueType::Bool,
             TracingAnyValue::Double(_) => ValueType::Double,
+            TracingAnyValue::Bytes(_) => ValueType::Bytes,
+            TracingAnyValue::Array(_) => ValueType::Array,
+            TracingAnyValue::KeyValueList(_) => ValueType::KeyValueList,
         }
     }
 
@@ -302,15 +339,28 @@ impl<'a> AnyValueView<'a> for TracingAnyValue {
     }
 
     fn as_bytes(&self) -> Option<&[u8]> {
-        None // Not commonly used in tracing
+        match self {
+            TracingAnyValue::Bytes(b) => Some(b.as_slice()),
+            _ => None,
+        }
     }
 
     fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
-        None // Not supported in this implementation
+        match self {
+            TracingAnyValue::Array(arr) => Some(ArrayIterator {
+                inner: arr.clone().into_iter(),
+            }),
+            _ => None,
+        }
     }
 
     fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
-        None // Not supported in this implementation
+        match self {
+            TracingAnyValue::KeyValueList(kvs) => Some(KeyValueListIterator {
+                inner: kvs.clone().into_iter(),
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -322,6 +372,27 @@ impl fmt::Display for TracingAnyValue {
             TracingAnyValue::Int(i) => write!(f, "{}", i),
             TracingAnyValue::Bool(b) => write!(f, "{}", b),
             TracingAnyValue::Double(d) => write!(f, "{}", d),
+            TracingAnyValue::Bytes(b) => write!(f, "{:?}", b),
+            TracingAnyValue::Array(arr) => {
+                write!(f, "[")?;
+                for (i, v) in arr.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
+            TracingAnyValue::KeyValueList(kvs) => {
+                write!(f, "{{")?;
+                for (i, kv) in kvs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", kv.key, kv.value)?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
