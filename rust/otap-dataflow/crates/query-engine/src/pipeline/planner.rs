@@ -346,7 +346,7 @@ impl PipelinePlanner {
                 transform
                     .validate()
                     .map_err(|e| Error::InvalidPipelineError {
-                        cause: format!("invalid attribute rename transform {e}"),
+                        cause: format!("invalid attribute delete transform {e}"),
                         query_location: Some(reduce_map_expr.get_query_location().clone()),
                     })?;
 
