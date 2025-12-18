@@ -269,27 +269,61 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
+        let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
+        let num_cores = available_core_ids.len();
+
         match quota.core_allocation {
             CoreAllocation::AllCores => Ok(available_core_ids),
             CoreAllocation::CoreCount { count } => {
-                let count = if count == 0 {
-                    available_core_ids.len()
+                if count == 0 {
+                    Ok(available_core_ids)
+                } else if count > num_cores {
+                    Err(Error::InvalidCoreAllocation {
+                        alloc: quota.core_allocation.clone(),
+                        message: format!(
+                            "Requested {} cores but only {} cores available on this system",
+                            count, num_cores
+                        ),
+                        available: available_core_ids.iter().map(|c| c.id).collect(),
+                    })
                 } else {
-                    count.min(available_core_ids.len())
-                };
-                Ok(available_core_ids.into_iter().take(count).collect())
+                    Ok(available_core_ids.into_iter().take(count).collect())
+                }
             }
             CoreAllocation::CoreSet { ref set } => {
-                set.iter().try_for_each(|r| {
+                // Validate all ranges first
+                for r in set.iter() {
                     if r.start > r.end {
                         return Err(Error::InvalidCoreAllocation {
                             alloc: quota.core_allocation.clone(),
-                            message: "Start of range is greater than end".to_owned(),
+                            message: format!(
+                                "Invalid core range: start ({}) is greater than end ({})",
+                                r.start, r.end
+                            ),
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         });
                     }
-                    Ok(())
-                })?;
+                    if r.start > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.start, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                    if r.end > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.end, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                }
 
                 // Filter cores in range
                 let selected: Vec<_> = available_core_ids
