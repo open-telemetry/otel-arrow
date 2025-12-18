@@ -12,8 +12,11 @@ use otap_df_otap::syslog_cef_receiver::parser::parsed_message::ParsedSyslogMessa
 use otap_df_otap::syslog_cef_receiver::parser::rfc3164::parse_rfc3164;
 use otap_df_otap::syslog_cef_receiver::parser::rfc5424::parse_rfc5424;
 use std::hint::black_box;
+
+#[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

@@ -33,6 +33,15 @@ Demonstrates the filter processor:
 
 - Generates fake data -> filter processor -> debug processor -> noop exporter
 
+### `fake-transform-debug-noop.yaml`
+
+Demonstrate using the transform processor to transform data
+
+- Generates fake data -> debug -> transform -> debug -> noop exporter
+
+The input data can be viewed at /tmp/debug1.log and the transformed output at
+/tmp/debug2.log
+
 ### `fake-otap.yaml`
 
 Generates fake data and exports via OTAP:
