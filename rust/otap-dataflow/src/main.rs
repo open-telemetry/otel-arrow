@@ -132,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
 
-    // Map CLI arguments to the new enum structure
+    // Map CLI arguments to the core allocation enum
     let core_allocation = if let Some(range) = args.core_id_range {
         range
     } else if args.num_cores == 0 {
@@ -145,12 +145,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let quota = Quota { core_allocation };
 
-    // Print what we're doing
+    // Print the requested core configuration
     match &quota.core_allocation {
-        CoreAllocation::AllCores => println!("Starting pipeline using all available cores"),
-        CoreAllocation::CoreCount { count } => println!("Starting pipeline with {count} cores"),
+        CoreAllocation::AllCores => println!("Requested core allocation: all available cores"),
+        CoreAllocation::CoreCount { count } => println!("Requested core allocation: {count} cores"),
         CoreAllocation::CoreSet { .. } => {
-            println!("Starting pipeline on core ID set {}", quota.core_allocation);
+            println!("Requested core allocation: {}", quota.core_allocation);
         }
     }
 
@@ -170,7 +170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("Pipeline failed to run: {e}");
             std::process::exit(1);
         }
     }
