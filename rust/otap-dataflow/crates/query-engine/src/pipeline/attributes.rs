@@ -247,7 +247,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filtering_when_no_attrs_batch_present() {
+    async fn test_rename_when_no_attrs_batch_present() {
         let input = vec![LogRecord::build().event_name("test").finish()];
         let result = exec_logs_pipeline(
             "logs | 
