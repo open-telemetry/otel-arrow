@@ -222,6 +222,173 @@ pub struct PipelineMetrics {
     // ToDo Add pipeline_network_io_sent
 }
 
+/// Tokio runtime metrics sampled from the pipeline thread.
+///
+/// These metrics are collected from [`tokio::runtime::Handle::try_current`] / `Handle::metrics()`
+/// and are updated at the same cadence as [`PipelineMetrics`].
+///
+/// **Notes**
+/// - Tokio exposes runtime-level (aggregate) metrics; it does not expose per-task numeric
+///   metrics through the stable API.
+/// - Some Tokio metrics are per-worker; this metric set reports aggregates across all workers.
+/// - When compiled without `tokio_unstable`, only Tokio's stable metrics are included.
+///   Additional metrics are included when compiling with `RUSTFLAGS="--cfg tokio_unstable" cargo build --release`.
+#[metric_set(name = "tokio.runtime")]
+#[derive(Debug, Default, Clone)]
+pub struct TokioRuntimeMetrics {
+    /// Number of worker threads used by the Tokio runtime.
+    ///
+    /// For Tokio's `current_thread` runtime, this is always `1`.
+    #[metric(unit = "{thread}")]
+    pub worker_count: ObserveUpDownCounter<u64>,
+
+    /// Current number of alive tasks in the runtime.
+    ///
+    /// This value increases when tasks are spawned and decreases when tasks complete.
+    #[metric(unit = "{task}")]
+    pub task_active_count: ObserveUpDownCounter<u64>,
+
+    /// Current number of tasks pending in the runtime's global/injection queue.
+    ///
+    /// This queue is used when tasks are spawned or woken from outside the runtime.
+    #[metric(unit = "{task}")]
+    pub global_task_queue_size: ObserveUpDownCounter<u64>,
+
+    /// Total worker busy time, summed across all runtime workers, since runtime creation.
+    ///
+    /// With multiple workers, this sum can exceed wall-clock time because workers can be busy
+    /// concurrently. This metric is only available on targets with 64-bit atomics.
+    #[cfg(target_has_atomic = "64")]
+    #[metric(unit = "{s}")]
+    pub worker_busy_time: ObserveCounter<f64>,
+
+    /// Total number of times runtime workers parked, summed across all workers, since runtime creation.
+    ///
+    /// A worker "parks" when it becomes idle and waits for new work.
+    /// This metric is only available on targets with 64-bit atomics.
+    #[cfg(target_has_atomic = "64")]
+    #[metric(unit = "{park}")]
+    pub worker_park_count: ObserveCounter<u64>,
+
+    /// Total number of park/unpark transitions, summed across all workers, since runtime creation.
+    ///
+    /// An odd value means at least one worker is currently parked; an even value means all workers
+    /// are currently active. This metric is only available on targets with 64-bit atomics.
+    #[cfg(target_has_atomic = "64")]
+    #[metric(unit = "{unpark}")]
+    pub worker_park_unpark_count: ObserveCounter<u64>,
+
+    /// Current number of tasks pending in the blocking thread pool.
+    ///
+    /// This counts tasks spawned using `spawn_blocking` that have not yet started.
+    #[cfg(tokio_unstable)]
+    #[metric(unit = "{task}")]
+    pub blocking_task_queue_size: ObserveUpDownCounter<u64>,
+
+    /// Current number of threads created for the blocking thread pool.
+    #[cfg(tokio_unstable)]
+    #[metric(unit = "{thread}")]
+    pub blocking_thread_count: ObserveUpDownCounter<u64>,
+
+    /// Current number of idle threads in the blocking thread pool.
+    #[cfg(tokio_unstable)]
+    #[metric(unit = "{thread}")]
+    pub blocking_thread_idle_count: ObserveUpDownCounter<u64>,
+
+    /// Current number of tasks pending in worker-local queues, summed across all workers.
+    #[cfg(tokio_unstable)]
+    #[metric(unit = "{task}")]
+    pub worker_local_queue_size: ObserveUpDownCounter<u64>,
+
+    /// Total number of tasks spawned in the runtime since it was created.
+    ///
+    /// This counter is monotonically increasing. This metric requires `tokio_unstable` and
+    /// 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{spawn}")]
+    pub spawned_tasks_count: ObserveCounter<u64>,
+
+    /// Total number of tasks scheduled from outside the runtime since it was created.
+    ///
+    /// These schedules go through the global injection queue and can be slower than worker-local scheduling.
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{remote}")]
+    pub remote_schedule_count: ObserveCounter<u64>,
+
+    /// Total number of times tasks were forced to yield after exhausting their cooperative budget.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{yield}")]
+    pub budget_forced_yield_count: ObserveCounter<u64>,
+
+    /// Total number of "noop" unpark events, summed across workers, since runtime creation.
+    ///
+    /// A noop unpark is when a worker is unparked but finds no work before parking again.
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{noop}")]
+    pub worker_noop_count: ObserveCounter<u64>,
+
+    /// Total number of successful steal operations, summed across workers, since runtime creation.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{steal}")]
+    pub worker_steal_success_count: ObserveCounter<u64>,
+
+    /// Total number of steal attempts, summed across workers, since runtime creation.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{steal}")]
+    pub worker_steal_attempt_count: ObserveCounter<u64>,
+
+    /// Total number of task polls, summed across workers, since runtime creation.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{poll}")]
+    pub worker_poll_count: ObserveCounter<u64>,
+
+    /// Total number of tasks scheduled onto worker-local queues, summed across workers, since runtime creation.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{schedule}")]
+    pub worker_local_schedule_count: ObserveCounter<u64>,
+
+    /// Total number of worker local-queue overflows, summed across workers, since runtime creation.
+    ///
+    /// This metric only applies to Tokio's multi-threaded scheduler. This metric requires
+    /// `tokio_unstable` and 64-bit atomics.
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{overflow}")]
+    pub worker_overflow_count: ObserveCounter<u64>,
+
+    /// Total number of file descriptors registered with the runtime's I/O driver.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics (and Tokio's `net` feature).
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{fd}")]
+    pub io_driver_fd_registered_count: ObserveCounter<u64>,
+
+    /// Total number of file descriptors deregistered from the runtime's I/O driver.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics (and Tokio's `net` feature).
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{fd}")]
+    pub io_driver_fd_deregistered_count: ObserveCounter<u64>,
+
+    /// Total number of ready events processed by the runtime's I/O driver.
+    ///
+    /// This metric requires `tokio_unstable` and 64-bit atomics (and Tokio's `net` feature).
+    #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+    #[metric(unit = "{ready}")]
+    pub io_driver_ready_count: ObserveCounter<u64>,
+}
+
 /// Per-thread allocation counters.
 pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
@@ -242,6 +409,8 @@ pub(crate) struct PipelineMetricsMonitor {
     cpu_start: ThreadTime,
 
     metrics: MetricSet<PipelineMetrics>,
+    tokio_rt: Option<tokio::runtime::RuntimeMetrics>,
+    tokio_metrics: MetricSet<TokioRuntimeMetrics>,
 }
 
 impl PipelineMetricsMonitor {
@@ -283,6 +452,9 @@ impl PipelineMetricsMonitor {
         let (jemalloc_supported, last_allocated, last_deallocated) = (false, 0, 0);
 
         let rusage_thread_supported = Self::init_rusage_baseline();
+        let tokio_rt = tokio::runtime::Handle::try_current()
+            .ok()
+            .map(|handle| handle.metrics());
 
         Self {
             start_time: now,
@@ -297,6 +469,8 @@ impl PipelineMetricsMonitor {
             wall_start: now,
             cpu_start: ThreadTime::now(),
             metrics: pipeline_ctx.register_metrics::<PipelineMetrics>(),
+            tokio_rt,
+            tokio_metrics: pipeline_ctx.register_metrics::<TokioRuntimeMetrics>(),
         }
     }
 
@@ -305,7 +479,22 @@ impl PipelineMetricsMonitor {
         &mut self.metrics
     }
 
+    /// Returns a mutable reference to the Tokio runtime metrics struct.
+    pub fn tokio_metrics_mut(&mut self) -> &mut MetricSet<TokioRuntimeMetrics> {
+        &mut self.tokio_metrics
+    }
+
+    #[cfg(test)]
     pub fn update_metrics(&mut self) {
+        self.update_tokio_metrics();
+        self.update_pipeline_metrics();
+    }
+
+    /// Updates the per-pipeline (thread) internal metrics.
+    ///
+    /// These metrics include CPU usage and, where available, per-thread scheduling/page-fault
+    /// signals and jemalloc-derived heap metrics.
+    pub fn update_pipeline_metrics(&mut self) {
         // === Update thread memory allocation metrics (jemalloc only) ===
         #[cfg(not(windows))]
         if self.jemalloc_supported {
@@ -369,6 +558,150 @@ impl PipelineMetricsMonitor {
         // Reset time anchors for the next interval
         self.wall_start = now_wall;
         self.cpu_start = now_cpu;
+    }
+
+    /// Updates Tokio runtime metrics visible to the current thread.
+    ///
+    /// If the current thread is not within a Tokio runtime, this method is a no-op.
+    pub fn update_tokio_metrics(&mut self) {
+        if self.tokio_rt.is_none() {
+            self.tokio_rt = tokio::runtime::Handle::try_current()
+                .ok()
+                .map(|handle| handle.metrics());
+        }
+
+        let Some(tokio_rt) = self.tokio_rt.as_ref() else {
+            return;
+        };
+
+        let num_workers_usize = tokio_rt.num_workers();
+        let num_workers = u64::try_from(num_workers_usize).unwrap_or(u64::MAX);
+        let num_alive_tasks = u64::try_from(tokio_rt.num_alive_tasks()).unwrap_or(u64::MAX);
+        let global_queue_depth = u64::try_from(tokio_rt.global_queue_depth()).unwrap_or(u64::MAX);
+
+        self.tokio_metrics.worker_count.observe(num_workers);
+        self.tokio_metrics
+            .task_active_count
+            .observe(num_alive_tasks);
+        self.tokio_metrics
+            .global_task_queue_size
+            .observe(global_queue_depth);
+
+        #[cfg(target_has_atomic = "64")]
+        {
+            let mut total_busy_s = 0.0f64;
+            let mut total_park_count = 0u64;
+            let mut total_park_unpark_count = 0u64;
+
+            for worker in 0..num_workers_usize {
+                total_busy_s += tokio_rt.worker_total_busy_duration(worker).as_secs_f64();
+                total_park_count =
+                    total_park_count.saturating_add(tokio_rt.worker_park_count(worker));
+                total_park_unpark_count = total_park_unpark_count
+                    .saturating_add(tokio_rt.worker_park_unpark_count(worker));
+            }
+
+            self.tokio_metrics.worker_busy_time.observe(total_busy_s);
+            self.tokio_metrics
+                .worker_park_count
+                .observe(total_park_count);
+            self.tokio_metrics
+                .worker_park_unpark_count
+                .observe(total_park_unpark_count);
+        }
+
+        #[cfg(tokio_unstable)]
+        {
+            let blocking_queue_depth =
+                u64::try_from(tokio_rt.blocking_queue_depth()).unwrap_or(u64::MAX);
+            let num_blocking_threads =
+                u64::try_from(tokio_rt.num_blocking_threads()).unwrap_or(u64::MAX);
+            let num_idle_blocking_threads =
+                u64::try_from(tokio_rt.num_idle_blocking_threads()).unwrap_or(u64::MAX);
+
+            let mut local_queue_depth_sum = 0u64;
+            for worker in 0..num_workers_usize {
+                local_queue_depth_sum = local_queue_depth_sum.saturating_add(
+                    u64::try_from(tokio_rt.worker_local_queue_depth(worker)).unwrap_or(u64::MAX),
+                );
+            }
+
+            self.tokio_metrics
+                .blocking_task_queue_size
+                .observe(blocking_queue_depth);
+            self.tokio_metrics
+                .blocking_thread_count
+                .observe(num_blocking_threads);
+            self.tokio_metrics
+                .blocking_thread_idle_count
+                .observe(num_idle_blocking_threads);
+            self.tokio_metrics
+                .worker_local_queue_size
+                .observe(local_queue_depth_sum);
+        }
+
+        #[cfg(all(tokio_unstable, target_has_atomic = "64"))]
+        {
+            self.tokio_metrics
+                .spawned_tasks_count
+                .observe(tokio_rt.spawned_tasks_count());
+            self.tokio_metrics
+                .remote_schedule_count
+                .observe(tokio_rt.remote_schedule_count());
+            self.tokio_metrics
+                .budget_forced_yield_count
+                .observe(tokio_rt.budget_forced_yield_count());
+            self.tokio_metrics
+                .io_driver_fd_registered_count
+                .observe(tokio_rt.io_driver_fd_registered_count());
+            self.tokio_metrics
+                .io_driver_fd_deregistered_count
+                .observe(tokio_rt.io_driver_fd_deregistered_count());
+            self.tokio_metrics
+                .io_driver_ready_count
+                .observe(tokio_rt.io_driver_ready_count());
+
+            let mut worker_noop_sum = 0u64;
+            let mut worker_steal_sum = 0u64;
+            let mut worker_steal_ops_sum = 0u64;
+            let mut worker_poll_sum = 0u64;
+            let mut worker_local_schedule_sum = 0u64;
+            let mut worker_overflow_sum = 0u64;
+
+            for worker in 0..num_workers_usize {
+                worker_noop_sum =
+                    worker_noop_sum.saturating_add(tokio_rt.worker_noop_count(worker));
+                worker_steal_sum =
+                    worker_steal_sum.saturating_add(tokio_rt.worker_steal_count(worker));
+                worker_steal_ops_sum =
+                    worker_steal_ops_sum.saturating_add(tokio_rt.worker_steal_operations(worker));
+                worker_poll_sum =
+                    worker_poll_sum.saturating_add(tokio_rt.worker_poll_count(worker));
+                worker_local_schedule_sum = worker_local_schedule_sum
+                    .saturating_add(tokio_rt.worker_local_schedule_count(worker));
+                worker_overflow_sum =
+                    worker_overflow_sum.saturating_add(tokio_rt.worker_overflow_count(worker));
+            }
+
+            self.tokio_metrics
+                .worker_noop_count
+                .observe(worker_noop_sum);
+            self.tokio_metrics
+                .worker_steal_success_count
+                .observe(worker_steal_sum);
+            self.tokio_metrics
+                .worker_steal_attempt_count
+                .observe(worker_steal_ops_sum);
+            self.tokio_metrics
+                .worker_poll_count
+                .observe(worker_poll_sum);
+            self.tokio_metrics
+                .worker_local_schedule_count
+                .observe(worker_local_schedule_sum);
+            self.tokio_metrics
+                .worker_overflow_count
+                .observe(worker_overflow_sum);
+        }
     }
 
     fn init_rusage_baseline() -> bool {
