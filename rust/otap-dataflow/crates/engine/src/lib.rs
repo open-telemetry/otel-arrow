@@ -36,6 +36,7 @@ pub mod processor;
 pub mod receiver;
 
 mod attributes;
+mod channel_metrics;
 pub mod config;
 pub mod context;
 pub mod control;
