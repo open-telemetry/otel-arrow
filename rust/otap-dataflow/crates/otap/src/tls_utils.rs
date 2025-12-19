@@ -1749,7 +1749,9 @@ mod tests {
         assert!(result.unwrap().is_some());
     }
 
+    // Skipping on macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[tokio::test]
+    #[cfg_attr(target_os = "macos", ignore = "Skipping on macOS due to flakiness")]
     async fn test_reloadable_client_ca_verifier_file_watch() {
         if skip_if_no_openssl() {
             return;
