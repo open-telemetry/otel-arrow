@@ -41,13 +41,13 @@ impl InternalLogsExporter {
         for (log_record, instrumentation_scope) in batch.iter() {
             let time_unix_nano: u64 = log_record
                 .timestamp()
-                .unwrap_or_else(|| SystemTime::now())
+                .unwrap_or_else(SystemTime::now)
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64;
             let observed_time_unix_nano: u64 = log_record
                 .observed_timestamp()
-                .unwrap_or_else(|| SystemTime::now())
+                .unwrap_or_else(SystemTime::now)
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos() as u64;
@@ -56,7 +56,7 @@ impl InternalLogsExporter {
             let severity_text = log_record.severity_text().unwrap_or("INFO").to_string();
             let body: Option<AnyValue> = log_record
                 .body()
-                .map(|any_value| Self::convert_sdk_any_value_to_proto(any_value));
+                .map(Self::convert_sdk_any_value_to_proto);
 
             let event_name: String = log_record.event_name().unwrap_or("").to_string();
 
@@ -94,7 +94,7 @@ impl InternalLogsExporter {
 
         let resource_logs = OtlpResourceLogs {
             resource: otlp_resource,
-            scope_logs: scope_logs,
+            scope_logs,
             schema_url: String::new(),
         };
         LogsData {
@@ -116,7 +116,7 @@ impl InternalLogsExporter {
                 Value::ArrayValue(opentelemetry_proto::tonic::common::v1::ArrayValue {
                     values: list
                         .iter()
-                        .map(|v| Self::convert_sdk_any_value_to_proto(v))
+                        .map(Self::convert_sdk_any_value_to_proto)
                         .collect(),
                 })
             }
@@ -223,9 +223,8 @@ impl LogExporter for InternalLogsExporter {
         async move {
             // Push the logs_data to the internal telemetry receiver though its channel.
             // It can be a different object to be sent instead of the proto LogsData.
-            if let Err(_) = sender.try_send(logs_data) {
-                // Ignore the error as there might not be any receiver configured to receive internal telemetry data.
-            }
+            let _ = sender.try_send(logs_data);
+            // Ignore if there is an error as there might not be any receiver configured to receive internal telemetry data.
             Ok(())
         }
     }
