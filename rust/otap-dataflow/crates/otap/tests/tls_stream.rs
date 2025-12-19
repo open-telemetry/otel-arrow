@@ -361,6 +361,10 @@ mod tests {
     /// Multiple slow clients should not prevent a fast client from completing.
     /// This tests the buffer_unordered concurrency mechanism.
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_concurrent_handshakes_not_blocked() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
