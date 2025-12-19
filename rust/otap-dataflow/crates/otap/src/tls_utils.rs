@@ -1808,7 +1808,9 @@ mod tests {
         assert!(verifier.client_auth_mandatory());
     }
 
+    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[tokio::test]
+    #[cfg_attr(any(target_os = "windows", target_os = "macos"), ignore = "Skipping on Windows and macOS due to flakiness")]
     async fn test_build_reloadable_server_config_with_mtls() {
         if skip_if_no_openssl() {
             return;
