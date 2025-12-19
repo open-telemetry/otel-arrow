@@ -2362,14 +2362,20 @@ mod tests {
 
     #[test]
     fn test_execute_invoke_function_scalar_expression() {
-        fn run_test_success(input: InvokeFunctionScalarExpression, expected: &str) {
+        fn run_test_success(input: InvokeFunctionScalarExpression, expected: Option<&str>) {
             let mut test = TestExecutionContext::new()
                 .with_record(TestRecord::new().with_key_value(
                     "Attributes".into(),
-                    OwnedValue::Map(MapValueStorage::new(HashMap::from([(
-                        "key1".into(),
-                        OwnedValue::String(StringValueStorage::new("value1".into())),
-                    )]))),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([
+                        (
+                            "key1".into(),
+                            OwnedValue::String(StringValueStorage::new("value1".into())),
+                        ),
+                        (
+                            "key2".into(),
+                            OwnedValue::String(StringValueStorage::new("1".into())),
+                        ),
+                    ]))),
                 ))
                 .with_pipeline(
                     PipelineExpressionBuilder::new("")
@@ -2417,16 +2423,20 @@ mod tests {
 
             let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
 
-            assert_eq!(
-                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
-                actual.to_value()
-            );
+            if let Some(expected) = expected {
+                assert_eq!(
+                    OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                    actual.to_value()
+                );
+            } else {
+                assert!(actual.get_value_type() == ValueType::Null);
+            }
         }
 
         run_test_success(
             InvokeFunctionScalarExpression::new(
                 QueryLocation::new_fake(),
-                Some(ValueType::Integer),
+                Some(ValueType::String),
                 0,
                 vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
                     SourceScalarExpression::new(
@@ -2445,7 +2455,58 @@ mod tests {
                     ),
                 ))],
             ),
-            "value1",
+            Some("value1"),
+        );
+
+        // Note: "value1" is returned as null in this test because it is not converable to integer
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
+                    ),
+                ))],
+            ),
+            None,
+        );
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                            )),
+                        ]),
+                    ),
+                ))],
+            ),
+            Some("1"),
         );
     }
 

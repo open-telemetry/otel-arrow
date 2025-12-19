@@ -279,13 +279,13 @@ where
                         RecordSetEngineDiagnosticLevel::Verbose,
                         expression,
                         || format!("Value automatically converted to '{expected_value_type}' argument type"));
-                        ResolvedValue::Computed(value)
+                    ResolvedValue::Computed(value)
                 } else {
                     self.parent_execution_context.add_diagnostic_if_enabled(
                         RecordSetEngineDiagnosticLevel::Warn,
                         expression,
                         || format!("Value could not be converted to '{expected_value_type}' argument type. Null will be returned"));
-                        ResolvedValue::Computed(OwnedValue::Null)
+                    ResolvedValue::Computed(OwnedValue::Null)
                 }
             } else {
                 value
