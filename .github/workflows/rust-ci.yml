@@ -116,9 +116,13 @@ jobs:
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
-      - name: Run tests with coverage (Linux)
-        if: runner.os == 'Linux'
+      - name: Run tests with coverage (Linux x86_64)
+        if: matrix.os == 'ubuntu-latest'
         run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Run tests (Linux ARM64)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
@@ -128,10 +132,10 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
-      # Only upload coverage from Linux since it runs the complete test suite
+      # Only upload coverage from Linux x86_64 since it runs the complete test suite
       # (including integration tests that are skipped on Windows).
       - name: Upload to codecov.io
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
