@@ -4,7 +4,7 @@
 # from instrumented applications and forwards it to Geneva.
 #
 # Usage:
-#   ./df_engine --pipeline test-config-otlp-receiver.yaml --num-cores 1
+#   ./df_engine --pipeline otlp-geneva.yaml --num-cores 1
 #
 # Send data to this collector using:
 #   - OTLP/gRPC endpoint: localhost:4317
@@ -16,7 +16,7 @@
 #
 # Workarounds for sensitive data:
 # 1. Use a template processor (envsubst, sed) before passing to df_engine:
-#    envsubst < test-config.yaml | ./df_engine --pipeline /dev/stdin
+#    envsubst < otlp-geneva.yaml | ./df_engine --pipeline /dev/stdin
 #
 # 2. Generate the config file at deployment time with your CI/CD tooling
 #
@@ -70,5 +70,8 @@ nodes:
       # ============================================================
       # OPTIONAL SETTINGS
       # ============================================================
+      # NOTE: max_buffer_size is currently reserved for a future buffering/flush
+      # implementation in the exporter. It is accepted by config parsing but not
+      # currently used to change runtime behavior.
       max_buffer_size: 1000
       max_concurrent_uploads: 4

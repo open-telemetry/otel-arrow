@@ -280,4 +280,91 @@ mod test {
             )
         }
     }
+
+    #[tokio::test]
+    async fn test_delete_attributes() {
+        let result = exec_logs_pipeline(
+            "logs | project-away attributes[\"x\"]",
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build().finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+
+        // test moving multiple attributes simultaneously from different payloads
+        let result = exec_logs_pipeline(
+            "logs | 
+                project-away 
+                    attributes[\"x\"], 
+                    resource.attributes[\"xr1\"], 
+                    instrumentation_scope.attributes[\"xs1\"]",
+            generate_logs_test_data(),
+        )
+        .await;
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build().finish(),
+                LogRecord::build()
+                    .attributes(vec![KeyValue::new("x2", AnyValue::new_string("b"))])
+                    .finish(),
+            ]
+        );
+        assert_eq!(
+            result.resource_logs[0]
+                .resource
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[KeyValue::new("xr2", AnyValue::new_string("a")),]
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .unwrap()
+                .attributes,
+            &[KeyValue::new("xs2", AnyValue::new_string("a")),]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_when_no_attrs_batch_present() {
+        let input = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().event_name("test").finish()],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline(
+            "logs | 
+                project-away attributes[\"y\"],
+                resource.attributes[\"xr1\"], 
+                instrumentation_scope.attributes[\"xs1\"]",
+            input.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].resource,
+            input.resource_logs[0].resource,
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].scope,
+            input.resource_logs[0].scope_logs[0].scope
+        );
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            input.resource_logs[0].scope_logs[0].log_records
+        );
+    }
 }
