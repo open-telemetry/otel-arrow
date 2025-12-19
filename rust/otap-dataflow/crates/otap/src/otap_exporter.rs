@@ -111,13 +111,17 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "Exporter.Start",
-            grpc_endpoint = self.config.grpc_endpoint.as_str(),
+            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
             message = "Starting OTAP Exporter"
         );
 
         let exporter_id = effect_handler.exporter_id();
-        let mut endpoint =
-            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
+        let mut endpoint = self
+            .config
+            .grpc
+            .build_endpoint_with_tls()
+            .await
+            .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id,
@@ -127,7 +131,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                 }
             })?;
 
-        // Apply timeout if configured
+        // Optional per-exporter timeout overrides shared client settings.
         if let Some(timeout) = self.config.timeout {
             endpoint = endpoint.timeout(timeout);
         }
@@ -630,7 +634,10 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let config = json!({
             "grpc_endpoint": grpc_endpoint,
-            "compression_method": "none"
+            "compression_method": "none",
+            "tls": {
+                "insecure": true
+            }
         });
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
@@ -667,7 +674,7 @@ mod tests {
         let exporter =
             OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
 
-        assert_eq!(exporter.config.grpc_endpoint, "http://localhost:4317");
+        assert_eq!(exporter.config.grpc.grpc_endpoint, "http://localhost:4317");
         match exporter.config.compression_method {
             Some(ref method) => match method {
                 CompressionMethod::Gzip => {} // success
@@ -781,9 +788,9 @@ mod tests {
         );
     }
 
-    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
-    #[cfg(not(windows))]
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
+    #[cfg_attr(windows, ignore = "Skipping on Windows due to flakiness")]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
@@ -803,7 +810,10 @@ mod tests {
                 pipeline_ctx,
                 &serde_json::json!({
                     "grpc_endpoint": grpc_endpoint,
-                    "compression_method": "none"
+                    "compression_method": "none",
+                    "tls": {
+                        "insecure": true
+                    }
                 }),
             )
             .unwrap(),

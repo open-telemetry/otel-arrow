@@ -19,8 +19,11 @@ use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
 use otap_df_pdata::views::bench_helpers::visit_logs_data;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
+
+#[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

@@ -129,15 +129,20 @@ impl Exporter<OtapPdata> for OTLPExporter {
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let endpoint = self.config.grpc.build_endpoint().map_err(|e| {
-            let source_detail = format_error_sources(&e);
-            Error::ExporterError {
-                exporter: exporter_id.clone(),
-                kind: ExporterErrorKind::Connect,
-                error: format!("grpc channel error {e}"),
-                source_detail,
-            }
-        })?;
+        let endpoint = self
+            .config
+            .grpc
+            .build_endpoint_with_tls()
+            .await
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Connect,
+                    error: format!("grpc channel error {e}"),
+                    source_detail,
+                }
+            })?;
 
         let channel = endpoint.connect_lazy();
 

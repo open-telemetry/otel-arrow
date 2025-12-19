@@ -30,7 +30,9 @@ jobs:
           - experimental/query_engine
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - windows-latest
+          - macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -90,6 +92,9 @@ jobs:
           Write-Host "disk usage after"
           Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
 
+      # macOS runners have sufficient disk space (~40GB available) for running tests without
+      # building the collector or running code coverage, so no cleanup is needed.
+
       - name: install cargo-llvm-cov and nextest
         uses: taiki-e/install-action@3575e532701a5fc614b0c842e4119af4cc5fd16d # v2.62.60
         with:
@@ -99,18 +104,26 @@ jobs:
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
-      - name: Run tests with coverage (Linux)
-        if: runner.os == 'Linux'
+      - name: Run tests with coverage (Linux x86_64)
+        if: matrix.os == 'ubuntu-latest'
         run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Run tests (Linux ARM64)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
-      # Only upload coverage from Linux since it runs the complete test suite
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo nextest run --all-features --workspace
+        working-directory: ./rust/${{ matrix.folder }}
+      # Only upload coverage from Linux x86_64 since it runs the complete test suite
       # (including integration tests that are skipped on Windows).
       - name: Upload to codecov.io
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
