@@ -7,11 +7,6 @@ on:
         branches: [ main ]
     workflow_dispatch:
 
-# Cancel in-progress runs on new commits to same PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
@@ -139,33 +134,11 @@ jobs:
 
           - name: Consolidate pipeline benchmark data
             run: |
-              echo "Consolidating pipeline benchmark JSON files..."
-              find results-pipeline -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find results-pipeline -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output-pipeline.json
-
-              echo "Consolidated pipeline benchmark data:"
-              cat output-pipeline.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
 
           - name: Consolidate saturation benchmark data
             run: |
-              echo "Consolidating saturation benchmark JSON files..."
-              find results-saturation -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find results-saturation -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output-saturation.json
-
-              echo "Consolidated saturation benchmark data:"
-              cat output-saturation.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-saturation output-saturation.json
 
           - name: Update pipeline benchmark data and deploy to GitHub Pages
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7

@@ -67,10 +67,13 @@ use otap_df_telemetry::MetricsSystem;
 use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
-use tikv_jemallocator::Jemalloc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

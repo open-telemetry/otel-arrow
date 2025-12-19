@@ -788,9 +788,9 @@ mod tests {
         );
     }
 
-    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
-    #[cfg(not(windows))]
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
+    #[cfg_attr(windows, ignore = "Skipping on Windows due to flakiness")]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
