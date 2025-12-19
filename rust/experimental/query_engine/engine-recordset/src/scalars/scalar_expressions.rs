@@ -342,12 +342,13 @@ where
 
             let arguments = ExecutionContextArgumentContainer {
                 parent_execution_context: execution_context,
+                function: func,
                 arguments: args,
             };
 
             let func_execution_context = execution_context.create_scope(Some(&arguments));
 
-            let return_value = match func.get_implementation() {
+            let mut return_value = match func.get_implementation() {
                 PipelineFunctionImplementation::Expressions(expressions) => {
                     let mut return_value = None;
 
@@ -381,6 +382,30 @@ where
                 }
             };
 
+            let return_value_type = return_value.get_value_type();
+
+            if let Some(expected_return_type) = func.get_return_value_type()
+                && return_value_type != ValueType::Null
+                && return_value_type != expected_return_type
+            {
+                match try_convert_value(return_value.to_value(), &expected_return_type) {
+                    Some(value) => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            scalar_expression,
+                            || format!("Return value automatically converted to '{expected_return_type}'"));
+                        return_value = ResolvedValue::Computed(value)
+                    }
+                    None => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || format!("Return value could not be converted to '{expected_return_type}'. Null will be returned"));
+                        return_value = ResolvedValue::Computed(OwnedValue::Null)
+                    }
+                }
+            }
+
             if execution_context
                 .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
             {
@@ -388,7 +413,7 @@ where
                     RecordSetEngineDiagnostic::new(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         scalar_expression,
-                        format!("Executed function '{function_id}'"),
+                        format!("Executed function '{function_id}' with result '{return_value}'"),
                     )
                     .with_nested_diagnostics(func_execution_context.take_diagnostics()),
                 );
@@ -2281,8 +2306,24 @@ mod tests {
                 )),
             ];
 
+            let func = PipelineFunction::new_external(
+                "f",
+                vec![
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                ],
+                None,
+            );
+
             let execution_context_arguments = ExecutionContextArgumentContainer {
                 parent_execution_context: &execution_context,
+                function: &func,
                 arguments: &arguments,
             };
 

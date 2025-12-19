@@ -10,12 +10,14 @@ use crate::{
     scalar_primitive_expressions::parse_accessor_expression,
 };
 
-pub(crate) fn parse_typeof_expression(
-    typeof_expression_rule: Pair<Rule>,
-) -> Result<Option<ValueType>, ParserError> {
+pub(crate) fn parse_typeof_expression(typeof_expression_rule: Pair<Rule>) -> Option<ValueType> {
     let typeof_rules = typeof_expression_rule.into_inner();
 
-    Ok(match typeof_rules.as_str() {
+    parse_type_literal(typeof_rules.as_str())
+}
+
+pub(crate) fn parse_type_literal(type_literal: &str) -> Option<ValueType> {
+    match type_literal {
         "bool" => Some(ValueType::Boolean),
         "datetime" => Some(ValueType::DateTime),
         "decimal" => Some(ValueType::Double),
@@ -28,8 +30,8 @@ pub(crate) fn parse_typeof_expression(
         "regex" => Some(ValueType::Regex),
         "string" => Some(ValueType::String),
         "timespan" => Some(ValueType::TimeSpan),
-        _ => panic!("Unexpected rule in typeof_expression_rule: {typeof_rules}"),
-    })
+        _ => panic!("Unexpected type_literal: {type_literal}"),
+    }
 }
 
 pub(crate) fn parse_source_assignment_expression(
@@ -90,15 +92,15 @@ pub(crate) fn parse_source_assignment_expression(
     Ok((query_location, scalar, destination))
 }
 
-pub(crate) fn parse_let_expression(
-    let_expression_rule: Pair<Rule>,
+pub(crate) fn parse_variable_definition_expression(
+    variable_definition_expression_rule: Pair<Rule>,
     scope: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError> {
-    let query_location = to_query_location(&let_expression_rule);
+    let query_location = to_query_location(&variable_definition_expression_rule);
 
-    let mut let_rules = let_expression_rule.into_inner();
+    let mut variable_definition_rules = variable_definition_expression_rule.into_inner();
 
-    let identifier_rule = let_rules.next().unwrap();
+    let identifier_rule = variable_definition_rules.next().unwrap();
 
     let name = identifier_rule.as_str().trim();
     if scope.is_well_defined_identifier(name) {
@@ -111,7 +113,7 @@ pub(crate) fn parse_let_expression(
 
     let identifier = StringScalarExpression::new(to_query_location(&identifier_rule), name);
 
-    let scalar = parse_scalar_expression(let_rules.next().unwrap(), scope)?;
+    let scalar = parse_scalar_expression(variable_definition_rules.next().unwrap(), scope)?;
 
     Ok(TransformExpression::Set(SetTransformExpression::new(
         query_location,
@@ -222,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    pub fn test_parse_let_expression() {
+    pub fn test_parse_variable_definition_expression() {
         let run_test_success = |input: &str, expected: TransformExpression| {
             let state = ParserState::new_with_options(
                 input,
@@ -231,9 +233,11 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlPestParser::parse(Rule::let_expression, input).unwrap();
+            let mut result =
+                KqlPestParser::parse(Rule::variable_definition_expression, input).unwrap();
 
-            let expression = parse_let_expression(result.next().unwrap(), &state).unwrap();
+            let expression =
+                parse_variable_definition_expression(result.next().unwrap(), &state).unwrap();
 
             assert_eq!(expected, expression);
         };
@@ -246,9 +250,11 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlPestParser::parse(Rule::let_expression, input).unwrap();
+            let mut result =
+                KqlPestParser::parse(Rule::variable_definition_expression, input).unwrap();
 
-            let error = parse_let_expression(result.next().unwrap(), &state).unwrap_err();
+            let error =
+                parse_variable_definition_expression(result.next().unwrap(), &state).unwrap_err();
 
             if let ParserError::QueryLanguageDiagnostic {
                 location: _,
