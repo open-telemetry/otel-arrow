@@ -276,16 +276,16 @@ where
             {
                 if let Some(value) = try_convert_value(value.to_value(), &expected_value_type) {
                     self.parent_execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    expression,
-                    || format!("Value automatically converted to '{expected_value_type}' argument type"));
-                    ResolvedValue::Computed(value)
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        expression,
+                        || format!("Value automatically converted to '{expected_value_type}' argument type"));
+                        ResolvedValue::Computed(value)
                 } else {
                     self.parent_execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Warn,
-                    expression,
-                    || format!("Value could not be converted to '{expected_value_type}' argument type. Null will be returned"));
-                    ResolvedValue::Computed(OwnedValue::Null)
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        expression,
+                        || format!("Value could not be converted to '{expected_value_type}' argument type. Null will be returned"));
+                        ResolvedValue::Computed(OwnedValue::Null)
                 }
             } else {
                 value
@@ -340,9 +340,9 @@ where
                 && expected_value_type != value.get_value_type()
             {
                 self.parent_execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Warn,
-                expression,
-                || format!("Value did not match expected '{expected_value_type}' argument type. Null will be returned"));
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    expression,
+                    || format!("Value did not match expected '{expected_value_type}' argument type. Null will be returned"));
                 ResolvedMutableArgument { value: None }
             } else {
                 value
