@@ -118,6 +118,13 @@ pub enum Error {
         /// The id of the pipeline that was duplicated.
         pipeline_id: PipelineId,
     },
+
+    /// An internal error occurred.
+    #[error("An internal error occurred: {details}")]
+    InternalError {
+        /// A description of the internal error that occurred.
+        details: String,
+    },
 }
 
 /// Information that all errors provide to help identify

@@ -7,6 +7,7 @@ pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
+use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
@@ -29,7 +30,10 @@ pub struct OpentelemetryClient {
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
-    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+    pub fn new(
+        config: &TelemetryConfig,
+        sender: crossbeam_channel::Sender<LogsData>,
+    ) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
@@ -40,7 +44,8 @@ impl OpentelemetryClient {
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        let logger_provider = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
+        let logger_provider =
+            LoggerProvider::configure(sdk_resource, &config.logs, runtime, sender)?;
 
         let (logger_provider, runtime) = logger_provider.into_parts();
 
@@ -140,7 +145,8 @@ mod tests {
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config)?;
+        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let client = OpentelemetryClient::new(&config, sender)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -174,7 +180,8 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let client = OpentelemetryClient::new(&config)?;
+        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let client = OpentelemetryClient::new(&config, sender)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();

@@ -77,7 +77,7 @@ azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 ahash = { workspace = true, optional = true }
 
 # OpenTelemetry proto with tonic feature enabled
-opentelemetry-proto = { workspace = true, optional = true }
+opentelemetry-proto = { workspace = true }
 rustls-native-certs = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
@@ -85,16 +85,16 @@ rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
+crossbeam-channel = { workspace = true }
 
 [features]
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:base64", "dep:arc-swap", "dep:notify"]
 # Base experimental feature - enabled by all experimental exporters
 experimental-exporters = []
 # Experimental exporters
-geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
+geneva-exporter = ["experimental-exporters", "dep:geneva-uploader"]
 azure-monitor-exporter = [
     "experimental-exporters", 
-    "dep:opentelemetry-proto",
     "dep:azure_identity",
     "dep:flate2",
     "dep:reqwest",

@@ -3,8 +3,11 @@
 
 //! Configures the OpenTelemetry logger provider based on the provided configuration.
 
+pub mod internal_exporter;
+
 use opentelemetry_appender_tracing::layer;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
+use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
 use otap_df_config::pipeline::service::telemetry::{
     logs::{
@@ -66,6 +69,7 @@ impl LoggerProvider {
         sdk_resource: Resource,
         logger_config: &LogsConfig,
         initial_runtime: Option<tokio::runtime::Runtime>,
+        sender: crossbeam_channel::Sender<LogsData>,
     ) -> Result<LoggerProvider, Error> {
         let mut sdk_logger_builder = SdkLoggerProvider::builder().with_resource(sdk_resource);
 
@@ -77,6 +81,8 @@ impl LoggerProvider {
             (sdk_logger_builder, runtime) =
                 Self::configure_log_processor(sdk_logger_builder, processor, runtime)?;
         }
+
+        sdk_logger_builder = Self::configure_internal_logs_exporter(sdk_logger_builder, sender)?;
 
         let sdk_logger_provider = sdk_logger_builder.build();
 
@@ -245,6 +251,15 @@ impl LoggerProvider {
             .map_err(|e| Error::ConfigurationError(e.to_string()))?;
         Ok(exporter)
     }
+
+    fn configure_internal_logs_exporter(
+        mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
+        sender: crossbeam_channel::Sender<LogsData>,
+    ) -> Result<opentelemetry_sdk::logs::LoggerProviderBuilder, Error> {
+        let exporter = internal_exporter::InternalLogsExporter::new(sender);
+        sdk_logger_builder = sdk_logger_builder.with_batch_exporter(exporter);
+        Ok(sdk_logger_builder)
+    }
 }
 
 #[cfg(test)]
@@ -265,7 +280,8 @@ mod tests {
                 ),
             ],
         };
-        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
 
         emit_log();
@@ -293,7 +309,8 @@ mod tests {
                 ),
             ],
         };
-        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, runtime_option) = logger_provider.into_parts();
 
         assert!(runtime_option.is_some());
@@ -312,7 +329,8 @@ mod tests {
             level: LogLevel::default(),
             processors: vec![],
         };
-        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
 
         emit_log();

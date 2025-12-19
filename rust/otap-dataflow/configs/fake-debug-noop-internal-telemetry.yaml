@@ -1,0 +1,51 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver_internal_telemetry:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:internal_telemetry:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - noop
+        dispatch_strategy: round_robin
+    config: {}
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - debug
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        max_signal_count: 1000
+        max_batch_size: 1000
+        signals_per_second: 1000
+        log_weight: 100
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+  debug:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - noop
+        dispatch_strategy: round_robin
+    config:
+      verbosity: basic
+  noop:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config:
+
+service:
+  telemetry:
+    logs: # This enables the internal telemetry exporter.
+      level: "info"
+    resource:
+      service.name: "fake-debug-noop-service"
