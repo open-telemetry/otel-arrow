@@ -154,8 +154,8 @@ steps:
       run:
         post:
           - sql_report:
-              name: Integration Report - Logs
-              report_config_file: ./test_suites/integration/configs/integration_report_logs_filtered.yaml
+              name: Integration Report - Logs Filtered
+              report_config_file: ./test_suites/integration/configs/integration_report_logs.yaml
               output:
                 - format:
                     template: {}
