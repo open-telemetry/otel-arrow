@@ -39,6 +39,7 @@ pub struct LogFilter {
     // If any condition resolves to true, the log event will be dropped.
     // Supports `and`, `or`, and `()`
     #[allow(dead_code)]
+    #[serde(default)]
     // ToDo: Add OTTL Support and accept OTTL expressions
     log_record: Vec<String>,
 }

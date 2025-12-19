@@ -96,7 +96,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
-        result_dir: "nightly_backpressure"
+        result_dir: "nightly_filter"
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otap.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otap
@@ -105,7 +105,7 @@ tests:
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker-filtered.yaml
       variables:
-        result_dir: "nightly_backpressure"
+        result_dir: "nightly_filter"
         engine_config_template: test_suites/integration/templates/configs/engine/filter/otap-filter-otlp.yaml
         loadgen_exporter_type: otap
         backend_receiver_type: otlp
