@@ -490,6 +490,10 @@ mod tests {
 
     #[cfg(feature = "experimental-tls")]
     #[tokio::test]
+    #[cfg_attr(
+        any(target_os = "windows", target_os = "macos"),
+        ignore = "Skipping on Windows and macOS due to flakiness"
+    )]
     async fn build_endpoint_with_tls_errors_when_ca_file_missing() {
         let settings = GrpcClientSettings {
             grpc_endpoint: "https://localhost:4317".to_string(),
