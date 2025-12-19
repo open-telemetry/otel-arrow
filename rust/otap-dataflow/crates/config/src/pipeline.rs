@@ -92,6 +92,45 @@ pub struct PipelineSettings {
     /// Health policy.
     #[serde(default)]
     pub health_policy: HealthPolicy,
+
+    /// Pipeline-level telemetry settings.
+    ///
+    /// These flags control capture of pipeline runtime metrics emitted by the pipeline
+    /// execution loop (e.g. per-pipeline CPU/memory metrics and Tokio runtime metrics).
+    ///
+    /// This is distinct from `service.telemetry`, which configures exporting of OpenTelemetry
+    /// signals to external backends.
+    #[serde(default)]
+    pub telemetry: TelemetrySettings,
+}
+
+/// Configuration for pipeline-internal telemetry capture.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TelemetrySettings {
+    /// Enable capture of per-pipeline internal metrics.
+    ///
+    /// When disabled, the engine does not update or report the `pipeline.metrics` metric set.
+    #[serde(default = "default_true")]
+    pub pipeline_metrics: bool,
+
+    /// Enable capture of Tokio runtime internal metrics.
+    ///
+    /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
+    #[serde(default = "default_true")]
+    pub tokio_metrics: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self {
+            pipeline_metrics: true,
+            tokio_metrics: true,
+        }
+    }
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -112,6 +151,7 @@ impl Default for PipelineSettings {
             default_pdata_channel_size: default_pdata_channel_size(),
             observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
+            telemetry: TelemetrySettings::default(),
         }
     }
 }

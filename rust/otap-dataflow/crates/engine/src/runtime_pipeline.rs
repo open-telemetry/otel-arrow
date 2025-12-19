@@ -167,6 +167,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
+        let internal_telemetry = self.config.pipeline_settings().telemetry.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
                 pipeline_key,
@@ -175,6 +176,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 control_senders,
                 event_reporter,
                 metrics_reporter,
+                internal_telemetry,
             );
             manager.run().await
         }));

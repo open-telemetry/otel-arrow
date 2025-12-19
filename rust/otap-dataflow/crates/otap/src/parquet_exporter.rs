@@ -865,7 +865,9 @@ mod test {
             });
     }
 
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
+    #[cfg_attr(windows, ignore = "Skipping on Windows due to flakiness")]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
