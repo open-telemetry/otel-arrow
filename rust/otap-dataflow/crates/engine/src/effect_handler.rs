@@ -13,9 +13,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
-use std::cell::RefCell;
 use std::net::SocketAddr;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
@@ -53,7 +51,7 @@ pub struct TelemetryBuffer(Arc<Mutex<SharedTelemetryState>>);
 
 impl TelemetryBuffer {
     /// Create a new telemetry buffer for shared effect handlers.
-    pub fn new(state: SharedTelemetryState) -> Self {
+    pub(crate) fn new(state: SharedTelemetryState) -> Self {
         Self(Arc::new(Mutex::new(state)))
     }
     

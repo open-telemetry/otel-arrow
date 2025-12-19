@@ -203,156 +203,21 @@ otel_info!(effect, "event", key=val)
 
 Add telemetry buffer to the core:
 
-```rust
-pub(crate) struct EffectHandlerCore<PData> {
-    pub(crate) node_id: NodeId,
-    pub(crate) pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
-    pub(crate) metrics_reporter: MetricsReporter,
-    
-    // New: Telemetry buffer (None if ITR not configured)
-    // IMPORTANT: Only stores Shared variant to maintain Send bounds
-    pub(crate) telemetry_buffer: Option<TelemetryBuffer>,
-}
-
-// Telemetry buffer for shared (Send) effect handlers
-// Wraps SharedTelemetryState in Arc<Mutex<>>
-pub struct TelemetryBuffer(Arc<Mutex<SharedTelemetryState>>);
-
-// Local effect handlers store LocalTelemetryState directly in their struct
-// This avoids breaking Send bounds for EffectHandlerCore
-pub struct EffectHandler<PData> {  // local::EffectHandler
-    pub(crate) core: EffectHandlerCore<PData>,
-    msg_senders: HashMap<PortName, LocalSender<PData>>,
-    default_sender: Option<LocalSender<PData>>,
-    
-    // Local telemetry state (not in core to preserve Send)
-    telemetry_state: Option<Rc<RefCell<LocalTelemetryState>>>,
-}
-
-struct LocalTelemetryState {
-    encoder: StatefulOtlpEncoder,
-    resource_bytes: OtlpProtoBytes,
-    scope_name: String,  // From node_id or component name
-    max_record_bytes: usize,
-}
-
-struct SharedTelemetryState {
-    encoder: StatefulOtlpEncoder,
-    resource_bytes: OtlpProtoBytes,
-    scope_name: String,
-    max_record_bytes: usize,
-}
-
-// Note: No overflow channel - synchronous flush only
-// Timer-based flush in ITR receiver is the primary batching mechanism
-// When buffer fills during encode, flush synchronously and retry
-
-```
+[SNIP]
 
 #### local::EffectHandler
 
-```rust
-impl<PData> EffectHandler<PData> {
-    pub fn log_event(&self, log_record: &impl LogRecordView) {
-        if let Some(ref buffer) = self.telemetry_state {
-            let mut state = buffer.borrow_mut();
-            
-            // Encode the log record (silent drop on error to prevent recursion)
-            match state.encoder.encode_log_record(
-                log_record,
-                &state.resource_bytes,
-                &state.scope_name,
-            ) {
-                Ok(_) => {
-                    // Success - timer-based flush will handle batching
-                }
-                Err(EncodingError::BufferFull) => {
-                    // Buffer full - flush synchronously in-place
-                    let _bytes = state.encoder.flush();
-                    // Retry encoding in empty buffer (drop if still fails - record too large)
-                    let _ = state.encoder.encode_log_record(
-                        log_record,
-                        &state.resource_bytes,
-                        &state.scope_name,
-                    );
-                }
-                Err(_) => {
-                    // Other error - drop silently (no recursion)
-                }
-            }
-        }
-    }
-}
-```
+[SNIP]
 
 #### shared::EffectHandler
 
-```rust
-impl<PData> EffectHandler<PData> {
-    pub fn log_event(&self, log_record: &impl LogRecordView) {
-        if let Some(ref buffer) = self.core.telemetry_buffer {
-            let mut state = buffer.lock().unwrap();
-            
-            // Encode the log record (silent drop on error to prevent recursion)
-            match state.encoder.encode_log_record(
-                log_record,
-                &state.resource_bytes,
-                &state.scope_name,
-            ) {
-                Ok(_) => {
-                    // Success - timer-based flush will handle batching
-                }
-                Err(EncodingError::BufferFull) => {
-                    // Buffer full - flush synchronously in-place
-                    let _bytes = state.encoder.flush();
-                    // Retry encoding in empty buffer (drop if still fails - record too large)
-                    let _ = state.encoder.encode_log_record(
-                        log_record,
-                        &state.resource_bytes,
-                        &state.scope_name,
-                    );
-                }
-                Err(_) => {
-                    // Other error - drop silently (no recursion)
-                }
-            }
-        }
-    }
-}
-```
+[SNIP]
 
 ### 2. Macro Modifications
 
 Update `otel_info!` and family to accept effect handler:
 
-```rust
-#[macro_export]
-macro_rules! otel_info {
-    // New signature: otel_info!(effect, "event.name", key = val, ...)
-    ($effect:expr, $name:expr $(,)?) => {{
-        // Create tracing::Event with metadata
-        let metadata = tracing::Metadata::new(
-            $name,
-            env!("CARGO_PKG_NAME"),
-            tracing::Level::INFO,
-            // ... other fields
-        );
-        
-        // Create event
-        let event = tracing::Event::new(&metadata, &tracing::field::ValueSet::new(...));
-        
-        // Create TracingLogRecord view
-        let log_record = $crate::tracing_integration::TracingLogRecord::new(&event);
-        
-        // Log directly to effect handler (bypass global subscriber)
-        $effect.log_event(&log_record)?;
-    }};
-    
-    ($effect:expr, $name:expr, $($key:ident = $value:expr),+ $(,)?) => {{
-        // Similar with attributes
-    }};
-}
-```
+[SNIP]
 
 ### 3. Internal Telemetry Receiver
 
@@ -363,46 +228,6 @@ The ITR is a standard OTAP receiver that:
 - Manages ONLY timer-based flushing (no overflow channel)
 - **CRITICAL**: ITR and all downstream components MUST use raw console logger (no effect handler telemetry)
 
-```rust
-pub struct InternalTelemetryReceiver {
-    config: Config,
-    mode: ReceiverMode,
-}
-
-enum ReceiverMode {
-    Local(Rc<RefCell<LocalTelemetryState>>),
-    Shared(Arc<Mutex<SharedTelemetryState>>),
-}
-
-impl Receiver<OtapPdata> for InternalTelemetryReceiver {
-    async fn start(&mut self, effect_handler: &mut EffectHandler<OtapPdata>) {
-        // Start timer for periodic flush
-        let timer = effect_handler.start_periodic_timer(self.config.flush_interval).await?;
-        
-        // Main loop - timer-based flush ONLY
-        loop {
-            tokio::select! {
-                // Timer tick - periodic flush
-                _ = timer_tick => {
-                    let bytes = match &self.mode {
-                        ReceiverMode::Local(buffer) => {
-                            buffer.borrow_mut().encoder.flush()
-                        }
-                        ReceiverMode::Shared(buffer) => {
-                            buffer.lock().unwrap().encoder.flush()
-                        }
-                    };
-                    
-                    if !bytes.is_empty() {
-                        let pdata = OtapPdata::from_otlp_bytes(bytes);
-                        effect_handler.send_message(pdata, None).await?;
-                    }
-                }
-            }
-        }
-    }
-}
-```
 
 **Anti-recursion guarantee**: ITR receiver and all downstream components are configured with raw console logger only. They CANNOT log to the pipeline. Production configuration: errors only, INFO/WARN suppressed.
 
@@ -440,57 +265,6 @@ impl Receiver<OtapPdata> for InternalTelemetryReceiver {
 - Single bounded channel only for 3rd party logs in Mode 3
 - Complete isolation prevents all feedback loops
 
-```rust
-// Note: LocalTelemetryState stored directly in local::EffectHandler
-// to avoid breaking Send bounds for shared::EffectHandler.
-// Only SharedTelemetryState lives in EffectHandlerCore via TelemetryBuffer.
-
-struct LocalTelemetryState {
-    encoder: StatefulOtlpEncoder,  // Pre-allocated, fixed capacity buffer (e.g., 64 KiB)
-    resource_bytes: OtlpProtoBytes,
-    scope_name: String,
-    max_record_bytes: usize,  // Max single record size (e.g., 16 KiB)
-    // NO channel - synchronous flush only
-}
-
-struct SharedTelemetryState {
-    encoder: StatefulOtlpEncoder,  // Pre-allocated, fixed capacity buffer
-    resource_bytes: OtlpProtoBytes,
-    scope_name: String,
-    max_record_bytes: usize,  // Max single record size
-    // NO channel - synchronous flush only
-}
-
-pub fn log_event(&self, log_record: &impl LogRecordView) {
-    if let Some(ref buffer) = self.telemetry_state {
-        let mut state = buffer.borrow_mut();
-        
-        // Try to encode
-        match state.encoder.encode_log_record(
-            log_record,
-            &state.resource_bytes,
-            &state.scope_name,
-        ) {
-            Ok(_) => {
-                // Success - timer will flush
-            }
-            Err(EncodingError::BufferFull) => {
-                // Buffer full - flush synchronously (discard bytes)
-                let _bytes = state.encoder.flush();
-                // Retry in empty buffer (drop if still fails - record too large)
-                let _ = state.encoder.encode_log_record(
-                    log_record,
-                    &state.resource_bytes,
-                    &state.scope_name,
-                );
-            }
-            Err(_) => {
-                // Other error - drop silently
-            }
-        }
-    }
-}
-```
 
 ### 2. ITR Pipeline Must Not Use ITR
 
@@ -608,33 +382,7 @@ pipelines:
 
 **Routing logic in admin component:**
 
-```rust
-// During admin component initialization
-let telemetry_config = &service_config.telemetry.logs;
-
-// Determine routing for 3rd party logs
-let third_party_destination = if !telemetry_config.processors.is_empty() {
-    // Mode 1 or 2: Use SDK for 3rd party logs
-    ThirdPartyDestination::Sdk(init_sdk_processors(&telemetry_config.processors))
-} else if telemetry_config.internal_collection.enabled {
-    // Mode 3: Route 3rd party logs to ITR (no SDK)
-    let itr_sender = locate_itr_receiver_sender(&pipeline_graph)?;
-    ThirdPartyDestination::Itr(itr_sender)
-} else {
-    // No processors and no ITR: raw console logger only
-    ThirdPartyDestination::Console
-};
-
-// Determine routing for component logs
-let component_destination = if telemetry_config.internal_collection.enabled {
-    // Mode 2 or 3: Route component logs to ITR
-    let itr_sender = locate_itr_receiver_sender(&pipeline_graph)?;
-    ComponentDestination::Itr(itr_sender)
-} else {
-    // Mode 1: Route component logs to SDK (shares with 3rd party)
-    ComponentDestination::Sdk(shared_otlp_bytes_channel)
-};
-```
+[SNIP]
 
 **Note:** When ITR is configured, the pipeline engine automatically:
 - Routes component logs to ITR receiver (bypasses SDK processors in modes 2 & 3)
@@ -719,80 +467,9 @@ let component_destination = if telemetry_config.internal_collection.enabled {
 
 **Implementation:**
 
-```rust
-pub fn log_event(&self, log_record: &impl LogRecordView) {
-    if let Some(ref buffer) = self.telemetry_state {
-        let mut state = buffer.borrow_mut();
-        
-        // Clone to avoid borrowing issues
-        let resource_bytes = state.resource_bytes.clone();
-        let scope_name = state.scope_name.clone();
-        
-        // Try to encode
-        match state.encoder.encode_log_record(log_record, resource_bytes.as_bytes(), &scope_name) {
-            Ok(_) => {
-                // Encoding succeeded, no action needed
-                // Timer-based flush will handle batching
-            }
-            Err(EncodingError::BufferFull) => {
-                // Buffer full - flush and retry
-                if Self::flush_and_send(&mut state) {
-                    // Retry encoding in empty buffer
-                    if state.encoder.encode_log_record(
-                        log_record, resource_bytes.as_bytes(), &scope_name
-                    ).is_err() {
-                        // Still failed (record too large for empty buffer)
-                        Self::fallback_to_raw_logger(log_record);
-                    }
-                } else {
-                    // Flush failed (channel full) - use raw logger
-                    Self::fallback_to_raw_logger(log_record);
-                }
-            }
-            Err(_) => {
-                // Other encoding error - drop with counter
-                // TODO: increment telemetry.dropped_events
-            }
-        }
-    }
-}
-
-fn flush_and_send(state: &mut LocalTelemetryState) -> bool {
-    let bytes = state.encoder.flush();
-    if bytes.is_empty() {
-        return true;  // Nothing to send
-    }
-    
-    // Non-blocking send (bounded channel)
-    match state.overflow_sender.try_send(bytes) {
-        Ok(_) => true,
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            // Channel full - backpressure, use raw logger
-            false
-        }
-        Err(mpsc::error::TrySendError::Disconnected(_)) => {
-            // Channel disconnected - receiver dropped
-            false
-        }
-    }
-}
-
-fn fallback_to_raw_logger(log_record: &impl LogRecordView) {
-    // Use the raw console logger initialized early in main()
-    // This is synchronous and never fails (writes to stderr)
-    use otap_df_telemetry::internal_events::raw_log;
-    raw_log(log_record);
-}
-```
+[SNIP]
 
 **Rationale:** Telemetry must never fail the component operation. Bounded resources ensure we never cause OOM. When buffers/channels are full, degrade gracefully to synchronous console logging.
-            );
-            
-            // TODO: Count dropped events and log statistics periodically
-        }
-    }
-}
-```
 
 ### 6. Macro Bypass Global Subscriber
 
@@ -873,30 +550,10 @@ When `internal_collection.enabled: false` (default), component logs must:
    - Component logs: Decode → SDK LogRecord → SDK exporter
 
 3. **Decoder implementation** (new):
-   ```rust
-   // In crates/pdata/src/otlp/logs/decoder.rs
-   pub struct OtlpLogsDecoder {
-       // Decode OTLP Bytes back to LogRecord views
-   }
-   
-   impl OtlpLogsDecoder {
-       pub fn decode(&mut self, bytes: &Bytes) -> Result<Vec<impl LogRecordView>> {
-           // Parse protobuf bytes
-           // Return views over decoded data
-       }
-   }
-   ```
+[SNIP]
 
 4. **SDK bridge** (new):
-   ```rust
-   // In crates/telemetry/src/opentelemetry_client/logs_bridge.rs
-   pub fn otlp_to_sdk_log_record(
-       log_record: &impl LogRecordView
-   ) -> opentelemetry_sdk::logs::LogRecord {
-       // Emulate what opentelemetry-tracing-appender bridge does
-       // Convert OTLP fields to SDK LogRecord
-   }
-   ```
+[SNIP]
 
 **Current Status:** Configuration structure defined. Next step is implementing the SDK path for component logs.
 

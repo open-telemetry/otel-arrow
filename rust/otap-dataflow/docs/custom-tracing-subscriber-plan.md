@@ -164,20 +164,7 @@ The effect handler directly owns a **reusable byte buffer**:
 - Flush sends accumulated bytes, clears buffer (capacity retained)
 - Threshold=1 enables synchronous logging
 
-```rust
-pub struct EffectHandlerCore<PData> {
-    node_id: NodeId,
-    pipeline_ctrl_msg_sender: Option<PipelineCtrlMsgSender<PData>>,
-    metrics_reporter: MetricsReporter,
-    
-    // NEW: Reusable OTLP byte buffer
-    otlp_buffer: RefCell<Vec<u8>>,
-    pipeline_context: PipelineContext,
-    
-    // Track when to flush (in bytes)
-    otlp_buffer_flush_threshold: usize,
-}
-```
+[SNIP]
 
 **Advantages**:
 - **Single Allocation**: One Vec<u8> per core, reused indefinitely
@@ -199,65 +186,7 @@ The `otel_*!` macros construct a view on-the-fly and encode directly to the reus
 - Check size threshold after each append
 - No intermediate LogRecord storage needed
 
-```rust
-// In the macro expansion
-pub fn log_event_fast(
-    effect: &impl EffectHandlerTraceBuffer,
-    level: Level,
-    name: &str,
-    fields: &[(&str, &dyn Debug)],
-    location: &'static Location<'static>,
-) {
-    // Build LogRecord in-place (stack allocation, short-lived)
-    let log_record = build_log_record_inline(
-        level, 
-        name, 
-        fields, 
-        location,
-        effect.pipeline_context()
-    );
-    
-    // Create ephemeral view for single record
-    let view = SingleLogRecordView::new(
-        &log_record,
-        effect.pipeline_context().resource(),
-        effect.pipeline_context().scope(),
-    );
-    
-    // Encode directly to OTLP bytes, append to buffer
-    let buffer = effect.otlp_buffer_mut();
-    encode_log_record_otlp(&view, buffer).expect("encoding failed");
-    
-    // Check size threshold (bytes, not count)
-    if buffer.len() >= effect.otlp_buffer_threshold() {
-        effect.flush_otlp_buffer().ok();
-    }
-}
-
-fn build_log_record_inline(
-    level: Level,
-    name: &str,
-    fields: &[(&str, &dyn Debug)],
-    location: &'static Location<'static>,
-    context: &PipelineContext,
-) -> LogRecord {
-    let mut log_record = LogRecord::default();
-    log_record.set_severity_number(level.into());
-    log_record.set_observed_timestamp(SystemTime::now());
-    log_record.add_attribute(Key::new("event.name"), AnyValue::String(name.into()));
-    log_record.add_attribute(Key::new("code.filepath"), AnyValue::String(location.file().into()));
-    log_record.add_attribute(Key::new("code.lineno"), AnyValue::Int(location.line() as i64));
-    
-    for (key, value) in fields {
-        log_record.add_attribute(
-            Key::new(*key),
-            AnyValue::String(format!("{:?}", value).into())
-        );
-    }
-    
-    log_record
-}
-```
+[SNIP]
 
 **Advantages of Streaming Encoding**:
 - **Zero Intermediate Storage**: LogRecord only lives on stack during encoding
@@ -280,49 +209,7 @@ fn build_log_record_inline(
 - **Clear buffer** (not reallocate), capacity retained
 - **Downstream batch processor** handles timing & further batching
 
-```rust
-// Inline flush on size threshold (in macro helper)
-pub fn log_event_fast(
-    effect: &mut EffectHandler<OtapPdata>,
-    level: Level,
-    name: &str,
-    fields: &[(&str, &dyn Debug)],
-    location: &'static Location<'static>,
-) {
-    // Build ephemeral view and encode directly to buffer
-    let log_record = build_log_record_inline(level, name, fields, location, effect.pipeline_context());
-    let view = SingleLogRecordView::new(&log_record, effect.pipeline_context().resource(), effect.pipeline_context().scope());
-    
-    // Encode to OTLP, append to reusable buffer
-    let buffer = effect.otlp_buffer_mut();
-    encode_log_record_otlp(&view, buffer).expect("encode failed");
-    
-    // Auto-flush if size threshold reached (inline)
-    if buffer.len() >= effect.otlp_buffer_threshold() {
-        effect.flush_otlp_buffer().ok();  // Best effort
-    }
-}
-
-// In EffectHandlerCore
-impl<PData> EffectHandlerCore<PData> {
-    fn flush_otlp_buffer(&self) -> Result<(), Error> {
-        let mut buffer = self.otlp_buffer.borrow_mut();
-        if buffer.is_empty() {
-            return Ok(());
-        }
-        
-        // Send accumulated OTLP bytes directly
-        let otlp_bytes = buffer.clone(); // or swap with empty vec
-        let pdata = OtapPdata::from_otlp_bytes(otlp_bytes)?;
-        self.send_message_internal(pdata)?;
-        
-        // Clear buffer (retains capacity - reused!)
-        buffer.clear();
-        
-        Ok(())
-    }
-}
-```
+[SNIP]
 
 **Advantages**:
 - **Reusable Buffer**: Vec<u8> cleared, not reallocated (capacity stable)
@@ -367,23 +254,7 @@ The `otel_*!` macros will be updated to **require** an effect handler reference:
 - Compile error if effect handler not provided - forces intentional design
 - No silent fallback to global state - maintains architectural integrity
 
-```rust
-#[macro_export]
-macro_rules! otel_error {
-    // FAST PATH: effect handler as first argument
-    // Bypasses global subscriber completely
-    ($effect:expr, $name:expr $(, $key:ident = $value:expr)* $(,)?) => {
-        // Direct write to effect handler's buffer - bypasses ALL tracing infrastructure
-        $crate::internal::log_event_fast(
-            $effect,
-            $crate::Level::ERROR,
-            $name,
-            &[$((stringify!($key), &$value)),*],
-            &core::panic::Location::caller(),
-        )
-    };
-}
-```
+[SNIP]
 
 **Two-Path Design**:
 
@@ -410,25 +281,7 @@ macro_rules! otel_error {
 
 **Usage Patterns**:
 
-```rust
-// Pipeline code - FAST PATH
-impl Processor {
-    async fn process(&mut self, msg: Message, effect: &mut EffectHandler) {
-        otel_info!(effect, "processor.batch", count = 42);  // < 100ns
-    }
-}
-
-// Bootstrap code - SLOW PATH (but that's OK)
-fn main() {
-    tracing::info!("Starting controller");  // ~5μs, but runs once
-    // ... start pipelines
-}
-
-// Third-party library - SLOW PATH
-fn some_library_code() {
-    tracing::debug!("library event");  // Uses global subscriber
-}
-```
+[SNIP]
 
 **Key Insight**: By requiring effect handler as **argument 0**, the performance path is:
 - **Obvious at call site** (you see the effect parameter)
@@ -601,42 +454,7 @@ Deliverables:
 
 Use a simple `Vec<u8>` for OTLP-encoded bytes:
 
-```rust
-pub struct EffectHandlerCore<PData> {
-    // Reusable buffer for OTLP bytes
-    otlp_buffer: RefCell<Vec<u8>>,
-    otlp_buffer_flush_threshold: usize, // in bytes
-    // ... other fields
-}
-
-impl<PData> EffectHandlerCore<PData> {
-    pub fn new(flush_threshold_bytes: usize) -> Self {
-        Self {
-            otlp_buffer: RefCell::new(Vec::with_capacity(flush_threshold_bytes)),
-            otlp_buffer_flush_threshold: flush_threshold_bytes,
-            // ...
-        }
-    }
-    
-    pub fn otlp_buffer_mut(&self) -> RefMut<Vec<u8>> {
-        self.otlp_buffer.borrow_mut()
-    }
-    
-    pub fn flush_otlp_buffer(&self) -> Result<(), Error> {
-        let mut buffer = self.otlp_buffer.borrow_mut();
-        if buffer.is_empty() {
-            return Ok(());
-        }
-        
-        let otlp_bytes = std::mem::take(&mut *buffer); // Take ownership, leave empty vec
-        let pdata = OtapPdata::from_otlp_bytes(otlp_bytes)?;
-        self.send_message_internal(pdata)?;
-        
-        // buffer is now empty but retains capacity
-        Ok(())
-    }
-}
-```
+[SNIP]
 
 Buffer sizing:
 - Default: 64KB per core (configurable)
@@ -648,61 +466,15 @@ Buffer sizing:
 
 **Build ephemeral LogRecord, encode immediately**:
 
-```rust
-use opentelemetry_sdk::logs::LogRecord;
-
-// LogRecord built inline (stack-allocated, short-lived)
-fn build_log_record_inline(
-    level: Level,
-    name: &str,
-    fields: &[(&str, &dyn Debug)],
-    location: &'static Location<'static>,
-) -> LogRecord {
-    let mut log_record = LogRecord::default();
-    log_record.set_severity_number(level.into());
-    log_record.set_observed_timestamp(SystemTime::now());
-    log_record.add_attribute(Key::new("event.name"), AnyValue::String(name.into()));
-    // ... add other attributes
-    log_record
-}
-```
+[SNIP]
 
 **Implement single-event view for streaming**:
 
-```rust
-// Ephemeral view for one log record
-pub struct SingleLogRecordView<'a> {
-    log_record: &'a LogRecord,
-    resource: &'a Resource,
-    scope: &'a InstrumentationScope,
-}
-
-impl<'a> LogsDataView for SingleLogRecordView<'a> {
-    fn resource_logs_count(&self) -> usize { 1 }
-    fn scope_logs_count(&self, _res_idx: usize) -> usize { 1 }
-    fn log_records_count(&self, _res_idx: usize, _scope_idx: usize) -> usize { 1 }
-    
-    fn log_record(&self, _res_idx: usize, _scope_idx: usize, _log_idx: usize) -> LogRecordView {
-        LogRecordView::from_sdk(self.log_record)
-    }
-    // ... other view methods
-}
-```
+[SNIP]
 
 **Streaming OTLP encoder**:
 
-```rust
-// Encode single log record, append to existing Vec<u8>
-pub fn encode_log_record_otlp(
-    view: &SingleLogRecordView,
-    buffer: &mut Vec<u8>,
-) -> Result<(), Error> {
-    // Use prost or similar to encode OTLP LogRecord message
-    // Append encoded bytes directly to buffer
-    // This grows the buffer incrementally
-    Ok(())
-}
-```
+[SNIP]
 
 **Benefits**:
 - **Zero Heap Allocation**: LogRecord on stack, view borrows it
@@ -765,55 +537,7 @@ pub fn encode_log_record_otlp(
 
 Effect handler owns reusable OTLP buffer and handles streaming encoding:
 
-```rust
-impl<PData> EffectHandlerCore<PData> {
-    /// Create effect handler with reusable OTLP buffer
-    pub(crate) fn new(
-        node_id: NodeId,
-        metrics_reporter: MetricsReporter,
-        pipeline_context: PipelineContext,
-        flush_threshold_bytes: usize,
-    ) -> Self {
-        Self {
-            node_id,
-            pipeline_ctrl_msg_sender: None,
-            metrics_reporter,
-            otlp_buffer: RefCell::new(Vec::with_capacity(flush_threshold_bytes)),
-            pipeline_context,
-            otlp_buffer_flush_threshold: flush_threshold_bytes,
-        }
-    }
-    
-    /// Get mutable access to OTLP buffer (used by macros)
-    #[inline]
-    pub(crate) fn otlp_buffer_mut(&self) -> RefMut<Vec<u8>> {
-        self.otlp_buffer.borrow_mut()
-    }
-    
-    /// Check if flush needed (used by macros after encoding)
-    #[inline]
-    pub(crate) fn should_flush(&self) -> bool {
-        self.otlp_buffer.borrow().len() >= self.otlp_buffer_flush_threshold
-    }
-    
-    /// Flush accumulated OTLP bytes to pipeline
-    pub(crate) fn flush_otlp_buffer(&self) -> Result<(), Error> {
-        let mut buffer = self.otlp_buffer.borrow_mut();
-        if buffer.is_empty() {
-            return Ok(());
-        }
-        
-        // Take ownership of bytes, leave empty vec (capacity retained)
-        let otlp_bytes = std::mem::take(&mut *buffer);
-        
-        // Inject into pipeline via send_message()
-        let pdata = OtapPdata::from_otlp_bytes(otlp_bytes)?;
-        self.send_message_internal(pdata)?;
-        
-        Ok(())
-    }
-}
-```
+[SNIP]
 
 **Performance Benefits**:
 - **Single Allocation**: Vec<u8> grows once, capacity stable
@@ -927,30 +651,7 @@ This design is **additive, not breaking**:
 
 **Migration Strategy**:
 
-```rust
-// BEFORE: Using global subscriber (slow, but works)
-use tracing::info;
-
-impl Processor {
-    async fn process(&mut self, msg: Message, effect: &mut EffectHandler) {
-        info!("processing batch");  // ~5μs, global lock
-    }
-}
-
-// AFTER: Using fast path (explicit effect handler)
-use otap_df_telemetry::otel_info;
-
-impl Processor {
-    async fn process(&mut self, msg: Message, effect: &mut EffectHandler) {
-        otel_info!(effect, "processing.batch");  // < 100ns, direct buffer
-    }
-}
-
-// Bootstrap code - NO CHANGE NEEDED
-fn main() {
-    tracing::info!("Starting up");  // Still works, slow path is fine here
-}
-```
+[SNIP]
 
 **The Key Insight**: 
 - Use `otel_*!(effect, ...)` in hot paths (pipeline components)
@@ -964,7 +665,7 @@ fn main() {
    - Per-message or per-batch operations
    - Inner loops and high-frequency operations
 
-2. **Update hot path logging** to use fast path:
+2. **Update component logging** to use the effect handler:
    ```rust
    // Old - slow path (global subscriber)
    use tracing::info;
@@ -975,36 +676,15 @@ fn main() {
    otel_info!(effect, "processing.batch");  // < 100ns
    ```
 
-3. **Leave cold paths alone** (or migrate for consistency):
+3. **Leave cold paths alone**
    ```rust
    // Bootstrap/init code - no change needed
    fn main() {
        tracing::info!("Starting controller");  // Slow path is fine here
    }
-   
-   // Or migrate for consistency (optional)
-   fn init(effect: &EffectHandler) {
-       otel_info!(effect, "controller.init");  // Fast path everywhere
-   }
    ```
 
-4. **For tests**: Continue using global subscriber OR use fast path
-   ```rust
-   // Option 1: Keep using global subscriber (easy)
-   #[test]
-   fn test_something() {
-       tracing::info!("test started");  // Works fine
-   }
-   
-   // Option 2: Use fast path (better performance profiling)
-   #[test]
-   fn test_something() {
-       let mut effect = test_utils::mock_effect_handler();
-       otel_info!(effect, "test.started");  // Fast path in tests too
-   }
-   ```
-
-5. **Validation**: Both paths work, choose based on needs
+4. **Validation**: Both paths work, choose based on needs
    - Fast path: Requires effect handler, < 100ns
    - Slow path: No requirements, ~5μs
    - No breaking changes
@@ -1040,23 +720,7 @@ This design opens a **major opportunity**: bolting OTel SDKs directly to the dat
 
 ### Vision
 
-```rust
-// User application with OTel SDK
-use opentelemetry::logs::Logger;
-use opentelemetry_sdk::logs::LoggerProvider;
-
-// Create logger provider that writes to OTAP dataflow
-let logger_provider = LoggerProvider::builder()
-    .with_log_processor(
-        // Custom processor that buffers and uses view API
-        OtapDataflowLogProcessor::new(effect_handler)
-    )
-    .build();
-
-// Now SDK logs flow through dataflow engine!
-let logger = logger_provider.logger("my-app");
-logger.emit(LogRecord::builder().body("Hello").build());
-```
+[SNIP]
 
 ### Implementation Path
 
@@ -1111,14 +775,6 @@ logger.emit(LogRecord::builder().body("Hello").build());
 7. **Documentation**: Complete API documentation and examples
 8. **Simplicity**: Less code than current implementation
 
-## Timeline
-
-- **Total Duration**: 10 weeks
-- **Team Size**: 2-3 engineers
-- **Review Points**: End of each phase
-- **Beta Release**: Week 8
-- **Production Ready**: Week 10
-
 ## References
 
 1. [Tokio Tracing Documentation](https://docs.rs/tracing)
@@ -1126,138 +782,3 @@ logger.emit(LogRecord::builder().body("Hello").build());
 3. [Thread-Per-Core Architecture Paper](https://www.usenix.org/conference/osdi21/presentation/ousterhout)
 4. [OTAP-Dataflow Engine Design](../crates/engine/README.md)
 5. [Shared-Nothing Architecture Principles](../../docs/design-principles.md)
-
-## Appendix A: Example Usage
-
-### Component Initialization
-
-```rust
-use otap_df_engine::local;
-use otap_df_telemetry::{otel_info, otel_error};
-- REQUIRED parameter
-                otel_info!(
-                    effect,
-                    "processor.batch",
-                    count = self.counter,
-                    size = pdata.size()
-                );
-                
-                effect.send_message(pdata).await
-            }
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::Shutdown { .. } => {
-                        otel_info!(
-                            1;
-                
-                // Log with effect handler context
-                otel_info!(
-                    eh: effect,
-                    "processor.batch",
-                    count = self.counter,
-                    size = pdata.size()
-                );
-                
-                effect.send_message(pdata).await
-            }
-            Message::Control(ctrl) => {
-                match ctrl {
-                    NodeControlMsg::Shutdown { .. } => {
-                        otel_info!(
-                            eh: effect,
-                            "processor.shutdown",
-                            total_processed = self.counter
-                        );
-                    }
-                    _ => {}
-                }
-                Ok(())
-            }
-        }
-    }
-}
-```
-
-### Configuration Example
-
-```yaml
-service:
-  telemetry:
-    logs:
-      level: info
-      internal:
-        enabled: true
-        buffer_size: 2048
-        flush_interval: 50ms
-
-pipelines:
-  # Main data pipeline
-  traces/main:
-    receivers: [otlp]
-    processors: [batch]
-    exporters: [otlp]
-  
-  # Internal telemetry pipeline
-  logs/internal:
-    receivers: [internal_telemetry]
-    processors: [batch]
-    exporters: [otlp/logs]
-
-receivers:
-  internal_telemetry:
-    urn: "urn:otap:receiver:internal-telemetry:v1"
-    flush_interval: 50ms
-
-exporters:
-  otlp/logs:
-    urn: "urn:otap:exporter:otlp:v1"
-    endpoint: "http://localhost:4317"
-```
-
-## Appendix B: Performance Benchmark Design
-
-### Benchmark Scenarios
-
-1. **Baseline**: Current global subscriber
-2. **Thread-Local**: New subscriber without pipeline integration
-3. **Full Integration**: New subscriber with pipeline and receiver
-4. **High Contention**: Multiple cores logging simultaneously
-
-### Metrics to Collect
-
-- Latency (p50, p95, p99, p999)
-- Throughput (events/second)
-- CPU usage
-- Memory usage
-- Cache misses
-- Lock contention time
-
-### Benchmark Code Template
-
-```rust
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-
-fn bench_trace_event_recording(c: &mut Criterion) {
-    let mut group = c.benchmark_group("trace_recording");
-    
-    // Baseline: global subscriber
-    group.bench_function("global", |b| {
-        b.iter(|| {
-            otel_info!("test.event", value = black_box(42));
-        });
-    });
-    
-    // New: thread-local subscriber
-    group.bench_function("thread_local", |b| {
-        setup_thread_local_subscriber();
-        b.iter(|| {
-            otel_info!("test.event", value = black_box(42));
-        });
-    });
-    
-    group.finish();
-}
-
-criterion_group!(benches, bench_trace_event_recording);
-criterion_main!(benches);
-```
