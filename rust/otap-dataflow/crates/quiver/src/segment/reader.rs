@@ -82,6 +82,16 @@ pub struct ReconstructedBundle {
 }
 
 impl ReconstructedBundle {
+    /// Creates an empty bundle for testing purposes.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            bundle_index: 0,
+            payloads: HashMap::new(),
+            _backing: Arc::new(Buffer::from_vec(Vec::<u8>::new())),
+        }
+    }
+
     /// Returns the bundle index from the manifest.
     #[must_use]
     pub fn bundle_index(&self) -> u32 {

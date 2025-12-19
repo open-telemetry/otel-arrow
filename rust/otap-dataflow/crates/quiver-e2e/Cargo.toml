@@ -1,0 +1,27 @@
+[package]
+name = "quiver-e2e"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "End-to-end stress test harness for Quiver persistence layer"
+
+[[bin]]
+name = "quiver-e2e"
+path = "src/main.rs"
+
+[dependencies]
+quiver = { workspace = true, features = ["mmap"] }
+arrow-array.workspace = true
+arrow-schema.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+parking_lot.workspace = true
+rand.workspace = true
+tikv-jemallocator.workspace = true
+tikv-jemalloc-ctl = { workspace = true, features = ["stats"] }
+clap.workspace = true
+
+[lints]
+workspace = true

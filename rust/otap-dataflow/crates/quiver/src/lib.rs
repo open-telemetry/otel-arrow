@@ -28,6 +28,8 @@ pub mod engine;
 pub mod error;
 pub mod record_bundle;
 pub mod segment;
+pub mod segment_store;
+pub mod subscriber;
 pub mod telemetry;
 pub(crate) mod wal;
 
@@ -35,4 +37,6 @@ pub use config::{QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
 pub use engine::QuiverEngine;
 pub use error::{QuiverError, Result};
 pub use segment::SegmentError;
+pub use segment_store::SegmentStore;
+pub use subscriber::SubscriberError;
 pub use wal::WalError;
