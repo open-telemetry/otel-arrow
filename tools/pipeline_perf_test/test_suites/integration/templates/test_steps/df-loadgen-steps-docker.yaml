@@ -153,6 +153,8 @@ steps:
     hooks:
       run:
         post:
+          # Print all Docker container logs
+          - print_container_logs: {}
           - sql_report:
               name: Integration Report - Logs
               report_config_file: ./test_suites/integration/configs/integration_report_logs.yaml
