@@ -5,18 +5,21 @@
 
 use data_engine_expressions::{
     BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
-    LogicalExpression, PipelineExpression, ScalarExpression, StaticScalarExpression, StringValue,
-    ValueAccessor,
+    LogicalExpression, MoveTransformExpression, MutableValueExpression, PipelineExpression,
+    RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue,
+    TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::transform::{AttributesTransform, RenameTransform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
 use crate::pipeline::filter::{Composite, FilterPipelineStage, FilterPlan};
 
@@ -82,6 +85,19 @@ impl PipelinePlanner {
                 }),
             },
 
+            DataExpression::Transform(transform_expr) => match transform_expr {
+                TransformExpression::Move(move_expr) => self.plan_move(move_expr),
+                TransformExpression::RenameMapKeys(rename_map_keys_expr) => {
+                    self.plan_rename(rename_map_keys_expr)
+                }
+                other => Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "transform expression not yet supported {}",
+                        other.get_name()
+                    ),
+                }),
+            },
+
             // TODO support other DataExpressions
             other => Err(Error::NotYetSupportedError {
                 message: format!("data expression not yet supported {}", other.get_name()),
@@ -105,6 +121,147 @@ impl PipelinePlanner {
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
         Ok(vec![Box::new(filter_stage)])
+    }
+
+    fn plan_move(
+        &self,
+        move_expr: &MoveTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        match (move_expr.get_source(), move_expr.get_destination()) {
+            (MutableValueExpression::Source(source), MutableValueExpression::Source(dest)) => {
+                let source = ColumnAccessor::try_from(source.get_value_accessor())?;
+                let dest = ColumnAccessor::try_from(dest.get_value_accessor())?;
+
+                match (source, dest) {
+                    // currently the only type of move transform supported is renaming attributes
+                    (
+                        ColumnAccessor::Attributes(src_attrs_id, src_key),
+                        ColumnAccessor::Attributes(dest_attrs_id, dest_key),
+                    ) => {
+                        // the attributes being renamed must be in the same map. for example doing
+                        // `attributes["x"] = resource.attributes["y"]` is not yet supported
+                        if src_attrs_id != dest_attrs_id {
+                            Err(Error::NotYetSupportedError {
+                                message: format!(
+                                    "attribute key rename currently only supports renaming within the same attributes map; found {:?} to {:?}",
+                                    src_attrs_id, dest_attrs_id,
+                                ),
+                            })
+                        } else {
+                            let transform = AttributesTransform::default().with_rename(
+                                RenameTransform::new([(src_key, dest_key)].into_iter().collect()),
+                            );
+                            transform
+                                .validate()
+                                .map_err(|e| Error::InvalidPipelineError {
+                                    cause: format!("invalid attribute rename transform {e}"),
+                                    query_location: Some(move_expr.get_query_location().clone()),
+                                })?;
+                            Ok(vec![Box::new(AttributeTransformPipelineStage::new(
+                                src_attrs_id,
+                                transform,
+                            ))])
+                        }
+                    }
+
+                    (source, dest) => Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "move expression for column source = {source:?}, dest = {dest:?}"
+                        ),
+                    }),
+                }
+            }
+            (source, dest) => Err(Error::NotYetSupportedError {
+                message: format!("move from {source:?} to {dest:?}"),
+            }),
+        }
+    }
+
+    fn plan_rename(
+        &self,
+        rename_map_keys_expr: &RenameMapKeysTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        let mut root_attrs_renames = vec![];
+        let mut scope_attrs_renames = vec![];
+        let mut resource_attrs_renames = vec![];
+
+        for key_rename in rename_map_keys_expr.get_keys() {
+            let source = ColumnAccessor::try_from(key_rename.get_source())?;
+            let dest = ColumnAccessor::try_from(key_rename.get_destination())?;
+
+            match (source, dest) {
+                // currently the only type of move transform supported is renaming attributes
+                (
+                    ColumnAccessor::Attributes(src_attrs_id, src_key),
+                    ColumnAccessor::Attributes(dest_attrs_id, dest_key),
+                ) => {
+                    // the attributes being renamed must be in the same map. for example doing
+                    // `attributes["x"] = resource.attributes["y"]` is not yet supported
+                    if src_attrs_id != dest_attrs_id {
+                        return Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "attribute key rename currently only supports renaming within the same attributes map; found {:?} to {:?}",
+                                src_attrs_id, dest_attrs_id,
+                            ),
+                        });
+                    }
+
+                    let rename = (src_key, dest_key);
+
+                    match src_attrs_id {
+                        AttributesIdentifier::Root => root_attrs_renames.push(rename),
+                        AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+                            ArrowPayloadType::ResourceAttrs => resource_attrs_renames.push(rename),
+                            ArrowPayloadType::ScopeAttrs => scope_attrs_renames.push(rename),
+                            other => {
+                                return Err(Error::NotYetSupportedError {
+                                    message: format!("renaming attributes for payload {other:?}"),
+                                });
+                            }
+                        },
+                    }
+                }
+
+                (source, dest) => {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "move expression for column source = {source:?}, dest = {dest:?}"
+                        ),
+                    });
+                }
+            }
+        }
+
+        let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
+
+        // build up a pipeline stage for each type set of attributes in the expression
+        for (renames, attrs_id) in [
+            (root_attrs_renames, AttributesIdentifier::Root),
+            (
+                scope_attrs_renames,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+            ),
+            (
+                resource_attrs_renames,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+            ),
+        ] {
+            if !renames.is_empty() {
+                let rename_transform = RenameTransform::new(renames.into_iter().collect());
+                let transform = AttributesTransform::default().with_rename(rename_transform);
+                transform
+                    .validate()
+                    .map_err(|e| Error::InvalidPipelineError {
+                        cause: format!("invalid attribute rename transform {e}"),
+                        query_location: Some(rename_map_keys_expr.get_query_location().clone()),
+                    })?;
+
+                let pipeline_stage = AttributeTransformPipelineStage::new(attrs_id, transform);
+                pipeline_stages.push(Box::new(pipeline_stage));
+            }
+        }
+
+        Ok(pipeline_stages)
     }
 }
 
