@@ -279,6 +279,10 @@ mod tests {
     /// This tests the DoS protection feature where slow/malicious clients
     /// that don't complete the TLS handshake are timed out.
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_handshake_respects_timeout() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
