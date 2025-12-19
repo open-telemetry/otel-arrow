@@ -12,6 +12,7 @@ from .network import (
     DeleteDockerNetwork,
     DeleteDockerNetworkConfig,
 )
+from .print_container_logs import PrintContainerLogs, PrintContainerLogsConfig
 from .tidy_existing_container import TidyExistingContainer, TidyExistingContainerConfig
 from .wait_for_status import WaitForDockerStatus, WaitForDockerStatusConfig
 
@@ -24,6 +25,8 @@ __all__ = [
     "CreateDockerNetworkConfig",
     "DeleteDockerNetwork",
     "DeleteDockerNetworkConfig",
+    "PrintContainerLogs",
+    "PrintContainerLogsConfig",
     "TidyExistingContainer",
     "TidyExistingContainerConfig",
     "WaitForDockerStatus",

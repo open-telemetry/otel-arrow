@@ -65,7 +65,7 @@ steps:
                 # default_node_ctrl_msg_channel_size: 100
                 # default_pdata_channel_size: 100
                 # ----- Receiver traffic config -----
-                max_batch_size: {{max_batch_size | default(10000)}}
+                max_batch_size: {{max_batch_size | default(1000)}}
                 signals_per_second: {% if signals_per_second is none %}null{% else %}{{signals_per_second | default(100000)}}{% endif %}
                 # metric_weight: 0
                 # trace_weight: 0
@@ -153,6 +153,8 @@ steps:
     hooks:
       run:
         post:
+          # Print all Docker container logs
+          - print_container_logs: {}
           - sql_report:
               name: Integration Report - Logs
               report_config_file: ./test_suites/integration/configs/integration_report_logs.yaml
