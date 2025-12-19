@@ -219,7 +219,7 @@ impl PipelineContext {
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
             node_id: self.node_id.clone(),
-            node_kind: self.node_kind.clone(),
+            node_kind: self.node_kind,
             internal_telemetry_receiver: Some(receiver),
         }
     }

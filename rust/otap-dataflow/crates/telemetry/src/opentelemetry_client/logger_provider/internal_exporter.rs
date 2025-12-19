@@ -54,9 +54,8 @@ impl InternalLogsExporter {
 
             let severity_number = log_record.severity_number().unwrap_or(SdkSeverity::Info) as i32;
             let severity_text = log_record.severity_text().unwrap_or("INFO").to_string();
-            let body: Option<AnyValue> = log_record
-                .body()
-                .map(Self::convert_sdk_any_value_to_proto);
+            let body: Option<AnyValue> =
+                log_record.body().map(Self::convert_sdk_any_value_to_proto);
 
             let event_name: String = log_record.event_name().unwrap_or("").to_string();
 
