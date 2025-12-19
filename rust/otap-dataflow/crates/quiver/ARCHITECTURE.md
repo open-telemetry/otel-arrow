@@ -255,44 +255,91 @@ WAL entries belonging to:
 **Per-Subscriber Progress Files (`quiver.sub.<id>`)**: Each subscriber maintains
 an independent progress file that records its current state.
 
-- Stores current state snapshot (not an append-only log)
-- Terminal outcomes: `Ack` (successful delivery) or `Dropped` (permanent failure)
-- Does NOT store transient failures (retry is the embedding layer's concern)
-- File format (v1):
+##### Subscriber ID Naming Constraints
 
-  ```text
-  +----------+---------+--------------+------------------------+------------------+
-  | magic    | version | header_size  | oldest_incomplete_seg  | segment_entries  |
-  | (8B)     | (2B LE) | (2B LE)      | (8B LE)                | (variable)       |
-  +----------+---------+--------------+------------------------+------------------+
-  ```
+Subscriber IDs become part of the filename (`quiver.sub.<id>`), so they must be
+filesystem-safe:
 
-  Segment entry format (for partially-complete segments only):
+- **Non-empty**: At least one character
+- **Max length**: 64 characters (conservative for cross-platform compatibility)
+- **Character set**: ASCII alphanumeric, hyphen, underscore (`[a-zA-Z0-9_-]`)
+- **No reserved names**: Cannot be `.`, `..`, or Windows reserved names
+  (CON, PRN, etc.)
 
-  ```text
-  +------------+--------------+-----------------+
-  | seg_seq    | bundle_count | acked_bitmap    |
-  | (8B LE)    | (4B LE)      | (variable)      |
-  +------------+--------------+-----------------+
-  ```
+Examples: `exporter-otlp`, `backup_s3`, `metrics-1`
 
-- **Compact representation**: Only partially-complete segments are tracked.
-  Once all bundles in a segment are acked, `oldest_incomplete_segment` advances
-  and the segment entry is removed.
+##### Progress File Format (v1)
+
+The binary format is designed for forward and backward compatibility:
+
+```text
+Header (fixed size for v1 = 32 bytes):
++----------+---------+-------------+----------+-----------------------+-------------+----------+
+| magic    | version | header_size | flags    | oldest_incomplete_seg | entry_count | reserved |
+| (8B)     | (2B LE) | (2B LE)     | (2B LE)  | (8B LE)               | (4B LE)     | (6B)     |
++----------+---------+-------------+----------+-----------------------+-------------+----------+
+
+Body (entry_count segment entries):
++------------+--------------+---------------+-----------------+
+| seg_seq    | bundle_count | bitmap_words  | acked_bitmap    |
+| (8B LE)    | (4B LE)      | (2B LE)       | (bitmap_words * 8B) |
++------------+--------------+---------------+-----------------+
+
+Footer:
++----------+
+| crc32    |
+| (4B LE)  |
++----------+
+```
+
+Field descriptions:
+
+- `magic`: `"QUIVSUB\0"` (8 bytes) - identifies file type
+- `version`: Format version (currently 1)
+- `header_size`: Total header bytes (32 for v1); allows skipping unknown fields
+- `flags`: Reserved for future per-file options (must be 0 for v1)
+- `oldest_incomplete_seg`: Segment sequence of oldest incomplete segment
+- `entry_count`: Number of segment entries in body
+- `reserved`: Zero-filled; available for future header fields
+- `seg_seq`: Segment sequence number for this entry
+- `bundle_count`: Total bundles in segment (for validation)
+- `bitmap_words`: Number of 8-byte words in the bitmap
+- `acked_bitmap`: Bit vector of acked bundles (1 = acked, LSB = bundle 0)
+- `crc32`: CRC32C of all preceding bytes (header + body)
+
+##### Compatibility Guarantees
+
+- **Forward compatibility** (old reader, new writer):
+  - `header_size` lets old readers skip unknown header extensions
+  - Unknown trailing bytes after known fields are ignored
+  - Unknown non-zero `flags` should warn but not fail
+
+- **Backward compatibility** (new reader, old writer):
+  - Version field identifies format; v1 readers reject v0 or unknown versions
+  - Shorter-than-expected files are rejected as corrupted
+
+- **Integrity**: CRC32C covers entire file; mismatches indicate corruption
+
+##### File Semantics
+
 - **Atomic updates**: Progress is written via `write temp → fsync → rename`,
   ensuring crash-safe updates without append-only log compaction.
 - **Batched I/O**: In-memory state is updated on each ack; file writes are
   batched based on `progress_flush_interval` (default 25ms) to amortize fsync
   cost across multiple acks.
+- **Compact representation**: Only partially-complete segments are tracked.
+  Once all bundles in a segment are acked, `oldest_incomplete_segment` advances
+  and the segment entry is removed.
 
-##### Progress File Semantics
+##### Recovery Semantics
 
-- **Recovery**: On startup, read each `quiver.sub.<id>` file to restore that
-  subscriber's state. No log replay required—file contains current state.
+- **Startup**: Read each `quiver.sub.<id>` file to restore that subscriber's
+  state. No log replay required—file contains current state.
+- **CRC validation**: If CRC fails, the file is considered corrupted. Recovery
+  options: (1) start fresh from latest segment, (2) fail startup, or (3) use
+  backup if available. Policy is configurable.
 - **Cleanup coordination**: Before deleting a segment, all subscriber progress
   files must be flushed and show `oldest_incomplete_segment > deleted_segment`.
-- **Forward compatibility**: `header_size` field allows future versions to add
-  header fields; unknown trailing bytes in entries are ignored.
 
 **Dual Time & Ordering Semantics**:
 

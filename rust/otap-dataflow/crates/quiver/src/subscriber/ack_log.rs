@@ -1482,8 +1482,8 @@ mod tests {
 
         // Verify header: magic (8) + version (2) + header_size (2) = 12 bytes
         let file = std::fs::read(&path).unwrap();
-        assert_eq!(&file[0..8], quiver.ack_MAGIC);
-        assert_eq!(u16::from_le_bytes([file[8], file[9]]), quiver.ack_VERSION);
+        assert_eq!(&file[0..8], ACK_LOG_MAGIC);
+        assert_eq!(u16::from_le_bytes([file[8], file[9]]), ACK_LOG_VERSION);
         assert_eq!(
             u16::from_le_bytes([file[10], file[11]]),
             HEADER_V1_SIZE as u16
@@ -1663,7 +1663,7 @@ mod tests {
         let path = dir.path().join("quiver.ack");
 
         let mut data = Vec::new();
-        data.extend_from_slice(quiver.ack_MAGIC);
+        data.extend_from_slice(ACK_LOG_MAGIC);
         data.extend_from_slice(&99u16.to_le_bytes()); // Invalid version
         data.extend_from_slice(&12u16.to_le_bytes()); // header_size
 
@@ -1683,8 +1683,8 @@ mod tests {
 
         // Write valid header + partial length prefix (only 2 of 4 bytes)
         let mut data = Vec::new();
-        data.extend_from_slice(quiver.ack_MAGIC);
-        data.extend_from_slice(&quiver.ack_VERSION.to_le_bytes());
+        data.extend_from_slice(ACK_LOG_MAGIC);
+        data.extend_from_slice(&ACK_LOG_VERSION.to_le_bytes());
         data.extend_from_slice(&(HEADER_V1_SIZE as u16).to_le_bytes()); // header_size
         data.extend_from_slice(&[0x20, 0x00]); // Partial 2-byte length (need 4)
 
@@ -1770,7 +1770,7 @@ mod tests {
         }
 
         // Truncate back to valid
-        truncate_quiver.ack(&path, valid_pos).unwrap();
+        truncate_ack_log(&path, valid_pos).unwrap();
 
         assert_eq!(std::fs::metadata(&path).unwrap().len(), valid_pos);
 
@@ -1852,8 +1852,8 @@ mod tests {
             use std::io::Write;
             let mut file = File::create(&path).unwrap();
 
-            file.write_all(quiver.ack_MAGIC).unwrap();
-            file.write_all(&quiver.ack_VERSION.to_le_bytes()).unwrap();
+            file.write_all(ACK_LOG_MAGIC).unwrap();
+            file.write_all(&ACK_LOG_VERSION.to_le_bytes()).unwrap();
             // Header size = 20 (current 12 + 8 extra bytes)
             file.write_all(&20u16.to_le_bytes()).unwrap();
             // Extra future header fields
@@ -1930,8 +1930,8 @@ mod tests {
             "Expected rotation to occur"
         );
 
-        // All entries should be readable via read_all_quiver.acks
-        let all_entries = read_all_quiver.acks(&path).unwrap();
+        // All entries should be readable via read_all_ack_logs
+        let all_entries = read_all_ack_logs(&path).unwrap();
         assert_eq!(all_entries.len(), 10);
     }
 
@@ -1969,7 +1969,7 @@ mod tests {
         }
 
         // All remaining entries should still be readable
-        let remaining = read_all_quiver.acks(&path).unwrap();
+        let remaining = read_all_ack_logs(&path).unwrap();
         assert!(!remaining.is_empty());
 
         // Verify we can identify how many were purged
@@ -1977,7 +1977,7 @@ mod tests {
     }
 
     #[test]
-    fn read_all_quiver.acks_combines_rotated_and_active() {
+    fn read_all_ack_logs_combines_rotated_and_active() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("quiver.ack");
 
@@ -2002,7 +2002,7 @@ mod tests {
         assert!(rotated_count > 0, "Expected rotation to occur");
 
         // Read all and verify count
-        let all_entries = read_all_quiver.acks(&path).unwrap();
+        let all_entries = read_all_ack_logs(&path).unwrap();
         assert_eq!(all_entries.len(), 20);
     }
 
@@ -2032,7 +2032,7 @@ mod tests {
     }
 
     #[test]
-    fn read_all_quiver.acks_empty_directory() {
+    fn read_all_ack_logs_empty_directory() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("quiver.ack");
 
@@ -2041,7 +2041,7 @@ mod tests {
             let _writer = AckLogWriter::open(&path).unwrap();
         }
 
-        let entries = read_all_quiver.acks(&path).unwrap();
+        let entries = read_all_ack_logs(&path).unwrap();
         assert!(entries.is_empty());
     }
 

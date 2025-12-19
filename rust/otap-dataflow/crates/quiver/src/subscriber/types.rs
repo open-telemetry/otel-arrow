@@ -16,9 +16,9 @@ use crate::segment::SegmentSeq;
 
 /// Maximum length for subscriber IDs.
 ///
-/// Subscriber IDs are persisted in the ack log, so we limit their size to
-/// prevent unbounded storage growth and ensure efficient serialization.
-pub const MAX_SUBSCRIBER_ID_LEN: usize = 256;
+/// Subscriber IDs become part of filenames (`quiver.sub.<id>`), so we use a
+/// conservative limit for cross-platform filesystem compatibility.
+pub const MAX_SUBSCRIBER_ID_LEN: usize = 64;
 
 /// Unique identifier for a subscriber.
 ///

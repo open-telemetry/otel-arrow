@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Subscriber management and acknowledgment tracking for Quiver.
+//! Subscriber management and progress tracking for Quiver.
 //!
 //! This module implements the consumer side of Quiver's persistence layer,
 //! enabling multiple independent subscribers to consume bundles from segments
-//! with durable acknowledgment tracking.
+//! with durable progress tracking.
 //!
 //! # Concepts
 //!
@@ -18,8 +18,9 @@
 //! - **AckOutcome**: The terminal outcome of bundle processing—either
 //!   successfully acknowledged or permanently dropped.
 //!
-//! - **quiver.ack**: A durable append-only log recording subscriber outcomes.
-//!   Replayed on recovery to rebuild subscriber state.
+//! - **Progress File** (`quiver.sub.<id>`): Each subscriber maintains an
+//!   independent progress file that snapshots its current state. Progress is
+//!   atomically updated via write-fsync-rename.
 //!
 //! # Architecture
 //!
@@ -40,11 +41,12 @@
 //! |---------------|---------------------------------------------------|
 //! | `types.rs`    | Core type definitions (SubscriberId, BundleRef)   |
 //! | `error.rs`    | Subscriber-specific error types                   |
-//! | `ack_log.rs`  | Durable ack log writer and reader                 |
-//! | `state.rs`    | Per-subscriber progress tracking                  |
+//! | `progress.rs` | Per-subscriber progress file (write/read)         |
+//! | `state.rs`    | Per-subscriber in-memory progress tracking        |
 //! | `handle.rs`   | RAII bundle handle for consumption                |
 //! | `registry.rs` | Subscriber lifecycle management                   |
 
+// TODO: Replace ack_log.rs with progress.rs (see ARCHITECTURE.md)
 mod ack_log;
 mod error;
 mod handle;
