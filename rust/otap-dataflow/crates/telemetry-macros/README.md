@@ -68,7 +68,8 @@ Notes:
 - The macro injects `#[repr(C, align(64))]` for better cache-line isolation.
 - The macro also derives the required handler to integrate with the metrics
   registry.
-- Delta instruments (`Delta*`) are meant to be reset after reporting.
+- Delta instruments (`Counter` and `UpDownCounter`) are meant to be reset after
+  reporting.
 - Observe instruments (`Observe*`) and `Gauge` are meant to be replaced on each
   report/observation (not accumulated).
 
