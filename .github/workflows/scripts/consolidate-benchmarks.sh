@@ -22,9 +22,5 @@ done
 # Combine all benchmark JSON files into a single output (find them recursively)
 find "${INPUT_DIR}" -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > "${OUTPUT_FILE}"
 
-# Trim commit messages to just the first line (PR title)
-jq 'map(.commit.message |= (split("\n")[0]))' "${OUTPUT_FILE}" > "${OUTPUT_FILE}.tmp"
-mv "${OUTPUT_FILE}.tmp" "${OUTPUT_FILE}"
-
 echo "Consolidated benchmark data:"
 cat "${OUTPUT_FILE}"
