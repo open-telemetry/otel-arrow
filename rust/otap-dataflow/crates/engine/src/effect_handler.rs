@@ -6,13 +6,62 @@
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
 use crate::node::NodeId;
+use bytes::Bytes;
 use otap_df_channel::error::SendError;
+use otap_df_pdata::otlp::stateful_encoder::StatefulOtlpEncoder;
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
+use std::cell::RefCell;
 use std::net::SocketAddr;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::mpsc;
+
+/// Telemetry buffer state for local (!Send) components.
+pub(crate) struct LocalTelemetryState {
+    pub(crate) encoder: StatefulOtlpEncoder,
+    pub(crate) resource_bytes: OtlpProtoBytes,
+    pub(crate) scope_name: String,
+    pub(crate) flush_threshold_bytes: usize,
+    pub(crate) overflow_sender: mpsc::UnboundedSender<Bytes>,
+}
+
+/// Telemetry buffer state for shared (Send + Sync) components.
+pub(crate) struct SharedTelemetryState {
+    pub(crate) encoder: StatefulOtlpEncoder,
+    pub(crate) resource_bytes: OtlpProtoBytes,
+    pub(crate) scope_name: String,
+    pub(crate) flush_threshold_bytes: usize,
+    pub(crate) overflow_sender: mpsc::UnboundedSender<Bytes>,
+}
+
+/// Telemetry buffer for component-level logging via shared (Send + Sync) effect handlers.
+///
+/// Routes component logs to the internal telemetry receiver.
+/// The overflow_sender can point to:
+/// - ITR receiver (when ITR is configured) - enters OTAP pipeline
+/// - OtlpBytesChannel (SDK fallback) - same as 3rd party logs
+///
+/// Note: Local (!Send) effect handlers store LocalTelemetryState directly
+/// in their struct to avoid breaking Send bounds.
+#[derive(Clone)]
+pub struct TelemetryBuffer(Arc<Mutex<SharedTelemetryState>>);
+
+impl TelemetryBuffer {
+    /// Create a new telemetry buffer for shared effect handlers.
+    pub fn new(state: SharedTelemetryState) -> Self {
+        Self(Arc::new(Mutex::new(state)))
+    }
+    
+    /// Get a reference to the inner state (for internal use).
+    pub(crate) fn inner(&self) -> &Arc<Mutex<SharedTelemetryState>> {
+        &self.0
+    }
+}
 
 /// Common implementation of all effect handlers.
 ///
@@ -25,6 +74,10 @@ pub(crate) struct EffectHandlerCore<PData> {
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    
+    /// Telemetry buffer for component-level logging.
+    /// None if telemetry is disabled for this component.
+    pub(crate) telemetry_buffer: Option<TelemetryBuffer>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -34,6 +87,21 @@ impl<PData> EffectHandlerCore<PData> {
             node_id,
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
+            telemetry_buffer: None,
+        }
+    }
+    
+    /// Creates a new EffectHandlerCore with telemetry buffer (for shared effect handlers only).
+    pub(crate) fn new_with_shared_telemetry(
+        node_id: NodeId,
+        metrics_reporter: MetricsReporter,
+        telemetry_buffer: TelemetryBuffer,
+    ) -> Self {
+        Self {
+            node_id,
+            pipeline_ctrl_msg_sender: None,
+            metrics_reporter,
+            telemetry_buffer: Some(telemetry_buffer),
         }
     }
 

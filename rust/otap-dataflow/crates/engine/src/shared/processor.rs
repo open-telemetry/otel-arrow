@@ -242,5 +242,43 @@ impl<PData> EffectHandler<PData> {
         self.core.report_metrics(metrics)
     }
 
+    /// Log a telemetry event from this component.
+    ///
+    /// This method encodes the log record into the component's telemetry buffer.
+    /// On overflow (buffer exceeds threshold), it automatically flushes to the
+    /// configured destination (ITR or SDK fallback) via non-blocking channel send.
+    ///
+    /// This method never fails - errors are silently dropped to prevent recursion.
+    /// If the telemetry buffer is not configured, this is a no-op.
+    /// Thread-safe via Arc<Mutex<>>.
+    pub fn log_event(&self, log_record: &impl otap_df_pdata::views::logs::LogRecordView) {
+        if let Some(ref buffer) = self.core.telemetry_buffer {
+            let mut state = buffer.inner().lock().unwrap();
+            
+            // Clone necessary data to avoid holding immutable borrows
+            let resource_bytes = state.resource_bytes.clone();
+            let scope_name = state.scope_name.clone();
+            let threshold = state.flush_threshold_bytes;
+            
+            // Encode the log record (silent drop on error to prevent recursion)
+            if state.encoder.encode_log_record(
+                log_record,
+                resource_bytes.as_bytes(),
+                &scope_name,
+            ).is_err() {
+                // TODO: Increment dropped events counter
+                return;
+            }
+            
+            // Check overflow - non-blocking send to break recursion
+            if state.encoder.len() >= threshold {
+                let bytes = state.encoder.flush();
+                // Non-blocking send - errors are silently dropped
+                // Destination is either ITR or SDK fallback (OtlpBytesChannel)
+                let _ = state.overflow_sender.send(bytes);
+            }
+        }
+    }
+
     // More methods will be added in the future as needed.
 }
