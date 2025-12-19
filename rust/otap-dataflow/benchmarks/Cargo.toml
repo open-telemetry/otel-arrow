@@ -19,7 +19,6 @@ criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
-tikv-jemallocator.workspace = true
 
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
@@ -38,6 +37,9 @@ roaring.workspace = true
 unsync.workspace = true
 portpicker.workspace = true
 tokio-stream.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator.workspace = true
 
 [lints]
 workspace = true

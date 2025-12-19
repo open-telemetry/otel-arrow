@@ -11,8 +11,30 @@ use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_telemetry::opentelemetry_client::logger_provider::LoggerProvider;
 use std::path::PathBuf;
+
+#[cfg(all(
+    not(windows),
+    feature = "jemalloc",
+    feature = "mimalloc",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `jemalloc` and `mimalloc` are mutually exclusive. \
+     To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
+);
+
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
@@ -89,12 +111,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This captures ALL tracing events from df_engine and third-party libraries
     // and formats them synchronously to stdout/stderr with OTLP encoding
     LoggerProvider::init_default_console_tracing();
-    
+
     // Log startup
     tracing::info!("df_engine starting");
-    
+
     let args = Args::parse();
-    
+
     // Initialize rustls crypto provider (required for rustls 0.23+)
     // We use ring as the default provider
     #[cfg(feature = "experimental-tls")]
@@ -106,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // That will be replaced with a more dynamic approach in the future.
     let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
     let pipeline_id: PipelineId = "default_pipeline".into();
+
+    println!("{}", system_info());
 
     // Load pipeline configuration from file
     let pipeline_cfg = match PipelineConfig::from_file(
@@ -133,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
 
-    // Map CLI arguments to the new enum structure
+    // Map CLI arguments to the core allocation enum
     let core_allocation = if let Some(range) = args.core_id_range {
         range
     } else if args.num_cores == 0 {
@@ -146,12 +170,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let quota = Quota { core_allocation };
 
-    // Log what we're doing (using tracing instead of println)
+    // Print the requested core configuration
     match &quota.core_allocation {
-        CoreAllocation::AllCores => tracing::info!("Starting pipeline using all available cores"),
-        CoreAllocation::CoreCount { count } => tracing::info!(cores = count, "Starting pipeline"),
+        CoreAllocation::AllCores => println!("Requested core allocation: all available cores"),
+        CoreAllocation::CoreCount { count } => println!("Requested core allocation: {count} cores"),
         CoreAllocation::CoreSet { .. } => {
-            tracing::info!(allocation = %quota.core_allocation, "Starting pipeline on core ID set");
+            tracing::info!("Requested core allocation: {}", quota.core_allocation);
         }
     }
 
@@ -198,6 +222,14 @@ fn system_info() -> String {
         "release"
     };
 
+    let memory_allocator = if cfg!(feature = "mimalloc") {
+        "mimalloc"
+    } else if cfg!(all(feature = "jemalloc", not(windows))) {
+        "jemalloc"
+    } else {
+        "system"
+    };
+
     let debug_warning = if cfg!(debug_assertions) {
         "\n\n⚠️  WARNING: This binary was compiled in debug mode.
    Debug builds are NOT recommended for production, benchmarks, or performance testing.
@@ -231,15 +263,10 @@ fn system_info() -> String {
     exporters_sorted.sort();
 
     format!(
-        "Examples:
-  {} --pipeline configs/otlp-perf.yaml --num-cores 4
-  {} --pipeline configs/otlp-perf.yaml --core-id-range 2-5
-  {} -p configs/otlp-perf.yaml
-
-System Information:
+        "System Information:
   Available CPU cores: {}
   Build mode: {}
-  Default memory allocator: mimalloc
+  Memory allocator: {}
 
 Available Plugin URNs:
   Receivers: {}
@@ -247,11 +274,9 @@ Available Plugin URNs:
   Exporters: {}
 
 Configuration files can be found in the configs/ directory.{}",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_NAME"),
         available_cores,
         build_mode,
+        memory_allocator,
         receivers_sorted.join(", "),
         processors_sorted.join(", "),
         exporters_sorted.join(", "),

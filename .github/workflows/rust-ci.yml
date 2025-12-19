@@ -30,7 +30,9 @@ jobs:
           - experimental/query_engine
         os:
           - ubuntu-latest
+          - ubuntu-24.04-arm
           - windows-latest
+          - macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -90,6 +92,21 @@ jobs:
           Write-Host "disk usage after"
           Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
 
+      - name: Free disk space (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "disk usage before"
+          df -h
+
+          # Remove unnecessary tools to free up space
+          sudo rm -rf /Applications/Xcode_*.app
+          sudo rm -rf ~/Library/Android
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/local/lib/node_modules
+
+          echo "disk usage after"
+          df -h
+
       - name: install cargo-llvm-cov and nextest
         uses: taiki-e/install-action@3575e532701a5fc614b0c842e4119af4cc5fd16d # v2.62.60
         with:
@@ -105,6 +122,10 @@ jobs:
         working-directory: ./rust/${{ matrix.folder }}
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
+        run: cargo nextest run --all-features --workspace
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
         run: cargo nextest run --all-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       # Only upload coverage from Linux since it runs the complete test suite
