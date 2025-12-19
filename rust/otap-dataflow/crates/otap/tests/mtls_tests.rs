@@ -428,7 +428,10 @@ async fn test_build_server_config_corrupted_pem() {
 /// the server's trusted CA file changes and verification succeeds/fails accordingly.
 // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
 #[tokio::test]
-#[cfg_attr(windows, ignore = "Skipping on Windows due to flakiness")]
+#[cfg_attr(
+    any(windows, target_os = "macos"),
+    ignore = "Skipping on Windows and macOS due to flakiness"
+)]
 async fn test_mtls_ca_hot_reload() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
