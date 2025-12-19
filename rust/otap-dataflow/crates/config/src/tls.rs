@@ -53,7 +53,42 @@ fn default_reload_interval() -> Option<Duration> {
 /// - **Scrapers/clients**: When pulling data from a target (e.g., Prometheus scrape, OTLP/HTTP client).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct TlsClientConfig {
-    // TODO: Implement client TLS configuration fields when needed.
+    /// Common TLS configuration (client certificate + key for mTLS).
+    #[serde(flatten)]
+    pub config: TlsConfig,
+
+    /// Path to a PEM bundle of CA certificates to trust when verifying the server.
+    pub ca_file: Option<PathBuf>,
+
+    /// In-memory PEM bundle of CA certificates to trust when verifying the server.
+    pub ca_pem: Option<String>,
+
+    /// Controls whether system CA certificates are loaded for server certificate verification.
+    ///
+    /// Defaults to true when omitted.
+    pub include_system_ca_certs_pool: Option<bool>,
+
+    /// Override the server name used for TLS SNI and certificate verification.
+    ///
+    /// This is typically needed when connecting by IP address or when the endpoint hostname
+    /// does not match the certificate.
+    #[serde(rename = "server_name_override")]
+    pub server_name: Option<String>,
+
+    /// Insecure disables TLS.
+    #[serde(default)]
+    pub insecure: Option<bool>,
+
+    /// InsecureSkipVerify would enable TLS but skip server certificate verification.
+    ///
+    /// NOTE: This is currently **not supported** in the Rust collector implementation.
+    /// If set to `true`, startup will fail with a clear error instead of silently
+    /// proceeding with normal certificate verification.
+    ///
+    /// TODO: Implement this behind a clearly-labeled "dangerous" option once the
+    /// tonic/rustls client stack supports plugging in a custom verifier.
+    #[serde(default)]
+    pub insecure_skip_verify: Option<bool>,
 }
 
 /// TLS configuration specific to server connections (terminating TLS/mTLS).
