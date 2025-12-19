@@ -30,9 +30,9 @@ pub use payload::{OtapPayload, OtapPayloadHelpers};
 // #[cfg(test)] ?
 pub mod testing;
 
-// The validation module uses Unix-specific functionality (signals via nix crate)
-// and is only used for integration tests with the OpenTelemetry Collector.
-#[cfg(all(test, unix))]
+// The validation module is only used for integration tests with the OpenTelemetry Collector.
+// The collector is only built on Linux in CI, so we only compile these tests on Linux.
+#[cfg(all(test, target_os = "linux"))]
 mod validation;
 
 pub use decode::decoder::Consumer;
