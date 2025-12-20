@@ -2379,6 +2379,14 @@ mod tests {
                             "key3".into(),
                             OwnedValue::Integer(IntegerValueStorage::new(1)),
                         ),
+                        (
+                            "key4".into(),
+                            OwnedValue::Map(MapValueStorage::new(HashMap::new())),
+                        ),
+                        (
+                            "key5".into(),
+                            OwnedValue::Array(ArrayValueStorage::new(vec![])),
+                        ),
                     ]))),
                 ))
                 .with_pipeline(
@@ -2598,6 +2606,101 @@ mod tests {
                                     ),
                                 ],
                             ),
+                            PipelineFunction::new_with_expressions(
+                                QueryLocation::new_fake(),
+                                vec![
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::MutableValue(Some(
+                                            ValueType::Map,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::MutableValue(Some(
+                                            ValueType::Array,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::MutableValue(Some(
+                                            ValueType::Map,
+                                        )),
+                                    ),
+                                ],
+                                None,
+                                vec![
+                                    PipelineFunctionExpression::Transform(
+                                        TransformExpression::Set(SetTransformExpression::new(
+                                            QueryLocation::new_fake(),
+                                            ScalarExpression::Argument(
+                                                ArgumentScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    Some(ValueType::Map),
+                                                    0,
+                                                    ValueAccessor::new(),
+                                                ),
+                                            ),
+                                            MutableValueExpression::Variable(
+                                                VariableScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    StringScalarExpression::new(
+                                                        QueryLocation::new_fake(),
+                                                        "a",
+                                                    ),
+                                                    ValueAccessor::new(),
+                                                ),
+                                            ),
+                                        )),
+                                    ),
+                                    PipelineFunctionExpression::Transform(
+                                        TransformExpression::Set(SetTransformExpression::new(
+                                            QueryLocation::new_fake(),
+                                            ScalarExpression::Argument(
+                                                ArgumentScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    Some(ValueType::Array),
+                                                    1,
+                                                    ValueAccessor::new(),
+                                                ),
+                                            ),
+                                            MutableValueExpression::Variable(
+                                                VariableScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    StringScalarExpression::new(
+                                                        QueryLocation::new_fake(),
+                                                        "b",
+                                                    ),
+                                                    ValueAccessor::new(),
+                                                ),
+                                            ),
+                                        )),
+                                    ),
+                                    PipelineFunctionExpression::Transform(
+                                        TransformExpression::Set(SetTransformExpression::new(
+                                            QueryLocation::new_fake(),
+                                            ScalarExpression::Argument(
+                                                ArgumentScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    Some(ValueType::Map),
+                                                    2,
+                                                    ValueAccessor::new(),
+                                                ),
+                                            ),
+                                            MutableValueExpression::Variable(
+                                                VariableScalarExpression::new(
+                                                    QueryLocation::new_fake(),
+                                                    StringScalarExpression::new(
+                                                        QueryLocation::new_fake(),
+                                                        "c",
+                                                    ),
+                                                    ValueAccessor::new(),
+                                                ),
+                                            ),
+                                        )),
+                                    ),
+                                ],
+                            ),
                         ])
                         .build()
                         .unwrap(),
@@ -2793,6 +2896,65 @@ mod tests {
                                 )),
                                 ScalarExpression::Static(StaticScalarExpression::String(
                                     StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                ],
+            ),
+            None,
+        );
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                3,
+                vec![
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key4"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key5"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
                                 )),
                             ]),
                         ),
