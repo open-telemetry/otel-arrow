@@ -68,14 +68,14 @@ jobs:
         id: binary_size
         run: |
           echo "### Binary Size - ${{ matrix.platform.name }}" >> $GITHUB_STEP_SUMMARY
-          docker run --rm df_engine:${{ matrix.platform.name }} ls -lh /home/dataflow/df_engine >> $GITHUB_STEP_SUMMARY
+          docker run --rm --entrypoint ls df_engine:${{ matrix.platform.name }} -lh /home/dataflow/df_engine >> $GITHUB_STEP_SUMMARY
           
           # Also capture the size in bytes for artifact
-          SIZE=$(docker run --rm df_engine:${{ matrix.platform.name }} stat -c %s /home/dataflow/df_engine 2>/dev/null || docker run --rm df_engine:${{ matrix.platform.name }} stat -f %z /home/dataflow/df_engine)
+          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/dataflow/df_engine)
           echo "size_bytes=$SIZE" >> $GITHUB_OUTPUT
           
           # Human readable
-          SIZE_HR=$(docker run --rm df_engine:${{ matrix.platform.name }} ls -lh /home/dataflow/df_engine | awk '{print $5}')
+          SIZE_HR=$(docker run --rm --entrypoint ls df_engine:${{ matrix.platform.name }} -lh /home/dataflow/df_engine | awk '{print $5}')
           echo "size_human=$SIZE_HR" >> $GITHUB_OUTPUT
 
       - name: Get Docker image size
