@@ -2424,8 +2424,8 @@ mod tests {
                                     )),
                                 )],
                             ),
-                            PipelineFunction::new_with_expressions(
-                                QueryLocation::new_fake(),
+                            PipelineFunction::new_external(
+                                "external_1",
                                 vec![
                                     PipelineFunctionParameter::new(
                                         QueryLocation::new_fake(),
@@ -2465,149 +2465,9 @@ mod tests {
                                     ),
                                 ],
                                 None,
-                                vec![
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::Integer),
-                                                    0,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "a",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::Boolean),
-                                                    1,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "b",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::Double),
-                                                    2,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "c",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::DateTime),
-                                                    3,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "d",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::TimeSpan),
-                                                    4,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "e",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::String),
-                                                    5,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "f",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                ],
                             ),
-                            PipelineFunction::new_with_expressions(
-                                QueryLocation::new_fake(),
+                            PipelineFunction::new_external(
+                                "external_2",
                                 vec![
                                     PipelineFunctionParameter::new(
                                         QueryLocation::new_fake(),
@@ -2629,81 +2489,59 @@ mod tests {
                                     ),
                                 ],
                                 None,
-                                vec![
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::Map),
-                                                    0,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "a",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::Array),
-                                                    1,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "b",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                    PipelineFunctionExpression::Transform(
-                                        TransformExpression::Set(SetTransformExpression::new(
-                                            QueryLocation::new_fake(),
-                                            ScalarExpression::Argument(
-                                                ArgumentScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    Some(ValueType::Map),
-                                                    2,
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                            MutableValueExpression::Variable(
-                                                VariableScalarExpression::new(
-                                                    QueryLocation::new_fake(),
-                                                    StringScalarExpression::new(
-                                                        QueryLocation::new_fake(),
-                                                        "c",
-                                                    ),
-                                                    ValueAccessor::new(),
-                                                ),
-                                            ),
-                                        )),
-                                    ),
-                                ],
                             ),
                         ])
                         .build()
                         .unwrap(),
+                )
+                .with_external_function_implementation(
+                    "external_1",
+                    RecordSetEngineFunctionClosureCallback::new(|_, ec| {
+                        let args = ec.get_arguments().expect("Arguments not found");
+
+                        let a1 = args.get_argument(0)?;
+                        assert!(a1.get_value_type() == ValueType::Null);
+
+                        let a2 = args.get_argument(1)?;
+                        assert!(a2.get_value_type() == ValueType::Boolean);
+
+                        let a3 = args.get_argument(2)?;
+                        assert!(a3.get_value_type() == ValueType::Double);
+
+                        let a4 = args.get_argument(3)?;
+                        assert!(a4.get_value_type() == ValueType::DateTime);
+
+                        let a5 = args.get_argument(4)?;
+                        assert!(a5.get_value_type() == ValueType::TimeSpan);
+
+                        let a6 = args.get_argument(5)?;
+                        assert!(a6.get_value_type() == ValueType::String);
+
+                        Ok(ResolvedValue::Computed(OwnedValue::Null))
+                    }),
+                )
+                .with_external_function_implementation(
+                    "external_2",
+                    RecordSetEngineFunctionClosureCallback::new(|_, ec| {
+                        let args = ec.get_arguments().expect("Arguments not found");
+
+                        {
+                            let a1 = args.get_argument_mut(0)?;
+                            assert!(a1.get_value_type() == ValueType::Map);
+                        }
+
+                        {
+                            let a2 = args.get_argument_mut(1)?;
+                            assert!(a2.get_value_type() == ValueType::Array);
+                        }
+
+                        {
+                            let a3 = args.get_argument_mut(2)?;
+                            assert!(a3.get_value_type() == ValueType::Null);
+                        }
+
+                        Ok(ResolvedValue::Computed(OwnedValue::Null))
+                    }),
                 );
 
             let execution_context = test.create_execution_context();
@@ -2831,7 +2669,7 @@ mod tests {
                                     ),
                                 )),
                                 ScalarExpression::Static(StaticScalarExpression::String(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
                                 )),
                             ]),
                         ),
