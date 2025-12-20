@@ -75,7 +75,7 @@ tests:
         engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
-        observation_interval: 15
+        observation_interval: 60
         signals_per_second: null # Using null means loadgen don't self-cap the rate.
         max_batch_size: {{max_batch_size}}
 
