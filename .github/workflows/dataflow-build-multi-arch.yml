@@ -1,0 +1,120 @@
+name: Dataflow Engine Multi-Architecture Build
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run weekly on Mondays at 00:00 UTC
+    - cron: '0 0 * * 1'
+  push:
+    branches:
+      - main
+    paths:
+      - 'rust/otap-dataflow/**'
+      - 'rust/experimental/**'
+      - 'proto/**'
+      - '.github/workflows/dataflow-build-multiarch.yml'
+
+jobs:
+  build-multiarch:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            docker-platform: linux/amd64
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            docker-platform: linux/arm64
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@aa33708b10e362ff993539393ff100fa93ed6a27 # v3.7.1
+
+      - name: Build dataflow_engine for ${{ matrix.platform.name }}
+        run: |
+          git submodule init
+          git submodule update
+          cd rust/otap-dataflow
+          docker buildx build \
+            --platform ${{ matrix.platform.docker-platform }} \
+            --build-context otel-arrow=../../ \
+            -f Dockerfile \
+            -t df_engine:${{ matrix.platform.name }} \
+            --load \
+            .
+          cd ../..
+
+      - name: Get binary size for ${{ matrix.platform.name }}
+        id: binary_size
+        run: |
+          echo "### Binary Size - ${{ matrix.platform.name }}" >> $GITHUB_STEP_SUMMARY
+          docker run --rm df_engine:${{ matrix.platform.name }} ls -lh /home/dataflow/df_engine >> $GITHUB_STEP_SUMMARY
+          
+          # Also capture the size in bytes for artifact
+          SIZE=$(docker run --rm df_engine:${{ matrix.platform.name }} stat -c %s /home/dataflow/df_engine 2>/dev/null || docker run --rm df_engine:${{ matrix.platform.name }} stat -f %z /home/dataflow/df_engine)
+          echo "size_bytes=$SIZE" >> $GITHUB_OUTPUT
+          
+          # Human readable
+          SIZE_HR=$(docker run --rm df_engine:${{ matrix.platform.name }} ls -lh /home/dataflow/df_engine | awk '{print $5}')
+          echo "size_human=$SIZE_HR" >> $GITHUB_OUTPUT
+
+      - name: Get Docker image size
+        run: |
+          echo "### Docker Image Size - ${{ matrix.platform.name }}" >> $GITHUB_STEP_SUMMARY
+          docker images df_engine:${{ matrix.platform.name }} --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create size report
+        run: |
+          mkdir -p size-reports
+          cat > size-reports/${{ matrix.platform.name }}.txt << EOF
+          Platform: ${{ matrix.platform.name }}
+          Binary Size: ${{ steps.binary_size.outputs.size_human }} (${{ steps.binary_size.outputs.size_bytes }} bytes)
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: ${{ github.sha }}
+          EOF
+
+      - name: Upload size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: size-report-${{ matrix.platform.name }}
+          path: size-reports/${{ matrix.platform.name }}.txt
+
+  summary:
+    runs-on: ubuntu-24.04
+    needs: build-multiarch
+    if: always()
+    steps:
+      - name: Download all size reports
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: size-report-*
+          merge-multiple: true
+          path: all-reports
+
+      - name: Generate summary
+        run: |
+          echo "## Dataflow Engine Build Size Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Binary Size | Commit |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          for report in all-reports/*.txt; do
+            if [ -f "$report" ]; then
+              PLATFORM=$(grep "Platform:" "$report" | cut -d' ' -f2)
+              SIZE=$(grep "Binary Size:" "$report" | cut -d' ' -f3)
+              COMMIT=$(grep "Commit:" "$report" | cut -d' ' -f2 | cut -c1-8)
+              echo "| $PLATFORM | $SIZE | $COMMIT |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
