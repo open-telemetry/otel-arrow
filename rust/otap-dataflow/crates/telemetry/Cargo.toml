@@ -20,7 +20,7 @@ unchecked-arithmetic = []
 
 [dependencies]
 otap-df-config = { workspace = true }
-otap-df-pdata-otlp-model = { workspace = true }
+otap-df-pdata = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -39,3 +39,4 @@ opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 crossbeam-channel = { workspace = true }
+prost = { workspace = true }

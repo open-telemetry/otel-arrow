@@ -6,6 +6,7 @@
 use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
+use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
@@ -98,8 +99,7 @@ pub struct PipelineContext {
     pipeline_id: PipelineId,
     node_id: NodeId,
     node_kind: NodeKind,
-    internal_telemetry_receiver:
-        Option<crossbeam_channel::Receiver<opentelemetry_proto::tonic::logs::v1::LogsData>>,
+    internal_telemetry_receiver: Option<crossbeam_channel::Receiver<OtapPayload>>,
 }
 
 impl ControllerContext {
@@ -210,7 +210,7 @@ impl PipelineContext {
     #[must_use]
     pub fn with_internal_telemetry_receiver(
         &mut self,
-        receiver: crossbeam_channel::Receiver<opentelemetry_proto::tonic::logs::v1::LogsData>,
+        receiver: crossbeam_channel::Receiver<OtapPayload>,
     ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
@@ -226,9 +226,7 @@ impl PipelineContext {
 
     /// Returns the internal telemetry receiver, if any.
     #[must_use]
-    pub fn internal_telemetry_receiver(
-        &self,
-    ) -> Option<crossbeam_channel::Receiver<opentelemetry_proto::tonic::logs::v1::LogsData>> {
+    pub fn internal_telemetry_receiver(&self) -> Option<crossbeam_channel::Receiver<OtapPayload>> {
         self.internal_telemetry_receiver.clone()
     }
 }

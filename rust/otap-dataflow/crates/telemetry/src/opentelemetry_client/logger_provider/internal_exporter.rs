@@ -17,18 +17,21 @@ use opentelemetry_sdk::{
     error::OTelSdkResult,
     logs::{LogBatch, LogExporter},
 };
+use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use prost::Message;
+use prost::bytes::BytesMut;
 
 /// An OpenTelemetry log exporter that sends internal logs to the pipeline engine.
 #[derive(Debug)]
 pub struct InternalLogsExporter {
-    sender: crossbeam_channel::Sender<LogsData>,
+    sender: crossbeam_channel::Sender<OtapPayload>,
     sdk_resource: Option<SdkResource>,
 }
 
 impl InternalLogsExporter {
     /// Creates a new instance of the InternalLogsExporter.
     #[must_use]
-    pub fn new(sender: crossbeam_channel::Sender<LogsData>) -> Self {
+    pub fn new(sender: crossbeam_channel::Sender<OtapPayload>) -> Self {
         InternalLogsExporter {
             sender,
             sdk_resource: None,
@@ -210,19 +213,30 @@ impl InternalLogsExporter {
             })
             .collect()
     }
+
+    fn convert_sdk_logs_batch_to_otap_data(&self, batch: LogBatch<'_>) -> OtapPayload {
+        let logs_data = self.to_otlp_logs_data(batch);
+
+        let mut bytes = BytesMut::new();
+        logs_data
+            .encode(&mut bytes)
+            .expect("Failed to encode LogsData");
+
+        let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(bytes.into());
+        OtapPayload::OtlpBytes(otlp_bytes)
+    }
 }
 
 impl LogExporter for InternalLogsExporter {
     fn export(&self, batch: LogBatch<'_>) -> impl Future<Output = OTelSdkResult> + Send {
-        // TODO: Decide if LogsData is the right object to be sent through the internal telemetry channel.
-        // It should be something around OTAP instead, that supports other types of signals in the same channel.
-        let logs_data = self.to_otlp_logs_data(batch);
+        let otap_data = self.convert_sdk_logs_batch_to_otap_data(batch);
+        //let logs_data = self.to_otlp_logs_data(batch);
         let sender = self.sender.clone();
 
         async move {
             // Push the logs_data to the internal telemetry receiver though its channel.
             // It can be a different object to be sent instead of the proto LogsData.
-            let _ = sender.try_send(logs_data);
+            let _ = sender.try_send(otap_data);
             // Ignore if there is an error as there might not be any receiver configured to receive internal telemetry data.
             Ok(())
         }

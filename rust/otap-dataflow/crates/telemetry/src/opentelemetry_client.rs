@@ -7,11 +7,11 @@ pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
-use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
 };
+use otap_df_pdata::OtapPayload;
 
 use crate::{
     error::Error,
@@ -32,7 +32,7 @@ impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
     pub fn new(
         config: &TelemetryConfig,
-        sender: crossbeam_channel::Sender<LogsData>,
+        sender: crossbeam_channel::Sender<OtapPayload>,
     ) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 

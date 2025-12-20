@@ -9,7 +9,6 @@ use crate::OTAP_RECEIVER_FACTORIES;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use opentelemetry_proto::tonic::logs::v1::LogsData;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
@@ -19,6 +18,7 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_pdata::OtapPayload;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ pub struct InternalTelemetryReceiver {
     config: Config,
 
     /// The channel to receive internal telemetry data from the OpenTelemetry SDK.
-    internal_telemetry_receiver: crossbeam_channel::Receiver<LogsData>,
+    internal_telemetry_receiver: crossbeam_channel::Receiver<OtapPayload>,
 
     /// The node id of this receiver
     node_id: NodeId,
@@ -61,7 +61,6 @@ impl InternalTelemetryReceiver {
     /// TODO: Fail if more than one instance is created, as the internal telemetry channel should
     /// have only one receiver instance (it can be multiple replicas).
     /// We can do this validation during configuration time.
-    #[must_use]
     pub fn new(
         pipeline_ctx: PipelineContext,
         config: Config,
@@ -99,6 +98,7 @@ impl InternalTelemetryReceiver {
 /// Implement the Receiver trait for the InternalTelemetryReceiver
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
+    #[allow(clippy::print_stdout)] // Keeping prints for demonstration purposes
     async fn start(
         mut self: Box<Self>,
         mut _ctrl_msg_recv: local::ControlChannel<OtapPdata>,
@@ -113,14 +113,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 }) => {
                     match result {
                         Ok(Ok(logs_data)) => {
-                            let count: usize = logs_data
-                                .resource_logs
-                                .iter()
-                                .flat_map(|rl| &rl.scope_logs)
-                                .map(|sl| sl.log_records.len())
-                                .sum();
-
-                            println!("The InternalTelemetryReceiver received a logs data batch with {} log records. Node name: '{}'", count, self.node_id);
+                            println!("The InternalTelemetryReceiver received a logs data batch with {:?} log records. Node name: '{}'", logs_data, self.node_id);
                             //TODO: Send the received logs data to the next consumers through the effect handler
                             // Make sure no new internal telemetry data is produced for this entire pipeline.
                             //effect_handler.send_data(pdata).await?;
