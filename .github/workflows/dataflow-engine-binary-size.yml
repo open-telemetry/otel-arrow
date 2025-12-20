@@ -17,9 +17,11 @@ jobs:
           - name: linux-amd64
             runner: ubuntu-24.04
             docker-platform: linux/amd64
+            rustflags: "-C target-cpu=x86-64 -C strip=symbols"
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             docker-platform: linux/arm64
+            rustflags: "-C target-cpu=generic -C strip=symbols"
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -42,6 +44,7 @@ jobs:
           docker buildx build \
             --platform ${{ matrix.platform.docker-platform }} \
             --build-context otel-arrow=../../ \
+            --build-arg RUSTFLAGS="${{ matrix.platform.rustflags }}" \
             -f Dockerfile \
             -t df_engine:${{ matrix.platform.name }} \
             --load \
