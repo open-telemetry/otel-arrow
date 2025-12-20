@@ -7,6 +7,14 @@ on:
   schedule:
     # Run weekly on Mondays at 00:00 UTC
     - cron: '0 0 * * 1'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'rust/otap-dataflow/**'
+      - 'rust/experimental/**'
+      - 'proto/**'
+      - '.github/workflows/dataflow-build-multiarch.yml'
   push:
     branches:
       - main
