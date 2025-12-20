@@ -118,11 +118,17 @@ jobs:
           echo "| Platform | Binary Size | Commit |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------------|--------|" >> $GITHUB_STEP_SUMMARY
           
+          echo "## Dataflow Engine Build Size Summary"
+          echo ""
+          echo "| Platform | Binary Size | Commit |"
+          echo "|----------|-------------|--------|"
+          
           for report in all-reports/*.txt; do
             if [ -f "$report" ]; then
               PLATFORM=$(grep "Platform:" "$report" | cut -d' ' -f2)
               SIZE=$(grep "Binary Size:" "$report" | cut -d' ' -f3)
               COMMIT=$(grep "Commit:" "$report" | cut -d' ' -f2 | cut -c1-8)
               echo "| $PLATFORM | $SIZE | $COMMIT |" >> $GITHUB_STEP_SUMMARY
+              echo "| $PLATFORM | $SIZE | $COMMIT |"
             fi
           done
