@@ -23,11 +23,6 @@ jobs:
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             docker-platform: linux/arm64
-        features:
-          - name: default
-            build-arg: ""
-          - name: all-features
-            build-arg: "FEATURES=azure,quiver-persistence,experimental-tls,experimental-exporters,geneva-exporter,azure-monitor-exporter,unsafe-optimizations"
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -42,7 +37,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@aa33708b10e362ff993539393ff100fa93ed6a27 # v3.7.1
 
-      - name: Build dataflow_engine for ${{ matrix.platform.name }} with ${{ matrix.features.name }}
+      - name: Build dataflow_engine for ${{ matrix.platform.name }}
         run: |
           git submodule init
           git submodule update
@@ -50,24 +45,23 @@ jobs:
           docker buildx build \
             --platform ${{ matrix.platform.docker-platform }} \
             --build-context otel-arrow=../../ \
-            ${{ matrix.features.build-arg != '' && format('--build-arg {0}', matrix.features.build-arg) || '' }} \
             -f Dockerfile \
-            -t df_engine:${{ matrix.platform.name }}-${{ matrix.features.name }} \
+            -t df_engine:${{ matrix.platform.name }} \
             --load \
             .
           cd ../..
 
       - name: Get binary size and create report
         run: |
-          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }}-${{ matrix.features.name }} -c %s /home/dataflow/df_engine)
+          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/dataflow/df_engine)
           SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE)
-          echo "Binary size for ${{ matrix.platform.name }} (${{ matrix.features.name }}): $SIZE_HR ($SIZE bytes)"
+          echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE bytes)"
 
           mkdir -p size-reports
-          cat > size-reports/${{ matrix.platform.name }}-${{ matrix.features.name }}.json << EOF
+          cat > size-reports/${{ matrix.platform.name }}.json << EOF
           [
             {
-              "name": "${{ matrix.platform.name }}-${{ matrix.features.name }}-binary-size",
+              "name": "${{ matrix.platform.name }}-binary-size",
               "unit": "bytes",
               "value": $SIZE
             }
@@ -77,8 +71,8 @@ jobs:
       - name: Upload size report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: size-report-${{ matrix.platform.name }}-${{ matrix.features.name }}
-          path: size-reports/${{ matrix.platform.name }}-${{ matrix.features.name }}.json
+          name: size-report-${{ matrix.platform.name }}
+          path: size-reports/${{ matrix.platform.name }}.json
 
   summary:
     runs-on: ubuntu-24.04
