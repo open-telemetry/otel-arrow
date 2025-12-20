@@ -1,0 +1,11 @@
+# Saturation test with 4 core df_engine
+from_template:
+  path: test_suites/integration/continuous/saturation-cores-template.yaml.j2
+  variables:
+    num_cores: 4
+    engine_core_range: "1-4"
+    loadgen_cores: 12
+    loadgen_core_range: "5-16"
+    backend_cores: 1
+    backend_core_range: "0-0"
+    max_batch_size: 800
