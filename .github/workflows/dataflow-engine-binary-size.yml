@@ -27,7 +27,7 @@ jobs:
           - name: default
             build-arg: ""
           - name: all-features
-            build-arg: "FEATURES=--all-features"
+            build-arg: "FEATURES=azure,quiver-persistence,experimental-tls,experimental-exporters,geneva-exporter,azure-monitor-exporter,unsafe-optimizations"
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -50,7 +50,7 @@ jobs:
           docker buildx build \
             --platform ${{ matrix.platform.docker-platform }} \
             --build-context otel-arrow=../../ \
-            ${{ matrix.features.build-arg && format('--build-arg {0}', matrix.features.build-arg) || '' }} \
+            ${{ matrix.features.build-arg != '' && format('--build-arg {0}', matrix.features.build-arg) || '' }} \
             -f Dockerfile \
             -t df_engine:${{ matrix.platform.name }}-${{ matrix.features.name }} \
             --load \
