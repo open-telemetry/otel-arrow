@@ -10,6 +10,7 @@ use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
+use sysinfo::System;
 
 #[cfg(all(
     not(windows),
@@ -196,6 +197,11 @@ fn system_info() -> String {
         "system"
     };
 
+    let mut sys = System::new_all();
+    sys.refresh_memory();
+    let total_memory_gb = sys.total_memory() as f64 / 1_073_741_824.0;
+    let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
+
     let debug_warning = if cfg!(debug_assertions) {
         "\n\n⚠️  WARNING: This binary was compiled in debug mode.
    Debug builds are NOT recommended for production, benchmarks, or performance testing.
@@ -231,6 +237,7 @@ fn system_info() -> String {
     format!(
         "System Information:
   Available CPU cores: {}
+  Available memory: {:.2} GB / {:.2} GB
   Build mode: {}
   Memory allocator: {}
 
@@ -241,6 +248,8 @@ Available Plugin URNs:
 
 Configuration files can be found in the configs/ directory.{}",
         available_cores,
+        available_memory_gb,
+        total_memory_gb,
         build_mode,
         memory_allocator,
         receivers_sorted.join(", "),
