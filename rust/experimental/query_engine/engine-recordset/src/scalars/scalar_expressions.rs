@@ -2375,6 +2375,10 @@ mod tests {
                             "key2".into(),
                             OwnedValue::String(StringValueStorage::new("1".into())),
                         ),
+                        (
+                            "key3".into(),
+                            OwnedValue::Integer(IntegerValueStorage::new(1)),
+                        ),
                     ]))),
                 ))
                 .with_pipeline(
@@ -2411,6 +2415,49 @@ mod tests {
                                         ValueAccessor::new(),
                                     )),
                                 )],
+                            ),
+                            PipelineFunction::new_with_expressions(
+                                QueryLocation::new_fake(),
+                                vec![
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::Integer,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::Boolean,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::Double,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::DateTime,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::TimeSpan,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::String,
+                                        )),
+                                    ),
+                                ],
+                                None,
+                                vec![],
                             ),
                         ])
                         .build()
@@ -2507,6 +2554,113 @@ mod tests {
                 ))],
             ),
             Some("1"),
+        );
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                2,
+                vec![
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                ],
+            ),
+            None,
         );
     }
 
