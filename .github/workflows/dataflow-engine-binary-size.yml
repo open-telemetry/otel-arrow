@@ -1,4 +1,4 @@
-name: Dataflow Engine Multi-Architecture Build
+name: Dataflow Engine Binary Size Tracking
 permissions:
   contents: read
 
@@ -51,42 +51,19 @@ jobs:
             .
           cd ../..
 
-      - name: Get binary size for ${{ matrix.platform.name }}
-        id: binary_size
+      - name: Get binary size and create report
         run: |
-          echo "### Binary Size - ${{ matrix.platform.name }}" >> $GITHUB_STEP_SUMMARY
-          docker run --rm --entrypoint ls df_engine:${{ matrix.platform.name }} -lh /home/dataflow/df_engine >> $GITHUB_STEP_SUMMARY
-
-          # Also capture the size in bytes for artifact
           SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/dataflow/df_engine)
-          echo "size_bytes=$SIZE" >> $GITHUB_OUTPUT
+          SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE)
+          echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE bytes)"
 
-          # Human readable
-          SIZE_HR=$(docker run --rm --entrypoint ls df_engine:${{ matrix.platform.name }} -lh /home/dataflow/df_engine | awk '{print $5}')
-          echo "size_human=$SIZE_HR" >> $GITHUB_OUTPUT
-
-      - name: Get Docker image size
-        run: |
-          echo "### Docker Image Size - ${{ matrix.platform.name }}" >> $GITHUB_STEP_SUMMARY
-          docker images df_engine:${{ matrix.platform.name }} --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}" >> $GITHUB_STEP_SUMMARY
-
-      - name: Create size report
-        run: |
           mkdir -p size-reports
-          cat > size-reports/${{ matrix.platform.name }}.txt << EOF
-          Platform: ${{ matrix.platform.name }}
-          Binary Size: ${{ steps.binary_size.outputs.size_human }} (${{ steps.binary_size.outputs.size_bytes }} bytes)
-          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          Commit: ${{ github.sha }}
-          EOF
-
-          # Create benchmark JSON for github-action-benchmark
           cat > size-reports/${{ matrix.platform.name }}.json << EOF
           [
             {
               "name": "${{ matrix.platform.name }}-binary-size",
               "unit": "bytes",
-              "value": ${{ steps.binary_size.outputs.size_bytes }}
+              "value": $SIZE
             }
           ]
           EOF
@@ -95,9 +72,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: size-report-${{ matrix.platform.name }}
-          path: |
-            size-reports/${{ matrix.platform.name }}.txt
-            size-reports/${{ matrix.platform.name }}.json
+          path: size-reports/${{ matrix.platform.name }}.json
 
   summary:
     runs-on: ubuntu-24.04
@@ -118,59 +93,29 @@ jobs:
           merge-multiple: true
           path: all-reports
 
-      - name: Generate summary
+      - name: Consolidate and display results
         run: |
-          echo "## Dataflow Engine Build Size Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Platform | Binary Size |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------------|" >> $GITHUB_STEP_SUMMARY
+          # Merge all JSON files into a single array using jq
+          jq -s 'map(.[0])' all-reports/*.json > consolidated-sizes.json
 
-          echo "## Dataflow Engine Build Size Summary"
-          echo ""
-          echo "| Platform | Binary Size |"
-          echo "|----------|-------------|"
-
-          for report in all-reports/*.txt; do
-            if [ -f "$report" ]; then
-              PLATFORM=$(grep "Platform:" "$report" | cut -d' ' -f2)
-              SIZE=$(grep "Binary Size:" "$report" | cut -d' ' -f3)
-              echo "| $PLATFORM | $SIZE |" >> $GITHUB_STEP_SUMMARY
-              echo "| $PLATFORM | $SIZE |"
-            fi
-          done
-
-      - name: Consolidate benchmark data
-        run: |
-          # Merge all JSON files into a single array
-          echo "[" > consolidated-sizes.json
-          first=true
+          echo "## Dataflow Engine Binary Size"
+          echo "| Platform | Size |"
+          echo "|----------|------|"
           for json in all-reports/*.json; do
-            if [ -f "$json" ]; then
-              if [ "$first" = false ]; then
-                echo "," >> consolidated-sizes.json
-              fi
-              cat "$json" | jq '.[0]' >> consolidated-sizes.json
-              first=false
-            fi
+            PLATFORM=$(jq -r '.[0].name' "$json" | sed 's/-binary-size//')
+            SIZE_BYTES=$(jq -r '.[0].value' "$json")
+            SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE_BYTES)
+            echo "| $PLATFORM | $SIZE_HR |"
           done
-          echo "]" >> consolidated-sizes.json
 
-          echo "Consolidated benchmark data:"
-          cat consolidated-sizes.json
-
-      - name: Update binary size benchmarks and deploy to GitHub Pages
+      - name: Update binary size benchmarks
         uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
         with:
           tool: "customSmallerIsBetter"
           output-file-path: consolidated-sizes.json
           gh-pages-branch: benchmarks
-          max-items-in-chart: 100
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/binary-size"
-          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          save-data-file: true
-
-      - name: Add benchmark link to job summary
-        run: |
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[View the binary size benchmark history here](https://open-telemetry.github.io/otel-arrow/benchmarks/binary-size/)" >> $GITHUB_STEP_SUMMARY
+          auto-push: ${{ github.event_name == 'schedule' }}
+          comment-on-alert: true
+          alert-threshold: "110%"
