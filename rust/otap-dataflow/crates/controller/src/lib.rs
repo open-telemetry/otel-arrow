@@ -84,11 +84,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
 
-        let (internal_telemetry_sender, internal_telemetry_receiver) =
+        let (internal_logs_sender, internal_logs_receiver) =
             crossbeam_channel::bounded(settings.default_pipeline_ctrl_msg_channel_size);
 
         let opentelemetry_client =
-            OpentelemetryClient::new(telemetry_config, internal_telemetry_sender)?;
+            OpentelemetryClient::new(telemetry_config, internal_logs_sender)?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -153,7 +153,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     core_id.id,
                     thread_id,
                 )
-                .with_internal_telemetry_receiver(internal_telemetry_receiver.clone());
+                .with_internal_logs_receiver(internal_logs_receiver.clone());
             let metrics_reporter = metrics_reporter.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);

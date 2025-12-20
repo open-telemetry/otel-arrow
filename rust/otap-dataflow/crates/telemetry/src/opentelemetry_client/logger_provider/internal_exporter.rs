@@ -28,6 +28,25 @@ pub struct InternalLogsExporter {
     sdk_resource: Option<SdkResource>,
 }
 
+impl LogExporter for InternalLogsExporter {
+    fn export(&self, batch: LogBatch<'_>) -> impl Future<Output = OTelSdkResult> + Send {
+        let otap_data = self.convert_sdk_logs_batch_to_otap_data(batch);
+        let sender = self.sender.clone();
+
+        async move {
+            // Push the logs_data to the internal telemetry receiver though its channel.
+            // It can be a different object to be sent instead of the proto LogsData.
+            let _ = sender.try_send(otap_data);
+            // Ignore if there is an error as there might not be any receiver configured to receive internal telemetry data.
+            Ok(())
+        }
+    }
+
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.sdk_resource = Some(resource.clone());
+    }
+}
+
 impl InternalLogsExporter {
     /// Creates a new instance of the InternalLogsExporter.
     #[must_use]
@@ -224,25 +243,5 @@ impl InternalLogsExporter {
 
         let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(bytes.into());
         OtapPayload::OtlpBytes(otlp_bytes)
-    }
-}
-
-impl LogExporter for InternalLogsExporter {
-    fn export(&self, batch: LogBatch<'_>) -> impl Future<Output = OTelSdkResult> + Send {
-        let otap_data = self.convert_sdk_logs_batch_to_otap_data(batch);
-        //let logs_data = self.to_otlp_logs_data(batch);
-        let sender = self.sender.clone();
-
-        async move {
-            // Push the logs_data to the internal telemetry receiver though its channel.
-            // It can be a different object to be sent instead of the proto LogsData.
-            let _ = sender.try_send(otap_data);
-            // Ignore if there is an error as there might not be any receiver configured to receive internal telemetry data.
-            Ok(())
-        }
-    }
-
-    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
-        self.sdk_resource = Some(resource.clone());
     }
 }

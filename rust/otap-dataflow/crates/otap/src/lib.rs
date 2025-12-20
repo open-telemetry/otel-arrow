@@ -55,7 +55,7 @@ pub mod error_exporter;
 /// Experimental exporters
 #[cfg(feature = "experimental-exporters")]
 pub mod experimental;
-pub mod internal_telemetry_receiver;
+pub mod internal_logs_receiver;
 
 /// testing utilities
 #[cfg(test)]

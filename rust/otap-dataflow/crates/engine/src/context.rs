@@ -99,7 +99,7 @@ pub struct PipelineContext {
     pipeline_id: PipelineId,
     node_id: NodeId,
     node_kind: NodeKind,
-    internal_telemetry_receiver: Option<crossbeam_channel::Receiver<OtapPayload>>,
+    internal_logs_receiver: Option<crossbeam_channel::Receiver<OtapPayload>>,
 }
 
 impl ControllerContext {
@@ -151,7 +151,7 @@ impl PipelineContext {
             thread_id,
             node_id: Default::default(),
             node_kind: Default::default(),
-            internal_telemetry_receiver: None,
+            internal_logs_receiver: None,
         }
     }
 
@@ -202,15 +202,15 @@ impl PipelineContext {
             pipeline_id: self.pipeline_id.clone(),
             node_id,
             node_kind,
-            internal_telemetry_receiver: self.internal_telemetry_receiver.clone(),
+            internal_logs_receiver: self.internal_logs_receiver.clone(),
         }
     }
 
     /// Returns a new pipeline context with the given internal telemetry notifier handle.
     #[must_use]
-    pub fn with_internal_telemetry_receiver(
+    pub fn with_internal_logs_receiver(
         &mut self,
-        receiver: crossbeam_channel::Receiver<OtapPayload>,
+        logs_receiver: crossbeam_channel::Receiver<OtapPayload>,
     ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
@@ -220,13 +220,13 @@ impl PipelineContext {
             pipeline_id: self.pipeline_id.clone(),
             node_id: self.node_id.clone(),
             node_kind: self.node_kind,
-            internal_telemetry_receiver: Some(receiver),
+            internal_logs_receiver: Some(logs_receiver),
         }
     }
 
-    /// Returns the internal telemetry receiver, if any.
+    /// Returns the internal logs receiver, if any.
     #[must_use]
-    pub fn internal_telemetry_receiver(&self) -> Option<crossbeam_channel::Receiver<OtapPayload>> {
-        self.internal_telemetry_receiver.clone()
+    pub fn internal_logs_receiver(&self) -> Option<crossbeam_channel::Receiver<OtapPayload>> {
+        self.internal_logs_receiver.clone()
     }
 }
