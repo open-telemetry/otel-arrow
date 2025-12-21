@@ -254,10 +254,6 @@ impl GrpcClientSettings {
         }
     }
 
-    fn should_use_connect_proxy_tunnel(&self, proxy: &ProxyConfig) -> bool {
-        proxy.has_proxy()
-    }
-
     fn make_proxy_connector(
         &self,
         proxy: Arc<ProxyConfig>,
@@ -310,7 +306,7 @@ impl GrpcClientSettings {
             endpoint = endpoint.timeout(timeout);
         }
         let proxy = Arc::new(self.effective_proxy_config());
-        if self.should_use_connect_proxy_tunnel(proxy.as_ref()) {
+        if proxy.has_proxy() {
             let connector = self.make_proxy_connector(proxy);
             Ok(endpoint.connect_with_connector(connector).await?)
         } else {
@@ -328,7 +324,7 @@ impl GrpcClientSettings {
             endpoint = endpoint.timeout(timeout);
         }
         let proxy = Arc::new(self.effective_proxy_config());
-        if self.should_use_connect_proxy_tunnel(proxy.as_ref()) {
+        if proxy.has_proxy() {
             let connector = self.make_proxy_connector(proxy);
             Ok(endpoint.connect_with_connector_lazy(connector))
         } else {

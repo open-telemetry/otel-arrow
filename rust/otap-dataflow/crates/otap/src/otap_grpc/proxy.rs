@@ -385,15 +385,6 @@ pub async fn connect_tcp_stream_with_proxy_config(
 
         let stream = http_connect_tunnel_on_stream(stream, host, port).await?;
 
-        // Apply socket options again to the tunneled connection
-        let stream = apply_socket_options(
-            stream,
-            tcp_nodelay,
-            tcp_keepalive,
-            tcp_keepalive_interval,
-            tcp_keepalive_retries,
-        )?;
-
         Ok(stream)
     } else {
         let stream = TcpStream::connect((host, port)).await?;

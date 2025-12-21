@@ -163,7 +163,7 @@ async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
                     .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
                     .await;
 
-                let _ = target_hits.fetch_add(1, Ordering::Relaxed);
+                target_hits.fetch_add(1, Ordering::Relaxed);
 
                 let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
             });
@@ -181,7 +181,9 @@ async fn start_tls_logs_server() -> (
     tokio::task::JoinHandle<()>,
     mpsc::Receiver<()>,
 ) {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
 
     let (ca, ca_issuer) = new_ca();
     let ca_pem = ca.pem();
