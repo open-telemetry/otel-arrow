@@ -122,7 +122,40 @@ impl ProxyConfig {
             no_proxy: self.no_proxy.or(env_config.no_proxy),
         }
     }
+}
 
+impl std::fmt::Display for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact = |s: &Option<String>| -> String {
+            match s {
+                Some(url) => {
+                    if let Ok(uri) = url.parse::<Uri>() {
+                        if let Some(authority) = uri.authority() {
+                            let auth_str = authority.as_str();
+                            if let Some((_, host)) = auth_str.rsplit_once('@') {
+                                return url.replace(auth_str, &format!("[REDACTED]@{}", host));
+                            }
+                        }
+                    }
+                    if let Some((_, host)) = url.rsplit_once('@') {
+                        return format!("[REDACTED]@{}", host);
+                    }
+                    url.clone()
+                }
+                None => "None".to_string(),
+            }
+        };
+
+        f.debug_struct("ProxyConfig")
+            .field("http_proxy", &redact(&self.http_proxy))
+            .field("https_proxy", &redact(&self.https_proxy))
+            .field("all_proxy", &redact(&self.all_proxy))
+            .field("no_proxy", &self.no_proxy)
+            .finish()
+    }
+}
+
+impl ProxyConfig {
     /// Returns the proxy URL for a given target URI, or None if no proxy should be used.
     #[must_use]
     pub fn get_proxy_for_uri(&self, uri: &Uri) -> Option<&str> {

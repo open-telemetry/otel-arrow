@@ -247,7 +247,7 @@ impl GrpcClientSettings {
             log::info!(
                 "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. \
                  If your proxy does not support CONNECT for HTTP targets, consider using \
-                 a transparent proxy or SOCKS proxy instead. Endpoint: {}, Proxy: {:?}",
+                 a transparent proxy or SOCKS proxy instead. Endpoint: {}, Proxy: {}",
                 self.grpc_endpoint,
                 proxy
             );
