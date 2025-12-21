@@ -32,8 +32,6 @@ use tokio::net::TcpStream;
 use std::sync::Arc;
 #[cfg(feature = "experimental-tls")]
 use tokio_rustls::TlsConnector;
-#[cfg(feature = "experimental-tls")]
-use tokio_rustls::rustls::pki_types::ServerName;
 
 /// Errors that can occur during proxy connection.
 #[derive(Debug, Error)]
