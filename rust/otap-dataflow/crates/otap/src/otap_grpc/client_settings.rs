@@ -296,16 +296,24 @@ impl GrpcClientSettings {
         })
     }
 
-    /// Builds a gRPC channel, using proxy tunneling when configured.
-    pub async fn connect_channel(
+    async fn prepare_connection(
         &self,
         timeout_override: Option<Duration>,
-    ) -> Result<Channel, GrpcEndpointError> {
+    ) -> Result<(Endpoint, Arc<ProxyConfig>), GrpcEndpointError> {
         let mut endpoint = self.build_endpoint_with_tls().await?;
         if let Some(timeout) = timeout_override {
             endpoint = endpoint.timeout(timeout);
         }
         let proxy = Arc::new(self.effective_proxy_config());
+        Ok((endpoint, proxy))
+    }
+
+    /// Builds a gRPC channel, using proxy tunneling when configured.
+    pub async fn connect_channel(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> Result<Channel, GrpcEndpointError> {
+        let (endpoint, proxy) = self.prepare_connection(timeout_override).await?;
         if proxy.has_proxy() {
             let connector = self.make_proxy_connector(proxy);
             Ok(endpoint.connect_with_connector(connector).await?)
@@ -319,11 +327,7 @@ impl GrpcClientSettings {
         &self,
         timeout_override: Option<Duration>,
     ) -> Result<Channel, GrpcEndpointError> {
-        let mut endpoint = self.build_endpoint_with_tls().await?;
-        if let Some(timeout) = timeout_override {
-            endpoint = endpoint.timeout(timeout);
-        }
-        let proxy = Arc::new(self.effective_proxy_config());
+        let (endpoint, proxy) = self.prepare_connection(timeout_override).await?;
         if proxy.has_proxy() {
             let connector = self.make_proxy_connector(proxy);
             Ok(endpoint.connect_with_connector_lazy(connector))
