@@ -269,7 +269,11 @@ async fn http_connect_tunnel_on_stream(
     // Read the response status line
     let mut buf_reader = BufReader::new(reader);
     let mut status_line = String::new();
-    let _ = buf_reader.read_line(&mut status_line).await?;
+    if buf_reader.read_line(&mut status_line).await? == 0 {
+        return Err(ProxyError::InvalidResponse(
+            "unexpected EOF while reading status line".to_string(),
+        ));
+    }
 
     // Parse "HTTP/1.1 200 Connection established"
     let parts: Vec<&str> = status_line.trim().splitn(3, ' ').collect();
@@ -286,7 +290,11 @@ async fn http_connect_tunnel_on_stream(
     // Read remaining headers (skip until empty line)
     loop {
         let mut header_line = String::new();
-        let _ = buf_reader.read_line(&mut header_line).await?;
+        if buf_reader.read_line(&mut header_line).await? == 0 {
+            return Err(ProxyError::InvalidResponse(
+                "unexpected EOF while reading headers".to_string(),
+            ));
+        }
         if header_line.trim().is_empty() {
             break;
         }

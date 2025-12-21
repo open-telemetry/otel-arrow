@@ -258,6 +258,47 @@ impl GrpcClientSettings {
         proxy.has_proxy()
     }
 
+    fn make_proxy_connector(
+        &self,
+        proxy: Arc<ProxyConfig>,
+    ) -> impl tower::Service<
+        http::Uri,
+        Response = TokioIo<tokio::net::TcpStream>,
+        Error = io::Error,
+        Future = impl Send,
+    > + Send
+    + Clone {
+        let connect_timeout = self.connect_timeout;
+        let tcp_nodelay = self.tcp_nodelay;
+        let tcp_keepalive = self.tcp_keepalive;
+        let tcp_keepalive_interval = self.tcp_keepalive_interval;
+        let tcp_keepalive_retries = self.tcp_keepalive_retries;
+
+        service_fn(move |uri: http::Uri| {
+            let proxy = Arc::clone(&proxy);
+            async move {
+                let res = tokio::time::timeout(connect_timeout, async {
+                    crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
+                        &uri,
+                        proxy.as_ref(),
+                        tcp_nodelay,
+                        tcp_keepalive,
+                        tcp_keepalive_interval,
+                        tcp_keepalive_retries,
+                    )
+                    .await
+                })
+                .await;
+
+                match res {
+                    Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
+                    Ok(Err(err)) => Err(io::Error::other(err)),
+                    Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timeout")),
+                }
+            }
+        })
+    }
+
     /// Builds a gRPC channel, using proxy tunneling when configured.
     pub async fn connect_channel(
         &self,
@@ -269,35 +310,7 @@ impl GrpcClientSettings {
         }
         let proxy = Arc::new(self.effective_proxy_config());
         if self.should_use_connect_proxy_tunnel(proxy.as_ref()) {
-            let connect_timeout = self.connect_timeout;
-            let tcp_nodelay = self.tcp_nodelay;
-            let tcp_keepalive = self.tcp_keepalive;
-            let tcp_keepalive_interval = self.tcp_keepalive_interval;
-            let tcp_keepalive_retries = self.tcp_keepalive_retries;
-            let connector = service_fn(move |uri: http::Uri| {
-                let proxy = Arc::clone(&proxy);
-                async move {
-                    let res = tokio::time::timeout(connect_timeout, async {
-                        crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
-                            &uri,
-                            proxy.as_ref(),
-                            tcp_nodelay,
-                            tcp_keepalive,
-                            tcp_keepalive_interval,
-                            tcp_keepalive_retries,
-                        )
-                        .await
-                    })
-                    .await;
-
-                    match res {
-                        Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
-                        Ok(Err(err)) => Err(io::Error::new(io::ErrorKind::Other, err)),
-                        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timeout")),
-                    }
-                }
-            });
-
+            let connector = self.make_proxy_connector(proxy);
             Ok(endpoint.connect_with_connector(connector).await?)
         } else {
             Ok(endpoint.connect().await?)
@@ -315,35 +328,7 @@ impl GrpcClientSettings {
         }
         let proxy = Arc::new(self.effective_proxy_config());
         if self.should_use_connect_proxy_tunnel(proxy.as_ref()) {
-            let connect_timeout = self.connect_timeout;
-            let tcp_nodelay = self.tcp_nodelay;
-            let tcp_keepalive = self.tcp_keepalive;
-            let tcp_keepalive_interval = self.tcp_keepalive_interval;
-            let tcp_keepalive_retries = self.tcp_keepalive_retries;
-            let connector = service_fn(move |uri: http::Uri| {
-                let proxy = Arc::clone(&proxy);
-                async move {
-                    let res = tokio::time::timeout(connect_timeout, async {
-                        crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
-                            &uri,
-                            proxy.as_ref(),
-                            tcp_nodelay,
-                            tcp_keepalive,
-                            tcp_keepalive_interval,
-                            tcp_keepalive_retries,
-                        )
-                        .await
-                    })
-                    .await;
-
-                    match res {
-                        Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
-                        Ok(Err(err)) => Err(io::Error::new(io::ErrorKind::Other, err)),
-                        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timeout")),
-                    }
-                }
-            });
-
+            let connector = self.make_proxy_connector(proxy);
             Ok(endpoint.connect_with_connector_lazy(connector))
         } else {
             Ok(endpoint.connect_lazy())
