@@ -84,8 +84,8 @@ fn new_leaf(
 }
 
 async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind failed");
+    let addr = listener.local_addr().expect("local_addr failed");
 
     let _proxy_task = tokio::spawn(async move {
         loop {
@@ -163,7 +163,7 @@ async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
                     .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
                     .await;
 
-                target_hits.fetch_add(1, Ordering::Relaxed);
+                let _ = target_hits.fetch_add(1, Ordering::Relaxed);
 
                 let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
             });
@@ -210,18 +210,18 @@ async fn start_tls_logs_server() -> (
         .identity(server_identity)
         .client_ca_root(client_ca_root);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind failed");
+    let addr: SocketAddr = listener.local_addr().expect("local_addr failed");
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     let handle = tokio::spawn(async move {
         Server::builder()
             .tls_config(tls)
-            .unwrap()
+            .expect("tls_config failed")
             .add_service(logs_service)
             .serve_with_incoming(incoming)
             .await
-            .unwrap();
+            .expect("serve failed");
     });
 
     (addr, ca_pem, client_cert_pem, client_key_pem, handle, rx)
@@ -234,8 +234,8 @@ async fn send_one_request(channel: tonic::transport::Channel) {
     };
 
     let mut buf = Vec::new();
-    req.encode(&mut buf).unwrap();
-    let _ = client.export(Bytes::from(buf)).await.unwrap();
+    req.encode(&mut buf).expect("encode failed");
+    let _ = client.export(Bytes::from(buf)).await.expect("export failed");
 }
 
 #[tokio::test]
@@ -331,8 +331,8 @@ async fn start_plain_logs_server() -> (SocketAddr, tokio::task::JoinHandle<()>, 
     let (tx, rx) = mpsc::channel::<()>(8);
     let logs_service = LogsServiceServer::new(LogsServiceMock { sender: tx });
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind failed");
+    let addr: SocketAddr = listener.local_addr().expect("local_addr failed");
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     let handle = tokio::spawn(async move {
@@ -340,7 +340,7 @@ async fn start_plain_logs_server() -> (SocketAddr, tokio::task::JoinHandle<()>, 
             .add_service(logs_service)
             .serve_with_incoming(incoming)
             .await
-            .unwrap();
+            .expect("serve failed");
     });
 
     (addr, handle, rx)
