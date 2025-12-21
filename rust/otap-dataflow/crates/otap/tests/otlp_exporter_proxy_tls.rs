@@ -324,8 +324,7 @@ async fn otlp_exporter_connects_through_connect_proxy_lazy() {
     server_handle.abort();
 }
 
-async fn start_plain_logs_server() -> (SocketAddr, tokio::task::JoinHandle<()>, mpsc::Receiver<()>)
-{
+async fn start_plain_logs_server() -> (SocketAddr, tokio::task::JoinHandle<()>, mpsc::Receiver<()>) {
     let (tx, rx) = mpsc::channel::<()>(8);
     let logs_service = LogsServiceServer::new(LogsServiceMock { sender: tx });
 
