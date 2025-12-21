@@ -307,7 +307,10 @@ async fn http_connect_tunnel_on_stream(
 
     // Reunite the stream
     let reader = buf_reader.into_inner();
-    Ok(reader.reunite(writer).expect("same stream split"))
+    let stream = reader
+        .reunite(writer)
+        .map_err(|_| ProxyError::InvalidResponse("failed to reunite stream".to_string()))?;
+    Ok(stream)
 }
 
 /// Applies TCP socket options (nodelay, keepalive) to a stream.
