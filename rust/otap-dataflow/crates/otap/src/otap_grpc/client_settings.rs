@@ -241,7 +241,7 @@ impl GrpcClientSettings {
     /// For http:// endpoints (including h2c for gRPC), the proxy must support HTTP CONNECT
     /// for non-TLS targets. If your proxy rejects CONNECT for HTTP, consider using
     /// transparent proxying tools (SOCKS proxy, proxychains, etc.).
-    pub fn warn_if_proxy_configured(&self) {
+    pub fn log_proxy_info(&self) {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             log::info!(
@@ -265,9 +265,10 @@ impl GrpcClientSettings {
         http::Uri,
         Response = TokioIo<tokio::net::TcpStream>,
         Error = io::Error,
-        Future = impl Send,
+        Future = impl Send + 'static,
     > + Send
-    + Clone {
+    + Clone
+    + 'static {
         let connect_timeout = self.connect_timeout;
         let tcp_nodelay = self.tcp_nodelay;
         let tcp_keepalive = self.tcp_keepalive;

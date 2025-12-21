@@ -134,7 +134,7 @@ simdutf8 = "0.1.5"
 slotmap = "1.0.7"
 smallvec = { version = "1.15" , features = ["union"] }
 socket2 = { version = "0.6.1", features = ["all"] }
-ipnet = "2.10"
+ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 sysinfo = "0.37"
 tempfile = "3"
@@ -158,6 +158,7 @@ tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 tower = "0.5.2"
 tower-service = "0.3"
+hyper-util = "0.1.17"
 trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"

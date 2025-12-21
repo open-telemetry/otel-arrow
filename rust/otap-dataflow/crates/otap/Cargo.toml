@@ -65,7 +65,7 @@ weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
 tower = { workspace = true }
-hyper-util = "0.1.17"
+hyper-util = { workspace = true }
 socket2 = { workspace = true }
 ipnet = { workspace = true }
 
