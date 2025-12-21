@@ -218,8 +218,8 @@ fn parse_proxy_url(proxy_url: &str) -> Result<(String, u16), ProxyError> {
     if uri.scheme_str() == Some("https") {
         return Err(ProxyError::InvalidProxyUrl(format!(
             "https:// proxy URLs are not supported (proxy URL: {}). \
-                 Use http:// instead - the CONNECT tunnel will still encrypt \
-                 traffic to the final destination for https:// targets.",
+Use http:// instead - the CONNECT tunnel will still encrypt \
+traffic to the final destination for https:// targets.",
             proxy_url
         )));
     }
