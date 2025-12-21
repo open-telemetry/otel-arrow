@@ -235,7 +235,10 @@ async fn send_one_request(channel: tonic::transport::Channel) {
 
     let mut buf = Vec::new();
     req.encode(&mut buf).expect("encode failed");
-    let _ = client.export(Bytes::from(buf)).await.expect("export failed");
+    let _ = client
+        .export(Bytes::from(buf))
+        .await
+        .expect("export failed");
 }
 
 #[tokio::test]
