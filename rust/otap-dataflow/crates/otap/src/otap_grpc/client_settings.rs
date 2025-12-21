@@ -4,17 +4,23 @@
 //! Shared configuration for gRPC-based clients.
 
 use crate::compression::CompressionMethod;
+use crate::otap_grpc::proxy::ProxyConfig;
 
 #[cfg(feature = "experimental-tls")]
 use crate::tls_utils;
+use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsClientConfig;
 use serde::Deserialize;
+use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+use tower::service_fn;
 
 /// Common configuration shared across gRPC clients.
 #[derive(Debug, Deserialize, Clone)]
@@ -94,6 +100,15 @@ pub struct GrpcClientSettings {
     /// Internal Tower buffer size for the gRPC client.
     #[serde(default)]
     pub buffer_size: Option<usize>,
+
+    /// HTTP/HTTPS proxy configuration.
+    /// If not specified, proxy settings are read from environment variables:
+    /// - `HTTP_PROXY` / `http_proxy`: Proxy for HTTP connections
+    /// - `HTTPS_PROXY` / `https_proxy`: Proxy for HTTPS connections
+    /// - `ALL_PROXY` / `all_proxy`: Fallback proxy for all connections
+    /// - `NO_PROXY` / `no_proxy`: Comma-separated list of hosts to bypass proxy
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -105,11 +120,15 @@ pub enum GrpcEndpointError {
 
     /// IO error while reading certificates/keys for TLS.
     #[error("tls configuration error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
 
     /// TLS support is not compiled in.
     #[error("TLS support is disabled; enable the `experimental-tls` feature")]
     TlsFeatureDisabled,
+
+    /// Proxy configuration or connection error.
+    #[error("proxy error: {0}")]
+    Proxy(#[from] crate::otap_grpc::proxy::ProxyError),
 }
 
 impl GrpcClientSettings {
@@ -196,6 +215,140 @@ impl GrpcClientSettings {
             }
         }
     }
+
+    /// Returns the effective proxy configuration.
+    ///
+    /// If explicit proxy config is provided, it's merged with environment variables
+    /// (explicit values take precedence). If no explicit config is provided, reads
+    /// from environment variables only.
+    #[must_use]
+    pub fn effective_proxy_config(&self) -> ProxyConfig {
+        match &self.proxy {
+            Some(config) => config.clone().merge_with_env(),
+            None => ProxyConfig::from_env(),
+        }
+    }
+
+    /// Returns true if proxy is configured (either explicitly or via environment).
+    #[must_use]
+    pub fn has_proxy(&self) -> bool {
+        self.effective_proxy_config().has_proxy()
+    }
+
+    /// Logs an informational message if proxy is configured for http:// endpoints.
+    ///
+    /// HTTP CONNECT tunneling is now supported for both http:// and https:// endpoints.
+    /// For http:// endpoints (including h2c for gRPC), the proxy must support HTTP CONNECT
+    /// for non-TLS targets. If your proxy rejects CONNECT for HTTP, consider using
+    /// transparent proxying tools (SOCKS proxy, proxychains, etc.).
+    pub fn warn_if_proxy_configured(&self) {
+        let proxy = self.effective_proxy_config();
+        if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
+            log::info!(
+                "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. \
+                 If your proxy does not support CONNECT for HTTP targets, consider using \
+                 a transparent proxy or SOCKS proxy instead. Endpoint: {}, Proxy: {:?}",
+                self.grpc_endpoint,
+                proxy
+            );
+        }
+    }
+
+    fn should_use_connect_proxy_tunnel(&self, proxy: &ProxyConfig) -> bool {
+        proxy.has_proxy()
+    }
+
+    /// Builds a gRPC channel, using proxy tunneling when configured.
+    pub async fn connect_channel(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> Result<Channel, GrpcEndpointError> {
+        let mut endpoint = self.build_endpoint_with_tls().await?;
+        if let Some(timeout) = timeout_override {
+            endpoint = endpoint.timeout(timeout);
+        }
+        let proxy = Arc::new(self.effective_proxy_config());
+        if self.should_use_connect_proxy_tunnel(proxy.as_ref()) {
+            let connect_timeout = self.connect_timeout;
+            let tcp_nodelay = self.tcp_nodelay;
+            let tcp_keepalive = self.tcp_keepalive;
+            let tcp_keepalive_interval = self.tcp_keepalive_interval;
+            let tcp_keepalive_retries = self.tcp_keepalive_retries;
+            let connector = service_fn(move |uri: http::Uri| {
+                let proxy = Arc::clone(&proxy);
+                async move {
+                    let res = tokio::time::timeout(connect_timeout, async {
+                        crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
+                            &uri,
+                            proxy.as_ref(),
+                            tcp_nodelay,
+                            tcp_keepalive,
+                            tcp_keepalive_interval,
+                            tcp_keepalive_retries,
+                        )
+                        .await
+                    })
+                    .await;
+
+                    match res {
+                        Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
+                        Ok(Err(err)) => Err(io::Error::new(io::ErrorKind::Other, err)),
+                        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timeout")),
+                    }
+                }
+            });
+
+            Ok(endpoint.connect_with_connector(connector).await?)
+        } else {
+            Ok(endpoint.connect().await?)
+        }
+    }
+
+    /// Builds a lazy gRPC channel, using proxy tunneling when configured.
+    pub async fn connect_channel_lazy(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> Result<Channel, GrpcEndpointError> {
+        let mut endpoint = self.build_endpoint_with_tls().await?;
+        if let Some(timeout) = timeout_override {
+            endpoint = endpoint.timeout(timeout);
+        }
+        let proxy = Arc::new(self.effective_proxy_config());
+        if self.should_use_connect_proxy_tunnel(proxy.as_ref()) {
+            let connect_timeout = self.connect_timeout;
+            let tcp_nodelay = self.tcp_nodelay;
+            let tcp_keepalive = self.tcp_keepalive;
+            let tcp_keepalive_interval = self.tcp_keepalive_interval;
+            let tcp_keepalive_retries = self.tcp_keepalive_retries;
+            let connector = service_fn(move |uri: http::Uri| {
+                let proxy = Arc::clone(&proxy);
+                async move {
+                    let res = tokio::time::timeout(connect_timeout, async {
+                        crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
+                            &uri,
+                            proxy.as_ref(),
+                            tcp_nodelay,
+                            tcp_keepalive,
+                            tcp_keepalive_interval,
+                            tcp_keepalive_retries,
+                        )
+                        .await
+                    })
+                    .await;
+
+                    match res {
+                        Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
+                        Ok(Err(err)) => Err(io::Error::new(io::ErrorKind::Other, err)),
+                        Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timeout")),
+                    }
+                }
+            });
+
+            Ok(endpoint.connect_with_connector_lazy(connector))
+        } else {
+            Ok(endpoint.connect_lazy())
+        }
+    }
 }
 
 impl Default for GrpcClientSettings {
@@ -219,6 +372,7 @@ impl Default for GrpcClientSettings {
             #[cfg(feature = "experimental-tls")]
             tls: None,
             buffer_size: None,
+            proxy: None,
         }
     }
 }
@@ -272,7 +426,6 @@ const fn default_keep_alive_while_idle() -> bool {
 #[allow(missing_docs)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
 
     #[cfg(feature = "experimental-tls")]
     use otap_df_config::tls::{TlsClientConfig, TlsConfig};

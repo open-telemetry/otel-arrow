@@ -65,6 +65,9 @@ weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
 tower = { workspace = true }
+hyper-util = "0.1.17"
+socket2 = { workspace = true }
+ipnet = { workspace = true }
 
 # Geneva exporter dependencies
 geneva-uploader = { version = "0.3.0", optional = true }
