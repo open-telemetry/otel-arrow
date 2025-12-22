@@ -23,6 +23,8 @@ pub mod metrics;
 pub mod traces;
 
 mod common;
+/// Stateful encoder for streaming OTLP messages with automatic batching
+pub mod stateful_encoder;
 #[cfg(test)]
 mod tests;
 

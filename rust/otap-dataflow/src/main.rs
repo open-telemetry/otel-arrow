@@ -9,6 +9,7 @@ use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_telemetry::opentelemetry_client::logger_provider::LoggerProvider;
 use std::path::PathBuf;
 use sysinfo::System;
 
@@ -107,14 +108,22 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing FIRST - before ANYTHING else (even arg parsing)
+    // This captures ALL tracing events from df_engine and third-party libraries
+    // and formats them synchronously to stdout/stderr with OTLP encoding
+    LoggerProvider::init_default_console_tracing();
+
+    // Log startup
+    tracing::info!("df_engine starting");
+
+    let args = Args::parse();
+
     // Initialize rustls crypto provider (required for rustls 0.23+)
     // We use ring as the default provider
     #[cfg(feature = "experimental-tls")]
     rustls::crypto::ring::default_provider()
         .install_default()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
-
-    let args = Args::parse();
 
     // For now, we predefine pipeline group and pipeline IDs.
     // That will be replaced with a more dynamic approach in the future.
@@ -124,11 +133,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", system_info());
 
     // Load pipeline configuration from file
-    let pipeline_cfg = PipelineConfig::from_file(
+    let pipeline_cfg = match PipelineConfig::from_file(
         pipeline_group_id.clone(),
         pipeline_id.clone(),
         &args.pipeline,
-    )?;
+    ) {
+        Ok(cfg) => {
+            tracing::info!(
+                config_file = %args.pipeline.display(),
+                "Successfully loaded pipeline configuration"
+            );
+            cfg
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                config_file = %args.pipeline.display(),
+                "Failed to load pipeline configuration"
+            );
+            return Err(e.into());
+        }
+    };
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
@@ -151,7 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CoreAllocation::AllCores => println!("Requested core allocation: all available cores"),
         CoreAllocation::CoreCount { count } => println!("Requested core allocation: {count} cores"),
         CoreAllocation::CoreSet { .. } => {
-            println!("Requested core allocation: {}", quota.core_allocation);
+            tracing::info!("Requested core allocation: {}", quota.core_allocation);
         }
     }
 
@@ -159,19 +184,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bind_address: args.http_admin_bind,
     };
     let result = controller.run_forever(
-        pipeline_group_id,
-        pipeline_id,
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
         pipeline_cfg,
         quota,
         admin_settings,
     );
     match result {
         Ok(_) => {
-            println!("Pipeline run successfully");
+            tracing::info!(
+                pipeline_group = %pipeline_group_id,
+                pipeline = %pipeline_id,
+                "Pipeline completed successfully"
+            );
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("Pipeline failed to run: {e}");
+            tracing::error!(
+                error = %e,
+                pipeline_group = %pipeline_group_id,
+                pipeline = %pipeline_id,
+                "Pipeline failed"
+            );
             std::process::exit(1);
         }
     }
