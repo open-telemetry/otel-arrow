@@ -127,8 +127,10 @@ impl Expression for DiscardDataExpression {
 
 /// Conditional data expression.
 ///
-/// This is used to optionally apply nested [`DataExpression`s] to some subset of data which
-/// matches a predicate condition.
+/// This is used to define a data operation where some nested [`DataExpression`]s are applied to
+/// a subset of data which matches a predicate condition. Each combination of condition/expressions
+/// forms a "branch". The "default branch" defines how to optionally handle data that matches no
+/// other branch's condition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConditionalDataExpression {
     query_location: QueryLocation,

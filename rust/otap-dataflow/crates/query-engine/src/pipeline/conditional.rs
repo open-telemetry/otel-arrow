@@ -20,26 +20,26 @@ use crate::error::Result;
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
-/// This [`PipelineStage`] implementation will conditionally execute child pipeline stages on rows
-/// which match some condition. This can be used to execute `if/else if/else` type control flow for
-/// items in a telemetry batch.
+/// This [`PipelineStage`] implementation will conditionally apply child pipeline stages on rows
+/// which match some condition. This can be used to implement `if/else if/else` type control flow
+/// for items in a telemetry batch.
 ///
 /// When executed, this will evaluate the pipeline in each branch on a disjoint set of rows that are
 /// selected by the branches' conditions. The output will be the results of each branch & default
-/// branch concatenated/union'd together.
+/// branch concatenated together.
 pub struct ConditionalPipelineStage {
     /// The data in the batches will be checked against the conditions for each branch, and the
-    /// stages in each branch will be executed for the rows that pass the condition and did not
+    /// stages in each branch will be executed for the rows that pass the condition and didn't
     /// pass the condition for previous branches.
     ///
-    /// These branches can be thought of like `if`/`else if` control flow structures.
+    /// These branches are analogous to `if`/`else if` control flow statements
     branches: Vec<ConditionalPipelineStageBranch>,
 
     /// The "default branch", if not `None`, will be executed for rows that did not pass a
     /// condition in any of the branches. If this branch is `None`, the remaining rows will be
     /// appended to the result batch with no transformation.
     ///
-    /// This is analogous to the `else` branch.
+    /// This is analogous to the `else` branch of an if/else control flow statement.
     default_branch: Option<Vec<BoxedPipelineStage>>,
 }
 
@@ -113,11 +113,11 @@ impl PipelineStage for ConditionalPipelineStage {
             //
             // TODO: here we're evaluating the filter against all rows in the incoming batch for
             // each branch. There's probably a some optimization we can make here if this becomes
-            // a bottleneck:
+            // a bottleneck. for example:
             // if previous branches have been very selective, we might consider materializing a
             // batch specifically containing the rows that have not already been selected and
-            // feeding that into next iterations. This is extra overhead but the resulting batch
-            // would have less rows which could make filter faster
+            // feeding that into next iterations. This is extra overhead, but the resulting batch
+            // would have less rows which could make filter faster.
             let predicate_selection_vec = branch.condition.execute(&otap_batch, session_ctx)?;
 
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
@@ -128,10 +128,11 @@ impl PipelineStage for ConditionalPipelineStage {
             // create a batch with only the rows that match the condition
             //
             // TODO: the function we're calling here will materialize all the child record batches
-            // with parent_ids of rows associated with the selected parent rows. There might be an
-            // optimization to here where we don't do this for every branch for every batch. For
-            // example, if the branch doesn't read or write some child batch, we could avoid
-            // materializing it and sync up the rows once all branches have been evaluated.
+            // with parent_ids of rows associated with the selected parent rows. If this becomes a
+            // bottleneck, there might be an optimization to here where we don't do this for every
+            // branch for every batch. For example, if the branch doesn't read or write some child
+            // batch, we could avoid materializing it and sync up the rows once all branches have
+            // been evaluated.
             let mut branch_otap_batch =
                 filter_otap_batch(&branch_selection_vec, otap_batch.clone())?;
 
@@ -179,9 +180,9 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // concat all the record batches for each payload type and set in the result
         for payload_type in otap_batch.allowed_payload_types() {
-            // TODO - when we have filter stages that can modify the schema, such as adding or
+            // TODO - when we implement filter stages that can modify the schema, such as adding or
             // deleting columns, we'll need extra logic here to combine project the record batches
-            // we're iterating to a common superset schema.
+            // into a common schema containing a superset of all the fields.
 
             let schema = branch_results
                 .iter()
@@ -228,10 +229,10 @@ mod test {
     /// this is needed because we don't yet have parser implemented for these types of expressions
     #[derive(Default)]
     struct ConditionalTest {
-        /// tuples of (logical_expr, data_exprs) in kql
+        /// tuples of (logical_expr, data_exprs) specified in kql
         branches: Vec<(&'static str, &'static str)>,
 
-        /// data expr for the default branch in kql
+        /// data expr for the default branch specified in kql
         default_branch: Option<&'static str>,
     }
 
