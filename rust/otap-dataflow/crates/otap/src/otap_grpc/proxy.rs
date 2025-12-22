@@ -21,17 +21,10 @@ use socket2::{Socket, TcpKeepalive};
 use std::env;
 use std::io;
 use std::net::IpAddr;
-#[cfg(feature = "experimental-tls")]
-use std::sync::OnceLock;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-
-#[cfg(feature = "experimental-tls")]
-use std::sync::Arc;
-#[cfg(feature = "experimental-tls")]
-use tokio_rustls::TlsConnector;
 
 /// Errors that can occur during proxy connection.
 #[derive(Debug, Error)]
@@ -175,7 +168,24 @@ impl ProxyConfig {
         };
 
         if let Some(url) = proxy_url {
-            log::debug!("Using proxy {} for target {}", url, uri);
+            if log::log_enabled!(log::Level::Debug) {
+                // Redact credentials before logging
+                let safe_url = if let Ok(uri) = url.parse::<Uri>() {
+                    if let Some(authority) = uri.authority() {
+                        let auth_str = authority.as_str();
+                        if let Some((_, host)) = auth_str.rsplit_once('@') {
+                            url.replace(auth_str, &format!("[REDACTED]@{}", host))
+                        } else {
+                            url.to_string()
+                        }
+                    } else {
+                        url.to_string()
+                    }
+                } else {
+                    url.to_string()
+                };
+                log::debug!("Using proxy {} for target {}", safe_url, uri);
+            }
         } else {
             log::debug!("No proxy configured for target {}", uri);
         }
@@ -198,10 +208,13 @@ impl ProxyConfig {
             None => return false,
         };
 
+        // TODO(perf): Pre-parse NO_PROXY rules to avoid allocations in hot path
         let host_lower = host.to_lowercase();
 
         // Try to parse host as an IP address for CIDR matching
-        let host_ip = host.parse::<IpAddr>().ok();
+        // Handle IPv6 literals which might be wrapped in brackets (e.g., "[::1]")
+        let host_for_ip_parse = host.trim_start_matches('[').trim_end_matches(']');
+        let host_ip = host_for_ip_parse.parse::<IpAddr>().ok();
 
         for pattern in no_proxy.split(',') {
             let pattern = pattern.trim().to_lowercase();
@@ -346,16 +359,29 @@ async fn http_connect_tunnel_on_stream(
         .map_err(|_| ProxyError::InvalidResponse(format!("invalid status code: {}", parts[1])))?;
 
     // Read remaining headers (skip until empty line)
-    // Limit the number of headers to prevent potential DoS/memory exhaustion
+    // Limit the number of headers and their size to prevent potential DoS/memory exhaustion
     let mut header_count = 0;
     const MAX_HEADERS: usize = 100;
+    const MAX_HEADER_SIZE: u64 = 8192;
+
     loop {
         let mut header_line = String::new();
-        if buf_reader.read_line(&mut header_line).await? == 0 {
+        let mut limited_reader = buf_reader.by_ref().take(MAX_HEADER_SIZE);
+        let bytes_read = limited_reader.read_line(&mut header_line).await?;
+
+        if bytes_read == 0 {
             return Err(ProxyError::InvalidResponse(
                 "unexpected EOF while reading headers".to_string(),
             ));
         }
+
+        // If we read MAX_HEADER_SIZE bytes and didn't find a newline, the line is too long
+        if bytes_read as u64 == MAX_HEADER_SIZE && !header_line.ends_with('\n') {
+            return Err(ProxyError::InvalidResponse(
+                "header line too long".to_string(),
+            ));
+        }
+
         if header_line.trim().is_empty() {
             break;
         }
