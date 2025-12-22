@@ -51,45 +51,22 @@ impl ConditionalDataExpression {
 
     pub(crate) fn try_fold(
         &mut self,
-        scope: &PipelineResolutionScope,
+        _scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
-        let mut branches = Vec::with_capacity(self.branches.len());
-
-        for branch in self.branches.drain(..) {
-            // TODO - once the filtering code supports filtering by static literals, we can
-            // avoid the clone here (https://github.com/open-telemetry/otel-arrow/issues/1508)
-            if let Some(bool) = branch.condition.clone().try_resolve_static(scope)? {
-                if bool {
-                    // this branch's condition always resolves to true, so it will accept all the
-                    // remaining rows and none of the other branches need to be evaluated
-                    branches.push(branch);
-                    self.default_branch = None;
-                    break;
-                } else {
-                    // this branch always resolves to false, so no need to evaluate it. just skip
-                    // pushing it into the result branches
-                }
-            } else {
-                branches.push(branch)
-            }
-        }
-
-        // recursively execute try_fold
-        for branch in &mut branches {
-            for expr in &mut branch.expressions {
-                expr.try_fold(scope)?;
-            }
-        }
-
-        // update self branches to the filtered, folded branches
-        self.branches = branches;
-
-        // also recursively execute try_fold on the default branch, if present
-        if let Some(exprs) = self.default_branch.as_mut() {
-            for expr in exprs {
-                expr.try_fold(scope)?;
-            }
-        }
+        // TODO support folding here.. what we should do is:
+        //
+        // 1) for each branch, see if's condition can be folded into a boolean literal using
+        // LogicalExpression::try_resolve_static. If so:
+        // - if the static is false, discard the branch because it would evaluate on zero rows
+        // - if the static is true, discard all the other branches and the default branch because
+        //   no rows would be evaluated by them
+        //
+        // 2) recursively call try_fold on all the expressions in every remaining branch and the
+        // default branch if still present.
+        //
+        // Before doing this, we should support filtering by static literals. Otherwise, we won't
+        // be able to evaluate the resolved static as a filter so we can write unit tests that will
+        // evaluate the folded expr (https://github.com/open-telemetry/otel-arrow/issues/1508)
 
         Ok(())
     }
@@ -165,7 +142,6 @@ impl Expression for ConditionalDataExpression {
     }
 }
 
-/// TODO docs
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConditionalDataExpressionBranch {
     query_location: QueryLocation,
@@ -196,155 +172,5 @@ impl ConditionalDataExpressionBranch {
 
     pub fn get_expressions(&self) -> &[DataExpression] {
         &self.expressions
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::{
-        EqualToLogicalExpression, IntegerScalarExpression, MoveTransformExpression,
-        MutableValueExpression, PipelineExpression, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, TransformExpression, ValueAccessor,
-    };
-
-    use super::*;
-
-    #[test]
-    fn test_fmt_with_indent() {
-        let expr = ConditionalDataExpression::new(QueryLocation::new_fake())
-            .with_branch(ConditionalDataExpressionBranch::new(
-                QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                    QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
-                    )),
-                    ScalarExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    false,
-                )),
-                vec![
-                    DataExpression::Transform(TransformExpression::Move(
-                        MoveTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                        ),
-                    )),
-                    DataExpression::Transform(TransformExpression::Move(
-                        MoveTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                        ),
-                    )),
-                ],
-            ))
-            .with_branch(ConditionalDataExpressionBranch::new(
-                QueryLocation::new_fake(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                    QueryLocation::new_fake(),
-                    ScalarExpression::Static(StaticScalarExpression::Integer(
-                        IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
-                    )),
-                    ScalarExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    false,
-                )),
-                vec![
-                    DataExpression::Transform(TransformExpression::Move(
-                        MoveTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                        ),
-                    )),
-                    DataExpression::Transform(TransformExpression::Move(
-                        MoveTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new(),
-                            )),
-                        ),
-                    )),
-                ],
-            ))
-            .with_default_branch(vec![
-                DataExpression::Transform(TransformExpression::Move(MoveTransformExpression::new(
-                    QueryLocation::new_fake(),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                ))),
-                DataExpression::Transform(TransformExpression::Move(MoveTransformExpression::new(
-                    QueryLocation::new_fake(),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                ))),
-                DataExpression::Transform(TransformExpression::Move(MoveTransformExpression::new(
-                    QueryLocation::new_fake(),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                ))),
-                DataExpression::Transform(TransformExpression::Move(MoveTransformExpression::new(
-                    QueryLocation::new_fake(),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                    MutableValueExpression::Source(SourceScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        ValueAccessor::new(),
-                    )),
-                ))),
-            ]);
-
-        let mut pipeline = PipelineExpression::new("");
-        pipeline.push_expression(DataExpression::Conditional(expr));
-        println!("{}", pipeline);
     }
 }
