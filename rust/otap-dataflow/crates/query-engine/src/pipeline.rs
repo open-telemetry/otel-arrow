@@ -213,7 +213,7 @@ impl Pipeline {
         // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
-            let mut planner = PipelinePlanner::new();
+            let planner = PipelinePlanner::new();
             let stages =
                 planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
             self.planned_pipeline = Some(PlannedPipeline::new(stages, session_ctx));

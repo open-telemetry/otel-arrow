@@ -5,14 +5,18 @@
 
 use std::sync::Arc;
 
+use arrow::array::BooleanArray;
+use arrow::buffer::BooleanBuffer;
+use arrow::compute::{and, concat_batches, not, or};
 use async_trait::async_trait;
 use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
 use crate::error::Result;
-use crate::pipeline::filter::{Composite, FilterExec};
+use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// TODO comments on what its' doing
@@ -57,11 +61,99 @@ impl PipelineStage for ConditionalPipelineStage {
     async fn execute(
         &mut self,
         otap_batch: OtapArrowRecords,
-        session_context: &SessionContext,
+        session_ctx: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
     ) -> Result<OtapArrowRecords> {
-        todo!()
+        let root_batch = match otap_batch.root_record_batch() {
+            Some(root_batch) => root_batch,
+            None => {
+                // here we should invoke the pipelines with empties ...
+                todo!()
+            }
+        };
+
+        // keep track of the rows that were selected by previous branches
+        let mut already_selected_vec =
+            BooleanArray::new(BooleanBuffer::new_unset(root_batch.num_rows()), None);
+
+        let mut branch_results = Vec::with_capacity(
+            self.branches.len() + if self.default_branch.is_some() { 1 } else { 0 },
+        );
+
+        for branch in &mut self.branches {
+            // determine which rows are selected by this branch
+            //
+            // TODO: here we're evaluating the filter against all rows in the incoming batch for
+            // each branch. There's probably a handful of optimizations we can make here:
+            // 1) if batch_already_selected is all true, we know no rows match this branch so
+            // we can avoid evaluating the filter
+            // 2) if many of the rows have already been selected by a previous branch (say >80%)
+            // we might consider materializing a batch specifically containing the rows that have
+            // not already been selected and feeding that into future iterations. This is extra
+            // overhead but the resulting batch would have less rows which could make filter faster
+            let predicate_selection_vec = branch.predicate.execute(&otap_batch, &session_ctx)?;
+            let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
+
+            // update the list of rows that were already selected by branches
+            already_selected_vec = or(&already_selected_vec, &predicate_selection_vec)?;
+
+            // create a batch with only the rows that match the condition
+            //
+            // TODO: the function we're calling here will materialize all the child record batches
+            // with pointers to rows associated with the selected parent rows. There might be an
+            // optimization to here where we don't do this for every branch for every batch. For
+            // example, if the branch doesn't read or write some child batch, we could avoid
+            // materializing it and sync up the rows once all branches have been evaluated.
+            let mut branch_otap_batch =
+                filter_otap_batch(&branch_selection_vec, otap_batch.clone())?;
+
+            for stage in &mut branch.pipeline_stages {
+                branch_otap_batch = stage
+                    .execute(
+                        branch_otap_batch,
+                        session_ctx,
+                        config_options,
+                        task_context.clone(),
+                    )
+                    .await?;
+            }
+
+            branch_results.push(branch_otap_batch);
+        }
+
+        // TODO handle the default branch
+        let default_branch_batch =
+            filter_otap_batch(&not(&already_selected_vec)?, otap_batch.clone())?;
+        branch_results.push(default_branch_batch);
+
+        // reconstruct the result with the results of each branch
+        let mut result = match otap_batch {
+            OtapArrowRecords::Logs(_) => OtapArrowRecords::Logs(Logs::default()),
+            OtapArrowRecords::Traces(_) => OtapArrowRecords::Traces(Traces::default()),
+            OtapArrowRecords::Metrics(_) => OtapArrowRecords::Metrics(Metrics::default()),
+        };
+
+        // concat all the record batches for each payload type
+        for payload_type in otap_batch.allowed_payload_types() {
+            let schema = branch_results
+                .iter()
+                .filter_map(|branch_result| branch_result.get(*payload_type))
+                .map(|record_batch| record_batch.schema())
+                .next();
+
+            if let Some(schema) = schema {
+                let record_batch = concat_batches(
+                    &schema,
+                    branch_results
+                        .iter()
+                        .filter_map(|branch_result| branch_result.get(*payload_type)),
+                )?;
+                result.set(*payload_type, record_batch);
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -149,7 +241,7 @@ mod test {
         let pipeline_expr = ConditionalTest {
             branches: vec![(
                 "severity_text == \"ERROR\"",
-                "project-rename attributes[\"x\"] = attributes[\"y\"]",
+                "project-rename attributes[\"y\"] = attributes[\"x\"]",
             )],
             ..Default::default()
         }
