@@ -93,6 +93,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // not already been selected and feeding that into future iterations. This is extra
             // overhead but the resulting batch would have less rows which could make filter faster
             let predicate_selection_vec = branch.predicate.execute(&otap_batch, &session_ctx)?;
+
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
 
             // update the list of rows that were already selected by branches
@@ -101,7 +102,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // create a batch with only the rows that match the condition
             //
             // TODO: the function we're calling here will materialize all the child record batches
-            // with pointers to rows associated with the selected parent rows. There might be an
+            // with parent_ids of rows associated with the selected parent rows. There might be an
             // optimization to here where we don't do this for every branch for every batch. For
             // example, if the branch doesn't read or write some child batch, we could avoid
             // materializing it and sync up the rows once all branches have been evaluated.
@@ -122,9 +123,23 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(branch_otap_batch);
         }
 
-        // TODO handle the default branch
-        let default_branch_batch =
+        // handle the default branch (e.g. the rows that did not match the condition from any of
+        // the previous branches)
+        let mut default_branch_batch =
             filter_otap_batch(&not(&already_selected_vec)?, otap_batch.clone())?;
+
+        if let Some(default_branch) = self.default_branch.as_mut() {
+            for stage in default_branch {
+                default_branch_batch = stage
+                    .execute(
+                        default_branch_batch,
+                        session_ctx,
+                        config_options,
+                        task_context.clone(),
+                    )
+                    .await?;
+            }
+        }
         branch_results.push(default_branch_batch);
 
         // reconstruct the result with the results of each branch
@@ -134,7 +149,7 @@ impl PipelineStage for ConditionalPipelineStage {
             OtapArrowRecords::Metrics(_) => OtapArrowRecords::Metrics(Metrics::default()),
         };
 
-        // concat all the record batches for each payload type
+        // concat all the record batches for each payload type and set in the result
         for payload_type in otap_batch.allowed_payload_types() {
             let schema = branch_results
                 .iter()
@@ -218,6 +233,14 @@ mod test {
                 conditional_expr = conditional_expr.with_branch(branch);
             }
 
+            if let Some(data_exprs) = self.default_branch {
+                let exprs_pipeline = KqlParser::parse(&format!("logs | {data_exprs}"))
+                    .unwrap()
+                    .pipeline;
+                conditional_expr =
+                    conditional_expr.with_default_branch(exprs_pipeline.get_expressions().to_vec());
+            }
+
             PipelineExpressionBuilder::new(&"test")
                 .with_expressions(vec![DataExpression::Conditional(conditional_expr)])
                 .build()
@@ -226,7 +249,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_conditional_simple() {
+    async fn test_conditional_no_default_branch() {
         let log_records = vec![
             LogRecord::build()
                 .severity_text("ERROR")
@@ -257,6 +280,105 @@ mod test {
             LogRecord::build()
                 .severity_text("WARN")
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_with_branch() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        let pipeline_expr = ConditionalTest {
+            branches: vec![(
+                "severity_text == \"ERROR\"",
+                "project-rename attributes[\"y\"] = attributes[\"x\"]",
+            )],
+            default_branch: Some("project-rename attributes[\"z\"] = attributes[\"x\"]"),
+        }
+        .as_logs_pipeline();
+
+        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_multiple_branches() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("test")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .event_name("test")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("test_2")
+                .attributes(vec![
+                    KeyValue::new("x", AnyValue::new_string("test")),
+                    KeyValue::new("a", AnyValue::new_string("test")),
+                ])
+                .finish(),
+        ];
+
+        let pipeline_expr = ConditionalTest {
+            branches: vec![
+                (
+                    "severity_text == \"ERROR\"",
+                    "project-rename attributes[\"y\"] = attributes[\"x\"]",
+                ),
+                (
+                    "event_name == \"test\"",
+                    "project-rename attributes[\"z\"] = attributes[\"x\"]",
+                ),
+            ],
+            default_branch: Some("project-away attributes[\"x\"]"),
+        }
+        .as_logs_pipeline();
+
+        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("test")
+                .attributes(vec![KeyValue::new("y", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("WARN")
+                .event_name("test")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("test_2")
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("test"))])
                 .finish(),
         ];
 

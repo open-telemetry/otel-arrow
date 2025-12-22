@@ -127,7 +127,13 @@ impl PipelinePlanner {
                     ));
                 }
 
-                let pipeline_stage = ConditionalPipelineStage::new(pipeline_branches, None);
+                let default_branch = conditional_expr
+                    .get_default_branch()
+                    .map(|data_exprs| self.plan_data_exprs(data_exprs, session_ctx, otap_batch))
+                    .transpose()?;
+
+                let pipeline_stage =
+                    ConditionalPipelineStage::new(pipeline_branches, default_branch);
                 Ok(vec![Box::new(pipeline_stage)])
             }
 
