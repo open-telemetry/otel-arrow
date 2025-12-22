@@ -234,21 +234,19 @@ impl GrpcClientSettings {
         }
     }
 
-    /// Logs an informational message if proxy is configured for http:// endpoints.
+    /// Logs an informational message if a proxy is configured for a plain text (http://) endpoint.
     ///
-    /// HTTP CONNECT tunneling is now supported for both http:// and https:// endpoints.
-    /// For http:// endpoints (including h2c for gRPC), the proxy must support HTTP CONNECT
-    /// for non-TLS targets. If your proxy rejects CONNECT for HTTP, consider using
-    /// transparent proxying tools (SOCKS proxy, proxychains, etc.).
+    /// This warns users that the configured proxy must support HTTP CONNECT for non-TLS targets,
+    /// which is a common source of connection failures with some proxy servers.
     pub fn log_proxy_info(&self) {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
-            log::info!(
-                "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. \
-                 If your proxy does not support CONNECT for HTTP targets, consider using \
-                 a transparent proxy or SOCKS proxy instead. Endpoint: {}, Proxy: {}",
-                self.grpc_endpoint,
-                proxy
+            let proxy_str = proxy.to_string();
+            otap_df_telemetry::otel_info!(
+                "Proxy.Configured",
+                endpoint = self.grpc_endpoint.as_str(),
+                proxy = proxy_str.as_str(),
+                message = "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. If your proxy does not support CONNECT for HTTP targets, consider using a transparent proxy or SOCKS proxy instead."
             );
         }
     }

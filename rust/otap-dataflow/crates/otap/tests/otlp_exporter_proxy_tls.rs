@@ -191,9 +191,8 @@ async fn start_tls_logs_server() -> (
     mpsc::Receiver<()>,
 ) {
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
-        eprintln!(
-            "rustls default provider installation failed in test (OK if already installed): {err:?}"
-        );
+        // It's fine if the provider is already installed (e.g. by another test)
+        log::debug!("rustls default provider installation failed in test: {err:?}");
     }
 
     let (ca, ca_issuer) = new_ca();
