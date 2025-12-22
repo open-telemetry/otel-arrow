@@ -190,9 +190,11 @@ async fn start_tls_logs_server() -> (
     tokio::task::JoinHandle<()>,
     mpsc::Receiver<()>,
 ) {
-    let _ = rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
+    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+        eprintln!(
+            "rustls default provider installation failed in test (OK if already installed): {err}"
+        );
+    }
 
     let (ca, ca_issuer) = new_ca();
     let ca_pem = ca.pem();
