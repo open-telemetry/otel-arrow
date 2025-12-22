@@ -15,7 +15,7 @@ pub enum DataExpression {
     Transform(TransformExpression),
 
     /// Conditional data expression.
-    Conditional(ConditionalExpression),
+    Conditional(ConditionalDataExpression),
 }
 
 impl DataExpression {

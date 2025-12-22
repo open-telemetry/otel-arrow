@@ -1,7 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO module docs
+//! This module contains implementation of a pipeline stage that can optionally apply pipeline
+//! stages to rows that match some predicate conditions.
 
 use std::sync::Arc;
 
@@ -19,11 +20,26 @@ use crate::error::Result;
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
-/// TODO comments on what its' doing
+/// This [`PipelineStage`] implementation will conditionally execute child pipeline stages on rows
+/// which match some condition. This can be used to execute `if/else if/else` type control flow for
+/// items in a telemetry batch.
+///
+/// When executed, this will evaluate the pipeline in each branch on a disjoint set of rows that are
+/// selected by the branches' conditions. The output will be the results of each branch & default
+/// branch concatenated/union'd together.
 pub struct ConditionalPipelineStage {
-    /// TODO comments
+    /// The data in the batches will be checked against the conditions for each branch, and the
+    /// stages in each branch will be executed for the rows that pass the condition and did not
+    /// pass the condition for previous branches.
+    ///
+    /// These branches can be thought of like `if`/`else if` control flow structures.
     branches: Vec<ConditionalPipelineStageBranch>,
-    /// TODO comments
+
+    /// The "default branch", if not `None`, will be executed for rows that did not pass a
+    /// condition in any of the branches. If this branch is `None`, the remaining rows will be
+    /// appended to the result batch with no transformation.
+    ///
+    /// This is analogous to the `else` branch.
     default_branch: Option<Vec<BoxedPipelineStage>>,
 }
 
@@ -39,18 +55,23 @@ impl ConditionalPipelineStage {
     }
 }
 
-/// TODO comments
+/// A branch within a conditional pipeline stage
 pub struct ConditionalPipelineStageBranch {
-    /// TODO comments
-    predicate: Composite<FilterExec>,
-    /// TODO comments
+    /// This condition will be evaluated to determine for which rows to execute the pipeline
+    /// stages. The semantics are such that rows will be selected that pass this condition and
+    /// did not pass the condition for previous branches.
+    condition: Composite<FilterExec>,
+
+    /// These pipeline stages will be executed for rows selected for this branch, producing a new
+    /// OTAP Batch for the branch which will be concatenated with batches from the other branches
+    /// to produce the final result.
     pipeline_stages: Vec<BoxedPipelineStage>,
 }
 
 impl ConditionalPipelineStageBranch {
     pub fn new(predicate: Composite<FilterExec>, pipeline_stages: Vec<BoxedPipelineStage>) -> Self {
         Self {
-            predicate,
+            condition: predicate,
             pipeline_stages,
         }
     }
@@ -68,8 +89,8 @@ impl PipelineStage for ConditionalPipelineStage {
         let root_batch = match otap_batch.root_record_batch() {
             Some(root_batch) => root_batch,
             None => {
-                // here we should invoke the pipelines with empties ...
-                todo!()
+                // empty batch, nothing to do
+                return Ok(otap_batch);
             }
         };
 
@@ -82,17 +103,22 @@ impl PipelineStage for ConditionalPipelineStage {
         );
 
         for branch in &mut self.branches {
+            if already_selected_vec.true_count() == root_batch.num_rows() {
+                // all rows have been selected by previous branches, so there is no need to continue
+                // executing the next branches with empty batches
+                break;
+            }
+
             // determine which rows are selected by this branch
             //
             // TODO: here we're evaluating the filter against all rows in the incoming batch for
-            // each branch. There's probably a handful of optimizations we can make here:
-            // 1) if batch_already_selected is all true, we know no rows match this branch so
-            // we can avoid evaluating the filter
-            // 2) if many of the rows have already been selected by a previous branch (say >80%)
-            // we might consider materializing a batch specifically containing the rows that have
-            // not already been selected and feeding that into future iterations. This is extra
-            // overhead but the resulting batch would have less rows which could make filter faster
-            let predicate_selection_vec = branch.predicate.execute(&otap_batch, &session_ctx)?;
+            // each branch. There's probably a some optimization we can make here if this becomes
+            // a bottleneck:
+            // if previous branches have been very selective, we might consider materializing a
+            // batch specifically containing the rows that have not already been selected and
+            // feeding that into next iterations. This is extra overhead but the resulting batch
+            // would have less rows which could make filter faster
+            let predicate_selection_vec = branch.condition.execute(&otap_batch, session_ctx)?;
 
             let branch_selection_vec = and(&predicate_selection_vec, &not(&already_selected_vec)?)?;
 
@@ -123,24 +149,26 @@ impl PipelineStage for ConditionalPipelineStage {
             branch_results.push(branch_otap_batch);
         }
 
-        // handle the default branch (e.g. the rows that did not match the condition from any of
-        // the previous branches)
-        let mut default_branch_batch =
-            filter_otap_batch(&not(&already_selected_vec)?, otap_batch.clone())?;
+        // handle the default branch - e.g. the rows that did not match the condition from any of
+        // the previous branches
+        if already_selected_vec.true_count() != root_batch.num_rows() {
+            let mut default_branch_batch =
+                filter_otap_batch(&not(&already_selected_vec)?, otap_batch.clone())?;
 
-        if let Some(default_branch) = self.default_branch.as_mut() {
-            for stage in default_branch {
-                default_branch_batch = stage
-                    .execute(
-                        default_branch_batch,
-                        session_ctx,
-                        config_options,
-                        task_context.clone(),
-                    )
-                    .await?;
+            if let Some(default_branch) = self.default_branch.as_mut() {
+                for stage in default_branch {
+                    default_branch_batch = stage
+                        .execute(
+                            default_branch_batch,
+                            session_ctx,
+                            config_options,
+                            task_context.clone(),
+                        )
+                        .await?;
+                }
             }
+            branch_results.push(default_branch_batch);
         }
-        branch_results.push(default_branch_batch);
 
         // reconstruct the result with the results of each branch
         let mut result = match otap_batch {
@@ -151,6 +179,10 @@ impl PipelineStage for ConditionalPipelineStage {
 
         // concat all the record batches for each payload type and set in the result
         for payload_type in otap_batch.allowed_payload_types() {
+            // TODO - when we have filter stages that can modify the schema, such as adding or
+            // deleting columns, we'll need extra logic here to combine project the record batches
+            // we're iterating to a common superset schema.
+
             let schema = branch_results
                 .iter()
                 .filter_map(|branch_result| branch_result.get(*payload_type))
@@ -175,8 +207,11 @@ impl PipelineStage for ConditionalPipelineStage {
 #[cfg(test)]
 mod test {
     use data_engine_expressions::{
-        ConditionalExpression, ConditionalExpressionBranch, DataExpression, LogicalExpression,
-        PipelineExpression, PipelineExpressionBuilder, QueryLocation,
+        ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
+        EqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
+        MoveTransformExpression, MutableValueExpression, PipelineExpression,
+        PipelineExpressionBuilder, QueryLocation, ScalarExpression, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, TransformExpression, ValueAccessor,
     };
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_pdata::proto::opentelemetry::{
@@ -184,7 +219,10 @@ mod test {
         logs::v1::LogRecord,
     };
 
-    use crate::pipeline::test::{exec_logs_pipeline_expr, to_logs_data};
+    use crate::pipeline::{
+        Pipeline,
+        test::{exec_logs_pipeline_expr, to_logs_data},
+    };
 
     use super::*;
 
@@ -207,6 +245,8 @@ mod test {
                 let pipeline = KqlParser::parse(&format!("logs | where {condition}"))
                     .unwrap()
                     .pipeline;
+
+                println!("pipeline {}", pipeline);
                 let condition = match pipeline.get_expressions().first() {
                     Some(DataExpression::Discard(discard)) => match discard.get_predicate() {
                         Some(LogicalExpression::Not(not)) => not.get_inner_expression().clone(),
@@ -221,14 +261,14 @@ mod test {
                     .unwrap()
                     .pipeline;
 
-                branch_exprs.push(ConditionalExpressionBranch::new(
+                branch_exprs.push(ConditionalDataExpressionBranch::new(
                     QueryLocation::new_fake(),
                     condition,
                     exprs_pipeline.get_expressions().to_vec(),
                 ));
             }
 
-            let mut conditional_expr = ConditionalExpression::new(QueryLocation::new_fake());
+            let mut conditional_expr = ConditionalDataExpression::new(QueryLocation::new_fake());
             for branch in branch_exprs {
                 conditional_expr = conditional_expr.with_branch(branch);
             }
@@ -287,7 +327,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_conditional_with_branch() {
+    async fn test_conditional_with_default_branch() {
         let log_records = vec![
             LogRecord::build()
                 .severity_text("ERROR")
@@ -379,6 +419,324 @@ mod test {
                 .severity_text("INFO")
                 .event_name("test_2")
                 .attributes(vec![KeyValue::new("a", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_conditional_early_branch_selects_all() {
+        // there's a shortcut where we can stop checking the conditions for branches
+        // once all rows have been selected and processed. This test ensures we get
+        // correct results when we use that code bath
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        let pipeline_expr = ConditionalTest {
+            branches: vec![
+                (
+                    "severity_text == \"INFO\"",
+                    "project-rename attributes[\"y\"] = attributes[\"x\"]",
+                ),
+                (
+                    "severity_text == \"ERROR\"",
+                    "project-rename attributes[\"z\"] = attributes[\"x\"]",
+                ),
+                (
+                    "severity_text == \"WARN\"",
+                    "project-rename attributes[\"a\"] = attributes[\"x\"]",
+                ),
+            ],
+            default_branch: Some("project-away attributes[\"x\"]"),
+        }
+        .as_logs_pipeline();
+
+        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        pretty_assertions::assert_eq!(result.resource_logs[0].scope_logs[0].log_records, expected)
+    }
+
+    #[tokio::test]
+    async fn test_empty_batch() {
+        let pipeline_expr = ConditionalTest {
+            branches: vec![
+                (
+                    "severity_text == \"ERROR\"",
+                    "project-rename attributes[\"y\"] = attributes[\"x\"]",
+                ),
+                (
+                    "event_name == \"test\"",
+                    "project-rename attributes[\"z\"] = attributes[\"x\"]",
+                ),
+            ],
+            default_branch: Some("project-away attributes[\"x\"]"),
+        }
+        .as_logs_pipeline();
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = OtapArrowRecords::Logs(Logs::default());
+        let result = pipeline.execute(input.clone()).await.unwrap();
+        assert_eq!(result, input);
+    }
+
+    #[tokio::test]
+    async fn test_conditional_with_foldable_conditions() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
+                .finish(),
+        ];
+
+        // what's below is equivalent to
+        // ```
+        //  let pipeline_expr = ConditionalTest {
+        //     branches: vec![
+        //         (
+        //             "1 == 2",
+        //             "project-rename attributes[\"y\"] = attributes[\"x\"]",
+        //         ),
+        //         (
+        //             "1 == 1",
+        //             "project-rename attributes[\"z\"] = attributes[\"x\"]",
+        //         ),
+        //         (
+        //             "3 == 3",
+        //             "project-rename attributes[\"b\"] = attributes[\"a\"]",
+        //         ),
+        //     ],
+        //     ..Default::default()
+        // }
+        // .as_logs_pipeline();
+        // ```
+        // the reason we don't use our helper to parse this here is because the parser calls
+        // optimize() after parsing, but we want to construct the ConditionalDataExpression
+        // from unoptimized exprs, then let the builder call optimize on this expr.
+        let pipeline_expr = PipelineExpressionBuilder::new(&"")
+            .with_expressions(vec![DataExpression::Conditional(
+                ConditionalDataExpression::new(QueryLocation::new_fake())
+                    .with_branch(ConditionalDataExpressionBranch::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                            )),
+                            false,
+                        )),
+                        vec![DataExpression::Transform(TransformExpression::Move(
+                            MoveTransformExpression::new(
+                                QueryLocation::new_fake(),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes",
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "x",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes",
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "x",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ),
+                        ))],
+                    ))
+                    .with_branch(ConditionalDataExpressionBranch::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                            )),
+                            false,
+                        )),
+                        vec![DataExpression::Transform(TransformExpression::Move(
+                            MoveTransformExpression::new(
+                                QueryLocation::new_fake(),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes",
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "x",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes",
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "z",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ),
+                        ))],
+                    ))
+                    .with_branch(ConditionalDataExpressionBranch::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+                            )),
+                            false,
+                        )),
+                        vec![DataExpression::Transform(TransformExpression::Move(
+                            MoveTransformExpression::new(
+                                QueryLocation::new_fake(),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes",
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "a",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes",
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "b",
+                                            ),
+                                        )),
+                                    ]),
+                                )),
+                            ),
+                        ))],
+                    )),
+            )])
+            .build()
+            .unwrap();
+
+        match pipeline_expr.get_expressions().first() {
+            Some(DataExpression::Conditional(cond_expr)) => {
+                // ensure that when we called try_fold, we threw away two of the branches:
+                // the first one which nothing would match, and the third one that came after
+                // the branch which matches everything.
+                assert_eq!(cond_expr.get_branches().len(), 1)
+            }
+            other => {
+                panic!("unexpected pipeline expr {other :?}")
+            }
+        }
+
+        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+
+        let expected = vec![
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .attributes(vec![KeyValue::new("z", AnyValue::new_string("test"))])
                 .finish(),
         ];
 

@@ -1735,6 +1735,40 @@ mod test {
     };
 
     #[tokio::test]
+    async fn test_simple_filter_2() {
+        let ns_per_second: u64 = 1000 * 1000 * 1000;
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("TRACE")
+                .severity_number(1)
+                .time_unix_nano(ns_per_second)
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .severity_number(9)
+                .event_name("2")
+                .time_unix_nano(2 * ns_per_second)
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .severity_number(17)
+                .time_unix_nano(3 * ns_per_second)
+                .event_name("3")
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline(
+            "logs | where not(event_name == \"2\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()]
+        );
+    }
+
+    #[tokio::test]
     async fn test_simple_filter() {
         let ns_per_second: u64 = 1000 * 1000 * 1000;
         let log_records = vec![
