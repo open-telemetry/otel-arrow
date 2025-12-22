@@ -401,7 +401,6 @@ pub(crate) struct PipelineMetricsMonitor {
     deallocated: Option<ThreadLocal<u64>>,
     last_allocated: u64,
     last_deallocated: u64,
-    
     rusage_thread_supported: bool,
 
     // These timestamps mark the beginning of the current measurement interval
