@@ -293,7 +293,13 @@ impl GrpcClientSettings {
                 match res {
                     Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
                     Ok(Err(err)) => Err(io::Error::other(err)),
-                    Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timeout")),
+                    Err(_) => Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "connect timeout while connecting to {} with proxy config: {}",
+                            uri, proxy
+                        ),
+                    )),
                 }
             }
         })
