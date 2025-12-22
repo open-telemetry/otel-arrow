@@ -122,9 +122,18 @@ async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
                 let mut parts = request_line.split_whitespace();
                 let method = parts.next().unwrap_or("");
                 let authority = parts.next().unwrap_or("");
+                let version = parts.next().unwrap_or("");
+
                 if method != "CONNECT" {
                     let _ = downstream
                         .write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
+                        .await;
+                    return;
+                }
+
+                if version != "HTTP/1.1" && version != "HTTP/1.0" {
+                    let _ = downstream
+                        .write_all(b"HTTP/1.1 505 HTTP Version Not Supported\r\n\r\n")
                         .await;
                     return;
                 }
@@ -376,6 +385,41 @@ async fn otlp_exporter_connects_through_connect_proxy_http_endpoint() {
     assert!(
         proxy_hits.load(Ordering::Relaxed) >= 1,
         "Expected proxy to be used for http:// endpoint"
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn otlp_exporter_respects_no_proxy() {
+    let (srv_addr, server_handle, mut rx) = start_plain_logs_server().await;
+
+    let proxy_hits = Arc::new(AtomicUsize::new(0));
+    let proxy_addr = start_connect_proxy(proxy_hits.clone()).await;
+
+    let settings = GrpcClientSettings {
+        grpc_endpoint: format!("http://localhost:{}", srv_addr.port()),
+        proxy: Some(ProxyConfig {
+            http_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port())),
+            // Should bypass proxy for localhost
+            no_proxy: Some("localhost".to_string()),
+            ..ProxyConfig::default()
+        }),
+        ..GrpcClientSettings::default()
+    };
+
+    let channel = settings.connect_channel(None).await.unwrap();
+    send_one_request(channel).await;
+
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap();
+    assert!(observed.is_some());
+
+    assert_eq!(
+        proxy_hits.load(Ordering::Relaxed),
+        0,
+        "Expected proxy to be bypassed"
     );
 
     server_handle.abort();

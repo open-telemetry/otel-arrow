@@ -265,6 +265,9 @@ impl GrpcClientSettings {
     > + Send
     + Clone
     + 'static {
+        // Capture settings at creation time.
+        // Note: If GrpcClientSettings are modified after this connector is created,
+        // those changes will NOT be reflected in the connector.
         let connect_timeout = self.connect_timeout;
         let tcp_nodelay = self.tcp_nodelay;
         let tcp_keepalive = self.tcp_keepalive;

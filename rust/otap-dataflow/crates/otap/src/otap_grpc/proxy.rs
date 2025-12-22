@@ -216,10 +216,14 @@ impl ProxyConfig {
 
             // Handle CIDR notation (e.g., "192.168.0.0/16", "10.0.0.0/8")
             if pattern.contains('/') {
-                if let (Some(ip), Ok(net)) = (host_ip, pattern.parse::<IpNet>()) {
-                    if net.contains(&ip) {
-                        return true;
+                if let Ok(net) = pattern.parse::<IpNet>() {
+                    if let Some(ip) = host_ip {
+                        if net.contains(&ip) {
+                            return true;
+                        }
                     }
+                } else {
+                    log::warn!("Invalid CIDR notation in NO_PROXY: '{}'", pattern);
                 }
                 continue;
             }
@@ -298,10 +302,12 @@ async fn http_connect_tunnel_on_stream(
     target_port: u16,
 ) -> Result<TcpStream, ProxyError> {
     // Send HTTP CONNECT request
+    // Note: We use "Connection: Keep-Alive" instead of "Proxy-Connection" as the latter
+    // is non-standard, although widely supported. Modern proxies should respect "Connection".
     let connect_request = format!(
         "CONNECT {target_host}:{target_port} HTTP/1.1\r\n\
          Host: {target_host}:{target_port}\r\n\
-         Proxy-Connection: Keep-Alive\r\n\
+         Connection: Keep-Alive\r\n\
          \r\n"
     );
 
@@ -340,6 +346,9 @@ async fn http_connect_tunnel_on_stream(
         .map_err(|_| ProxyError::InvalidResponse(format!("invalid status code: {}", parts[1])))?;
 
     // Read remaining headers (skip until empty line)
+    // Limit the number of headers to prevent potential DoS/memory exhaustion
+    let mut header_count = 0;
+    const MAX_HEADERS: usize = 100;
     loop {
         let mut header_line = String::new();
         if buf_reader.read_line(&mut header_line).await? == 0 {
@@ -349,6 +358,12 @@ async fn http_connect_tunnel_on_stream(
         }
         if header_line.trim().is_empty() {
             break;
+        }
+        header_count += 1;
+        if header_count > MAX_HEADERS {
+            return Err(ProxyError::InvalidResponse(
+                "too many headers in proxy response".to_string(),
+            ));
         }
     }
 
@@ -366,6 +381,10 @@ async fn http_connect_tunnel_on_stream(
 }
 
 /// Applies TCP socket options (nodelay, keepalive) to a stream.
+///
+/// This function performs a series of conversions (tokio -> std -> socket2 -> std -> tokio)
+/// to apply socket options that are not directly exposed by tokio's TcpStream.
+/// Specifically, `socket2` is required to set detailed keepalive parameters (interval, retries).
 fn apply_socket_options(
     stream: TcpStream,
     tcp_nodelay: bool,
@@ -390,6 +409,14 @@ fn apply_socket_options(
         #[cfg(not(target_os = "windows"))]
         if let Some(retries) = tcp_keepalive_retries {
             keepalive = keepalive.with_retries(retries);
+        }
+
+        #[cfg(target_os = "windows")]
+        if tcp_keepalive_retries.is_some() {
+            log::warn!(
+                "tcp_keepalive_retries is configured but ignored on Windows: \
+                 TcpKeepalive::with_retries is not available on this platform"
+            );
         }
 
         socket.set_tcp_keepalive(&keepalive)?;
@@ -451,55 +478,7 @@ pub async fn connect_tcp_stream_with_proxy_config(
     }
 }
 
-/// Creates a TLS connector configured for HTTP/2 (gRPC).
-///
-/// This function creates a TLS connector with proper ALPN configuration
-/// (`h2`) which is required for HTTP/2 over TLS, essential for gRPC
-/// through HTTPS proxies.
-#[cfg(feature = "experimental-tls")]
-pub fn create_h2_tls_connector() -> Result<TlsConnector, ProxyError> {
-    use rustls::RootCertStore;
-    use tokio_rustls::rustls::ClientConfig;
 
-    static H2_TLS_CONNECTOR: OnceLock<TlsConnector> = OnceLock::new();
-
-    if let Some(connector) = H2_TLS_CONNECTOR.get() {
-        return Ok(connector.clone());
-    }
-
-    let mut roots = RootCertStore::empty();
-
-    // Load native certificates - rustls_native_certs returns CertificateResult struct
-    let cert_result = rustls_native_certs::load_native_certs();
-
-    // Log any errors that occurred during loading
-    for error in &cert_result.errors {
-        log::warn!("Error loading native cert: {error}");
-    }
-
-    // Add all successfully loaded certificates
-    for cert in cert_result.certs {
-        // Ignore individual cert errors, just skip them
-        let _ = roots.add(cert);
-    }
-
-    if roots.is_empty() {
-        return Err(ProxyError::TlsError(
-            "no valid root certificates found".to_string(),
-        ));
-    }
-
-    let mut config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-
-    // Critical: Set ALPN to h2 for HTTP/2 over TLS (required for gRPC)
-    config.alpn_protocols = vec![b"h2".to_vec()];
-
-    let connector = TlsConnector::from(Arc::new(config));
-    let _ = H2_TLS_CONNECTOR.set(connector.clone());
-    Ok(connector)
-}
 
 #[cfg(test)]
 mod tests {
