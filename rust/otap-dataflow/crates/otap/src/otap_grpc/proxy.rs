@@ -23,7 +23,7 @@ use std::io;
 use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 /// Errors that can occur during proxy connection.
@@ -366,7 +366,7 @@ async fn http_connect_tunnel_on_stream(
 
     loop {
         let mut header_line = String::new();
-        let mut limited_reader = buf_reader.by_ref().take(MAX_HEADER_SIZE);
+        let mut limited_reader = (&mut buf_reader).take(MAX_HEADER_SIZE);
         let bytes_read = limited_reader.read_line(&mut header_line).await?;
 
         if bytes_read == 0 {
