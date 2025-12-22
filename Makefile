@@ -36,8 +36,8 @@ doc:
 
 
 
-# Install opentelemetry-collector builder at a specific version which should always match component references in collector/otelarrowcol-build.yaml
-# This command attempts to update this version in both otelarrowcol-build.yaml and Dockerfile
+# Install opentelemetry-collector builder at a specific version which should (almost always) match component references in collector/otelarrowcol-build.yaml
+# In addition to installing the builder, this command attempts to synchronize this version in both otelarrowcol-build.yaml and Dockerfile
 # In the event that Collector and Collector-Contrib references need to be different versions, manual edits may be required after running this command
 BUILDER_VERSION = v0.142.0
 BUILDER = builder
