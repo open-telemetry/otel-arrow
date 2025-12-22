@@ -278,7 +278,7 @@ mod test {
                     conditional_expr.with_default_branch(exprs_pipeline.get_expressions().to_vec());
             }
 
-            PipelineExpressionBuilder::new(&"test")
+            PipelineExpressionBuilder::new("test")
                 .with_expressions(vec![DataExpression::Conditional(conditional_expr)])
                 .build()
                 .unwrap()

@@ -1521,7 +1521,7 @@ pub(crate) fn filter_otap_batch(
     }
 
     // take the rows from the root batch that were selected
-    let new_root_batch = filter_record_batch(root_batch, &selection_vec)?;
+    let new_root_batch = filter_record_batch(root_batch, selection_vec)?;
 
     // replace the root batch
     otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
