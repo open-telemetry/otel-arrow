@@ -415,6 +415,7 @@ const fn default_keep_alive_while_idle() -> bool {
 #[allow(missing_docs)]
 mod tests {
     use super::*;
+    #[cfg(feature = "experimental-tls")]
     use tempfile::NamedTempFile;
 
     #[cfg(feature = "experimental-tls")]
