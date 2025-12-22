@@ -451,7 +451,20 @@ pub async fn connect_tcp_stream_with_proxy_config(
 
     if let Some(proxy_url) = proxy_config.get_proxy_for_uri(target_uri) {
         let (proxy_host, proxy_port) = parse_proxy_url(proxy_url)?;
-        let stream = TcpStream::connect((proxy_host.as_str(), proxy_port)).await?;
+
+        log::debug!("Connecting to proxy at {}:{}", proxy_host, proxy_port);
+        let stream = TcpStream::connect((proxy_host.as_str(), proxy_port))
+            .await
+            .map_err(|e| {
+                log::warn!(
+                    "Failed to connect to proxy at {}:{}: {}",
+                    proxy_host,
+                    proxy_port,
+                    e
+                );
+                ProxyError::ProxyConnectionFailed(e)
+            })?;
+        log::debug!("Successfully connected to proxy TCP port");
 
         // Apply socket options to the proxy connection
         let stream = apply_socket_options(
@@ -477,8 +490,6 @@ pub async fn connect_tcp_stream_with_proxy_config(
         Ok(stream)
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
