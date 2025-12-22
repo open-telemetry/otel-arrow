@@ -227,22 +227,11 @@ impl GrpcClientSettings {
     /// This method reads environment variables (`HTTP_PROXY`, etc.) every time it is called.
     /// It is intended to be called during client initialization (startup), not per-request.
     #[must_use]
-    pub fn effective_proxy_config(&self) -> ProxyConfig {
+    fn effective_proxy_config(&self) -> ProxyConfig {
         match &self.proxy {
             Some(config) => config.clone().merge_with_env(),
             None => ProxyConfig::from_env(),
         }
-    }
-
-    /// Returns true if proxy is configured (either explicitly or via environment).
-    ///
-    /// # Performance
-    ///
-    /// This method calls [`effective_proxy_config`](Self::effective_proxy_config), which reads
-    /// environment variables. It is intended to be called during client initialization (startup).
-    #[must_use]
-    pub fn has_proxy(&self) -> bool {
-        self.effective_proxy_config().has_proxy()
     }
 
     /// Logs an informational message if proxy is configured for http:// endpoints.
