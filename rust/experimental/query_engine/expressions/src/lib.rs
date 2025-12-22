@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+pub(crate) mod conditional_expressions;
 pub(crate) mod data_expressions;
 pub(crate) mod expression;
 pub(crate) mod expression_error;
@@ -19,6 +20,7 @@ pub use expression_error::ExpressionError;
 pub use pipeline_expression::*;
 pub use value_accessor::ValueAccessor;
 
+pub use conditional_expressions::*;
 pub use data_expressions::*;
 pub use logical_expressions::*;
 pub use primitives::*;

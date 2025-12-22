@@ -32,7 +32,7 @@ impl AttributeTransformPipelineStage {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl PipelineStage for AttributeTransformPipelineStage {
     async fn execute(
         &mut self,

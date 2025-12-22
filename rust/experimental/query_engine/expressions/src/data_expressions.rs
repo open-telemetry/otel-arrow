@@ -13,6 +13,9 @@ pub enum DataExpression {
 
     /// Transform data expression.
     Transform(TransformExpression),
+
+    /// Conditional data expression.
+    Conditional(ConditionalExpression),
 }
 
 impl DataExpression {
@@ -24,6 +27,7 @@ impl DataExpression {
             DataExpression::Discard(d) => d.try_fold(scope),
             DataExpression::Summary(s) => s.try_fold(scope),
             DataExpression::Transform(t) => t.try_fold(scope),
+            DataExpression::Conditional(c) => c.try_fold(scope),
         }
     }
 }
@@ -34,6 +38,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(d) => d.get_query_location(),
             DataExpression::Summary(s) => s.get_query_location(),
             DataExpression::Transform(t) => t.get_query_location(),
+            DataExpression::Conditional(c) => c.get_query_location(),
         }
     }
 
@@ -42,6 +47,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(_) => "DataExpression(Discard)",
             DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
+            DataExpression::Conditional(_) => "DataExpression(Conditional)",
         }
     }
 
@@ -50,6 +56,7 @@ impl Expression for DataExpression {
             DataExpression::Discard(d) => d.fmt_with_indent(f, indent),
             DataExpression::Summary(s) => s.fmt_with_indent(f, indent),
             DataExpression::Transform(t) => t.fmt_with_indent(f, indent),
+            DataExpression::Conditional(c) => c.fmt_with_indent(f, indent),
         }
     }
 }

@@ -1577,7 +1577,7 @@ impl FilterPipelineStage {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl PipelineStage for FilterPipelineStage {
     async fn execute(
         &mut self,
