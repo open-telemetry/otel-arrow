@@ -135,10 +135,10 @@ impl Expression for DiscardDataExpression {
 pub struct ConditionalDataExpression {
     query_location: QueryLocation,
 
-    /// branches which will conditionally process
+    /// Branches which will conditionally process
     branches: Vec<ConditionalDataExpressionBranch>,
 
-    /// if `Some`, data that does not match the condition in any of the other branches
+    /// If `Some`, data that does not match the condition in any of the other branches
     /// will be handled by this branch
     default_branch: Option<Vec<DataExpression>>,
 }
@@ -174,20 +174,20 @@ impl ConditionalDataExpression {
         &mut self,
         _scope: &PipelineResolutionScope,
     ) -> Result<(), ExpressionError> {
-        // TODO support folding here.. what we should do is:
+        // TODO support folding. What this should do is:
         //
-        // 1) for each branch, see if's condition can be folded into a boolean literal using
-        // LogicalExpression::try_resolve_static. If so:
-        // - if the static is false, discard the branch because it would evaluate on zero rows
-        // - if the static is true, discard all the other branches and the default branch because
-        //   no rows would be evaluated by them
+        // 1) for each branch, check if's condition can be folded into a boolean literal using
+        // `LogicalExpression::try_resolve_static`. If so:
+        // - if the result is false, discard the branch because it would evaluate on zero rows
+        // - if the result is true, discard all the subsequent branches and the default branch
+        //   because no rows would be evaluated by them
         //
         // 2) recursively call try_fold on all the expressions in every remaining branch and the
         // default branch if still present.
         //
-        // Before doing this, we should support filtering by static literals. Otherwise, we won't
-        // be able to evaluate the resolved static as a filter so we can write unit tests that will
-        // evaluate the folded expr (https://github.com/open-telemetry/otel-arrow/issues/1508)
+        // Before doing this, we should support filtering by static literals. so we can write unit
+        // tests that will evaluate the folded expr. Without this, we won't be able to evaluate the
+        // resolved static as a filter. https://github.com/open-telemetry/otel-arrow/issues/1508
 
         Ok(())
     }
@@ -267,10 +267,10 @@ impl Expression for ConditionalDataExpression {
 pub struct ConditionalDataExpressionBranch {
     query_location: QueryLocation,
 
-    /// the condition that data must match to be handled by this branch
+    /// The condition that data must match to be handled by this branch
     condition: LogicalExpression,
 
-    /// the expressions to apply to the data handled by this branch
+    /// The expressions to apply to the data handled by this branch
     expressions: Vec<DataExpression>,
 }
 
