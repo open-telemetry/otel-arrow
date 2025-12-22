@@ -163,15 +163,24 @@ impl ProxyConfig {
 
         // Check if host should bypass proxy
         if self.should_bypass(host) {
+            log::debug!("Bypassing proxy for host: {}", host);
             return None;
         }
 
         // Select proxy based on scheme
         let scheme = uri.scheme_str().unwrap_or("http");
-        match scheme {
+        let proxy_url = match scheme {
             "https" => self.https_proxy.as_deref().or(self.all_proxy.as_deref()),
             _ => self.http_proxy.as_deref().or(self.all_proxy.as_deref()),
+        };
+
+        if let Some(url) = proxy_url {
+            log::debug!("Using proxy {} for target {}", url, uri);
+        } else {
+            log::debug!("No proxy configured for target {}", uri);
         }
+
+        proxy_url
     }
 
     /// Checks if a host should bypass the proxy based on NO_PROXY rules.
@@ -296,6 +305,11 @@ async fn http_connect_tunnel_on_stream(
          \r\n"
     );
 
+    log::debug!(
+        "Sending CONNECT request to proxy: {}",
+        connect_request.trim()
+    );
+
     let (reader, mut writer) = stream.into_split();
     writer.write_all(connect_request.as_bytes()).await?;
 
@@ -307,6 +321,11 @@ async fn http_connect_tunnel_on_stream(
             "unexpected EOF while reading status line".to_string(),
         ));
     }
+
+    log::debug!(
+        "Received proxy response status line: {}",
+        status_line.trim()
+    );
 
     // Parse "HTTP/1.1 200 Connection established"
     let parts: Vec<&str> = status_line.trim().splitn(3, ' ').collect();
