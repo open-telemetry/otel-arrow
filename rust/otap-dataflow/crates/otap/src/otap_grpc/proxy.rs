@@ -50,10 +50,6 @@ pub enum ProxyError {
     #[error("invalid HTTP response from proxy: {0}")]
     InvalidResponse(String),
 
-    /// TLS handshake failed
-    #[error("TLS handshake failed: {0}")]
-    TlsError(String),
-
     /// Invalid target URI
     #[error("invalid target URI: {0}")]
     InvalidUri(String),
