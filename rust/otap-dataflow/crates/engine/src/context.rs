@@ -230,3 +230,26 @@ impl PipelineContext {
         self.internal_logs_receiver.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_with_internal_logs_receiver() {
+        let controller_ctx = ControllerContext::new(MetricsRegistryHandle::default());
+
+        let (_internal_logs_sender, internal_logs_receiver) = crossbeam_channel::unbounded();
+
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with(
+                "test_pipeline_group_id".into(),
+                "test_pipeline_id".into(),
+                0,
+                0,
+            )
+            .with_internal_logs_receiver(internal_logs_receiver);
+
+        assert!(pipeline_ctx.internal_logs_receiver().is_some());
+    }
+}

@@ -6,7 +6,7 @@ settings:
 nodes:
   receiver_internal_telemetry:
     kind: receiver
-    plugin_urn: "urn:otel:otap:internal_telemetry:receiver"
+    plugin_urn: "urn:otel:otap:internal_logs:receiver"
     out_ports:
       out_port:
         destinations:
@@ -45,7 +45,11 @@ nodes:
 
 service:
   telemetry:
-    logs: # This enables the internal telemetry exporter.
+    logs:
       level: "info"
+      processors:
+        - batch:
+            exporter:
+              internal:
     resource:
       service.name: "fake-debug-noop-service"

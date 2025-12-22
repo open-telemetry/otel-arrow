@@ -154,6 +154,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_internal_logs_receiver_from_config() -> Result<(), otap_df_config::error::Error> {
+        let metrics_handle = MetricsRegistryHandle::new();
+        let controller_context = ControllerContext::new(metrics_handle);
+        let pipeline_group_id: PipelineGroupId = "test_group".into();
+        let pipeline_id: PipelineId = "test_pipeline".into();
+
+        let (_internal_logs_sender, internal_logs_receiver) =
+            crossbeam_channel::unbounded::<OtapPayload>();
+        let pipeline_ctx = controller_context
+            .pipeline_context_with(pipeline_group_id, pipeline_id, 0, 0)
+            .with_internal_logs_receiver(internal_logs_receiver);
+        let node_id = NodeId {
+            name: "test_node".into(),
+            index: 0,
+        };
+        let config_value = serde_json::json!({});
+        let receiver =
+            InternalLogsReceiver::from_config(pipeline_ctx, &config_value, node_id.clone())?;
+        drop(receiver); // Just testing creation
+        Ok(())
+    }
+
+    #[test]
     fn test_internal_logs_receiver_new_with_no_channel() {
         let metrics_handle = MetricsRegistryHandle::new();
         let controller_context = ControllerContext::new(metrics_handle);

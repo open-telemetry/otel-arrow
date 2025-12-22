@@ -32,7 +32,7 @@ impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
     pub fn new(
         config: &TelemetryConfig,
-        sender: crossbeam_channel::Sender<OtapPayload>,
+        internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
     ) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
@@ -44,8 +44,12 @@ impl OpentelemetryClient {
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        let logger_provider =
-            LoggerProvider::configure(sdk_resource, &config.logs, runtime, sender)?;
+        let logger_provider = LoggerProvider::configure(
+            sdk_resource,
+            &config.logs,
+            runtime,
+            internal_logs_sender.clone(),
+        )?;
 
         let (logger_provider, runtime) = logger_provider.into_parts();
 

@@ -18,6 +18,9 @@ pub enum LogBatchProcessorExporterConfig {
 
     /// OTLP log exporter
     Otlp(OtlpExporterConfig),
+
+    /// Internal log exporter
+    Internal,
 }
 
 impl<'de> Deserialize<'de> for LogBatchProcessorExporterConfig {
@@ -54,7 +57,15 @@ impl<'de> Deserialize<'de> for LogBatchProcessorExporterConfig {
                         let otlp_config: OtlpExporterConfig = map.next_value()?;
                         Ok(LogBatchProcessorExporterConfig::Otlp(otlp_config))
                     }
-                    _ => Err(de::Error::unknown_variant(&key, &["console", "otlp"])),
+                    "internal" => {
+                        // Internal exporter has no configuration, just consume the value (empty or null)
+                        let _: de::IgnoredAny = map.next_value()?;
+                        Ok(LogBatchProcessorExporterConfig::Internal)
+                    }
+                    _ => Err(de::Error::unknown_variant(
+                        &key,
+                        &["console", "otlp", "internal"],
+                    )),
                 }
             }
         }
@@ -90,6 +101,19 @@ mod tests {
         let config: LogBatchProcessorExporterConfig = serde_yaml::from_str(yaml_str)?;
         let LogBatchProcessorExporterConfig::Otlp(_) = config else {
             panic!("Expected OTLP exporter config");
+        };
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_batch_processor_internal_exporter_config_deserialize()
+    -> Result<(), serde_yaml::Error> {
+        let yaml_str = r#"
+            internal:
+            "#;
+        let config: LogBatchProcessorExporterConfig = serde_yaml::from_str(yaml_str)?;
+        let LogBatchProcessorExporterConfig::Internal = config else {
+            panic!("Expected Internal exporter config");
         };
         Ok(())
     }
