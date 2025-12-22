@@ -208,10 +208,7 @@ impl PipelineStage for ConditionalPipelineStage {
 mod test {
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-        EqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
-        MoveTransformExpression, MutableValueExpression, PipelineExpression,
-        PipelineExpressionBuilder, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, TransformExpression, ValueAccessor,
+        LogicalExpression, PipelineExpression, PipelineExpressionBuilder, QueryLocation,
     };
     use data_engine_kql_parser::{KqlParser, Parser};
     use otap_df_pdata::proto::opentelemetry::{

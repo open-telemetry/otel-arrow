@@ -62,7 +62,6 @@ impl PipelinePlanner {
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<BoxedPipelineStage>> {
-        // TODO we could avoid some heap allocations by passing in the results vec here?
         let mut results = Vec::new();
         for data_expr in data_exprs {
             let mut expr_results = self.plan_data_expr(data_expr, session_ctx, otap_batch)?;
