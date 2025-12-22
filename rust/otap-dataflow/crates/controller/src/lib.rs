@@ -38,7 +38,7 @@ use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{MetricsSystem, init_logging, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -75,11 +75,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &pipeline.service().telemetry;
-        init_logging(&telemetry_config.logs);
+        let settings = pipeline.pipeline_settings();
         otel_info!(
             "Controller.Start",
             num_nodes = pipeline.node_iter().count(),
-            pdata_channel_size = pipeline.pipeline_settings().default_pdata_channel_size
+            pdata_channel_size = settings.default_pdata_channel_size,
+            node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
+            pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
         let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
         let metrics_system = MetricsSystem::new(telemetry_config);
@@ -267,27 +269,61 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
+        let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
+        let num_cores = available_core_ids.len();
+
         match quota.core_allocation {
             CoreAllocation::AllCores => Ok(available_core_ids),
             CoreAllocation::CoreCount { count } => {
-                let count = if count == 0 {
-                    available_core_ids.len()
+                if count == 0 {
+                    Ok(available_core_ids)
+                } else if count > num_cores {
+                    Err(Error::InvalidCoreAllocation {
+                        alloc: quota.core_allocation.clone(),
+                        message: format!(
+                            "Requested {} cores but only {} cores available on this system",
+                            count, num_cores
+                        ),
+                        available: available_core_ids.iter().map(|c| c.id).collect(),
+                    })
                 } else {
-                    count.min(available_core_ids.len())
-                };
-                Ok(available_core_ids.into_iter().take(count).collect())
+                    Ok(available_core_ids.into_iter().take(count).collect())
+                }
             }
             CoreAllocation::CoreSet { ref set } => {
-                set.iter().try_for_each(|r| {
+                // Validate all ranges first
+                for r in set.iter() {
                     if r.start > r.end {
                         return Err(Error::InvalidCoreAllocation {
                             alloc: quota.core_allocation.clone(),
-                            message: "Start of range is greater than end".to_owned(),
+                            message: format!(
+                                "Invalid core range: start ({}) is greater than end ({})",
+                                r.start, r.end
+                            ),
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         });
                     }
-                    Ok(())
-                })?;
+                    if r.start > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.start, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                    if r.end > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.end, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                }
 
                 // Filter cores in range
                 let selected: Vec<_> = available_core_ids

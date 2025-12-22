@@ -3,27 +3,28 @@
 
 use std::{cell::*, collections::HashMap};
 
-use crate::*;
-
-use data_engine_expressions::*;
-
-#[cfg(test)]
-use crate::TestRecord;
-#[cfg(test)]
 use crate::{
     scalars::{
         execute_argument_scalar_expression, execute_scalar_expression,
         execute_source_scalar_expression, execute_variable_scalar_expression,
     },
-    value_expressions::execute_mutable_value_expression,
+    value_expressions::{execute_mutable_value_expression, get_borrow_source},
+    *,
 };
 
-pub(crate) struct ExecutionContext<'a, 'b, TRecord>
+use data_engine_expressions::*;
+
+#[cfg(test)]
+use crate::TestRecord;
+
+pub struct ExecutionContext<'a, 'b, TRecord>
 where
     TRecord: MapValue + 'static,
 {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     diagnostics: RefCell<Vec<RecordSetEngineDiagnostic<'a>>>,
+    external_function_implementations:
+        &'b HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
     pipeline: &'a PipelineExpression,
     variables: ExecutionContextVariables<'b>,
     summaries: &'b Summaries<'a>,
@@ -33,8 +34,13 @@ where
 }
 
 impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
-    pub fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
         diagnostic_level: RecordSetEngineDiagnosticLevel,
+        external_function_implementations: &'b HashMap<
+            Box<str>,
+            Box<dyn RecordSetEngineFunctionCallback>,
+        >,
         pipeline: &'a PipelineExpression,
         global_variables: &'b RefCell<MapValueStorage<OwnedValue>>,
         summaries: &'b Summaries<'a>,
@@ -45,6 +51,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         Self {
             diagnostic_level,
             diagnostics: RefCell::new(Vec::new()),
+            external_function_implementations,
             pipeline,
             attached_records,
             record: record.map(|v| RefCell::new(v)),
@@ -54,13 +61,13 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         }
     }
 
-    #[cfg(test)]
-    pub fn create_scope(
+    pub(crate) fn create_scope(
         &self,
         arguments: Option<&'b dyn ExecutionContextArguments>,
     ) -> ExecutionContext<'a, 'b, MapValueStorage<OwnedValue>> {
         ExecutionContext::<MapValueStorage<OwnedValue>>::new(
             self.diagnostic_level.clone(),
+            self.external_function_implementations,
             self.pipeline,
             self.get_variables().global_variables,
             self.summaries,
@@ -116,7 +123,7 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         &self.variables
     }
 
-    pub fn get_summaries(&self) -> &Summaries<'a> {
+    pub(crate) fn get_summaries(&self) -> &Summaries<'a> {
         self.summaries
     }
 
@@ -124,11 +131,21 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
         self.arguments
     }
 
-    pub fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
+    pub(crate) fn get_external_function_implementation(
+        &self,
+        name: &str,
+    ) -> &dyn RecordSetEngineFunctionCallback {
+        self.external_function_implementations
+            .get(name)
+            .unwrap_or_else(|| panic!("Function implementation for name '{name}' was not found"))
+            .as_ref()
+    }
+
+    pub(crate) fn take_diagnostics(self) -> Vec<RecordSetEngineDiagnostic<'a>> {
         self.diagnostics.take()
     }
 
-    pub fn consume_into_record(self) -> RecordSetEngineRecord<'a, TRecord> {
+    pub(crate) fn consume_into_record(self) -> RecordSetEngineRecord<'a, TRecord> {
         RecordSetEngineRecord::new(
             self.pipeline,
             self.record.expect("record wasn't set").into_inner(),
@@ -137,13 +154,13 @@ impl<'a, 'b, TRecord: Record + 'static> ExecutionContext<'a, 'b, TRecord> {
     }
 }
 
-pub(crate) struct ExecutionContextVariables<'a> {
+pub struct ExecutionContextVariables<'a> {
     global_variables: &'a RefCell<MapValueStorage<OwnedValue>>,
     local_variables: RefCell<MapValueStorage<OwnedValue>>,
 }
 
 impl<'a> ExecutionContextVariables<'a> {
-    pub fn new(global_variables: &'a RefCell<MapValueStorage<OwnedValue>>) -> Self {
+    pub(crate) fn new(global_variables: &'a RefCell<MapValueStorage<OwnedValue>>) -> Self {
         Self {
             global_variables,
             local_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
@@ -188,18 +205,23 @@ impl<'a> ExecutionContextVariables<'a> {
 }
 
 pub trait ExecutionContextArguments {
-    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource>;
-
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError>;
+
+    fn get_argument_mut_borrow_source(&self, id: usize) -> Option<BorrowSource>;
 
     fn get_argument_mut(
         &self,
         id: usize,
     ) -> Result<ResolvedMutableArgument<'_, '_>, ExpressionError>;
+
+    fn copy_value_if_required_for_write(
+        &self,
+        value: &mut ResolvedValue<'_>,
+        target_argument_mut_id: usize,
+    );
 }
 
-#[cfg(test)]
-pub struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
+pub(crate) struct ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
 where
     TRecord: Record + 'static,
 {
@@ -207,41 +229,11 @@ where
     pub arguments: &'a [InvokeFunctionArgument],
 }
 
-#[cfg(test)]
 impl<'a, 'b, 'c, TRecord> ExecutionContextArguments
     for ExecutionContextArgumentContainer<'a, 'b, 'c, TRecord>
 where
     TRecord: Record + 'static,
 {
-    fn get_argument_borrow_source(&self, id: usize) -> Option<BorrowSource> {
-        let argument = self
-            .arguments
-            .get(id)
-            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
-
-        match argument {
-            InvokeFunctionArgument::Scalar(s) => match s {
-                ScalarExpression::Source(_) => Some(BorrowSource::Source),
-                ScalarExpression::Variable(_) => Some(BorrowSource::Variable),
-                ScalarExpression::Argument(a) => self
-                    .parent_execution_context
-                    .get_arguments()
-                    .expect("Arguments were not found")
-                    .get_argument_borrow_source(a.get_argument_id()),
-                _ => None,
-            },
-            InvokeFunctionArgument::MutableValue(m) => match m {
-                MutableValueExpression::Source(_) => Some(BorrowSource::Source),
-                MutableValueExpression::Variable(_) => Some(BorrowSource::Variable),
-                MutableValueExpression::Argument(a) => self
-                    .parent_execution_context
-                    .get_arguments()
-                    .expect("Arguments were not found")
-                    .get_argument_borrow_source(a.get_argument_id()),
-            },
-        }
-    }
-
     fn get_argument(&self, id: usize) -> Result<ResolvedValue<'_>, ExpressionError> {
         let argument = self
             .arguments
@@ -269,6 +261,20 @@ where
         }
     }
 
+    fn get_argument_mut_borrow_source(&self, id: usize) -> Option<BorrowSource> {
+        let argument = self
+            .arguments
+            .get(id)
+            .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
+
+        match argument {
+            InvokeFunctionArgument::Scalar(_) => None,
+            InvokeFunctionArgument::MutableValue(m) => {
+                get_borrow_source(self.parent_execution_context, m)
+            }
+        }
+    }
+
     fn get_argument_mut(
         &self,
         id: usize,
@@ -286,14 +292,78 @@ where
             InvokeFunctionArgument::MutableValue(m) => {
                 let value = execute_mutable_value_expression(self.parent_execution_context, m)?;
 
-                Ok(ResolvedMutableArgument { source: m, value })
+                Ok(ResolvedMutableArgument { value })
             }
         }
+    }
+
+    fn copy_value_if_required_for_write(
+        &self,
+        value: &mut ResolvedValue<'_>,
+        target_argument_mut_id: usize,
+    ) {
+        let argument = self
+            .arguments
+            .get(target_argument_mut_id)
+            .unwrap_or_else(|| panic!("Argument for id '{target_argument_mut_id}' was not found"));
+
+        if let InvokeFunctionArgument::MutableValue(m) = argument {
+            value.copy_if_borrowed_from_target(self.parent_execution_context, m);
+        }
+    }
+}
+
+pub trait RecordSetEngineFunctionCallback: Send + Sync {
+    fn invoke<'a, 'b>(
+        &self,
+        expression: &'a dyn Expression,
+        execution_context: &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError>;
+}
+
+pub struct RecordSetEngineFunctionClosureCallback<F>
+where
+    F: for<'a, 'b> Fn(
+        &'a dyn Expression,
+        &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError>,
+{
+    callback: F,
+}
+
+impl<F> RecordSetEngineFunctionClosureCallback<F>
+where
+    F: for<'a, 'b> Fn(
+        &'a dyn Expression,
+        &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError>,
+{
+    pub fn new(callback: F) -> RecordSetEngineFunctionClosureCallback<F> {
+        Self { callback }
+    }
+}
+
+impl<F> RecordSetEngineFunctionCallback for RecordSetEngineFunctionClosureCallback<F>
+where
+    F: for<'a, 'b> Fn(
+            &'a dyn Expression,
+            &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+        ) -> Result<ResolvedValue<'b>, ExpressionError>
+        + Send
+        + Sync,
+{
+    fn invoke<'a, 'b>(
+        &self,
+        expression: &'a dyn Expression,
+        execution_context: &'b ExecutionContext<'a, '_, MapValueStorage<OwnedValue>>,
+    ) -> Result<ResolvedValue<'b>, ExpressionError> {
+        (self.callback)(expression, execution_context)
     }
 }
 
 #[cfg(test)]
 pub struct TestExecutionContext<'a> {
+    external_function_implementations: HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
     pipeline: PipelineExpression,
     global_variables: RefCell<MapValueStorage<OwnedValue>>,
     summaries: Summaries<'a>,
@@ -302,9 +372,17 @@ pub struct TestExecutionContext<'a> {
 }
 
 #[cfg(test)]
+impl<'a> Default for TestExecutionContext<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl<'a> TestExecutionContext<'a> {
     pub fn new() -> TestExecutionContext<'a> {
         Self {
+            external_function_implementations: HashMap::new(),
             pipeline: Default::default(),
             global_variables: RefCell::new(MapValueStorage::new(HashMap::new())),
             summaries: Summaries::new(8192),
@@ -331,6 +409,16 @@ impl<'a> TestExecutionContext<'a> {
         self
     }
 
+    pub fn with_external_function_implementation<F: RecordSetEngineFunctionCallback + 'static>(
+        mut self,
+        name: &str,
+        callback: F,
+    ) -> TestExecutionContext<'a> {
+        self.external_function_implementations
+            .insert(name.into(), Box::new(callback));
+        self
+    }
+
     pub fn set_global_variable(&self, name: &str, value: ResolvedValue) {
         self.global_variables.borrow_mut().set(name, value);
     }
@@ -338,6 +426,7 @@ impl<'a> TestExecutionContext<'a> {
     pub fn create_execution_context(&mut self) -> ExecutionContext<'_, 'a, TestRecord> {
         ExecutionContext::new(
             RecordSetEngineDiagnosticLevel::Verbose,
+            &self.external_function_implementations,
             &self.pipeline,
             &self.global_variables,
             &self.summaries,

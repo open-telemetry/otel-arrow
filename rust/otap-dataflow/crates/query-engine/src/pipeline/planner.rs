@@ -4,18 +4,22 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DoubleValue, Expression, IntegerValue, LogicalExpression,
-    PipelineExpression, ScalarExpression, StaticScalarExpression, StringValue, ValueAccessor,
+    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
+    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    PipelineExpression, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
+    ScalarExpression, StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
 use crate::pipeline::filter::{Composite, FilterPipelineStage, FilterPlan};
 
@@ -81,6 +85,22 @@ impl PipelinePlanner {
                 }),
             },
 
+            DataExpression::Transform(transform_expr) => match transform_expr {
+                TransformExpression::Move(move_expr) => self.plan_move(move_expr),
+                TransformExpression::RenameMapKeys(rename_map_keys_expr) => {
+                    self.plan_rename(rename_map_keys_expr)
+                }
+                TransformExpression::ReduceMap(reduce_map_exr) => {
+                    Self::plan_reduce_map(reduce_map_exr)
+                }
+                other => Err(Error::NotYetSupportedError {
+                    message: format!(
+                        "transform expression not yet supported {}",
+                        other.get_name()
+                    ),
+                }),
+            },
+
             // TODO support other DataExpressions
             other => Err(Error::NotYetSupportedError {
                 message: format!("data expression not yet supported {}", other.get_name()),
@@ -104,6 +124,238 @@ impl PipelinePlanner {
         let filter_stage = FilterPipelineStage::new(filter_exec);
 
         Ok(vec![Box::new(filter_stage)])
+    }
+
+    fn plan_move(
+        &self,
+        move_expr: &MoveTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        match (move_expr.get_source(), move_expr.get_destination()) {
+            (MutableValueExpression::Source(source), MutableValueExpression::Source(dest)) => {
+                let source = ColumnAccessor::try_from(source.get_value_accessor())?;
+                let dest = ColumnAccessor::try_from(dest.get_value_accessor())?;
+
+                match (source, dest) {
+                    // currently the only type of move transform supported is renaming attributes
+                    (
+                        ColumnAccessor::Attributes(src_attrs_id, src_key),
+                        ColumnAccessor::Attributes(dest_attrs_id, dest_key),
+                    ) => {
+                        // the attributes being renamed must be in the same map. for example doing
+                        // `attributes["x"] = resource.attributes["y"]` is not yet supported
+                        if src_attrs_id != dest_attrs_id {
+                            Err(Error::NotYetSupportedError {
+                                message: format!(
+                                    "attribute key rename currently only supports renaming within the same attributes map; found {:?} to {:?}",
+                                    src_attrs_id, dest_attrs_id,
+                                ),
+                            })
+                        } else {
+                            let transform = AttributesTransform::default().with_rename(
+                                RenameTransform::new([(src_key, dest_key)].into_iter().collect()),
+                            );
+                            transform
+                                .validate()
+                                .map_err(|e| Error::InvalidPipelineError {
+                                    cause: format!("invalid attribute rename transform {e}"),
+                                    query_location: Some(move_expr.get_query_location().clone()),
+                                })?;
+                            Ok(vec![Box::new(AttributeTransformPipelineStage::new(
+                                src_attrs_id,
+                                transform,
+                            ))])
+                        }
+                    }
+
+                    (source, dest) => Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "move expression for column source = {source:?}, dest = {dest:?}"
+                        ),
+                    }),
+                }
+            }
+            (source, dest) => Err(Error::NotYetSupportedError {
+                message: format!("move from {source:?} to {dest:?}"),
+            }),
+        }
+    }
+
+    fn plan_rename(
+        &self,
+        rename_map_keys_expr: &RenameMapKeysTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        let mut root_attrs_renames = vec![];
+        let mut scope_attrs_renames = vec![];
+        let mut resource_attrs_renames = vec![];
+
+        for key_rename in rename_map_keys_expr.get_keys() {
+            let source = ColumnAccessor::try_from(key_rename.get_source())?;
+            let dest = ColumnAccessor::try_from(key_rename.get_destination())?;
+
+            match (source, dest) {
+                // currently the only type of move transform supported is renaming attributes
+                (
+                    ColumnAccessor::Attributes(src_attrs_id, src_key),
+                    ColumnAccessor::Attributes(dest_attrs_id, dest_key),
+                ) => {
+                    // the attributes being renamed must be in the same map. for example doing
+                    // `attributes["x"] = resource.attributes["y"]` is not yet supported
+                    if src_attrs_id != dest_attrs_id {
+                        return Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "attribute key rename currently only supports renaming within the same attributes map; found {:?} to {:?}",
+                                src_attrs_id, dest_attrs_id,
+                            ),
+                        });
+                    }
+
+                    let rename = (src_key, dest_key);
+
+                    match src_attrs_id {
+                        AttributesIdentifier::Root => root_attrs_renames.push(rename),
+                        AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+                            ArrowPayloadType::ResourceAttrs => resource_attrs_renames.push(rename),
+                            ArrowPayloadType::ScopeAttrs => scope_attrs_renames.push(rename),
+                            other => {
+                                return Err(Error::NotYetSupportedError {
+                                    message: format!("renaming attributes for payload {other:?}"),
+                                });
+                            }
+                        },
+                    }
+                }
+
+                (source, dest) => {
+                    return Err(Error::NotYetSupportedError {
+                        message: format!(
+                            "move expression for column source = {source:?}, dest = {dest:?}"
+                        ),
+                    });
+                }
+            }
+        }
+
+        let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
+
+        // build up a pipeline stage for each type set of attributes in the expression
+        for (renames, attrs_id) in [
+            (root_attrs_renames, AttributesIdentifier::Root),
+            (
+                scope_attrs_renames,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+            ),
+            (
+                resource_attrs_renames,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+            ),
+        ] {
+            if !renames.is_empty() {
+                let rename_transform = RenameTransform::new(renames.into_iter().collect());
+                let transform = AttributesTransform::default().with_rename(rename_transform);
+                transform
+                    .validate()
+                    .map_err(|e| Error::InvalidPipelineError {
+                        cause: format!("invalid attribute rename transform {e}"),
+                        query_location: Some(rename_map_keys_expr.get_query_location().clone()),
+                    })?;
+
+                let pipeline_stage = AttributeTransformPipelineStage::new(attrs_id, transform);
+                pipeline_stages.push(Box::new(pipeline_stage));
+            }
+        }
+
+        Ok(pipeline_stages)
+    }
+
+    fn plan_reduce_map(
+        reduce_map_expr: &ReduceMapTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        let mut root_attrs_deletes = vec![];
+        let mut scope_attrs_deletes = vec![];
+        let mut resource_attrs_deletes = vec![];
+
+        match reduce_map_expr {
+            ReduceMapTransformExpression::Remove(remove_expr) => {
+                for map_selector in remove_expr.get_selectors() {
+                    match map_selector {
+                        MapSelector::ValueAccessor(val) => match ColumnAccessor::try_from(val)? {
+                            // currently the only kind of remove operation we support is on attributes
+                            ColumnAccessor::Attributes(attrs_ident, attrs_key) => match attrs_ident
+                            {
+                                AttributesIdentifier::Root => root_attrs_deletes.push(attrs_key),
+                                AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+                                    ArrowPayloadType::ResourceAttrs => {
+                                        resource_attrs_deletes.push(attrs_key)
+                                    }
+                                    ArrowPayloadType::ScopeAttrs => {
+                                        scope_attrs_deletes.push(attrs_key)
+                                    }
+                                    payload_type => {
+                                        return Err(Error::NotYetSupportedError {
+                                            message: format!(
+                                                "removing map keys from payload type {payload_type:?} not yet supported"
+                                            ),
+                                        });
+                                    }
+                                },
+                            },
+                            column => {
+                                return Err(Error::InvalidPipelineError {
+                                    cause: format!(
+                                        "reduce map remove specified non map column. found {column:?}"
+                                    ),
+                                    query_location: Some(remove_expr.get_query_location().clone()),
+                                });
+                            }
+                        },
+                        MapSelector::KeyOrKeyPattern(_) => {
+                            return Err(Error::NotYetSupportedError {
+                                message:
+                                    "specifying map removes by key or key pattern not yet supported"
+                                        .into(),
+                            });
+                        }
+                    }
+                }
+            }
+            ReduceMapTransformExpression::Retain(_) => {
+                return Err(Error::NotYetSupportedError {
+                    message: "reducing map using by specifying retain keys not yet supported"
+                        .into(),
+                });
+            }
+        }
+
+        let mut pipeline_stages: Vec<Box<dyn PipelineStage>> = vec![];
+
+        // build up a pipeline stage for each type set of attributes in the expression
+        for (deletes, attrs_id) in [
+            (root_attrs_deletes, AttributesIdentifier::Root),
+            (
+                scope_attrs_deletes,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ScopeAttrs),
+            ),
+            (
+                resource_attrs_deletes,
+                AttributesIdentifier::NonRoot(ArrowPayloadType::ResourceAttrs),
+            ),
+        ] {
+            if !deletes.is_empty() {
+                let delete_transform = DeleteTransform::new(deletes.into_iter().collect());
+                let transform = AttributesTransform::default().with_delete(delete_transform);
+                transform
+                    .validate()
+                    .map_err(|e| Error::InvalidPipelineError {
+                        cause: format!("invalid attribute delete transform {e}"),
+                        query_location: Some(reduce_map_expr.get_query_location().clone()),
+                    })?;
+
+                let pipeline_stage = AttributeTransformPipelineStage::new(attrs_id, transform);
+                pipeline_stages.push(Box::new(pipeline_stage));
+            }
+        }
+
+        Ok(pipeline_stages)
     }
 }
 
@@ -246,7 +498,59 @@ pub enum AttributesIdentifier {
     NonRoot(ArrowPayloadType),
 }
 
-pub fn try_static_scalar_to_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
+pub fn try_static_scalar_to_literal_for_column(
+    column_name: &str,
+    static_scalar: &StaticScalarExpression,
+) -> Result<Expr> {
+    Ok(match static_scalar {
+        // for integers, we need to choose the correct type of literal for the field
+        // note: this currently contains fields only on the root record batches as we don't
+        // yet support traversing into the OTAP batch to filter by nested fields like span
+        // events/links, metrics data points, etc.
+        StaticScalarExpression::Integer(int_val) => {
+            let val = int_val.get_value();
+            match column_name {
+                consts::AGGREGATION_TEMPORALITY
+                | consts::SEVERITY_NUMBER
+                | consts::KIND
+                | consts::EXP_HISTOGRAM_OFFSET => lit(val as i32),
+
+                consts::METRIC_TYPE => lit(val as u8),
+
+                consts::DROPPED_ATTRIBUTES_COUNT
+                | consts::FLAGS
+                | consts::DROPPED_EVENTS_COUNT
+                | consts::DROPPED_LINKS_COUNT => lit(val as u32),
+
+                // other columns for which filtering is currently supported are i64
+                _ => lit(val),
+            }
+        }
+        StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
+        StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
+        StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
+        StaticScalarExpression::DateTime(dt_val) => {
+            let val =
+                dt_val
+                    .get_value()
+                    .timestamp_nanos_opt()
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!("failed to convert {dt_val:?} to nanosecond timestamp"),
+                    })?;
+            lit_timestamp_nano(val)
+        }
+        _ => {
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "literal from scalar expression. received {:?}",
+                    static_scalar
+                ),
+            });
+        }
+    })
+}
+
+pub fn try_static_scalar_to_attr_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
     let lit_expr = match static_scalar {
         StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
         StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
@@ -299,6 +603,6 @@ pub fn try_attrs_value_filter_from_literal(
     Ok(BinaryExpr::new(
         Box::new(col(try_static_scalar_to_any_val_column(scalar_lit)?)),
         binary_op,
-        Box::new(try_static_scalar_to_literal(scalar_lit)?),
+        Box::new(try_static_scalar_to_attr_literal(scalar_lit)?),
     ))
 }

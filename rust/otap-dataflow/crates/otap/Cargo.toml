@@ -41,11 +41,14 @@ bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
 
+data_engine_kql_parser = { workspace = true }
+data_engine_expressions = { workspace =  true }
 otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 otap-df-pdata = { path = "../pdata" }
+otap-df-query-engine = { path = "../query-engine" }
 otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 
@@ -71,6 +74,7 @@ azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
+ahash = { workspace = true, optional = true }
 
 # OpenTelemetry proto with tonic feature enabled
 opentelemetry-proto = { workspace = true, optional = true }
@@ -94,7 +98,8 @@ azure-monitor-exporter = [
     "dep:azure_identity",
     "dep:flate2",
     "dep:reqwest",
-    "dep:azure_core"
+    "dep:azure_core",
+    "dep:ahash",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 

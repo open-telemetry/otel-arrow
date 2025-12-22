@@ -42,7 +42,7 @@ use crate::pipeline::PipelineStage;
 use crate::pipeline::functions::expr_fn::contains;
 use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
-    try_static_scalar_to_literal,
+    try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
 };
 
 pub mod optimize;
@@ -232,10 +232,12 @@ impl FilterPlan {
                 ColumnAccessor::ColumnName(left_col_name) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
                         // left = column & right = literal
+                        let right_expr =
+                            try_static_scalar_to_literal_for_column(&left_col_name, &right_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
                             Box::new(col(left_col_name)),
                             binary_op,
-                            Box::new(try_static_scalar_to_literal(&right_lit)?),
+                            Box::new(right_expr),
                         ))))
                     }
                     BinaryArg::Null => {
@@ -249,10 +251,14 @@ impl FilterPlan {
                 ColumnAccessor::StructCol(left_struct_name, left_struct_field) => match right_arg {
                     BinaryArg::Literal(right_lit) => {
                         // left = struct col & right = literal
+                        let right_expr = try_static_scalar_to_literal_for_column(
+                            &left_struct_field,
+                            &right_lit,
+                        )?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
                             Box::new(col(left_struct_name).field(left_struct_field)),
                             binary_op,
-                            Box::new(try_static_scalar_to_literal(&right_lit)?),
+                            Box::new(right_expr),
                         ))))
                     }
                     BinaryArg::Null => {
@@ -300,16 +306,22 @@ impl FilterPlan {
                 BinaryArg::Column(right_column) => match right_column {
                     ColumnAccessor::ColumnName(right_col_name) => {
                         // left = literal & right = column
+                        let left_expr =
+                            try_static_scalar_to_literal_for_column(&right_col_name, &left_lit)?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(try_static_scalar_to_literal(&left_lit)?),
+                            Box::new(left_expr),
                             binary_op,
                             Box::new(col(right_col_name)),
                         ))))
                     }
                     ColumnAccessor::StructCol(right_struct_name, right_struct_field) => {
                         // left = literal & right = struct col
+                        let left_expr = try_static_scalar_to_literal_for_column(
+                            &right_struct_field,
+                            &left_lit,
+                        )?;
                         Ok(FilterPlan::from(Expr::BinaryExpr(BinaryExpr::new(
-                            Box::new(try_static_scalar_to_literal(&left_lit)?),
+                            Box::new(left_expr),
                             binary_op,
                             Box::new(col(right_struct_name).field(right_struct_field)),
                         ))))
@@ -457,15 +469,16 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
         match left_arg {
             BinaryArg::Column(left_column) => {
                 let (left_expr, attrs) = Self::contains_column_arg(left_column);
-                let right_expr =
-                    match right_arg {
-                        BinaryArg::Literal(right_lit) => try_static_scalar_to_literal(&right_lit)?,
-                        _ => return Err(Error::NotYetSupportedError {
+                let right_expr = match right_arg {
+                    BinaryArg::Literal(right_lit) => try_static_scalar_to_attr_literal(&right_lit)?,
+                    _ => {
+                        return Err(Error::NotYetSupportedError {
                             message:
                                 "text contains predicate comparing column left to non literal right"
                                     .into(),
-                        }),
-                    };
+                        });
+                    }
+                };
 
                 let contains_expr = contains(left_expr, right_expr);
                 Ok(match attrs {
@@ -481,7 +494,7 @@ impl TryFrom<&ContainsLogicalExpression> for FilterPlan {
                 })
             }
             BinaryArg::Literal(left_lit) => {
-                let left_expr = try_static_scalar_to_literal(&left_lit)?;
+                let left_expr = try_static_scalar_to_attr_literal(&left_lit)?;
                 let (right_expr, attrs) = match right_arg {
                     BinaryArg::Column(right_column) => Self::contains_column_arg(right_column),
                     _ => {
@@ -1753,79 +1766,102 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
         Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
+        HistogramDataPoint, Metric, NumberDataPoint, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status, TracesData};
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use prost::Message;
 
-    use crate::pipeline::test::{to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces};
-
-    /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
-    pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        LogsData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
-    pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        TracesData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
-    pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let parser_result = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch).await.unwrap();
-        otap_to_logs_data(result)
-    }
+    use crate::pipeline::test::{
+        exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
+        to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+    };
 
     #[tokio::test]
     async fn test_simple_filter() {
-        let otap_batch = to_otap_logs(vec![
+        let ns_per_second: u64 = 1000 * 1000 * 1000;
+        let log_records = vec![
             LogRecord::build()
                 .severity_text("TRACE")
+                .severity_number(1)
+                .time_unix_nano(ns_per_second)
                 .event_name("1")
                 .finish(),
             LogRecord::build()
                 .severity_text("INFO")
+                .severity_number(9)
                 .event_name("2")
+                .time_unix_nano(2 * ns_per_second)
                 .finish(),
             LogRecord::build()
                 .severity_text("ERROR")
+                .severity_number(17)
+                .time_unix_nano(3 * ns_per_second)
                 .event_name("3")
                 .finish(),
-        ]);
+        ];
 
-        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch.clone()).await.unwrap();
-        let expected = to_otap_logs(vec![
-            LogRecord::build()
-                .severity_text("ERROR")
-                .event_name("3")
-                .finish(),
-        ]);
-        assert_eq!(result, expected);
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == \"ERROR\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
 
         // test same filter where the literal is on the left and column name on the right
-        let parser_result = KqlParser::parse("logs | where \"ERROR\" == severity_text").unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch.clone()).await.unwrap();
-        assert_eq!(result, expected);
+        let result = exec_logs_pipeline(
+            "logs | where \"ERROR\" == severity_text",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+
+        // test filtering by some other field types (u32, int32, timestamp)
+        let result = exec_logs_pipeline(
+            "logs | where severity_number == 17",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+        let result = exec_logs_pipeline(
+            "logs | where severity_number == 17",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[2].clone()]
+        );
+
+        let result = exec_logs_pipeline(
+            "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()]
+        );
+
+        let result = exec_logs_pipeline(
+            "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
     }
 
     #[tokio::test]

@@ -234,6 +234,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        otap_df_telemetry::otel_info!("Receiver.Start", message = "Starting OTAP Arrow Receiver");
+
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);

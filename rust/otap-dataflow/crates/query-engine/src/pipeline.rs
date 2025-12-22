@@ -23,6 +23,7 @@ use crate::error::{Error, Result};
 use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
+mod attributes;
 mod filter;
 mod functions;
 mod planner;
@@ -257,6 +258,7 @@ mod test {
 
     use data_engine_expressions::PipelineExpression;
 
+    use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
     use otap_df_pdata::proto::OtlpProtoMessage;
@@ -272,6 +274,8 @@ mod test {
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
+    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+    use prost::Message;
 
     use super::*;
 
@@ -327,6 +331,35 @@ mod test {
     /// helper function for converting OTLP metrics to OTAP batch
     pub fn to_otap_metrics(metrics: Vec<Metric>) -> OtapArrowRecords {
         otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)))
+    }
+
+    /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
+    pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        LogsData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
+    /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
+    pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        TracesData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
+    /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
+    pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
+        let otap_payload: OtapPayload = otap_batch.into();
+        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
+        MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
+    }
+
+    pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let parser_result = KqlParser::parse(kql_expr).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+        otap_to_logs_data(result)
     }
 
     #[tokio::test]

@@ -1,0 +1,51 @@
+# Test configuration for mTLS (mutual authentication)
+# This demonstrates OTLP receiver with mTLS -> OTLP exporter with mTLS
+#
+# How to test:
+# 1. Generate certificates: ./scripts/generate-test-certs.sh
+# 2. Start the collector: cargo run --features experimental-tls -- --config configs/test-mtls.yaml
+# 3. Send test data to the receiver on https://127.0.0.1:4317 with client cert
+
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4317"
+
+      # Receiver mTLS configuration (server-side)
+      tls:
+        # Server identity (required for TLS)
+        cert_file: "./test-certs/server.crt"
+        key_file: "./test-certs/server.key"
+
+        # Client certificate verification for mTLS
+        client_ca_file: "./test-certs/ca.crt"
+        include_system_ca_certs_pool: false
+
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otlp:exporter"
+    config:
+      # Send to another OTLP receiver with mTLS enabled
+      grpc_endpoint: "https://127.0.0.1:4318"
+
+      # Exporter mTLS configuration (client-side)
+      tls:
+        # Trust settings for verifying the server certificate
+        ca_file: "./test-certs/ca.crt"
+        include_system_ca_certs_pool: false
+
+        # Client identity for mTLS (these make it mTLS instead of just TLS)
+        cert_file: "./test-certs/client.crt"
+        key_file: "./test-certs/client.key"

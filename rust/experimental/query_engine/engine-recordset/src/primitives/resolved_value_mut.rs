@@ -25,14 +25,7 @@ pub(crate) enum ResolvedValueMut<'a, 'b> {
 
 #[derive(Debug)]
 pub struct ResolvedMutableArgument<'a, 'b> {
-    pub(crate) source: &'a MutableValueExpression,
-    pub(crate) value: Option<ResolvedValueMut<'b, 'a>>,
-}
-
-impl<'a, 'b> ResolvedMutableArgument<'a, 'b> {
-    pub fn get_source(&self) -> &'a MutableValueExpression {
-        self.source
-    }
+    pub(crate) value: Option<ResolvedValueMut<'a, 'b>>,
 }
 
 impl<'a, 'b> AsStaticValueMut for ResolvedMutableArgument<'a, 'b> {

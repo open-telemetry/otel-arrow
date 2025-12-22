@@ -32,6 +32,7 @@ tonic = { workspace = true, optional = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-stdout = { workspace = true }
-opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics"] }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "logs"] }
+opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }

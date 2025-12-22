@@ -63,14 +63,14 @@ impl MetricsCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::service::telemetry::LogsConfig;
+    use otap_df_config::pipeline::service::telemetry::logs::LogsConfig;
     use otap_df_config::pipeline::service::telemetry::metrics::MetricsConfig;
 
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        MetricsDescriptor, MetricsField,
+        MetricsDescriptor, MetricsField, Temporality,
     };
     use crate::metrics::MetricSetHandler;
     use crate::metrics::MetricValue;
@@ -108,6 +108,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
@@ -115,6 +116,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 2",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ],

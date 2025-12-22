@@ -32,8 +32,11 @@ use arrow::datatypes::UInt8Type;
 use arrow::error::ArrowError;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder;
+
+#[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

@@ -7,6 +7,7 @@
 //! dynamic dispatch.
 
 use crate::attributes::AttributeSetHandler;
+use crate::descriptor::Temporality;
 use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField};
 use crate::metrics::{MetricSet, MetricSetHandler, MetricValue};
 use crate::semconv::SemConvRegistry;
@@ -219,10 +220,25 @@ impl MetricsRegistry {
                         // Gauges report absolute values; replace.
                         *current = *incoming;
                     }
-                    Instrument::Counter | Instrument::UpDownCounter | Instrument::Histogram => {
-                        // Sum-like instruments report deltas; accumulate.
+                    Instrument::Histogram => {
+                        // Histograms (currently represented as numeric aggregates) report per-interval changes.
                         current.add_in_place(*incoming);
                     }
+                    Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
+                        Some(Temporality::Delta) => {
+                            // Delta sums report per-interval changes => accumulate.
+                            current.add_in_place(*incoming);
+                        }
+                        Some(Temporality::Cumulative) => {
+                            // Cumulative sums report the current value => replace.
+                            *current = *incoming;
+                        }
+                        None => {
+                            debug_assert!(false, "sum-like instrument must have a temporality");
+                            // Prefer replacing to avoid runaway accumulation if misconfigured.
+                            *current = *incoming;
+                        }
+                    },
                 });
         } else {
             // TODO: consider logging missing key
@@ -376,6 +392,7 @@ mod tests {
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
+        Temporality,
     };
     use std::fmt::Debug;
 
@@ -407,6 +424,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
@@ -414,6 +432,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 2",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ],
@@ -636,6 +655,7 @@ mod tests {
                 unit: "1",
                 brief: "Test metric 1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
@@ -643,6 +663,7 @@ mod tests {
                 unit: "1",
                 brief: "Test metric 2",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ];
@@ -674,6 +695,7 @@ mod tests {
             unit: "1",
             brief: "Test metric 1",
             instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }];
 
@@ -692,6 +714,7 @@ mod tests {
             unit: "1",
             brief: "Test metric 1",
             instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }];
 
@@ -780,6 +803,7 @@ mod tests {
                     unit: "1",
                     brief: "Test gauge 1",
                     instrument: Instrument::Gauge,
+                    temporality: None,
                     value_type: MetricValueType::U64,
                 },
                 MetricsField {
@@ -787,6 +811,7 @@ mod tests {
                     unit: "1",
                     brief: "Test counter 1",
                     instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Delta),
                     value_type: MetricValueType::U64,
                 },
             ],
@@ -825,5 +850,71 @@ mod tests {
         });
 
         assert_eq!(values, vec![MetricValue::U64(2), MetricValue::U64(13)]);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_observe_counter_replaces() {
+        #[derive(Debug)]
+        struct MockCumulativeCounterMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl MockCumulativeCounterMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![MetricValue::U64(0)],
+                }
+            }
+        }
+
+        impl Default for MockCumulativeCounterMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_OBSERVED_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_observed_metrics",
+            metrics: &[MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+            }],
+        };
+
+        impl MetricSetHandler for MockCumulativeCounterMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_OBSERVED_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let handle = MetricsRegistryHandle::new();
+        let metric_set: MetricSet<MockCumulativeCounterMetricSet> =
+            handle.register(MockAttributeSet::new("attr".to_string()));
+        let metrics_key = metric_set.key;
+
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(10)]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(15)]);
+
+        let mut collected = Vec::new();
+        handle.visit_metrics_and_reset(|_desc, _attrs, iter| {
+            for (_field, value) in iter {
+                collected.push(value);
+            }
+        });
+
+        assert_eq!(collected, vec![MetricValue::U64(15)]);
     }
 }

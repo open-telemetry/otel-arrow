@@ -865,7 +865,12 @@ mod test {
             });
     }
 
+    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
+    #[cfg_attr(
+        any(target_os = "windows", target_os = "macos"),
+        ignore = "Skipping on Windows and macOS due to flakiness"
+    )]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();

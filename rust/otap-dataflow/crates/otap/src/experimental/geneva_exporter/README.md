@@ -31,6 +31,12 @@ You should see `urn:otel:geneva:exporter` in the Exporters list.
 ./target/release/df_engine --pipeline config.yaml --num-cores 4
 ```
 
+### Notes on throughput knobs
+
+- `max_concurrent_uploads` limits how many batches the exporter will upload concurrently.
+- `max_buffer_size` is currently reserved for a future buffering/flush implementation.
+  It is accepted by config parsing but does not change runtime behavior yet.
+
 ## Test Configuration
 
 To test using the configuration file `otlp-geneva.yaml` provided
@@ -40,7 +46,7 @@ in this directory:
 # Start the collector
 ./target/release/df_engine \
   --pipeline crates/otap/src/experimental/geneva_exporter/\
-test-config-otlp-receiver.yaml \
+otlp-geneva.yaml \
   --num-cores 1
 
 # In another terminal, send test data:

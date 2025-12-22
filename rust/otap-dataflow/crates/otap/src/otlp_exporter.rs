@@ -39,6 +39,7 @@ use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -117,27 +118,31 @@ impl Exporter<OtapPdata> for OTLPExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        effect_handler
-            .info(&format!(
-                "Exporting OTLP traffic to endpoint: {}",
-                self.config.grpc.grpc_endpoint
-            ))
-            .await;
+        otel_info!(
+            "Exporter.Start",
+            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
+            message = "Starting OTLP Exporter"
+        );
 
         let exporter_id = effect_handler.exporter_id();
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let endpoint = self.config.grpc.build_endpoint().map_err(|e| {
-            let source_detail = format_error_sources(&e);
-            Error::ExporterError {
-                exporter: exporter_id.clone(),
-                kind: ExporterErrorKind::Connect,
-                error: format!("grpc channel error {e}"),
-                source_detail,
-            }
-        })?;
+        let endpoint = self
+            .config
+            .grpc
+            .build_endpoint_with_tls()
+            .await
+            .map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Connect,
+                    error: format!("grpc channel error {e}"),
+                    source_detail,
+                }
+            })?;
 
         let channel = endpoint.connect_lazy();
 

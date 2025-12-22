@@ -11,8 +11,11 @@ use prost::Message;
 use otap_df_pdata::proto::opentelemetry::common::v1::*;
 use otap_df_pdata::proto::opentelemetry::logs::v1::*;
 use otap_df_pdata::proto::opentelemetry::resource::v1::*;
+
+#[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
