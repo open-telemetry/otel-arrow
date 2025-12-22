@@ -14,6 +14,8 @@
 //!
 //! The implementation uses HTTP CONNECT method to establish tunnels through proxies.
 
+use base64::Engine;
+use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -261,14 +263,18 @@ impl ProxyConfig {
     }
 
     /// Returns true if any proxy is configured.
+    ///
+    /// Note: This returns true if *any* proxy URL is set, regardless of whether
+    /// the current target matches a NO_PROXY rule. The bypass logic is handled
+    /// per-request in `get_proxy_for_uri`.
     #[must_use]
     pub fn has_proxy(&self) -> bool {
         self.http_proxy.is_some() || self.https_proxy.is_some() || self.all_proxy.is_some()
     }
 }
 
-/// Parses a proxy URL and returns (host, port).
-fn parse_proxy_url(proxy_url: &str) -> Result<(String, u16), ProxyError> {
+/// Parses a proxy URL and returns (host, port, auth_header_value).
+fn parse_proxy_url(proxy_url: &str) -> Result<(String, u16, Option<String>), ProxyError> {
     let uri: Uri = proxy_url
         .parse()
         .map_err(|_| ProxyError::InvalidProxyUrl(proxy_url.to_string()))?;
@@ -290,7 +296,20 @@ traffic to the final destination for https:// targets.",
 
     let port = uri.port_u16().unwrap_or(3128); // Default proxy port
 
-    Ok((host, port))
+    // Extract credentials if present
+    let auth_header = if let Some(authority) = uri.authority() {
+        let auth_str = authority.as_str();
+        if let Some((user_pass, _)) = auth_str.rsplit_once('@') {
+            let encoded = BASE64_STANDARD.encode(user_pass);
+            Some(format!("Basic {}", encoded))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok((host, port, auth_header))
 }
 
 /// Establishes an HTTP CONNECT tunnel through a proxy.
@@ -307,23 +326,37 @@ async fn http_connect_tunnel(
     // Connect to the proxy
     let stream = TcpStream::connect((proxy_host, proxy_port)).await?;
 
-    http_connect_tunnel_on_stream(stream, target_host, target_port).await
+    http_connect_tunnel_on_stream(stream, target_host, target_port, None).await
 }
 
 async fn http_connect_tunnel_on_stream(
     stream: TcpStream,
     target_host: &str,
     target_port: u16,
+    proxy_auth: Option<&str>,
 ) -> Result<TcpStream, ProxyError> {
     // Send HTTP CONNECT request
     // Note: We use "Connection: Keep-Alive" instead of "Proxy-Connection" as the latter
     // is non-standard, although widely supported. Modern proxies should respect "Connection".
-    let connect_request = format!(
-        "CONNECT {target_host}:{target_port} HTTP/1.1\r\n\
-         Host: {target_host}:{target_port}\r\n\
-         Connection: Keep-Alive\r\n\
-         \r\n"
+
+    // Handle IPv6 addresses in Host header (must be bracketed)
+    let formatted_target = if target_host.contains(':') && !target_host.starts_with('[') {
+        format!("[{}]", target_host)
+    } else {
+        target_host.to_string()
+    };
+
+    let mut connect_request = format!(
+        "CONNECT {formatted_target}:{target_port} HTTP/1.1\r\n\
+         Host: {formatted_target}:{target_port}\r\n\
+         Connection: Keep-Alive\r\n"
     );
+
+    if let Some(auth) = proxy_auth {
+        connect_request.push_str(&format!("Proxy-Authorization: {}\r\n", auth));
+    }
+
+    connect_request.push_str("\r\n");
 
     otap_df_telemetry::otel_debug!("Proxy.ConnectRequest", request = connect_request.trim());
 
@@ -393,6 +426,13 @@ async fn http_connect_tunnel_on_stream(
         return Err(ProxyError::ConnectFailed { status, message });
     }
 
+    // Check for buffered data before reuniting
+    if !buf_reader.buffer().is_empty() {
+        return Err(ProxyError::InvalidResponse(
+            "unexpected data after CONNECT response headers".to_string(),
+        ));
+    }
+
     // Reunite the stream
     let reader = buf_reader.into_inner();
     let stream = reader
@@ -454,6 +494,10 @@ fn apply_socket_options(
 ///
 /// This is intended for gRPC transports that manage TLS separately (e.g., tonic's
 /// `Endpoint` with `.tls_config(...)`).
+///
+/// Note: TCP socket options (nodelay, keepalive) are applied to the connection
+/// to the proxy server itself. Since the tunnel is just a byte stream over this
+/// connection, these settings effectively apply to the tunneled traffic as well.
 pub(crate) async fn connect_tcp_stream_with_proxy_config(
     target_uri: &Uri,
     proxy_config: &ProxyConfig,
@@ -472,7 +516,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
     });
 
     if let Some(proxy_url) = proxy_config.get_proxy_for_uri(target_uri) {
-        let (proxy_host, proxy_port) = parse_proxy_url(proxy_url)?;
+        let (proxy_host, proxy_port, proxy_auth) = parse_proxy_url(proxy_url)?;
 
         otap_df_telemetry::otel_debug!("Proxy.Connecting", host = proxy_host, port = proxy_port);
         let stream = TcpStream::connect((proxy_host.as_str(), proxy_port))
@@ -497,7 +541,8 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
             tcp_keepalive_retries,
         )?;
 
-        let stream = http_connect_tunnel_on_stream(stream, host, port).await?;
+        let stream =
+            http_connect_tunnel_on_stream(stream, host, port, proxy_auth.as_deref()).await?;
 
         Ok(stream)
     } else {

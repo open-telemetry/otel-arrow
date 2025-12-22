@@ -38,6 +38,9 @@ pub struct GrpcClientSettings {
     pub concurrency_limit: usize,
 
     /// Timeout for establishing TCP connections.
+    ///
+    /// When a proxy is configured, this timeout covers the entire connection process,
+    /// including the TCP connection to the proxy and the HTTP CONNECT handshake.
     #[serde(default = "default_connect_timeout", with = "humantime_serde")]
     pub connect_timeout: Duration,
 
@@ -149,6 +152,10 @@ impl GrpcClientSettings {
         &self,
         grpc_endpoint: &str,
     ) -> Result<Endpoint, tonic::transport::Error> {
+        // Note: TCP settings (nodelay, keepalive) set here on the Endpoint are used
+        // by tonic's default connector (non-proxy case).
+        // When using a proxy, we provide a custom connector which ignores these Endpoint
+        // settings but applies the same configuration manually to the socket.
         let mut endpoint = Endpoint::from_shared(grpc_endpoint.to_string())?
             .concurrency_limit(self.effective_concurrency_limit())
             .connect_timeout(self.connect_timeout)
@@ -274,30 +281,20 @@ impl GrpcClientSettings {
         service_fn(move |uri: http::Uri| {
             let proxy = Arc::clone(&proxy);
             async move {
-                let res = tokio::time::timeout(connect_timeout, async {
-                    crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
-                        &uri,
-                        proxy.as_ref(),
-                        tcp_nodelay,
-                        tcp_keepalive,
-                        tcp_keepalive_interval,
-                        tcp_keepalive_retries,
-                    )
-                    .await
-                })
-                .await;
-
-                match res {
-                    Ok(Ok(stream)) => Ok(TokioIo::new(stream)),
-                    Ok(Err(err)) => Err(io::Error::other(err)),
-                    Err(_) => Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!(
-                            "connect timeout while connecting to {} with proxy config: {}",
-                            uri, proxy
-                        ),
-                    )),
-                }
+                // The connection timeout is handled by the tonic::Endpoint configuration
+                // (via .connect_timeout()), which wraps this connector service.
+                // We don't need an additional timeout here.
+                crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
+                    &uri,
+                    proxy.as_ref(),
+                    tcp_nodelay,
+                    tcp_keepalive,
+                    tcp_keepalive_interval,
+                    tcp_keepalive_retries,
+                )
+                .await
+                .map(TokioIo::new)
+                .map_err(io::Error::other)
             }
         })
     }
@@ -849,5 +846,61 @@ mod tests {
 
         let endpoint = futures::executor::block_on(settings.build_endpoint_with_tls()).unwrap();
         let _ = endpoint;
+    }
+
+    #[test]
+    fn test_proxy_config_deserialization() {
+        let json = r#"{
+            "grpc_endpoint": "http://localhost:4317",
+            "proxy": {
+                "http_proxy": "http://proxy:3128",
+                "no_proxy": "localhost"
+            }
+        }"#;
+        let settings: GrpcClientSettings = serde_json::from_str(json).unwrap();
+        assert!(settings.proxy.is_some());
+        let proxy = settings.proxy.as_ref().unwrap();
+        assert_eq!(proxy.http_proxy.as_deref(), Some("http://proxy:3128"));
+        assert_eq!(proxy.no_proxy.as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn test_effective_proxy_config_preserves_explicit() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://localhost:4317".to_string(),
+            proxy: Some(ProxyConfig {
+                http_proxy: Some("http://explicit-proxy:3128".to_string()),
+                ..Default::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let effective = settings.effective_proxy_config();
+        // Even if env vars are set, explicit should take precedence
+        assert_eq!(
+            effective.http_proxy.as_deref(),
+            Some("http://explicit-proxy:3128")
+        );
+    }
+
+    #[test]
+    fn test_has_proxy_logic() {
+        let config = ProxyConfig {
+            http_proxy: Some("http://proxy".to_string()),
+            ..Default::default()
+        };
+        assert!(config.has_proxy());
+
+        let config = ProxyConfig {
+            https_proxy: Some("http://proxy".to_string()),
+            ..Default::default()
+        };
+        assert!(config.has_proxy());
+
+        let config = ProxyConfig {
+            all_proxy: Some("http://proxy".to_string()),
+            ..Default::default()
+        };
+        assert!(config.has_proxy());
     }
 }
