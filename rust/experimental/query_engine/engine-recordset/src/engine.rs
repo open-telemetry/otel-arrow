@@ -309,7 +309,6 @@ fn process_record<'a, TRecord: Record + 'static>(
                 }
             }
             DataExpression::Conditional(c) => {
-                // TODO confirm this is the correct error handling
                 execution_context.add_diagnostic_if_enabled(
                     RecordSetEngineDiagnosticLevel::Error,
                     c,
