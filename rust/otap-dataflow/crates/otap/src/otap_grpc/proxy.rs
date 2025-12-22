@@ -637,13 +637,23 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_url() {
-        let (host, port) = parse_proxy_url("http://proxy.example.com:3128").unwrap();
+        let (host, port, auth) = parse_proxy_url("http://proxy.example.com:3128").unwrap();
         assert_eq!(host, "proxy.example.com");
         assert_eq!(port, 3128);
+        assert!(auth.is_none());
 
-        let (host, port) = parse_proxy_url("http://proxy.example.com").unwrap();
+        let (host, port, auth) = parse_proxy_url("http://proxy.example.com").unwrap();
         assert_eq!(host, "proxy.example.com");
         assert_eq!(port, 3128); // Default proxy port
+        assert!(auth.is_none());
+
+        // Test with credentials
+        let (host, port, auth) =
+            parse_proxy_url("http://user:pass@proxy.example.com:8080").unwrap();
+        assert_eq!(host, "proxy.example.com");
+        assert_eq!(port, 8080);
+        assert!(auth.is_some());
+        assert!(auth.unwrap().starts_with("Basic "));
     }
 
     #[test]
@@ -766,6 +776,66 @@ mod tests {
         });
 
         let stream = http_connect_tunnel("127.0.0.1", addr.port(), "example.com", 4317)
+            .await
+            .unwrap();
+        drop(stream);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_connect_tunnel_ipv6_formatting() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            let mut buf = vec![0u8; 2048];
+            let n = socket.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+
+            // Verify IPv6 address is bracketed in CONNECT line and Host header
+            assert!(req.starts_with("CONNECT [::1]:4317 HTTP/1.1"));
+            assert!(req.contains("Host: [::1]:4317"));
+
+            socket
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let stream = http_connect_tunnel("127.0.0.1", addr.port(), "::1", 4317)
+            .await
+            .unwrap();
+        drop(stream);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_connect_tunnel_with_auth() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            let mut buf = vec![0u8; 2048];
+            let n = socket.read(&mut buf).await.unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]);
+
+            assert!(req.starts_with("CONNECT example.com:4317 HTTP/1.1"));
+            assert!(req.contains("Proxy-Authorization: Basic dXNlcjpwYXNz")); // user:pass base64
+
+            socket
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        // Manually call http_connect_tunnel_on_stream to pass auth
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let auth = Some("Basic dXNlcjpwYXNz"); // user:pass
+        let stream = http_connect_tunnel_on_stream(stream, "example.com", 4317, auth)
             .await
             .unwrap();
         drop(stream);
