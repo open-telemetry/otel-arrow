@@ -192,7 +192,7 @@ async fn start_tls_logs_server() -> (
 ) {
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         eprintln!(
-            "rustls default provider installation failed in test (OK if already installed): {err}"
+            "rustls default provider installation failed in test (OK if already installed): {err:?}"
         );
     }
 

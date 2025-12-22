@@ -147,7 +147,7 @@ impl std::fmt::Display for ProxyConfig {
 impl ProxyConfig {
     /// Returns the proxy URL for a given target URI, or None if no proxy should be used.
     #[must_use]
-    pub fn get_proxy_for_uri(&self, uri: &Uri) -> Option<&str> {
+    pub(crate) fn get_proxy_for_uri(&self, uri: &Uri) -> Option<&str> {
         let host = uri.host().unwrap_or("");
 
         // Check if host should bypass proxy
@@ -293,7 +293,8 @@ traffic to the final destination for https:// targets.",
 ///
 /// This function connects to the proxy, sends an HTTP CONNECT request,
 /// and returns the TCP stream once the tunnel is established.
-pub async fn http_connect_tunnel(
+#[cfg(test)]
+async fn http_connect_tunnel(
     proxy_host: &str,
     proxy_port: u16,
     target_host: &str,
@@ -454,7 +455,7 @@ fn apply_socket_options(
 ///
 /// This is intended for gRPC transports that manage TLS separately (e.g., tonic's
 /// `Endpoint` with `.tls_config(...)`).
-pub async fn connect_tcp_stream_with_proxy_config(
+pub(crate) async fn connect_tcp_stream_with_proxy_config(
     target_uri: &Uri,
     proxy_config: &ProxyConfig,
     tcp_nodelay: bool,
