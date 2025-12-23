@@ -115,7 +115,7 @@ impl PipelineStage for ConditionalPipelineStage {
             // determine which rows are selected by this branch
             //
             // TODO: here we're evaluating the filter against all rows in the incoming batch for
-            // each branch. There's probably a some optimization we can make here if this becomes
+            // each branch. There's probably some optimization we can make here if this becomes
             // a bottleneck. for example:
             // if previous branches have been very selective, we might consider materializing a
             // batch specifically containing the rows that have not already been selected and
@@ -430,7 +430,7 @@ mod test {
     async fn test_conditional_early_branch_selects_all() {
         // there's a shortcut where we can stop checking the conditions for branches
         // once all rows have been selected and processed. This test ensures we get
-        // correct results when we use that code bath
+        // correct results when we use that code path
         let log_records = vec![
             LogRecord::build()
                 .severity_text("ERROR")

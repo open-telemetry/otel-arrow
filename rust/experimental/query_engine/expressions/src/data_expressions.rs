@@ -185,7 +185,7 @@ impl ConditionalDataExpression {
         // 2) recursively call try_fold on all the expressions in every remaining branch and the
         // default branch if still present.
         //
-        // Before doing this, we should support filtering by static literals. so we can write unit
+        // Before doing this, we should support filtering by static literals so we can write unit
         // tests that will evaluate the folded expr. Without this, we won't be able to evaluate the
         // resolved static as a filter. https://github.com/open-telemetry/otel-arrow/issues/1508
 
