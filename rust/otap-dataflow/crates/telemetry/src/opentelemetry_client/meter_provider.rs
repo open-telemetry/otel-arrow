@@ -3,6 +3,7 @@
 
 //! Configures the OpenTelemetry meter provider based on the provided configuration.
 
+pub mod prometheus_exporter_provider;
 pub mod views_provider;
 
 use opentelemetry::global;
@@ -19,10 +20,14 @@ use otap_df_config::pipeline::service::telemetry::metrics::{
             MetricsPeriodicExporterConfig,
             otlp::{OtlpExporterConfig, OtlpProtocol},
         },
+        pull::MetricsPullExporterConfig,
     },
 };
 
-use crate::error::Error;
+use crate::{
+    error::Error,
+    opentelemetry_client::meter_provider::prometheus_exporter_provider::PrometheusExporterProvider,
+};
 
 /// Wrapper around the OpenTelemetry SDK meter provider and its runtime.
 pub struct MeterProvider {
@@ -92,9 +97,16 @@ impl MeterProvider {
                 }
                 Ok((sdk_meter_builder, runtime))
             }
-            MetricsReaderConfig::Pull { .. } => Err(Error::ConfigurationError(
-                "Pull-based metric readers are not implemented yet".to_string(),
-            )),
+            MetricsReaderConfig::Pull(pull_config) => match &pull_config.exporter {
+                MetricsPullExporterConfig::Prometheus(prometheus_config) => {
+                    (sdk_meter_builder, runtime) = PrometheusExporterProvider::configure_exporter(
+                        sdk_meter_builder,
+                        prometheus_config,
+                        runtime,
+                    )?;
+                    Ok((sdk_meter_builder, runtime))
+                }
+            },
         }
     }
 
