@@ -22,6 +22,8 @@ use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, Bat
 struct StreamProducer {
     stream_writer: StreamWriter<Cursor<Vec<u8>>>,
     schema_id: i64,
+    schema: SchemaRef,
+    ipc_write_options: IpcWriteOptions,
 }
 
 impl StreamProducer {
@@ -32,12 +34,14 @@ impl StreamProducer {
     ) -> Result<Self> {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
-        let stream_writer = StreamWriter::try_new_with_options(cursor, &schema, ipc_write_options)
+        let stream_writer = StreamWriter::try_new_with_options(cursor, &schema, ipc_write_options.clone())
             .map_err(|e| Error::BuildStreamWriter { source: e })?;
 
         Ok(Self {
             stream_writer,
             schema_id,
+            schema,
+            ipc_write_options,
         })
     }
 
@@ -50,6 +54,21 @@ impl StreamProducer {
         let result = cursor.get_ref()[..pos].to_vec();
         cursor.set_position(0);
         Ok(result)
+    }
+
+    fn reset_stream(&mut self) -> Result<()> {
+        self.stream_writer.finish().unwrap();
+        // self.stream_writer.finish();
+        let mut buf = Vec::new();
+        let cursor = self.stream_writer.get_ref();
+        let other_buf = cursor.get_ref();
+        buf.extend_from_slice(other_buf);
+        let cursor = Cursor::new(buf);
+        let stream_writer = StreamWriter::try_new_with_options(cursor, &self.schema, self.ipc_write_options.clone())
+            .map_err(|e| Error::BuildStreamWriter { source: e })?;
+        self.stream_writer = stream_writer;
+
+        Ok(())
     }
 }
 
@@ -220,6 +239,17 @@ impl Producer {
             ..Default::default()
         })
     }
+
+    /// TODO comments
+    pub fn reset_streams(&mut self) -> Result<()> {
+        for producer in self.stream_producers.iter_mut() {
+            if let Some(producer) = producer {
+                producer.producer.reset_stream()?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for Producer {
@@ -230,6 +260,10 @@ impl Default for Producer {
 
 #[cfg(test)]
 mod test {
+    use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+    use crate::proto::OtlpProtoMessage;
+    use crate::testing::round_trip::otlp_to_otap;
     use crate::Consumer;
     use crate::otap::{Logs, from_record_messages};
     use crate::otlp::attributes::AttributeValueType;
@@ -240,6 +274,7 @@ mod test {
 
     use arrow::array::{StringArray, UInt8Array, UInt16Array, UInt32Array};
     use arrow::datatypes::{DataType, Field, Schema};
+    use prost::Message;
 
     #[test]
     fn test_round_trip_batch_arrow_records() {
@@ -318,6 +353,75 @@ mod test {
             consumer.consume_bar(&mut bar).unwrap(),
         ));
         assert_eq!(input, result);
+    }
+
+    #[test]
+    fn test_producer_reset_streams() {
+        // TODO move these
+        pub fn to_logs_data(log_records: Vec<LogRecord>) -> LogsData {
+            LogsData {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            }
+        }
+        pub fn to_otap_logs(log_records: Vec<LogRecord>) -> OtapArrowRecords {
+            otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
+        }
+
+        let batch1 = to_otap_logs(vec![
+            LogRecord::build()
+                .event_name("1")
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("1"))])
+                .finish()
+        ]);
+        let batch2 = to_otap_logs(vec![
+            LogRecord::build()
+                .event_name("2")
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("1"))])
+                .finish()
+        ]);
+        let batch3 = to_otap_logs(vec![
+            LogRecord::build()
+                .event_name("3")
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("3"))])
+                .finish()
+        ]);
+        let batch4 = to_otap_logs(vec![
+            LogRecord::build()
+                .event_name("4")
+                .attributes(vec![KeyValue::new("a", AnyValue::new_string("4"))])
+                .finish()
+        ]);
+
+        let mut producer = Producer::new();
+
+        let mut encoded_bars = vec![];
+        for mut batch in [batch1, batch2, batch3, batch4] {
+            let bar = producer.produce_bar(&mut batch).unwrap();
+            let mut bytes = Vec::new();
+            bar.encode(&mut bytes).unwrap();
+            encoded_bars.push(bytes);
+            producer.reset_streams().unwrap();
+        }
+
+        let mut consumer1 = Consumer::default();
+        let mut consumer2 = Consumer::default();
+
+        for i in 0..4 {
+            let bytes = &encoded_bars[i];
+            let mut bar = BatchArrowRecords::decode(bytes.as_ref()).unwrap();
+            let consumer = if i % 2 == 0 {
+                &mut consumer1
+            } else {
+               &mut consumer2
+            };
+            let result = consumer.consume_bar(&mut bar).unwrap();
+        }
     }
 
     #[test]
