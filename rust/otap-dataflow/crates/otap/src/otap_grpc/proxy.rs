@@ -897,10 +897,7 @@ mod tests {
                     || req.contains("CONNECT example.com:4317")
                     || req.contains("CONNECT my:host:4317")
                 {
-                    socket
-                        .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
-                        .await
-                        .unwrap();
+                    socket.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
                 } else {
                     // Fail if we see unexpected bracketing
                     socket
@@ -928,7 +925,7 @@ mod tests {
         let _ = http_connect_tunnel_on_stream(stream, "my:host", 4317, None)
             .await
             .unwrap();
-            
+
         // Abort the server task
         server.abort();
     }
