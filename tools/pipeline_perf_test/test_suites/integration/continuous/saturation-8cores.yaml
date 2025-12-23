@@ -3,9 +3,9 @@ from_template:
   path: test_suites/integration/continuous/saturation-cores-template.yaml.j2
   variables:
     num_cores: 8
-    engine_core_range: "1-8"
+    engine_core_range: "0-7"
     loadgen_cores: 24
-    loadgen_core_range: "9-32"
-    backend_cores: 1
-    backend_core_range: "0-0"
-    max_batch_size: 1600
+    loadgen_core_range: "8-31"
+    backend_cores: 8
+    backend_core_range: "32-39"
+    max_batch_size: 200
