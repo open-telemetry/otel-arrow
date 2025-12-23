@@ -266,7 +266,11 @@ impl AttributesProcessor {
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;
-                    records.set(payload_ty, rb);
+                    if rb.num_rows() == 0 {
+                        records.remove(payload_ty);
+                    } else {
+                        records.set(payload_ty, rb);
+                    }
                 }
             }
         }
