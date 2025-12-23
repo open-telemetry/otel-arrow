@@ -1005,7 +1005,6 @@ mod tests {
             vec![],
             vec![
                 KeyValue::new("a", AnyValue::new_string("1")),
-                KeyValue::new("a", AnyValue::new_string("2")),
                 KeyValue::new("b", AnyValue::new_string("1")),
             ],
         );
