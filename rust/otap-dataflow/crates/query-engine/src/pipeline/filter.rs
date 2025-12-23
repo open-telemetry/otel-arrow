@@ -1193,8 +1193,8 @@ impl AdaptivePhysicalExprExec {
         // the underlying compute kernels that will be used for the physical exprs will produce
         // nulls if the incoming value is null. For the expressions we support, we want this to
         // be `false`, so the null buffer must be removed
-       let (result_bool_values, null_buffer) = boolean_arr.into_parts();
-       let boolean_arr = match null_buffer {
+        let (result_bool_values, null_buffer) = boolean_arr.into_parts();
+        let boolean_arr = match null_buffer {
             // no nulls, just return the selection vec as is:
             None => BooleanArray::new(result_bool_values, None),
 
@@ -1209,9 +1209,9 @@ impl AdaptivePhysicalExprExec {
                 }
                 and(&BooleanArray::new(result_bool_values, None), &null_mask)?
             }
-       };
+        };
 
-       Ok(boolean_arr)
+        Ok(boolean_arr)
     }
 }
 
@@ -1774,7 +1774,10 @@ mod test {
 
     use super::*;
 
-    use arrow::array::{DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch, StringArray, UInt8Array};
+    use arrow::array::{
+        DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
+        StringArray, UInt8Array,
+    };
     use arrow::buffer::MutableBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
@@ -3099,7 +3102,7 @@ mod test {
             &[log_records[1].clone()],
         );
 
-        // test a few scenarios where if we had null in the selection vector (which we 
+        // test a few scenarios where if we had null in the selection vector (which we
         // shouldn't have), they would not pass:
         let result = exec_logs_pipeline(
             "logs | where not(severity_text == \"ERROR\")",
@@ -4445,11 +4448,13 @@ mod test {
 
     #[tokio::test]
     async fn test_adaptive_physical_expr_columns_null_values() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Utf8,
+            true,
+        )]));
 
-        // Note - this array is constructed in a specific way that ensures that when doing 
+        // Note - this array is constructed in a specific way that ensures that when doing
         // something like `eq(arr, &StringArray::new_scalar("WARN"))`, we produce a values
         // buffer that has `true` in a null position. This is used to test  that we use the
         // correct logic when combining the null buffer with the values buffer.
@@ -4468,18 +4473,10 @@ mod test {
         nulls.append(false);
         nulls.append(false);
         nulls.append(true);
-        let string_arr = StringArray::new(
-            offsets.finish(), 
-            values.into(),
-            nulls.finish()
-        );
+        let string_arr = StringArray::new(offsets.finish(), values.into(), nulls.finish());
 
-        let input = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(string_arr)],
-        )
-        .unwrap();
-        
+        let input = RecordBatch::try_new(schema.clone(), vec![Arc::new(string_arr)]).unwrap();
+
         let session_ctx = Pipeline::create_session_context();
 
         // in this expression, we want to produce a selection vec that considers null to be false
@@ -4493,7 +4490,7 @@ mod test {
         let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
         let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
         assert_eq!(result, BooleanArray::from_iter([false, true, true, false]));
-        
+
         let logical_expr = col(consts::SEVERITY_TEXT).is_not_null();
         let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
         let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
