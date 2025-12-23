@@ -635,9 +635,6 @@ mod tests {
         let config = json!({
             "grpc_endpoint": grpc_endpoint,
             "compression_method": "none",
-            "tls": {
-                "insecure": true
-            }
         });
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
@@ -811,9 +808,6 @@ mod tests {
                 &serde_json::json!({
                     "grpc_endpoint": grpc_endpoint,
                     "compression_method": "none",
-                    "tls": {
-                        "insecure": true
-                    }
                 }),
             )
             .unwrap(),

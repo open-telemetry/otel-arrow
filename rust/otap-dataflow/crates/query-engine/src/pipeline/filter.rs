@@ -1181,14 +1181,37 @@ impl AdaptivePhysicalExprExec {
             .into_array(record_batch.num_rows())?;
 
         // ensure it actually evaluated to a boolean expression, and if so return that as selection vec
-        as_boolean_array(&arr)
+        let boolean_arr = as_boolean_array(&arr)
             .cloned()
             .map_err(|_| Error::ExecutionError {
                 cause: format!(
                     "Cannot create selection vector from non-boolean predicates. Found {}",
                     arr.data_type()
                 ),
-            })
+            })?;
+
+        // the underlying compute kernels that will be used for the physical exprs will produce
+        // nulls if the incoming value is null. For the expressions we support, we want this to
+        // be `false`, so the null buffer must be removed
+        let (result_bool_values, null_buffer) = boolean_arr.into_parts();
+        let boolean_arr = match null_buffer {
+            // no nulls, just return the selection vec as is:
+            None => BooleanArray::new(result_bool_values, None),
+
+            // combine nulls into selection vec:
+            Some(null_buffer) => {
+                // Note: arrow-rs doesn't make any guarantees that the null values in a boolean
+                // array are `false` in the values buffer so we can't simply drop the null buffer
+                // in the case null values don't pass the filter.
+                let mut null_mask = BooleanArray::new(null_buffer.into_inner(), None);
+                if self.missing_data_passes {
+                    null_mask = not(&null_mask)?;
+                }
+                and(&BooleanArray::new(result_bool_values, None), &null_mask)?
+            }
+        };
+
+        Ok(boolean_arr)
     }
 }
 
@@ -1707,7 +1730,11 @@ mod test {
 
     use super::*;
 
-    use arrow::array::{DictionaryArray, Int32Array, RecordBatch, StringArray, UInt8Array};
+    use arrow::array::{
+        DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
+        StringArray, UInt8Array,
+    };
+    use arrow::buffer::MutableBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
@@ -3000,6 +3027,56 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_nulls() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .severity_text("ERROR")
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                // severity_text == null
+                .finish(),
+        ];
+
+        // check simple filter to ensure we filter out the value with null in the column
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == \"ERROR\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone()],
+        );
+
+        // test a few scenarios where if we had null in the selection vector (which we
+        // shouldn't have), they would not pass:
+        let result = exec_logs_pipeline(
+            "logs | where not(severity_text == \"ERROR\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()],
+        );
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == \"ERROR\" or event_name == \"3\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
         );
     }
 
@@ -4323,6 +4400,57 @@ mod test {
         .unwrap();
         let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
         assert_eq!(result, BooleanArray::from_iter([true, true, false]));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_columns_null_values() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Utf8,
+            true,
+        )]));
+
+        // Note - this array is constructed in a specific way that ensures that when doing
+        // something like `eq(arr, &StringArray::new_scalar("WARN"))`, we produce a values
+        // buffer that has `true` in a null position. This is used to test  that we use the
+        // correct logic when combining the null buffer with the values buffer.
+        let mut offsets = OffsetBufferBuilder::new(4);
+        offsets.push_length(4);
+        offsets.push_length(4);
+        offsets.push_length(4);
+        offsets.push_length(4);
+        let mut values = MutableBuffer::new(16);
+        values.extend_from_slice(b"WARN");
+        values.extend_from_slice(b"INFO");
+        values.extend_from_slice(b"WARN");
+        values.extend_from_slice(b"INFO");
+        let mut nulls = NullBufferBuilder::new(4);
+        nulls.append(true);
+        nulls.append(false);
+        nulls.append(false);
+        nulls.append(true);
+        let string_arr = StringArray::new(offsets.finish(), values.into(), nulls.finish());
+
+        let input = RecordBatch::try_new(schema.clone(), vec![Arc::new(string_arr)]).unwrap();
+
+        let session_ctx = Pipeline::create_session_context();
+
+        // in this expression, we want to produce a selection vec that considers null to be false
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([true, false, false, false]));
+
+        // some smoke tests for other null handling scenarios
+        let logical_expr = col(consts::SEVERITY_TEXT).is_null();
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, true, true, false]));
+
+        let logical_expr = col(consts::SEVERITY_TEXT).is_not_null();
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([true, false, false, true]));
     }
 
     /// A physical Expr that should not get called. This can be used to test that some
