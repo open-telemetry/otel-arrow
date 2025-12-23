@@ -27,6 +27,9 @@ use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 /// When executed, this will evaluate the pipeline in each branch on a disjoint set of rows that are
 /// selected by the branches' conditions. The output will be the results of each branch & default
 /// branch concatenated together.
+///
+/// Note: the order of the rows in the incoming [`RecordBatch`](arrow::array::RecordBatch)s may not
+/// be preserved.
 pub struct ConditionalPipelineStage {
     /// The data in the batches will be checked against the conditions for each branch, and the
     /// stages in each branch will be executed for the rows that pass the condition and didn't
