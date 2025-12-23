@@ -111,6 +111,7 @@ pub struct GrpcClientSettings {
     /// - `ALL_PROXY` / `all_proxy`: Fallback proxy for all connections
     /// - `NO_PROXY` / `no_proxy`: Comma-separated list of hosts to bypass proxy
     #[serde(default)]
+    #[doc(hidden)]
     pub proxy: Option<ProxyConfig>,
 }
 
@@ -245,7 +246,7 @@ impl GrpcClientSettings {
     ///
     /// This warns users that the configured proxy must support HTTP CONNECT for non-TLS targets,
     /// which is a common source of connection failures with some proxy servers.
-    pub fn log_proxy_info(&self) {
+    pub(crate) fn log_proxy_info(&self) {
         let proxy = self.effective_proxy_config();
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             let proxy_str = proxy.to_string();
@@ -311,6 +312,7 @@ impl GrpcClientSettings {
     }
 
     /// Builds a gRPC channel, using proxy tunneling when configured.
+    #[doc(hidden)]
     pub async fn connect_channel(
         &self,
         timeout_override: Option<Duration>,
@@ -325,6 +327,7 @@ impl GrpcClientSettings {
     }
 
     /// Builds a lazy gRPC channel, using proxy tunneling when configured.
+    #[doc(hidden)]
     pub async fn connect_channel_lazy(
         &self,
         timeout_override: Option<Duration>,

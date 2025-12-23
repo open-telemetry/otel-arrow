@@ -60,6 +60,7 @@ pub enum ProxyError {
 /// Proxy configuration that can be set explicitly or read from environment.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[doc(hidden)]
 pub struct ProxyConfig {
     /// HTTP proxy URL (e.g., "http://proxy.example.com:3128")
     /// If not set, reads from HTTP_PROXY/http_proxy environment variable.
@@ -90,14 +91,20 @@ impl ProxyConfig {
         Self {
             http_proxy: env::var("HTTP_PROXY")
                 .or_else(|_| env::var("http_proxy"))
-                .ok(),
+                .ok()
+                .filter(|s| !s.is_empty()),
             https_proxy: env::var("HTTPS_PROXY")
                 .or_else(|_| env::var("https_proxy"))
-                .ok(),
+                .ok()
+                .filter(|s| !s.is_empty()),
             all_proxy: env::var("ALL_PROXY")
                 .or_else(|_| env::var("all_proxy"))
-                .ok(),
-            no_proxy: env::var("NO_PROXY").or_else(|_| env::var("no_proxy")).ok(),
+                .ok()
+                .filter(|s| !s.is_empty()),
+            no_proxy: env::var("NO_PROXY")
+                .or_else(|_| env::var("no_proxy"))
+                .ok()
+                .filter(|s| !s.is_empty()),
         }
     }
 
