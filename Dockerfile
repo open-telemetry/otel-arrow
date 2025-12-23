@@ -13,7 +13,8 @@ WORKDIR /otel-arrow
 COPY . .
 ENV CGO_ENABLED=0
 
-# Note the version MUST MATCH otelarrowcol-build.yaml
+# Note the version should match the builder version referenced in the Makefile.
+# The version is overridden when running `make builder`.
 RUN go install go.opentelemetry.io/collector/cmd/builder@v0.142.0
 
 # This command generates main.go, go.mod but does not update deps.
