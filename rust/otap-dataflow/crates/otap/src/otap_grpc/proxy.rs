@@ -340,7 +340,7 @@ async fn http_connect_tunnel_on_stream(
     // is non-standard, although widely supported. Modern proxies should respect "Connection".
 
     // Handle IPv6 addresses in Host header (must be bracketed)
-    let formatted_target = if target_host.contains(':') && !target_host.starts_with('[') {
+    let formatted_target = if target_host.parse::<std::net::Ipv6Addr>().is_ok() {
         format!("[{}]", target_host)
     } else {
         target_host.to_string()
@@ -358,7 +358,15 @@ async fn http_connect_tunnel_on_stream(
 
     connect_request.push_str("\r\n");
 
-    otap_df_telemetry::otel_debug!("Proxy.ConnectRequest", request = connect_request.trim());
+    if proxy_auth.is_some() {
+        otap_df_telemetry::otel_debug!(
+            "Proxy.ConnectRequest",
+            target = format!("{formatted_target}:{target_port}"),
+            has_auth = true
+        );
+    } else {
+        otap_df_telemetry::otel_debug!("Proxy.ConnectRequest", request = connect_request.trim());
+    }
 
     let (reader, mut writer) = stream.into_split();
     writer.write_all(connect_request.as_bytes()).await?;
@@ -868,5 +876,60 @@ mod tests {
         }
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_http_connect_tunnel_ipv6_formatting_robustness() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(_) => break,
+                };
+                let mut buf = vec![0u8; 2048];
+                let n = socket.read(&mut buf).await.unwrap();
+                let req = String::from_utf8_lossy(&buf[..n]);
+
+                if req.contains("CONNECT [2001:db8::1]:4317")
+                    || req.contains("CONNECT example.com:4317")
+                    || req.contains("CONNECT my:host:4317")
+                {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+                        .await
+                        .unwrap();
+                } else {
+                    // Fail if we see unexpected bracketing
+                    socket
+                        .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+
+        // 1. Valid IPv6
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let _ = http_connect_tunnel_on_stream(stream, "2001:db8::1", 4317, None)
+            .await
+            .unwrap();
+
+        // 2. Regular Hostname
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let _ = http_connect_tunnel_on_stream(stream, "example.com", 4317, None)
+            .await
+            .unwrap();
+
+        // 3. Hostname with colon (should not be bracketed)
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let _ = http_connect_tunnel_on_stream(stream, "my:host", 4317, None)
+            .await
+            .unwrap();
+            
+        // Abort the server task
+        server.abort();
     }
 }

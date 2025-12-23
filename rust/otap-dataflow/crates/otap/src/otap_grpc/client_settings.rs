@@ -272,7 +272,6 @@ impl GrpcClientSettings {
         // Capture settings at creation time.
         // Note: If GrpcClientSettings are modified after this connector is created,
         // those changes will NOT be reflected in the connector.
-        let connect_timeout = self.connect_timeout;
         let tcp_nodelay = self.tcp_nodelay;
         let tcp_keepalive = self.tcp_keepalive;
         let tcp_keepalive_interval = self.tcp_keepalive_interval;
@@ -415,6 +414,8 @@ const fn default_keep_alive_while_idle() -> bool {
 #[allow(missing_docs)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "experimental-tls")]
     use tempfile::NamedTempFile;
 
     #[cfg(feature = "experimental-tls")]
