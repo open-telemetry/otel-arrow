@@ -4,13 +4,16 @@
 //! Readers level configurations.
 
 pub mod periodic;
+pub mod pull;
 
 use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+use crate::pipeline::service::telemetry::metrics::readers::{
+    periodic::MetricsPeriodicExporterConfig, pull::MetricsPullExporterConfig,
+};
 
 /// OpenTelemetry Metrics Reader configuration.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -19,9 +22,7 @@ pub enum MetricsReaderConfig {
     /// Periodic reader that exports metrics at regular intervals.
     Periodic(MetricsReaderPeriodicConfig),
     /// Pull reader that allows on-demand metric collection.
-    Pull {
-        //TODO: Add specific configuration for supported pull readers.
-    },
+    Pull(MetricsReaderPullConfig),
 }
 
 /// OpenTelemetry Metrics Periodic Reader configuration.
@@ -50,7 +51,7 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
             #[serde(rename = "periodic")]
             periodic: Option<MetricsReaderPeriodicConfig>,
             #[serde(rename = "pull")]
-            pull: Option<()>,
+            pull: Option<MetricsReaderPullConfig>,
         }
 
         let reader_options_result = ReaderOptions::deserialize(deserializer);
@@ -58,8 +59,8 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
             Ok(options) => {
                 if let Some(config) = options.periodic {
                     Ok(MetricsReaderConfig::Periodic(config))
-                } else if options.pull.is_some() {
-                    Ok(MetricsReaderConfig::Pull {})
+                } else if let Some(config) = options.pull {
+                    Ok(MetricsReaderConfig::Pull(config))
                 } else {
                     Err(serde::de::Error::custom(
                         "Expected either 'periodic' or 'pull' reader",
@@ -72,6 +73,13 @@ impl<'de> Deserialize<'de> for MetricsReaderConfig {
             ))),
         }
     }
+}
+
+/// OpenTelemetry Metrics Pull Reader configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MetricsReaderPullConfig {
+    /// The metrics exporter to use.
+    pub exporter: MetricsPullExporterConfig,
 }
 
 /// The temporality of the metrics to be exported.
@@ -106,6 +114,26 @@ mod tests {
             assert_eq!(periodic_config.interval.as_secs(), 10);
         } else {
             panic!("Expected periodic reader");
+        }
+    }
+
+    #[test]
+    fn test_metrics_reader_config_deserialize_pull() {
+        let yaml_str = r#"
+            pull:
+                exporter:
+                    prometheus:
+                        host: "0.0.0.0"
+                        port: 9090
+            "#;
+        let config: MetricsReaderConfig = serde_yaml::from_str(yaml_str).unwrap();
+
+        if let MetricsReaderConfig::Pull(pull_config) = config {
+            let MetricsPullExporterConfig::Prometheus(prometheus_config) = pull_config.exporter;
+            assert_eq!(prometheus_config.host, "0.0.0.0");
+            assert_eq!(prometheus_config.port, 9090);
+        } else {
+            panic!("Expected pull reader");
         }
     }
 
