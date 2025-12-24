@@ -411,7 +411,7 @@
               const { datasetIndex, index } = items[0];
               const data = results[datasetIndex].dataset[index];
               if (!data) return '';
-              return '\n' + data.commit.message + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.author.username + '\n';
+              return '\n' + data.commit.message.split('\n')[0] + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.author.username + '\n';
             },
             label: item => {
               const { datasetIndex, index, value } = item;
