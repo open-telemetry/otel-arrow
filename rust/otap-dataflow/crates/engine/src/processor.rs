@@ -171,7 +171,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
                         kind: ProcessorErrorKind::Configuration,
-                        error: "The pdata receiver must be defined at this stage".to_owned(),
+                        error: "Processor has no input channel configured".into(),
                         source_detail: String::new(),
                     })?,
                 );
@@ -202,7 +202,7 @@ impl<PData> ProcessorWrapper<PData> {
                     Receiver::Shared(pdata_receiver.ok_or_else(|| Error::ProcessorError {
                         processor: node_id.clone(),
                         kind: ProcessorErrorKind::Configuration,
-                        error: "The pdata receiver must be defined at this stage".to_owned(),
+                        error: "Processor has no input channel configured".into(),
                         source_detail: String::new(),
                     })?),
                 );
@@ -246,7 +246,12 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
-                    processor.process(msg, &mut effect_handler).await?;
+                    if let Err(error) = processor.process(msg, &mut effect_handler).await {
+                        otap_df_telemetry::otel_error!(
+                            "Procsesor.Error",
+                            message = error.to_string(),
+                        );
+                    }
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
@@ -273,7 +278,12 @@ impl<PData> ProcessorWrapper<PData> {
                     .await?;
 
                 while let Ok(msg) = message_channel.recv().await {
-                    processor.process(msg, &mut effect_handler).await?;
+                    if let Err(error) = processor.process(msg, &mut effect_handler).await {
+                        otap_df_telemetry::otel_error!(
+                            "Procsesor.Error",
+                            message = error.to_string(),
+                        );
+                    }
                 }
                 // Cancel periodic collection
                 _ = telemetry_cancel_handle.cancel().await;
