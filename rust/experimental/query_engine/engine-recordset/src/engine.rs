@@ -308,6 +308,14 @@ fn process_record<'a, TRecord: Record + 'static>(
                     }
                 }
             }
+            DataExpression::Conditional(c) => {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Error,
+                    c,
+                    || "Conditional Expression not yet supported in record set engine".into(),
+                );
+                break;
+            }
         }
     }
 
