@@ -186,13 +186,19 @@ mod tests {
     #[tokio::test]
     async fn test_prometheus_get_metrics_handler() {
         let registry = Registry::new();
-        registry.register(Box::new(prometheus::Counter::new("test_counter", "A test counter").unwrap())).unwrap();
+        registry
+            .register(Box::new(
+                prometheus::Counter::new("test_counter", "A test counter").unwrap(),
+            ))
+            .unwrap();
         let response = PrometheusExporterProvider::get_metrics(State(registry)).await;
         match response {
             Ok(resp) => {
                 assert_eq!(resp.status(), StatusCode::OK);
                 let body = resp.into_body();
-                let bytes = axum::body::to_bytes(body, usize::MAX).await.expect("Failed to read body bytes");
+                let bytes = axum::body::to_bytes(body, usize::MAX)
+                    .await
+                    .expect("Failed to read body bytes");
                 let body_str = String::from_utf8(bytes.to_vec()).expect("Body is not valid UTF-8");
                 assert!(body_str.contains("HELP test_counter A test counter"));
             }
@@ -203,16 +209,18 @@ mod tests {
     #[tokio::test]
     async fn test_routes() {
         use axum::body::Body;
-        use axum::http::{Request, Method};
+        use axum::http::{Method, Request};
         use tower::ServiceExt; // For oneshot
 
         let registry = Registry::new();
-        registry.register(Box::new(
-            prometheus::Counter::new("route_test_counter", "A counter for route testing").unwrap()
-        )).unwrap();
+        registry
+            .register(Box::new(
+                prometheus::Counter::new("route_test_counter", "A counter for route testing")
+                    .unwrap(),
+            ))
+            .unwrap();
 
-        let app = PrometheusExporterProvider::routes("/metrics")
-            .with_state(registry);
+        let app = PrometheusExporterProvider::routes("/metrics").with_state(registry);
 
         // Test the /metrics endpoint
         let request = Request::builder()
@@ -226,7 +234,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response.into_body();
-        let bytes = axum::body::to_bytes(body, usize::MAX).await.expect("Failed to read body");
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .expect("Failed to read body");
         let body_str = String::from_utf8(bytes.to_vec()).expect("Body is not valid UTF-8");
 
         assert!(body_str.contains("route_test_counter"));

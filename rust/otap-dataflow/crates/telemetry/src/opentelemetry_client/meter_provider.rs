@@ -203,7 +203,9 @@ impl MeterProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::service::telemetry::metrics::readers::{MetricsReaderPeriodicConfig, MetricsReaderPullConfig, pull::PrometheusExporterConfig};
+    use otap_df_config::pipeline::service::telemetry::metrics::readers::{
+        MetricsReaderPeriodicConfig, MetricsReaderPullConfig, pull::PrometheusExporterConfig,
+    };
 
     #[test]
     fn test_meter_provider_configure_with_non_runtime_readers() -> Result<(), Error> {
@@ -259,13 +261,11 @@ mod tests {
                 }),
             }),
             MetricsReaderConfig::Pull(MetricsReaderPullConfig {
-                exporter: MetricsPullExporterConfig::Prometheus(
-                    PrometheusExporterConfig {
-                        host: "0.0.0.0".to_string(),
-                        port: 9090,
-                        path: "/metrics".to_string(),
-                    }
-                ),
+                exporter: MetricsPullExporterConfig::Prometheus(PrometheusExporterConfig {
+                    host: "0.0.0.0".to_string(),
+                    port: 9090,
+                    path: "/metrics".to_string(),
+                }),
             }),
         ];
         let metrics_config = MetricsConfig {
