@@ -39,3 +39,6 @@ opentelemetry-prometheus = { workspace = true }
 opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
+
+[dev-dependencies]
+tower = { workspace = true }
