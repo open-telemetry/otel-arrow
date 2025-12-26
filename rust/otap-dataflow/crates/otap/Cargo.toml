@@ -101,7 +101,10 @@ azure-monitor-exporter = [
     "dep:azure_core",
     "dep:ahash",
 ]
+# Experimental processors
+condense-attributes-processor = []
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
+
 
 [dev-dependencies]
 flume.workspace = true
