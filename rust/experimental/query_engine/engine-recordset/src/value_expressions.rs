@@ -793,8 +793,40 @@ mod tests {
                 )),
             ];
 
+            let func = PipelineFunction::new_external(
+                "f",
+                vec![
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                ],
+                None,
+            );
+
             let execution_context_arguments = ExecutionContextArgumentContainer {
                 parent_execution_context: &execution_context,
+                function: &func,
                 arguments: &arguments,
             };
 

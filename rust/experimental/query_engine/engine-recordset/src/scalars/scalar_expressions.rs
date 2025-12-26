@@ -342,12 +342,13 @@ where
 
             let arguments = ExecutionContextArgumentContainer {
                 parent_execution_context: execution_context,
+                function: func,
                 arguments: args,
             };
 
             let func_execution_context = execution_context.create_scope(Some(&arguments));
 
-            let return_value = match func.get_implementation() {
+            let mut return_value = match func.get_implementation() {
                 PipelineFunctionImplementation::Expressions(expressions) => {
                     let mut return_value = None;
 
@@ -381,6 +382,30 @@ where
                 }
             };
 
+            let return_value_type = return_value.get_value_type();
+
+            if let Some(expected_return_type) = func.get_return_value_type()
+                && return_value_type != ValueType::Null
+                && return_value_type != expected_return_type
+            {
+                match try_convert_value(return_value.to_value(), &expected_return_type) {
+                    Some(value) => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Verbose,
+                            scalar_expression,
+                            || format!("Return value automatically converted to '{expected_return_type}'"));
+                        return_value = ResolvedValue::Computed(value)
+                    }
+                    None => {
+                        execution_context.add_diagnostic_if_enabled(
+                            RecordSetEngineDiagnosticLevel::Warn,
+                            scalar_expression,
+                            || format!("Return value could not be converted to '{expected_return_type}'. Null will be returned"));
+                        return_value = ResolvedValue::Computed(OwnedValue::Null)
+                    }
+                }
+            }
+
             if execution_context
                 .is_diagnostic_level_enabled(RecordSetEngineDiagnosticLevel::Verbose)
             {
@@ -388,7 +413,7 @@ where
                     RecordSetEngineDiagnostic::new(
                         RecordSetEngineDiagnosticLevel::Verbose,
                         scalar_expression,
-                        format!("Executed function '{function_id}'"),
+                        format!("Executed function '{function_id}' with result '{return_value}'"),
                     )
                     .with_nested_diagnostics(func_execution_context.take_diagnostics()),
                 );
@@ -2281,8 +2306,24 @@ mod tests {
                 )),
             ];
 
+            let func = PipelineFunction::new_external(
+                "f",
+                vec![
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                ],
+                None,
+            );
+
             let execution_context_arguments = ExecutionContextArgumentContainer {
                 parent_execution_context: &execution_context,
+                function: &func,
                 arguments: &arguments,
             };
 
@@ -2321,14 +2362,32 @@ mod tests {
 
     #[test]
     fn test_execute_invoke_function_scalar_expression() {
-        fn run_test_success(input: InvokeFunctionScalarExpression, expected: &str) {
+        fn run_test_success(input: InvokeFunctionScalarExpression, expected: Option<&str>) {
             let mut test = TestExecutionContext::new()
                 .with_record(TestRecord::new().with_key_value(
                     "Attributes".into(),
-                    OwnedValue::Map(MapValueStorage::new(HashMap::from([(
-                        "key1".into(),
-                        OwnedValue::String(StringValueStorage::new("value1".into())),
-                    )]))),
+                    OwnedValue::Map(MapValueStorage::new(HashMap::from([
+                        (
+                            "key1".into(),
+                            OwnedValue::String(StringValueStorage::new("value1".into())),
+                        ),
+                        (
+                            "key2".into(),
+                            OwnedValue::String(StringValueStorage::new("1".into())),
+                        ),
+                        (
+                            "key3".into(),
+                            OwnedValue::Integer(IntegerValueStorage::new(1)),
+                        ),
+                        (
+                            "key4".into(),
+                            OwnedValue::Map(MapValueStorage::new(HashMap::new())),
+                        ),
+                        (
+                            "key5".into(),
+                            OwnedValue::Array(ArrayValueStorage::new(vec![])),
+                        ),
+                    ]))),
                 ))
                 .with_pipeline(
                     PipelineExpressionBuilder::new("")
@@ -2365,9 +2424,124 @@ mod tests {
                                     )),
                                 )],
                             ),
+                            PipelineFunction::new_external(
+                                "external_1",
+                                vec![
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::Integer,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::Boolean,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::Double,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::DateTime,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::TimeSpan,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::Scalar(Some(
+                                            ValueType::String,
+                                        )),
+                                    ),
+                                ],
+                                None,
+                            ),
+                            PipelineFunction::new_external(
+                                "external_2",
+                                vec![
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::MutableValue(Some(
+                                            ValueType::Map,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::MutableValue(Some(
+                                            ValueType::Array,
+                                        )),
+                                    ),
+                                    PipelineFunctionParameter::new(
+                                        QueryLocation::new_fake(),
+                                        PipelineFunctionParameterType::MutableValue(Some(
+                                            ValueType::Map,
+                                        )),
+                                    ),
+                                ],
+                                None,
+                            ),
                         ])
                         .build()
                         .unwrap(),
+                )
+                .with_external_function_implementation(
+                    "external_1",
+                    RecordSetEngineFunctionClosureCallback::new(|_, ec| {
+                        let args = ec.get_arguments().expect("Arguments not found");
+
+                        let a1 = args.get_argument(0)?;
+                        assert!(a1.get_value_type() == ValueType::Null);
+
+                        let a2 = args.get_argument(1)?;
+                        assert!(a2.get_value_type() == ValueType::Boolean);
+
+                        let a3 = args.get_argument(2)?;
+                        assert!(a3.get_value_type() == ValueType::Double);
+
+                        let a4 = args.get_argument(3)?;
+                        assert!(a4.get_value_type() == ValueType::DateTime);
+
+                        let a5 = args.get_argument(4)?;
+                        assert!(a5.get_value_type() == ValueType::TimeSpan);
+
+                        let a6 = args.get_argument(5)?;
+                        assert!(a6.get_value_type() == ValueType::String);
+
+                        Ok(ResolvedValue::Computed(OwnedValue::Null))
+                    }),
+                )
+                .with_external_function_implementation(
+                    "external_2",
+                    RecordSetEngineFunctionClosureCallback::new(|_, ec| {
+                        let args = ec.get_arguments().expect("Arguments not found");
+
+                        {
+                            let a1 = args.get_argument_mut(0)?;
+                            assert!(a1.get_value_type() == ValueType::Map);
+                        }
+
+                        {
+                            let a2 = args.get_argument_mut(1)?;
+                            assert!(a2.get_value_type() == ValueType::Array);
+                        }
+
+                        {
+                            let a3 = args.get_argument_mut(2)?;
+                            assert!(a3.get_value_type() == ValueType::Null);
+                        }
+
+                        Ok(ResolvedValue::Computed(OwnedValue::Null))
+                    }),
                 );
 
             let execution_context = test.create_execution_context();
@@ -2376,16 +2550,20 @@ mod tests {
 
             let actual = execute_scalar_expression(&execution_context, &expression).unwrap();
 
-            assert_eq!(
-                OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
-                actual.to_value()
-            );
+            if let Some(expected) = expected {
+                assert_eq!(
+                    OwnedValue::String(StringValueStorage::new(expected.into())).to_value(),
+                    actual.to_value()
+                );
+            } else {
+                assert!(actual.get_value_type() == ValueType::Null);
+            }
         }
 
         run_test_success(
             InvokeFunctionScalarExpression::new(
                 QueryLocation::new_fake(),
-                Some(ValueType::Integer),
+                Some(ValueType::String),
                 0,
                 vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
                     SourceScalarExpression::new(
@@ -2404,7 +2582,224 @@ mod tests {
                     ),
                 ))],
             ),
-            "value1",
+            Some("value1"),
+        );
+
+        // Note: "value1" is returned as null in this test because it is not converable to integer
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                            )),
+                        ]),
+                    ),
+                ))],
+            ),
+            None,
+        );
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                    SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "Attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                            )),
+                        ]),
+                    ),
+                ))],
+            ),
+            Some("1"),
+        );
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                2,
+                vec![
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key2"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key3"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                ],
+            ),
+            None,
+        );
+
+        run_test_success(
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                3,
+                vec![
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key4"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key5"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                    InvokeFunctionArgument::MutableValue(MutableValueExpression::Source(
+                        SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(
+                                        QueryLocation::new_fake(),
+                                        "Attributes",
+                                    ),
+                                )),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "key1"),
+                                )),
+                            ]),
+                        ),
+                    )),
+                ],
+            ),
+            None,
         );
     }
 
