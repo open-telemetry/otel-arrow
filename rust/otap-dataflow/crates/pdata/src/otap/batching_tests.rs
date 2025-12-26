@@ -3,7 +3,7 @@
 
 //! This module tests batching.rs logic.
 
-use crate::otap::batching::make_output_batches;
+use crate::otap::batching::make_item_batches;
 use crate::proto::OtlpProtoMessage;
 use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::{DataGenerator, MetricsConfig};
@@ -269,7 +269,7 @@ fn test_batching(
         .expect("at least one input")
         .signal_type();
 
-    let outputs_otlp: Vec<_> = make_output_batches(signal_type, max_items, inputs_otap)
+    let outputs_otlp: Vec<_> = make_item_batches(signal_type, max_items, inputs_otap)
         .expect("batching should succeed")
         .iter()
         .map(otap_to_otlp)
