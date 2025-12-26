@@ -217,18 +217,26 @@ impl CondenseAttributesProcessor {
         let key_str_arr = key_col.as_any().downcast_ref::<StringArray>();
         let (key_dict_u8_keys, key_dict_u8_vals) = if let Some(dict) = key_col
             .as_any()
-            .downcast_ref::<DictionaryArray<UInt8Type>>()
-        {
-            let vals = dict.values().as_any().downcast_ref::<StringArray>().unwrap();
+            .downcast_ref::<DictionaryArray<UInt8Type>>(
+        ) {
+            let vals = dict
+                .values()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
             (Some(dict.keys()), Some(vals))
         } else {
             (None, None)
         };
         let (key_dict_u16_keys, key_dict_u16_vals) = if let Some(dict) = key_col
             .as_any()
-            .downcast_ref::<DictionaryArray<UInt16Type>>()
-        {
-            let vals = dict.values().as_any().downcast_ref::<StringArray>().unwrap();
+            .downcast_ref::<DictionaryArray<UInt16Type>>(
+        ) {
+            let vals = dict
+                .values()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
             (Some(dict.keys()), Some(vals))
         } else {
             (None, None)
@@ -237,13 +245,25 @@ impl CondenseAttributesProcessor {
         // Helper function to get key at index i
         let get_key = |i: usize| -> Option<&str> {
             if let Some(arr) = key_str_arr {
-                return if arr.is_null(i) { None } else { Some(arr.value(i)) };
+                return if arr.is_null(i) {
+                    None
+                } else {
+                    Some(arr.value(i))
+                };
             }
             if let (Some(keys), Some(vals)) = (key_dict_u8_keys, key_dict_u8_vals) {
-                return if keys.is_null(i) { None } else { Some(vals.value(keys.value(i) as usize)) };
+                return if keys.is_null(i) {
+                    None
+                } else {
+                    Some(vals.value(keys.value(i) as usize))
+                };
             }
             if let (Some(keys), Some(vals)) = (key_dict_u16_keys, key_dict_u16_vals) {
-                return if keys.is_null(i) { None } else { Some(vals.value(keys.value(i) as usize)) };
+                return if keys.is_null(i) {
+                    None
+                } else {
+                    Some(vals.value(keys.value(i) as usize))
+                };
             }
             None
         };
