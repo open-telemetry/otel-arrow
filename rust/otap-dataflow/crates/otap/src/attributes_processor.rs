@@ -266,7 +266,11 @@ impl AttributesProcessor {
                         .map_err(|e| engine_err(&format!("transform_attributes failed: {e}")))?;
                     deleted_total += stats.deleted_entries;
                     renamed_total += stats.renamed_entries;
-                    records.set(payload_ty, rb);
+                    if rb.num_rows() == 0 {
+                        records.remove(payload_ty);
+                    } else {
+                        records.set(payload_ty, rb);
+                    }
                 }
             }
         }
@@ -535,13 +539,13 @@ mod tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
-    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
+    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -990,6 +994,66 @@ mod tests {
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
                 assert!(!log_attrs.iter().any(|kv| kv.key == "a"));
                 assert!(log_attrs.iter().any(|kv| kv.key == "b"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_delete_all_attributes() {
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("1")),
+                KeyValue::new("b", AnyValue::new_string("1")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "delete", "key": "a"},
+                {"action": "delete", "key": "b"},
+            ]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-delete-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otap_batch = match first {
+                    OtapPayload::OtapArrowRecords(otap_batch) => otap_batch,
+                    _ => panic!("unexpected output payload type"),
+                };
+
+                assert!(
+                    otap_batch.get(ArrowPayloadType::LogAttrs).is_none(),
+                    "expected LogAttrs payload type to have been removed"
+                );
             })
             .validate(|_| async move {});
     }

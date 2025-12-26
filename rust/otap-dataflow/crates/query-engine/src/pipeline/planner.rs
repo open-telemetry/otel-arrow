@@ -18,10 +18,11 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
-use crate::pipeline::PipelineStage;
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
+use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
-use crate::pipeline::filter::{Composite, FilterPipelineStage, FilterPlan};
+use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
+use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Converts an pipeline expression (AST) into a series of executable pipeline stages.
 ///
@@ -47,13 +48,22 @@ impl PipelinePlanner {
     /// # Returns
     /// A vector of compiled stages ready for execution
     pub fn plan_stages(
-        &mut self,
+        &self,
         pipeline: &PipelineExpression,
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        self.plan_data_exprs(pipeline.get_expressions(), session_ctx, otap_batch)
+    }
+
+    fn plan_data_exprs(
+        &self,
+        data_exprs: &[DataExpression],
+        session_ctx: &SessionContext,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Vec<BoxedPipelineStage>> {
         let mut results = Vec::new();
-        for data_expr in pipeline.get_expressions() {
+        for data_expr in data_exprs {
             let mut expr_results = self.plan_data_expr(data_expr, session_ctx, otap_batch)?;
             results.append(&mut expr_results);
         }
@@ -62,7 +72,7 @@ impl PipelinePlanner {
     }
 
     fn plan_data_expr(
-        &mut self,
+        &self,
         data_expr: &DataExpression,
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
@@ -101,6 +111,31 @@ impl PipelinePlanner {
                 }),
             },
 
+            DataExpression::Conditional(conditional_expr) => {
+                let mut pipeline_branches = vec![];
+                for branch in conditional_expr.get_branches() {
+                    let predicate =
+                        Self::plan_filter_exec(branch.get_condition(), session_ctx, otap_batch)?;
+
+                    let pipeline_stages =
+                        self.plan_data_exprs(branch.get_expressions(), session_ctx, otap_batch)?;
+
+                    pipeline_branches.push(ConditionalPipelineStageBranch::new(
+                        predicate,
+                        pipeline_stages,
+                    ));
+                }
+
+                let default_branch = conditional_expr
+                    .get_default_branch()
+                    .map(|data_exprs| self.plan_data_exprs(data_exprs, session_ctx, otap_batch))
+                    .transpose()?;
+
+                let pipeline_stage =
+                    ConditionalPipelineStage::new(pipeline_branches, default_branch);
+                Ok(vec![Box::new(pipeline_stage)])
+            }
+
             // TODO support other DataExpressions
             other => Err(Error::NotYetSupportedError {
                 message: format!("data expression not yet supported {}", other.get_name()),
@@ -109,21 +144,30 @@ impl PipelinePlanner {
     }
 
     fn plan_filter(
-        &mut self,
+        &self,
         logical_expr: &LogicalExpression,
         session_ctx: &SessionContext,
         otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        let filter_exec = Self::plan_filter_exec(logical_expr, session_ctx, otap_batch)?;
+        let filter_stage = FilterPipelineStage::new(filter_exec);
+
+        Ok(vec![Box::new(filter_stage)])
+    }
+
+    /// plan a [`FilterExec`] from a [`LogicalExpression`]
+    fn plan_filter_exec(
+        logical_expr: &LogicalExpression,
+        session_ctx: &SessionContext,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<Composite<FilterExec>> {
         let filter_plan = Composite::<FilterPlan>::try_from(logical_expr)?;
 
         // optimize the to the plan
         let filter_plan = AttrsFilterCombineOptimizerRule::optimize(filter_plan);
 
         // transform logical plan into executable plan
-        let filter_exec = filter_plan.to_exec(session_ctx, otap_batch)?;
-        let filter_stage = FilterPipelineStage::new(filter_exec);
-
-        Ok(vec![Box::new(filter_stage)])
+        filter_plan.to_exec(session_ctx, otap_batch)
     }
 
     fn plan_move(
