@@ -4,13 +4,16 @@
 //!
 //! This module provides a processor performing a unique kind of attribute transformation.
 //! It condenses multiple attributes into a single entry based on specified rules.
-//! 
+//!
 //! This functionality may be useful for scenarios where attribute data needs to be simplified to match a specific output schema.
 //!
 
+use arrow::array::{
+    Array, BooleanArray, DictionaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
+    UInt16Array,
+};
+use arrow::datatypes::{UInt8Type, UInt16Type};
 use async_trait::async_trait;
-use arrow::array::{Array, BooleanArray, DictionaryArray, Float64Array, Int64Array, StringArray, UInt16Array, UInt8Array};
-use arrow::datatypes::{UInt16Type, UInt8Type};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -22,8 +25,8 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
@@ -33,12 +36,12 @@ use std::sync::Arc;
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
-    
+
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:condense_attributes:processor";
 
 /// Configuration for the Condense Attributes processor
-/// 
+///
 /// `destination_key`: The key under which the condensed attributes will be stored.
 /// `delimiter`: The character used to separate individual attribute values in the condensed string.
 /// `source_keys`: Optional set of specific keys to condense. Cannot be specified with `exclude_keys`.
@@ -107,7 +110,7 @@ impl CondenseAttributesProcessor {
                 error: "destination_key is required and must be a string".to_string(),
             })?
             .to_string();
-        
+
         let delimiter = config
             .get("delimiter")
             .and_then(|v| v.as_str())
@@ -115,7 +118,7 @@ impl CondenseAttributesProcessor {
             .ok_or_else(|| ConfigError::InvalidUserConfig {
                 error: "delimiter is required and must be a single character string".to_string(),
             })?;
-        
+
         let source_keys = if let Some(source_keys_val) = config.get("source_keys") {
             let keys: HashSet<String> = source_keys_val
                 .as_array()
@@ -129,7 +132,7 @@ impl CondenseAttributesProcessor {
         } else {
             None
         };
-        
+
         let exclude_keys = if let Some(exclude_keys_val) = config.get("exclude_keys") {
             let keys: HashSet<String> = exclude_keys_val
                 .as_array()
@@ -143,14 +146,14 @@ impl CondenseAttributesProcessor {
         } else {
             None
         };
-        
+
         // Validate that both source_keys and exclude_keys are not specified
         if source_keys.is_some() && exclude_keys.is_some() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "cannot specify both 'source_keys' and 'exclude_keys'".to_string(),
             });
         }
-        
+
         Ok(Self::new(Config {
             destination_key,
             delimiter,
@@ -184,7 +187,7 @@ impl CondenseAttributesProcessor {
         let key_col = rb
             .column_by_name(consts::ATTRIBUTE_KEY)
             .ok_or_else(|| engine_err("key column not found"))?;
-        
+
         // Get attribute type column
         let type_col = rb
             .column_by_name(consts::ATTRIBUTE_TYPE)
@@ -213,7 +216,10 @@ impl CondenseAttributesProcessor {
                     }
                 }
                 arrow::datatypes::DataType::Dictionary(_, _) => {
-                    if let Some(dict_arr) = key_col.as_any().downcast_ref::<DictionaryArray<UInt8Type>>() {
+                    if let Some(dict_arr) = key_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    {
                         if dict_arr.is_null(i) {
                             return None;
                         }
@@ -221,7 +227,10 @@ impl CondenseAttributesProcessor {
                         let values = dict_arr.values().as_any().downcast_ref::<StringArray>()?;
                         return Some(values.value(dict_key as usize));
                     }
-                    if let Some(dict_arr) = key_col.as_any().downcast_ref::<DictionaryArray<UInt16Type>>() {
+                    if let Some(dict_arr) = key_col
+                        .as_any()
+                        .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    {
                         if dict_arr.is_null(i) {
                             return None;
                         }
@@ -238,34 +247,29 @@ impl CondenseAttributesProcessor {
         // Helper function to extract value as string based on type
         let get_value_str = |value_type: AttributeValueType, i: usize| -> Option<String> {
             match value_type {
-                AttributeValueType::Str => {
-                    str_col.and_then(|col| {
-                        Self::extract_value_from_column(col, i, |arr: &StringArray, index| {
-                            arr.value(index).to_string()
-                        })
+                AttributeValueType::Str => str_col.and_then(|col| {
+                    Self::extract_value_from_column(col, i, |arr: &StringArray, index| {
+                        arr.value(index).to_string()
                     })
-                }
-                AttributeValueType::Int => {
-                    int_col.and_then(|col| {
-                        Self::extract_value_from_column(col, i, |arr: &Int64Array, index| {
-                            arr.value(index)
-                        }).map(|v| v.to_string())
+                }),
+                AttributeValueType::Int => int_col.and_then(|col| {
+                    Self::extract_value_from_column(col, i, |arr: &Int64Array, index| {
+                        arr.value(index)
                     })
-                }
-                AttributeValueType::Double => {
-                    double_col.and_then(|col| {
-                        Self::extract_value_from_column(col, i, |arr: &Float64Array, index| {
-                            arr.value(index)
-                        }).map(|v| v.to_string())
+                    .map(|v| v.to_string())
+                }),
+                AttributeValueType::Double => double_col.and_then(|col| {
+                    Self::extract_value_from_column(col, i, |arr: &Float64Array, index| {
+                        arr.value(index)
                     })
-                }
-                AttributeValueType::Bool => {
-                    bool_col.and_then(|col| {
-                        Self::extract_value_from_column(col, i, |arr: &BooleanArray, index| {
-                            arr.value(index)
-                        }).map(|v| v.to_string())
+                    .map(|v| v.to_string())
+                }),
+                AttributeValueType::Bool => bool_col.and_then(|col| {
+                    Self::extract_value_from_column(col, i, |arr: &BooleanArray, index| {
+                        arr.value(index)
                     })
-                }
+                    .map(|v| v.to_string())
+                }),
                 // If needed, add handling for Map, Slice, and Bytes?
                 _ => None,
             }
@@ -304,7 +308,10 @@ impl CondenseAttributesProcessor {
 
             if let Ok(value_type_enum) = AttributeValueType::try_from(value_type) {
                 if let Some(val) = get_value_str(value_type_enum, i) {
-                    parent_to_attrs.entry(parent_id).or_insert_with(Vec::new).push((key, val));
+                    parent_to_attrs
+                        .entry(parent_id)
+                        .or_insert_with(Vec::new)
+                        .push((key, val));
                 }
             }
         }
@@ -317,10 +324,13 @@ impl CondenseAttributesProcessor {
         for (parent_id, attrs) in parent_to_attrs.iter() {
             if !attrs.is_empty() {
                 // Allocate capacity for all key=val strings + n-1 delimiters
-                let total_len = attrs.iter().map(|(k, v)| k.len() + 1 + v.len()).sum::<usize>()
+                let total_len = attrs
+                    .iter()
+                    .map(|(k, v)| k.len() + 1 + v.len())
+                    .sum::<usize>()
                     + (attrs.len() - 1) * delimiter_str.len();
                 let mut condensed_value = String::with_capacity(total_len);
-                
+
                 for (index, (key, val)) in attrs.iter().enumerate() {
                     if index > 0 {
                         condensed_value.push(self.config.delimiter);
@@ -330,10 +340,12 @@ impl CondenseAttributesProcessor {
                     condensed_value.push_str(val);
                     condensed_count += 1;
                 }
-                
+
                 builder.append_parent_id(parent_id);
                 builder.append_key(&self.config.destination_key);
-                builder.any_values_builder.append_str(condensed_value.as_bytes());
+                builder
+                    .any_values_builder
+                    .append_str(condensed_value.as_bytes());
             }
         }
 
@@ -395,9 +407,13 @@ impl CondenseAttributesProcessor {
         // - Inserting the new condensed attribute
         // - Removing the original attributes that were condensed
         // This would cut down on a lot of the copying currently happening.
-        let new_batch = builder.finish()
-            .map_err(|e| engine_err(&format!("Failed to build condensed attributes batch: {}", e)))?;
-        
+        let new_batch = builder.finish().map_err(|e| {
+            engine_err(&format!(
+                "Failed to build condensed attributes batch: {}",
+                e
+            ))
+        })?;
+
         records.set(ArrowPayloadType::LogAttrs, new_batch);
 
         Ok(condensed_count)
@@ -455,12 +471,10 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 let condensed_records: OtapArrowRecords =
                     match signal {
-                        SignalType::Logs => {
-                            match self.condense(&mut records) {
-                                Ok(_condensed) => records,
-                                Err(e) => return Err(e),
-                            }
-                        }
+                        SignalType::Logs => match self.condense(&mut records) {
+                            Ok(_condensed) => records,
+                            Err(e) => return Err(e),
+                        },
                         _ => return Err(Error::ProcessorError {
                             processor: effect_handler.processor_id(),
                             kind: ProcessorErrorKind::Other,
@@ -532,7 +546,8 @@ mod condense_tests {
 
         let node = test_node("condense-attributes-processor-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let mut node_config = NodeUserConfig::new_processor_config(CONDENSE_ATTRIBUTES_PROCESSOR_URN);
+        let mut node_config =
+            NodeUserConfig::new_processor_config(CONDENSE_ATTRIBUTES_PROCESSOR_URN);
         node_config.config = cfg;
         let proc = create_condense_attributes_processor(
             pipeline_ctx,
@@ -714,8 +729,12 @@ mod config_tests {
         assert_eq!(processor.config.destination_key, "condensed");
         assert_eq!(processor.config.delimiter, '|');
         assert!(processor.config.exclude_keys.is_none());
-        
-        let source_keys = processor.config.source_keys.as_ref().expect("source_keys should be present");
+
+        let source_keys = processor
+            .config
+            .source_keys
+            .as_ref()
+            .expect("source_keys should be present");
         assert_eq!(source_keys.len(), 3);
         assert!(source_keys.contains("key1"));
         assert!(source_keys.contains("key2"));
@@ -734,8 +753,12 @@ mod config_tests {
         assert_eq!(processor.config.destination_key, "condensed_attr");
         assert_eq!(processor.config.delimiter, ',');
         assert!(processor.config.source_keys.is_none());
-        
-        let exclude_keys = processor.config.exclude_keys.as_ref().expect("exclude_keys should be present");
+
+        let exclude_keys = processor
+            .config
+            .exclude_keys
+            .as_ref()
+            .expect("exclude_keys should be present");
         assert_eq!(exclude_keys.len(), 2);
         assert!(exclude_keys.contains("id"));
         assert!(exclude_keys.contains("timestamp"));

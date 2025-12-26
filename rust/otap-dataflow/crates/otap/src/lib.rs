@@ -53,7 +53,10 @@ pub mod noop_exporter;
 pub mod error_exporter;
 
 /// Experimental exporters and processors
-#[cfg(any(feature = "experimental-exporters", feature = "condense-attributes-processor"))]
+#[cfg(any(
+    feature = "experimental-exporters",
+    feature = "experimental-processors"
+))]
 pub mod experimental;
 
 /// testing utilities
