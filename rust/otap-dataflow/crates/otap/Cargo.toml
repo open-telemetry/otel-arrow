@@ -40,6 +40,7 @@ smallvec = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
+base64 = { workspace = true }
 
 data_engine_kql_parser = { workspace = true }
 data_engine_expressions = { workspace =  true }
@@ -65,6 +66,9 @@ weaver_resolver.workspace = true
 rand.workspace = true
 zip.workspace = true
 tower = { workspace = true }
+hyper-util = { workspace = true }
+socket2 = { workspace = true }
+ipnet = { workspace = true }
 
 # Geneva exporter dependencies
 geneva-uploader = { version = "0.3.0", optional = true }
@@ -79,7 +83,6 @@ ahash = { workspace = true, optional = true }
 # OpenTelemetry proto with tonic feature enabled
 opentelemetry-proto = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
@@ -87,7 +90,7 @@ tokio-rustls = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
 
 [features]
-experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:base64", "dep:arc-swap", "dep:notify"]
+experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
 # Base experimental feature - enabled by all experimental exporters
 experimental-exporters = []
 # Experimental exporters

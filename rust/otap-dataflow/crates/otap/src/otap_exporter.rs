@@ -116,10 +116,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         let exporter_id = effect_handler.exporter_id();
-        let mut endpoint = self
+        let channel = self
             .config
             .grpc
-            .build_endpoint_with_tls()
+            .connect_channel_lazy(self.config.timeout)
             .await
             .map_err(|e| {
                 let source_detail = format_error_sources(&e);
@@ -130,13 +130,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     source_detail,
                 }
             })?;
-
-        // Optional per-exporter timeout overrides shared client settings.
-        if let Some(timeout) = self.config.timeout {
-            endpoint = endpoint.timeout(timeout);
-        }
-
-        let channel = endpoint.connect_lazy();
 
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
