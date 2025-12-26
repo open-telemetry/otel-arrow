@@ -223,7 +223,9 @@ impl CondenseAttributesProcessor {
                 .values()
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| engine_err("dictionary values are not StringArray for UInt8 key type"))?;
+                .ok_or_else(|| {
+                    engine_err("dictionary values are not StringArray for UInt8 key type")
+                })?;
             (Some(dict.keys()), Some(vals))
         } else {
             (None, None)
@@ -236,7 +238,9 @@ impl CondenseAttributesProcessor {
                 .values()
                 .as_any()
                 .downcast_ref::<StringArray>()
-                .ok_or_else(|| engine_err("dictionary values are not StringArray for UInt16 key type"))?;
+                .ok_or_else(|| {
+                    engine_err("dictionary values are not StringArray for UInt16 key type")
+                })?;
             (Some(dict.keys()), Some(vals))
         } else {
             (None, None)
