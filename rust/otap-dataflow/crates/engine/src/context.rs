@@ -6,6 +6,7 @@
 use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
+use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
@@ -98,6 +99,7 @@ pub struct PipelineContext {
     pipeline_id: PipelineId,
     node_id: NodeId,
     node_kind: NodeKind,
+    internal_logs_receiver: Option<crossbeam_channel::Receiver<OtapPayload>>,
 }
 
 impl ControllerContext {
@@ -149,6 +151,7 @@ impl PipelineContext {
             thread_id,
             node_id: Default::default(),
             node_kind: Default::default(),
+            internal_logs_receiver: None,
         }
     }
 
@@ -199,6 +202,54 @@ impl PipelineContext {
             pipeline_id: self.pipeline_id.clone(),
             node_id,
             node_kind,
+            internal_logs_receiver: self.internal_logs_receiver.clone(),
         }
+    }
+
+    /// Returns a new pipeline context with the given internal telemetry notifier handle.
+    #[must_use]
+    pub fn with_internal_logs_receiver(
+        &mut self,
+        logs_receiver: crossbeam_channel::Receiver<OtapPayload>,
+    ) -> Self {
+        Self {
+            controller_context: self.controller_context.clone(),
+            core_id: self.core_id,
+            thread_id: self.thread_id,
+            pipeline_group_id: self.pipeline_group_id.clone(),
+            pipeline_id: self.pipeline_id.clone(),
+            node_id: self.node_id.clone(),
+            node_kind: self.node_kind,
+            internal_logs_receiver: Some(logs_receiver),
+        }
+    }
+
+    /// Returns the internal logs receiver, if any.
+    #[must_use]
+    pub fn internal_logs_receiver(&self) -> Option<crossbeam_channel::Receiver<OtapPayload>> {
+        self.internal_logs_receiver.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_with_internal_logs_receiver() {
+        let controller_ctx = ControllerContext::new(MetricsRegistryHandle::default());
+
+        let (_internal_logs_sender, internal_logs_receiver) = crossbeam_channel::unbounded();
+
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with(
+                "test_pipeline_group_id".into(),
+                "test_pipeline_id".into(),
+                0,
+                0,
+            )
+            .with_internal_logs_receiver(internal_logs_receiver);
+
+        assert!(pipeline_ctx.internal_logs_receiver().is_some());
     }
 }

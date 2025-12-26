@@ -47,6 +47,7 @@ tikv-jemallocator = { workspace = true, optional = true }
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
+otap-df-pdata = { path = "./crates/pdata" }
 otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
@@ -76,6 +77,7 @@ ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
 core_affinity = "0.8.3"
 criterion = "0.8.0"
+crossbeam-channel = "0.5.15"
 data-encoding = "2.9.0"
 datafusion = { version = "51.0.0", default-features = false }
 fluke-hpack = "0.3.1"
