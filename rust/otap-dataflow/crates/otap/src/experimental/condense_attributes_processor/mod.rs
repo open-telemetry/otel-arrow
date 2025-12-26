@@ -505,7 +505,7 @@ mod condense_tests {
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
-        common::v1::{AnyValue, InstrumentationScope, KeyValue},
+        common::v1::{any_value, AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
@@ -534,11 +534,10 @@ mod condense_tests {
         )])
     }
 
-    fn test_condense_helper(
-        input: ExportLogsServiceRequest,
-        cfg: Value,
-        expected_attrs: Vec<KeyValue>,
-    ) {
+    fn run_condense_test<F>(input: ExportLogsServiceRequest, cfg: Value, validate: F)
+    where
+        F: FnOnce(ExportLogsServiceRequest) + 'static,
+    {
         let metrics_registry_handle = MetricsRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
@@ -579,11 +578,20 @@ mod condense_tests {
                 };
                 let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
-                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-
-                assert_eq!(log_attrs, &expected_attrs);
+                validate(decoded);
             })
             .validate(|_| async move {});
+    }
+
+    fn test_condense_single_log(
+        input: ExportLogsServiceRequest,
+        cfg: Value,
+        expected_attrs: Vec<KeyValue>,
+    ) {
+        run_condense_test(input, cfg, move |decoded| {
+            let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+            assert_eq!(log_attrs, &expected_attrs);
+        });
     }
 
     #[test]
@@ -604,7 +612,7 @@ mod condense_tests {
             AnyValue::new_string("attr1=value1;attr2=42;attr3=true"),
         )];
 
-        test_condense_helper(input, cfg, expected_attrs);
+        test_condense_single_log(input, cfg, expected_attrs);
     }
 
     #[test]
@@ -626,7 +634,7 @@ mod condense_tests {
             KeyValue::new("attr3", AnyValue::new_bool(true)),
         ];
 
-        test_condense_helper(input, cfg, expected_attrs);
+        test_condense_single_log(input, cfg, expected_attrs);
     }
 
     #[test]
@@ -648,7 +656,7 @@ mod condense_tests {
             KeyValue::new("attr1", AnyValue::new_string("value1")),
         ];
 
-        test_condense_helper(input, cfg, expected_attrs);
+        test_condense_single_log(input, cfg, expected_attrs);
     }
 
     #[test]
@@ -662,7 +670,7 @@ mod condense_tests {
 
         let expected_attrs = vec![];
 
-        test_condense_helper(input, cfg, expected_attrs);
+        test_condense_single_log(input, cfg, expected_attrs);
     }
 
     #[test]
@@ -685,7 +693,7 @@ mod condense_tests {
             KeyValue::new("attr3", AnyValue::new_bool(true)),
         ];
 
-        test_condense_helper(input, cfg, expected_attrs);
+        test_condense_single_log(input, cfg, expected_attrs);
     }
 
     #[test]
@@ -708,7 +716,149 @@ mod condense_tests {
             KeyValue::new("attr3", AnyValue::new_bool(true)),
         ];
 
-        test_condense_helper(input, cfg, expected_attrs);
+        test_condense_single_log(input, cfg, expected_attrs);
+    }
+
+    #[test]
+    fn test_condense_multiple_logs() {
+        // Build input with multiple log records, each with different attributes
+        let input = ExportLogsServiceRequest::new(vec![ResourceLogs::new(
+            Resource {
+                ..Default::default()
+            },
+            vec![ScopeLogs::new(
+                InstrumentationScope {
+                    ..Default::default()
+                },
+                vec![
+                    // Log 1: Has all source_keys (user_id, session_id) plus extra attributes
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .event_name("login")
+                        .attributes(vec![
+                            KeyValue::new("user_id", AnyValue::new_string("user123")),
+                            KeyValue::new("session_id", AnyValue::new_string("sess456")),
+                            KeyValue::new("ip_address", AnyValue::new_string("192.168.1.1")),
+                            KeyValue::new("timestamp", AnyValue::new_int(1234567890)),
+                        ])
+                        .finish(),
+                    // Log 2: Has only one source_key (user_id) plus different extra attributes
+                    LogRecord::build()
+                        .time_unix_nano(2u64)
+                        .severity_number(SeverityNumber::Warn)
+                        .event_name("api_call")
+                        .attributes(vec![
+                            KeyValue::new("user_id", AnyValue::new_string("user789")),
+                            KeyValue::new("endpoint", AnyValue::new_string("/api/v1/data")),
+                            KeyValue::new("method", AnyValue::new_string("POST")),
+                            KeyValue::new("status_code", AnyValue::new_int(200)),
+                            KeyValue::new("duration_ms", AnyValue::new_double(45.3)),
+                        ])
+                        .finish(),
+                    // Log 3: Has session_id but not user_id, plus other attributes
+                    LogRecord::build()
+                        .time_unix_nano(3u64)
+                        .severity_number(SeverityNumber::Error)
+                        .event_name("error")
+                        .attributes(vec![
+                            KeyValue::new("session_id", AnyValue::new_string("sess999")),
+                            KeyValue::new("error_code", AnyValue::new_int(500)),
+                            KeyValue::new("error_msg", AnyValue::new_string("Internal Server Error")),
+                            KeyValue::new("retry", AnyValue::new_bool(true)),
+                        ])
+                        .finish(),
+                    // Log 4: Has neither source_key, only non-source attributes
+                    LogRecord::build()
+                        .time_unix_nano(4u64)
+                        .severity_number(SeverityNumber::Debug)
+                        .event_name("cache_hit")
+                        .attributes(vec![
+                            KeyValue::new("cache_key", AnyValue::new_string("key_abc")),
+                            KeyValue::new("hit", AnyValue::new_bool(true)),
+                        ])
+                        .finish(),
+                ],
+            )],
+        )]);
+
+        let cfg = json!({
+            "destination_key": "user_session",
+            "delimiter": "|",
+            "source_keys": ["user_id", "session_id"]
+        });
+
+        run_condense_test(input, cfg, |decoded| {
+            let has_attr = |attrs: &Vec<KeyValue>, key: &str| -> bool {
+                attrs.iter().any(|kv| kv.key == key)
+            };
+            let get_string_val = |attrs: &Vec<KeyValue>, key: &str| -> String {
+                attrs.iter()
+                    .find(|kv| kv.key == key)
+                    .and_then(|kv| kv.value.as_ref())
+                    .and_then(|v| {
+                        if let Some(any_value::Value::StringValue(s)) = &v.value {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .expect(&format!("Expected string value for key {}", key))
+            };
+
+            let log_records = &decoded.resource_logs[0].scope_logs[0].log_records;
+            assert_eq!(log_records.len(), 4, "Should have 4 log records");
+
+            // Log 1: Both user_id and session_id condensed, other attrs preserved
+            let log1_attrs = &log_records[0].attributes;
+            assert_eq!(log1_attrs.len(), 3, "Log 1 should have 3 attributes");
+            assert!(has_attr(log1_attrs, "user_session"), "Log 1 should have user_session");
+            let condensed_str = get_string_val(log1_attrs, "user_session");
+            assert!(
+                condensed_str.contains("user_id=user123"),
+                "Log 1 condensed should contain user_id=user123, got: {}", condensed_str
+            );
+            assert!(
+                condensed_str.contains("session_id=sess456"),
+                "Log 1 condensed should contain session_id=sess456, got: {}", condensed_str
+            );
+            assert!(has_attr(log1_attrs, "ip_address"), "Log 1 should preserve ip_address");
+            assert!(has_attr(log1_attrs, "timestamp"), "Log 1 should preserve timestamp");
+
+            // Log 2: Only user_id condensed (session_id not present), other attrs preserved
+            let log2_attrs = &log_records[1].attributes;
+            assert_eq!(log2_attrs.len(), 5, "Log 2 should have 5 attributes");
+            assert!(has_attr(log2_attrs, "user_session"), "Log 2 should have user_session");
+            let condensed_str = get_string_val(log2_attrs, "user_session");
+            assert_eq!(
+                condensed_str, "user_id=user789",
+                "Log 2 should only condense user_id, got: {}", condensed_str
+            );
+            assert!(has_attr(log2_attrs, "endpoint"), "Log 2 should preserve endpoint");
+            assert!(has_attr(log2_attrs, "method"), "Log 2 should preserve method");
+            assert!(has_attr(log2_attrs, "status_code"), "Log 2 should preserve status_code");
+            assert!(has_attr(log2_attrs, "duration_ms"), "Log 2 should preserve duration_ms");
+
+            // Log 3: Only session_id condensed (user_id not present), other attrs preserved
+            let log3_attrs = &log_records[2].attributes;
+            assert_eq!(log3_attrs.len(), 4, "Log 3 should have 4 attributes");
+            assert!(has_attr(log3_attrs, "user_session"), "Log 3 should have user_session");
+            let condensed_str = get_string_val(log3_attrs, "user_session");
+            assert_eq!(
+                condensed_str, "session_id=sess999",
+                "Log 3 should only condense session_id, got: {}", condensed_str
+            );
+            assert!(has_attr(log3_attrs, "error_code"), "Log 3 should preserve error_code");
+            assert!(has_attr(log3_attrs, "error_msg"), "Log 3 should preserve error_msg");
+            assert!(has_attr(log3_attrs, "retry"), "Log 3 should preserve retry");
+
+            // Log 4: No source_keys present, all attributes preserved, no condensed attr
+            let log4_attrs = &log_records[3].attributes;
+            assert_eq!(log4_attrs.len(), 2, "Log 4 should have 2 attributes");
+            assert!(!has_attr(log4_attrs, "user_session"), "Log 4 should not have user_session");
+            assert!(has_attr(log4_attrs, "cache_key"), "Log 4 should preserve cache_key");
+            assert!(has_attr(log4_attrs, "hit"), "Log 4 should preserve hit");
+        });
     }
 }
 
