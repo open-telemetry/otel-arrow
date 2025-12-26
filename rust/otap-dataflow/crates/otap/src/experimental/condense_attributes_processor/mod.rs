@@ -97,6 +97,7 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
 
 impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance
+    #[must_use]
     pub fn new(config: Config) -> Self {
         Self { config }
     }
@@ -310,7 +311,7 @@ impl CondenseAttributesProcessor {
                 if let Some(val) = get_value_str(value_type_enum, i) {
                     parent_to_attrs
                         .entry(parent_id)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push((key, val));
                 }
             }
@@ -506,7 +507,7 @@ mod condense_tests {
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
-        common::v1::{any_value, AnyValue, InstrumentationScope, KeyValue},
+        common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
@@ -765,7 +766,10 @@ mod condense_tests {
                         .attributes(vec![
                             KeyValue::new("session_id", AnyValue::new_string("sess999")),
                             KeyValue::new("error_code", AnyValue::new_int(500)),
-                            KeyValue::new("error_msg", AnyValue::new_string("Internal Server Error")),
+                            KeyValue::new(
+                                "error_msg",
+                                AnyValue::new_string("Internal Server Error"),
+                            ),
                             KeyValue::new("retry", AnyValue::new_bool(true)),
                         ])
                         .finish(),
@@ -790,11 +794,11 @@ mod condense_tests {
         });
 
         run_condense_test(input, cfg, |decoded| {
-            let has_attr = |attrs: &Vec<KeyValue>, key: &str| -> bool {
-                attrs.iter().any(|kv| kv.key == key)
-            };
+            let has_attr =
+                |attrs: &Vec<KeyValue>, key: &str| -> bool { attrs.iter().any(|kv| kv.key == key) };
             let get_string_val = |attrs: &Vec<KeyValue>, key: &str| -> String {
-                attrs.iter()
+                attrs
+                    .iter()
                     .find(|kv| kv.key == key)
                     .and_then(|kv| kv.value.as_ref())
                     .and_then(|v| {
@@ -804,7 +808,7 @@ mod condense_tests {
                             None
                         }
                     })
-                    .expect(&format!("Expected string value for key {}", key))
+                    .unwrap_or_else(|| panic!("Expected string value for key {}", key))
             };
 
             let log_records = &decoded.resource_logs[0].scope_logs[0].log_records;
@@ -813,51 +817,94 @@ mod condense_tests {
             // Log 1: Both user_id and session_id condensed, other attrs preserved
             let log1_attrs = &log_records[0].attributes;
             assert_eq!(log1_attrs.len(), 3, "Log 1 should have 3 attributes");
-            assert!(has_attr(log1_attrs, "user_session"), "Log 1 should have user_session");
+            assert!(
+                has_attr(log1_attrs, "user_session"),
+                "Log 1 should have user_session"
+            );
             let condensed_str = get_string_val(log1_attrs, "user_session");
             assert!(
                 condensed_str.contains("user_id=user123"),
-                "Log 1 condensed should contain user_id=user123, got: {}", condensed_str
+                "Log 1 condensed should contain user_id=user123, got: {}",
+                condensed_str
             );
             assert!(
                 condensed_str.contains("session_id=sess456"),
-                "Log 1 condensed should contain session_id=sess456, got: {}", condensed_str
+                "Log 1 condensed should contain session_id=sess456, got: {}",
+                condensed_str
             );
-            assert!(has_attr(log1_attrs, "ip_address"), "Log 1 should preserve ip_address");
-            assert!(has_attr(log1_attrs, "timestamp"), "Log 1 should preserve timestamp");
+            assert!(
+                has_attr(log1_attrs, "ip_address"),
+                "Log 1 should preserve ip_address"
+            );
+            assert!(
+                has_attr(log1_attrs, "timestamp"),
+                "Log 1 should preserve timestamp"
+            );
 
             // Log 2: Only user_id condensed (session_id not present), other attrs preserved
             let log2_attrs = &log_records[1].attributes;
             assert_eq!(log2_attrs.len(), 5, "Log 2 should have 5 attributes");
-            assert!(has_attr(log2_attrs, "user_session"), "Log 2 should have user_session");
+            assert!(
+                has_attr(log2_attrs, "user_session"),
+                "Log 2 should have user_session"
+            );
             let condensed_str = get_string_val(log2_attrs, "user_session");
             assert_eq!(
                 condensed_str, "user_id=user789",
-                "Log 2 should only condense user_id, got: {}", condensed_str
+                "Log 2 should only condense user_id, got: {}",
+                condensed_str
             );
-            assert!(has_attr(log2_attrs, "endpoint"), "Log 2 should preserve endpoint");
-            assert!(has_attr(log2_attrs, "method"), "Log 2 should preserve method");
-            assert!(has_attr(log2_attrs, "status_code"), "Log 2 should preserve status_code");
-            assert!(has_attr(log2_attrs, "duration_ms"), "Log 2 should preserve duration_ms");
+            assert!(
+                has_attr(log2_attrs, "endpoint"),
+                "Log 2 should preserve endpoint"
+            );
+            assert!(
+                has_attr(log2_attrs, "method"),
+                "Log 2 should preserve method"
+            );
+            assert!(
+                has_attr(log2_attrs, "status_code"),
+                "Log 2 should preserve status_code"
+            );
+            assert!(
+                has_attr(log2_attrs, "duration_ms"),
+                "Log 2 should preserve duration_ms"
+            );
 
             // Log 3: Only session_id condensed (user_id not present), other attrs preserved
             let log3_attrs = &log_records[2].attributes;
             assert_eq!(log3_attrs.len(), 4, "Log 3 should have 4 attributes");
-            assert!(has_attr(log3_attrs, "user_session"), "Log 3 should have user_session");
+            assert!(
+                has_attr(log3_attrs, "user_session"),
+                "Log 3 should have user_session"
+            );
             let condensed_str = get_string_val(log3_attrs, "user_session");
             assert_eq!(
                 condensed_str, "session_id=sess999",
-                "Log 3 should only condense session_id, got: {}", condensed_str
+                "Log 3 should only condense session_id, got: {}",
+                condensed_str
             );
-            assert!(has_attr(log3_attrs, "error_code"), "Log 3 should preserve error_code");
-            assert!(has_attr(log3_attrs, "error_msg"), "Log 3 should preserve error_msg");
+            assert!(
+                has_attr(log3_attrs, "error_code"),
+                "Log 3 should preserve error_code"
+            );
+            assert!(
+                has_attr(log3_attrs, "error_msg"),
+                "Log 3 should preserve error_msg"
+            );
             assert!(has_attr(log3_attrs, "retry"), "Log 3 should preserve retry");
 
             // Log 4: No source_keys present, all attributes preserved, no condensed attr
             let log4_attrs = &log_records[3].attributes;
             assert_eq!(log4_attrs.len(), 2, "Log 4 should have 2 attributes");
-            assert!(!has_attr(log4_attrs, "user_session"), "Log 4 should not have user_session");
-            assert!(has_attr(log4_attrs, "cache_key"), "Log 4 should preserve cache_key");
+            assert!(
+                !has_attr(log4_attrs, "user_session"),
+                "Log 4 should not have user_session"
+            );
+            assert!(
+                has_attr(log4_attrs, "cache_key"),
+                "Log 4 should preserve cache_key"
+            );
             assert!(has_attr(log4_attrs, "hit"), "Log 4 should preserve hit");
         });
     }
