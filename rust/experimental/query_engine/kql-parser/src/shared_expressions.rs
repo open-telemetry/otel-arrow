@@ -107,7 +107,9 @@ pub(crate) fn parse_variable_definition_expression(
         return Err(ParserError::QueryLanguageDiagnostic {
             location: to_query_location(&identifier_rule).clone(),
             diagnostic_id: "KS201",
-            message: format!("A variable or function with the name '{name}' has already been declared"),
+            message: format!(
+                "A variable or function with the name '{name}' has already been declared"
+            ),
         });
     }
 
