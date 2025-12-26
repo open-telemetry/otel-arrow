@@ -1,4 +1,5 @@
-// Copyright The OpenTelemetry Authors SPDX-License-Identifier: Apache-2.0
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //! Condense Attributes Processor
 //!
