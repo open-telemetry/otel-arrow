@@ -213,45 +213,39 @@ impl CondenseAttributesProcessor {
         let bool_col = rb.column_by_name(consts::ATTRIBUTE_BOOL);
         let delimiter_str = self.config.delimiter.to_string();
 
+        // Pre-extract key arrays
+        let key_str_arr = key_col.as_any().downcast_ref::<StringArray>();
+        let (key_dict_u8_keys, key_dict_u8_vals) = if let Some(dict) = key_col
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+        {
+            let vals = dict.values().as_any().downcast_ref::<StringArray>().unwrap();
+            (Some(dict.keys()), Some(vals))
+        } else {
+            (None, None)
+        };
+        let (key_dict_u16_keys, key_dict_u16_vals) = if let Some(dict) = key_col
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+        {
+            let vals = dict.values().as_any().downcast_ref::<StringArray>().unwrap();
+            (Some(dict.keys()), Some(vals))
+        } else {
+            (None, None)
+        };
+
         // Helper function to get key at index i
-        // Keys may be stored as plain StringArray or DictionaryArray
         let get_key = |i: usize| -> Option<&str> {
-            match key_col.data_type() {
-                arrow::datatypes::DataType::Utf8 => {
-                    let arr = key_col.as_any().downcast_ref::<StringArray>()?;
-                    if arr.is_null(i) {
-                        None
-                    } else {
-                        Some(arr.value(i))
-                    }
-                }
-                arrow::datatypes::DataType::Dictionary(_, _) => {
-                    if let Some(dict_arr) = key_col
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt8Type>>()
-                    {
-                        if dict_arr.is_null(i) {
-                            return None;
-                        }
-                        let dict_key = dict_arr.keys().value(i);
-                        let values = dict_arr.values().as_any().downcast_ref::<StringArray>()?;
-                        return Some(values.value(dict_key as usize));
-                    }
-                    if let Some(dict_arr) = key_col
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    {
-                        if dict_arr.is_null(i) {
-                            return None;
-                        }
-                        let dict_key = dict_arr.keys().value(i);
-                        let values = dict_arr.values().as_any().downcast_ref::<StringArray>()?;
-                        return Some(values.value(dict_key as usize));
-                    }
-                    None
-                }
-                _ => None,
+            if let Some(arr) = key_str_arr {
+                return if arr.is_null(i) { None } else { Some(arr.value(i)) };
             }
+            if let (Some(keys), Some(vals)) = (key_dict_u8_keys, key_dict_u8_vals) {
+                return if keys.is_null(i) { None } else { Some(vals.value(keys.value(i) as usize)) };
+            }
+            if let (Some(keys), Some(vals)) = (key_dict_u16_keys, key_dict_u16_vals) {
+                return if keys.is_null(i) { None } else { Some(vals.value(keys.value(i) as usize)) };
+            }
+            None
         };
 
         // Helper function to extract value as string based on type
