@@ -107,7 +107,7 @@ pub(crate) fn parse_variable_definition_expression(
         return Err(ParserError::QueryLanguageDiagnostic {
             location: to_query_location(&identifier_rule).clone(),
             diagnostic_id: "KS201",
-            message: format!("A variable with the name '{name}' has already been declared"),
+            message: format!("A variable or function with the name '{name}' has already been declared"),
         });
     }
 
@@ -287,13 +287,13 @@ mod tests {
         run_test_failure(
             "let variable = 1;",
             "KS201",
-            "A variable with the name 'variable' has already been declared",
+            "A variable or function with the name 'variable' has already been declared",
         );
 
         run_test_failure(
             "let resource = 1;",
             "KS201",
-            "A variable with the name 'resource' has already been declared",
+            "A variable or function with the name 'resource' has already been declared",
         );
     }
 }

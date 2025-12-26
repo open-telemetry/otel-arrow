@@ -130,7 +130,7 @@ pub(crate) fn parse_query(
                         location: to_query_location(&identifier_rule).clone(),
                         diagnostic_id: "KS201",
                         message: format!(
-                            "A variable with the name '{name}' has already been declared"
+                            "A variable or function with the name '{name}' has already been declared"
                         ),
                     });
                 }
@@ -546,7 +546,7 @@ mod tests {
         run_test_failure(
             "let var1 = 1; let var1 = 2;",
             Some("KS201"),
-            "A variable with the name 'var1' has already been declared",
+            "A variable or function with the name 'var1' has already been declared",
         );
 
         run_test_failure(
