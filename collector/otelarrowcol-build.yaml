@@ -25,6 +25,8 @@ dist:
   # Users: This can be customized for integration into your CI/CD system.
   output_path: collector/cmd/otelarrowcol
 
+# Note that all component versions should (almost always) match the builder version referenced in the Makefile.
+# The version is overridden when running `make builder`.
 exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.142.0
