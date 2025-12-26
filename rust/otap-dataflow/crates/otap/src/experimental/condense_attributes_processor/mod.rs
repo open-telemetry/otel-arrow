@@ -45,6 +45,7 @@ pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:condense_attribute
 ///
 /// `destination_key`: The key under which the condensed attributes will be stored.
 /// `delimiter`: The character used to separate individual attribute values in the condensed string.
+///                Note: Cannot be '=' as it would create ambiguous output (e.g., k1=v1=k2=v2).
 /// `source_keys`: Optional set of specific keys to condense. Cannot be specified with `exclude_keys`.
 /// `exclude_keys`: Optional set of keys to exclude from condensing. Cannot be specified with `source_keys`.
 ///
@@ -120,6 +121,13 @@ impl CondenseAttributesProcessor {
             .ok_or_else(|| ConfigError::InvalidUserConfig {
                 error: "delimiter is required and must be a single character string".to_string(),
             })?;
+
+        // Validate that delimiter is not '=' as it would create ambiguous output
+        if delimiter == '=' {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "delimiter cannot be '=' as it would create ambiguous output (e.g., k1=v1=k2=v2)".to_string(),
+            });
+        }
 
         let source_keys = if let Some(source_keys_val) = config.get("source_keys") {
             let keys: HashSet<String> = source_keys_val
@@ -1006,6 +1014,24 @@ mod config_tests {
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
                 assert!(error.contains("delimiter"));
+            }
+            _ => panic!("expected InvalidUserConfig error"),
+        }
+    }
+
+    #[test]
+    fn test_config_parsing_delimiter_cannot_be_equals() {
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": "=",
+            "source_keys": ["key1", "key2"]
+        });
+
+        let result = CondenseAttributesProcessor::from_config(&cfg);
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidUserConfig { error }) => {
+                assert!(error.contains("delimiter cannot be '='"));
             }
             _ => panic!("expected InvalidUserConfig error"),
         }
