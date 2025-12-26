@@ -407,6 +407,7 @@ impl CondenseAttributesProcessor {
         // - Inserting the new condensed attribute
         // - Removing the original attributes that were condensed
         // This would cut down on a lot of the copying currently happening.
+        // This work is tracked in https://github.com/open-telemetry/otel-arrow/issues/1694
         let new_batch = builder.finish().map_err(|e| {
             engine_err(&format!(
                 "Failed to build condensed attributes batch: {}",
