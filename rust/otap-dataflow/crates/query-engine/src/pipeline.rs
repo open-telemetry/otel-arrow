@@ -24,6 +24,7 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::table::RecordBatchPartitionStream;
 
 mod attributes;
+mod conditional;
 mod filter;
 mod functions;
 mod planner;
@@ -36,7 +37,7 @@ mod planner;
 /// Implementations may be backed by a DataFusion [`ExecutionPlan`], but this is not a strict
 /// requirement. Other implementations may, for example, simply transform the [`RecordBatch`]s
 /// using Arrow compute kernels.
-#[async_trait]
+#[async_trait(?Send)]
 pub trait PipelineStage {
     /// Execute this stage's transformation on the current OTAP batch.
     ///
@@ -57,6 +58,8 @@ pub trait PipelineStage {
     ) -> Result<OtapArrowRecords>;
 }
 
+type BoxedPipelineStage = Box<dyn PipelineStage>;
+
 /// Implementation of pipeline that executes a datafusion `ExecutionPlan` on the record batch
 /// associated with the payload type
 pub struct DataFusionPipelineStage {
@@ -72,7 +75,7 @@ pub struct DataFusionPipelineStage {
     execution_plan: Arc<dyn ExecutionPlan>,
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl PipelineStage for DataFusionPipelineStage {
     async fn execute(
         &mut self,
@@ -210,7 +213,7 @@ impl Pipeline {
         // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
-            let mut planner = PipelinePlanner::new();
+            let planner = PipelinePlanner::new();
             let stages =
                 planner.plan_stages(&self.pipeline_definition, &session_ctx, &otap_batch)?;
             self.planned_pipeline = Some(PlannedPipeline::new(stages, session_ctx));
@@ -355,9 +358,16 @@ mod test {
     }
 
     pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
         let parser_result = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        exec_logs_pipeline_expr(parser_result.pipeline, logs_data).await
+    }
+
+    pub async fn exec_logs_pipeline_expr(
+        pipeline_expr: PipelineExpression,
+        logs_data: LogsData,
+    ) -> LogsData {
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let mut pipeline = Pipeline::new(pipeline_expr);
         let result = pipeline.execute(otap_batch).await.unwrap();
         otap_to_logs_data(result)
     }
