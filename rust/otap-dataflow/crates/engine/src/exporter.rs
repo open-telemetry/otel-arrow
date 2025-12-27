@@ -7,8 +7,10 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
+use crate::channel_metrics::{control_channel_id, ChannelMetricsRegistry, CHANNEL_KIND_CONTROL};
 use crate::config::ExporterConfig;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::context::PipelineContext;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -35,6 +37,8 @@ pub enum ExporterWrapper<PData> {
         node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
+        /// The runtime configuration for the exporter.
+        runtime_config: ExporterConfig,
         /// The exporter instance.
         exporter: Box<dyn local::Exporter<PData>>,
         /// A sender for control messages.
@@ -50,6 +54,8 @@ pub enum ExporterWrapper<PData> {
         node_id: NodeId,
         /// The user configuration for the node, including its name and channel settings.
         user_config: Arc<NodeUserConfig>,
+        /// The runtime configuration for the exporter.
+        runtime_config: ExporterConfig,
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
         /// A sender for control messages.
@@ -92,9 +98,10 @@ impl<PData> ExporterWrapper<PData> {
         ExporterWrapper::Local {
             node_id,
             user_config,
+            runtime_config: config.clone(),
             exporter: Box::new(exporter),
-            control_sender: LocalSender::MpscSender(control_sender),
-            control_receiver: Some(LocalReceiver::MpscReceiver(control_receiver)),
+            control_sender: LocalSender::mpsc(control_sender),
+            control_receiver: Some(LocalReceiver::mpsc(control_receiver)),
             pdata_receiver: None, // This will be set later
         }
     }
@@ -116,10 +123,112 @@ impl<PData> ExporterWrapper<PData> {
         ExporterWrapper::Shared {
             node_id,
             user_config,
+            runtime_config: config.clone(),
             exporter: Box::new(exporter),
-            control_sender: SharedSender::MpscSender(control_sender),
-            control_receiver: Some(SharedReceiver::MpscReceiver(control_receiver)),
+            control_sender: SharedSender::mpsc(control_sender),
+            control_receiver: Some(SharedReceiver::mpsc(control_receiver)),
             pdata_receiver: None, // This will be set later
+        }
+    }
+
+    pub(crate) fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+    ) -> Self {
+        match self {
+            ExporterWrapper::Local {
+                node_id,
+                runtime_config,
+                control_sender,
+                control_receiver,
+                user_config,
+                exporter,
+                pdata_receiver,
+                ..
+            } => {
+                let channel_id = control_channel_id(&node_id);
+                let control_sender = match control_sender.into_mpsc() {
+                    Ok(sender) => LocalSender::mpsc_with_metrics(
+                        sender,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        CHANNEL_KIND_CONTROL,
+                    ),
+                    Err(sender) => sender,
+                };
+                let control_receiver = match control_receiver {
+                    Some(control_receiver) => match control_receiver.into_mpsc() {
+                        Ok(receiver) => Some(LocalReceiver::mpsc_with_metrics(
+                            receiver,
+                            pipeline_ctx,
+                            channel_metrics,
+                            channel_id,
+                            CHANNEL_KIND_CONTROL,
+                            runtime_config.control_channel.capacity as u64,
+                        )),
+                        Err(receiver) => Some(receiver),
+                    },
+                    None => None,
+                };
+
+                ExporterWrapper::Local {
+                    node_id,
+                    user_config,
+                    runtime_config,
+                    exporter,
+                    control_sender,
+                    control_receiver,
+                    pdata_receiver,
+                }
+            }
+            ExporterWrapper::Shared {
+                node_id,
+                runtime_config,
+                control_sender,
+                control_receiver,
+                user_config,
+                exporter,
+                pdata_receiver,
+                ..
+            } => {
+                let channel_id = control_channel_id(&node_id);
+                let control_sender = match control_sender.into_mpsc() {
+                    Ok(sender) => SharedSender::mpsc_with_metrics(
+                        sender,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        CHANNEL_KIND_CONTROL,
+                    ),
+                    Err(sender) => sender,
+                };
+                let control_receiver = match control_receiver {
+                    Some(control_receiver) => match control_receiver.into_mpsc() {
+                        Ok(receiver) => Some(SharedReceiver::mpsc_with_metrics(
+                            receiver,
+                            pipeline_ctx,
+                            channel_metrics,
+                            channel_id,
+                            CHANNEL_KIND_CONTROL,
+                            runtime_config.control_channel.capacity as u64,
+                        )),
+                        Err(receiver) => Some(receiver),
+                    },
+                    None => None,
+                };
+
+                ExporterWrapper::Shared {
+                    node_id,
+                    user_config,
+                    runtime_config,
+                    exporter,
+                    control_sender,
+                    control_receiver,
+                    pdata_receiver,
+                }
+            }
         }
     }
 
@@ -469,8 +578,8 @@ mod tests {
             control_tx,
             pdata_tx,
             message::MessageChannel::new(
-                message::Receiver::Local(LocalReceiver::MpscReceiver(control_rx)),
-                message::Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx)),
+                message::Receiver::Local(LocalReceiver::mpsc(control_rx)),
+                message::Receiver::Local(LocalReceiver::mpsc(pdata_rx)),
             ),
         )
     }

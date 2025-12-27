@@ -249,8 +249,8 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                 );
                 (
                     node_id.clone(),
-                    Sender::Local(LocalSender::MpscSender(sender)),
-                    Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
+                    Sender::Local(LocalSender::mpsc(sender)),
+                    Receiver::Local(LocalReceiver::mpsc(receiver)),
                 )
             }
             ReceiverWrapper::Shared {
@@ -262,8 +262,8 @@ impl<PData: Debug + 'static> TestPhase<PData> {
                     tokio::sync::mpsc::channel(runtime_config.output_pdata_channel.capacity);
                 (
                     node_id.clone(),
-                    Sender::Shared(SharedSender::MpscSender(sender)),
-                    Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
+                    Sender::Shared(SharedSender::mpsc(sender)),
+                    Receiver::Shared(SharedReceiver::mpsc(receiver)),
                 )
             }
         };

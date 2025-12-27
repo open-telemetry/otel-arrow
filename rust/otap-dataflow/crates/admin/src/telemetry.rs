@@ -98,6 +98,9 @@ pub struct MetricsQuery {
     /// Output format: json (default), json_compact, line_protocol, prometheus
     #[serde(default)]
     format: Option<OutputFormat>,
+    /// When true, metric set which have all zero values are kept in the output. Default: false.
+    #[serde(default = "default_false")]
+    keep_all_zeroes: bool,
 }
 
 /// Query parameters for /telemetry/metrics/aggregate
@@ -131,6 +134,11 @@ const fn default_true() -> bool {
     true
 }
 
+#[inline]
+const fn default_false() -> bool {
+    false
+}
+
 /// Handler for the /live-schema endpoint.
 ///
 /// This reflects the current live schema of the metrics registry.
@@ -160,9 +168,9 @@ pub async fn get_metrics(
         OutputFormat::Json => {
             // Snapshot with optional reset
             let metric_sets = if q.reset {
-                collect_metrics_snapshot_and_reset(&state.metrics_registry)
+                collect_metrics_snapshot_and_reset(&state.metrics_registry, q.keep_all_zeroes)
             } else {
-                collect_metrics_snapshot(&state.metrics_registry)
+                collect_metrics_snapshot(&state.metrics_registry, q.keep_all_zeroes)
             };
 
             let response = MetricsWithMetadata {
@@ -572,10 +580,10 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
 }
 
 /// Collects a snapshot of current metrics without resetting them.
-fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWithMetadata> {
+fn collect_metrics_snapshot(registry: &MetricsRegistryHandle, keep_all_zeroes: bool) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
+    registry.visit_current_metrics_with_zeroes(|descriptor, attributes, metrics_iter| {
         let mut metrics = Vec::new();
 
         for (field, value) in metrics_iter {
@@ -599,7 +607,7 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
                 metrics,
             });
         }
-    });
+    }, keep_all_zeroes);
 
     metric_sets
 }
@@ -607,10 +615,11 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
 /// Collects a snapshot of current metrics and resets them afterwards.
 fn collect_metrics_snapshot_and_reset(
     registry: &MetricsRegistryHandle,
+    keep_all_zeroes: bool,
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+    registry.visit_metrics_and_reset_with_zeroes(|descriptor, attributes, metrics_iter| {
         let mut metrics = Vec::new();
 
         for (field, value) in metrics_iter {
@@ -633,7 +642,7 @@ fn collect_metrics_snapshot_and_reset(
                 metrics,
             });
         }
-    });
+    }, keep_all_zeroes);
 
     metric_sets
 }

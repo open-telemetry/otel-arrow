@@ -252,14 +252,14 @@ impl MetricsRegistry {
 
     /// Visits only metric sets, yields a zero-alloc iterator
     /// of (MetricsField, value), then resets the values to zero.
-    pub(crate) fn visit_metrics_and_reset<F>(&mut self, mut f: F)
+    pub(crate) fn visit_metrics_and_reset<F>(&mut self, mut f: F, keep_all_zeroes: bool)
     where
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
-            if values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes | values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
@@ -355,10 +355,21 @@ impl MetricsRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        let mut reg = self.metric_registry.lock();
-        reg.visit_metrics_and_reset(f);
+        self.visit_metrics_and_reset_with_zeroes(f, false);
     }
 
+    /// Visits metric sets, yields a zero-alloc iterator
+    /// of (MetricsField, value), then resets the values to zero.
+    /// Retains zero-valued metrics if `keep_all_zeroes` is true.
+    pub fn visit_metrics_and_reset_with_zeroes<F>(&self, f: F, keep_all_zeroes: bool)
+    where
+            for<'a> F:
+    FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
+        let mut reg = self.metric_registry.lock();
+        reg.visit_metrics_and_reset(f, keep_all_zeroes);
+    }
+    
     /// Generates a SemConvRegistry from the current MetricsRegistry.
     /// AttributeFields are deduplicated based on their key.
     #[must_use]
@@ -368,7 +379,17 @@ impl MetricsRegistryHandle {
 
     /// Visits current metric sets without resetting them.
     /// This is useful for read-only access to metrics for HTTP endpoints.
-    pub fn visit_current_metrics<F>(&self, mut f: F)
+    pub fn visit_current_metrics<F>(&self, f: F)
+    where
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
+        self.visit_current_metrics_with_zeroes(f, false);
+    }
+
+    /// Visits current metric sets without resetting them, with optional zero retention.
+    /// This is useful for read-only access to metrics for HTTP endpoints.
+    pub fn visit_current_metrics_with_zeroes<F>(&self, mut f: F, keep_all_zeroes: bool)
     where
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
@@ -376,7 +397,7 @@ impl MetricsRegistryHandle {
         let reg = self.metric_registry.lock();
         for entry in reg.metrics.values() {
             let values = &entry.metric_values;
-            if values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes | values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
@@ -619,8 +640,8 @@ mod tests {
         let mut collected_values = Vec::new();
 
         handle.visit_metrics_and_reset(|desc, _attrs, iter| {
-            visit_count += 1;
-            assert_eq!(desc.name, "test_metrics");
+                    visit_count += 1;
+                    assert_eq!(desc.name, "test_metrics");
 
             for (field, value) in iter {
                 collected_values.push((field.name, value));

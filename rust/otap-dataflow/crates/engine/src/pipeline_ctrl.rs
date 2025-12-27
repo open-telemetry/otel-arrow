@@ -182,6 +182,8 @@ pub struct PipelineCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
+    /// Channel metrics handles for periodic reporting.
+    channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
     /// Flags controlling capture of internal engine metrics.
     telemetry: TelemetrySettings,
@@ -190,7 +192,7 @@ pub struct PipelineCtrlMsgManager<PData> {
 impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         pipeline_key: DeployedPipelineKey,
         pipeline_context: PipelineContext,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
@@ -198,6 +200,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         internal_telemetry: TelemetrySettings,
+        channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
         Self {
             pipeline_key,
@@ -209,6 +212,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
+            channel_metrics,
             telemetry: internal_telemetry,
         }
     }
@@ -337,6 +341,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
 
+                    for metrics in &self.channel_metrics {
+                        if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                            otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                        }
+                    }
+
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
                         self.send(node_id, msg).await;
@@ -422,8 +432,8 @@ mod tests {
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         (
-            Sender::Shared(SharedSender::MpscSender(tx)),
-            Receiver::Shared(SharedReceiver::MpscReceiver(rx)),
+            Sender::Shared(SharedSender::mpsc(tx)),
+            Receiver::Shared(SharedReceiver::mpsc(rx)),
         )
     }
 
@@ -475,6 +485,7 @@ mod tests {
             observed_state_store.reporter(),
             metrics_reporter,
             pipeline_settings.telemetry.clone(),
+            Vec::new(),
         );
         (manager, pipeline_tx, control_receivers, nodes)
     }

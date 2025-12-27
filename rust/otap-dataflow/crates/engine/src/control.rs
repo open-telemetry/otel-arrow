@@ -291,8 +291,8 @@ pub fn pipeline_ctrl_msg_channel<PData>(
 ) -> (PipelineCtrlMsgSender<PData>, PipelineCtrlMsgReceiver<PData>) {
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     (
-        SharedSender::MpscSender(tx),
-        SharedReceiver::MpscReceiver(rx),
+        SharedSender::mpsc(tx),
+        SharedReceiver::mpsc(rx),
     )
 }
 

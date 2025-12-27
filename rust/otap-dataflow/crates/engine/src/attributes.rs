@@ -62,13 +62,16 @@ pub struct NodeAttributeSet {
     /// Node unique identifier (in scope of the pipeline).
     #[attribute]
     pub node_id: Cow<'static, str>,
+    /// Node plugin URN.
+    #[attribute(key = "node.urn")]
+    pub node_urn: Cow<'static, str>,
     /// Node type (e.g., "receiver", "processor", "exporter").
     #[attribute]
     pub node_type: Cow<'static, str>,
 }
 
 /// Channel endpoint attributes (sender or receiver).
-#[attribute_set(name = "control.channel.attrs")]
+#[attribute_set(name = "channel.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ChannelAttributeSet {
     /// Node attributes.
@@ -78,6 +81,9 @@ pub struct ChannelAttributeSet {
     /// Unique channel identifier (in scope of the pipeline).
     #[attribute(key = "channel.id")]
     pub channel_id: Cow<'static, str>,
+    /// Channel payload kind ("control" or "pdata").
+    #[attribute(key = "channel.kind")]
+    pub channel_kind: Cow<'static, str>,
     /// Concurrency mode of the channel ("local" or "shared").
     #[attribute(key = "channel.mode")]
     pub channel_mode: Cow<'static, str>,

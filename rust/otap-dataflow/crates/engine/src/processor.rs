@@ -7,8 +7,10 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
+use crate::channel_metrics::{control_channel_id, ChannelMetricsRegistry, CHANNEL_KIND_CONTROL};
 use crate::config::ProcessorConfig;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::context::PipelineContext;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
@@ -117,8 +119,8 @@ impl<PData> ProcessorWrapper<PData> {
             user_config,
             runtime_config,
             processor: Box::new(processor),
-            control_sender: LocalSender::MpscSender(control_sender),
-            control_receiver: LocalReceiver::MpscReceiver(control_receiver),
+            control_sender: LocalSender::mpsc(control_sender),
+            control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
         }
@@ -143,10 +145,109 @@ impl<PData> ProcessorWrapper<PData> {
             user_config,
             runtime_config,
             processor: Box::new(processor),
-            control_sender: SharedSender::MpscSender(control_sender),
-            control_receiver: SharedReceiver::MpscReceiver(control_receiver),
+            control_sender: SharedSender::mpsc(control_sender),
+            control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
+        }
+    }
+
+    pub(crate) fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+    ) -> Self {
+        match self {
+            ProcessorWrapper::Local {
+                node_id,
+                runtime_config,
+                control_sender,
+                control_receiver,
+                user_config,
+                processor,
+                pdata_senders,
+                pdata_receiver,
+                ..
+            } => {
+                let channel_id = control_channel_id(&node_id);
+                let control_sender = match control_sender.into_mpsc() {
+                    Ok(sender) => LocalSender::mpsc_with_metrics(
+                        sender,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        CHANNEL_KIND_CONTROL,
+                    ),
+                    Err(sender) => sender,
+                };
+                let control_receiver = match control_receiver.into_mpsc() {
+                    Ok(receiver) => LocalReceiver::mpsc_with_metrics(
+                        receiver,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_id,
+                        CHANNEL_KIND_CONTROL,
+                        runtime_config.control_channel.capacity as u64,
+                    ),
+                    Err(receiver) => receiver,
+                };
+
+                ProcessorWrapper::Local {
+                    node_id,
+                    user_config,
+                    runtime_config,
+                    processor,
+                    control_sender,
+                    control_receiver,
+                    pdata_senders,
+                    pdata_receiver,
+                }
+            }
+            ProcessorWrapper::Shared {
+                node_id,
+                runtime_config,
+                control_sender,
+                control_receiver,
+                user_config,
+                processor,
+                pdata_senders,
+                pdata_receiver,
+                ..
+            } => {
+                let channel_id = control_channel_id(&node_id);
+                let control_sender = match control_sender.into_mpsc() {
+                    Ok(sender) => SharedSender::mpsc_with_metrics(
+                        sender,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        CHANNEL_KIND_CONTROL,
+                    ),
+                    Err(sender) => sender,
+                };
+                let control_receiver = match control_receiver.into_mpsc() {
+                    Ok(receiver) => SharedReceiver::mpsc_with_metrics(
+                        receiver,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_id,
+                        CHANNEL_KIND_CONTROL,
+                        runtime_config.control_channel.capacity as u64,
+                    ),
+                    Err(receiver) => receiver,
+                };
+
+                ProcessorWrapper::Shared {
+                    node_id,
+                    user_config,
+                    runtime_config,
+                    processor,
+                    control_sender,
+                    control_receiver,
+                    pdata_senders,
+                    pdata_receiver,
+                }
+            }
         }
     }
 
