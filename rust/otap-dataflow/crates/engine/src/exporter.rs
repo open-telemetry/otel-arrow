@@ -7,10 +7,10 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
-use crate::channel_metrics::{control_channel_id, ChannelMetricsRegistry, CHANNEL_KIND_CONTROL};
+use crate::channel_metrics::{CHANNEL_KIND_CONTROL, ChannelMetricsRegistry, control_channel_id};
 use crate::config::ExporterConfig;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::context::PipelineContext;
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};

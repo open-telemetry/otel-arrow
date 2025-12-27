@@ -3,8 +3,9 @@
 
 //! Async Pipeline Engine
 
+use crate::error::{ProcessorErrorKind, ReceiverErrorKind};
 use crate::{
-    channel_metrics::{ChannelMetricsRegistry, CHANNEL_KIND_PDATA},
+    channel_metrics::{CHANNEL_KIND_PDATA, ChannelMetricsRegistry},
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     error::Error,
@@ -25,13 +26,12 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
+use otap_df_telemetry::otel_debug;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{collections::HashMap, sync::OnceLock};
-use otap_df_telemetry::otel_debug;
-use crate::error::{ProcessorErrorKind, ReceiverErrorKind};
 
 pub mod error;
 pub mod exporter;
@@ -433,11 +433,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             // Select channel type
             let channel_id = format!("{}:{}", hyper_edge.source.name, hyper_edge.port);
-            let source_ctx = node_contexts
-                .get(&hyper_edge.source.name)
-                .ok_or_else(|| Error::UnknownNode {
-                    node: hyper_edge.source.name.clone(),
-                })?;
+            let source_ctx =
+                node_contexts
+                    .get(&hyper_edge.source.name)
+                    .ok_or_else(|| Error::UnknownNode {
+                        node: hyper_edge.source.name.clone(),
+                    })?;
             let (pdata_sender, pdata_receivers) = Self::select_channel_type(
                 src_node,
                 &dest_nodes,
@@ -570,10 +571,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         Receiver::Shared(receiver)
                     })
                     .collect::<Vec<_>>();
-                Ok((
-                    Sender::Shared(pdata_sender),
-                    pdata_receivers,
-                ))
+                Ok((Sender::Shared(pdata_sender), pdata_receivers))
             }
             (true, false) => {
                 let (pdata_sender, pdata_receiver) =
@@ -585,9 +583,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     channel_id.clone(),
                     channel_kind,
                 );
-                let ctx = dest_contexts
-                    .first()
-                    .expect("dest_contexts is empty");
+                let ctx = dest_contexts.first().expect("dest_contexts is empty");
                 let pdata_receiver = SharedReceiver::mpsc_with_metrics(
                     pdata_receiver,
                     ctx,
@@ -626,10 +622,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         Receiver::Local(receiver)
                     })
                     .collect::<Vec<_>>();
-                Ok((
-                    Sender::Local(pdata_sender),
-                    pdata_receivers,
-                ))
+                Ok((Sender::Local(pdata_sender), pdata_receivers))
             }
             (false, false) => {
                 // ToDo(LQ): Use a local SPSC channel when available.
@@ -642,9 +635,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     channel_id.clone(),
                     channel_kind,
                 );
-                let ctx = dest_contexts
-                    .first()
-                    .expect("dest_contexts is empty");
+                let ctx = dest_contexts.first().expect("dest_contexts is empty");
                 let pdata_receiver = LocalReceiver::mpsc_with_metrics(
                     pdata_receiver,
                     ctx,
@@ -712,8 +703,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             (*pipeline_ctx).clone(),
             node_id.clone(),
             node_config,
-            &runtime_config
-        ).map_err(|e| Error::ConfigError(Box::new(e)))?;
+            &runtime_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
         if receiver.user_config().out_ports.is_empty() {
             return Err(Error::ReceiverError {
                 receiver: node_id,
@@ -786,7 +778,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             node_id.clone(),
             node_config.clone(),
             &processor_config,
-        ).map_err(|e| Error::ConfigError(Box::new(e)))?;
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
         if processor.user_config().out_ports.is_empty() {
             return Err(Error::ProcessorError {
                 processor: node_id,
@@ -854,8 +847,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         if names.insert(name.clone(), node_id.clone()).is_some() {
             return Err(Error::ExporterAlreadyExists { exporter: node_id });
         }
-        let exporter = create((*pipeline_ctx).clone(), node_id, node_config, &exporter_config)
-            .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        let exporter = create(
+            (*pipeline_ctx).clone(),
+            node_id,
+            node_config,
+            &exporter_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
 
         otel_debug!(
             "exporter.create.complete",

@@ -580,34 +580,40 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
 }
 
 /// Collects a snapshot of current metrics without resetting them.
-fn collect_metrics_snapshot(registry: &MetricsRegistryHandle, keep_all_zeroes: bool) -> Vec<MetricSetWithMetadata> {
+fn collect_metrics_snapshot(
+    registry: &MetricsRegistryHandle,
+    keep_all_zeroes: bool,
+) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_current_metrics_with_zeroes(|descriptor, attributes, metrics_iter| {
-        let mut metrics = Vec::new();
+    registry.visit_current_metrics_with_zeroes(
+        |descriptor, attributes, metrics_iter| {
+            let mut metrics = Vec::new();
 
-        for (field, value) in metrics_iter {
-            metrics.push(MetricDataPointWithMetadata {
-                metadata: *field,
-                value,
-            });
-        }
-
-        if !metrics.is_empty() {
-            // Convert attributes to HashMap using the iterator
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+            for (field, value) in metrics_iter {
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: *field,
+                    value,
+                });
             }
 
-            metric_sets.push(MetricSetWithMetadata {
-                name: descriptor.name.to_owned(),
-                brief: String::new(), // MetricsDescriptor doesn't have description field
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    }, keep_all_zeroes);
+            if !metrics.is_empty() {
+                // Convert attributes to HashMap using the iterator
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSetWithMetadata {
+                    name: descriptor.name.to_owned(),
+                    brief: String::new(), // MetricsDescriptor doesn't have description field
+                    attributes: attrs_map,
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }
@@ -619,30 +625,33 @@ fn collect_metrics_snapshot_and_reset(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_metrics_and_reset_with_zeroes(|descriptor, attributes, metrics_iter| {
-        let mut metrics = Vec::new();
+    registry.visit_metrics_and_reset_with_zeroes(
+        |descriptor, attributes, metrics_iter| {
+            let mut metrics = Vec::new();
 
-        for (field, value) in metrics_iter {
-            metrics.push(MetricDataPointWithMetadata {
-                metadata: *field,
-                value,
-            });
-        }
-
-        if !metrics.is_empty() {
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+            for (field, value) in metrics_iter {
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: *field,
+                    value,
+                });
             }
 
-            metric_sets.push(MetricSetWithMetadata {
-                name: descriptor.name.to_owned(),
-                brief: "".to_owned(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    }, keep_all_zeroes);
+            if !metrics.is_empty() {
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSetWithMetadata {
+                    name: descriptor.name.to_owned(),
+                    brief: "".to_owned(),
+                    attributes: attrs_map,
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }

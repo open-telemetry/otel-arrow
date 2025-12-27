@@ -4,10 +4,10 @@
 //! Abstraction to represent generic local senders and receivers.
 
 use crate::channel_metrics::{
+    CHANNEL_IMPL_INTERNAL, CHANNEL_MODE_LOCAL, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
     ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    LocalChannelReceiverMetricsHandle, LocalChannelSenderMetricsHandle, CHANNEL_IMPL_INTERNAL,
-    CHANNEL_MODE_LOCAL, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
+    LocalChannelReceiverMetricsHandle, LocalChannelSenderMetricsHandle,
 };
 use crate::context::PipelineContext;
 use otap_df_channel::error::{RecvError, SendError};
@@ -43,7 +43,6 @@ impl<T> Clone for LocalSender<T> {
 
 impl<T> LocalSender<T> {
     /// Creates a new local MPSC sender.
-    #[must_use]
     pub fn mpsc(sender: mpsc::Sender<T>) -> Self {
         Self {
             inner: LocalSenderInner::Mpsc(sender),
@@ -77,7 +76,6 @@ impl<T> LocalSender<T> {
     }
 
     /// Creates a new local MPMC sender.
-    #[must_use]
     pub fn mpmc(sender: mpmc::Sender<T>) -> Self {
         Self {
             inner: LocalSenderInner::Mpmc(sender),
@@ -208,8 +206,7 @@ impl<T> LocalReceiver<T> {
             .metrics_registry()
             .register::<ChannelReceiverMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
-            metrics,
-            capacity,
+            metrics, capacity,
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
         let mut receiver = Self::mpsc(receiver);
@@ -246,8 +243,7 @@ impl<T> LocalReceiver<T> {
             .metrics_registry()
             .register::<ChannelReceiverMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
-            metrics,
-            capacity,
+            metrics, capacity,
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
         let mut receiver = Self::new_mpmc(receiver);

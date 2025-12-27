@@ -899,6 +899,7 @@ mod tests {
                     observed_state_store.reporter(),
                     metrics_reporter,
                     TelemetrySettings::default(),
+                    Vec::new(),
                 );
                 let duration = Duration::from_millis(50);
 

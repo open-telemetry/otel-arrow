@@ -1413,6 +1413,7 @@ mod test {
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
             .with_node_context(
                 "parquet_exporter".into(),
+                PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
             );
 

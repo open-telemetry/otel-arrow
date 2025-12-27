@@ -632,13 +632,15 @@ mod tests {
             .expect("Server failed to start");
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
-        let config = json!({
+        let mut config = json!({
             "grpc_endpoint": grpc_endpoint,
             "compression_method": "none",
-            "tls": {
-                "insecure": true
-            }
         });
+        if cfg!(feature = "experimental-tls") {
+            config["tls"] = json!({
+                "insecure": true
+            });
+        }
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
         let pipeline_ctx =
@@ -805,18 +807,17 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
+        let mut config = serde_json::json!({
+            "grpc_endpoint": grpc_endpoint,
+            "compression_method": "none",
+        });
+        if cfg!(feature = "experimental-tls") {
+            config["tls"] = json!({
+                "insecure": true
+            });
+        }
         let mut exporter = ExporterWrapper::local(
-            OTAPExporter::from_config(
-                pipeline_ctx,
-                &serde_json::json!({
-                    "grpc_endpoint": grpc_endpoint,
-                    "compression_method": "none",
-                    "tls": {
-                        "insecure": true
-                    }
-                }),
-            )
-            .unwrap(),
+            OTAPExporter::from_config(pipeline_ctx, &config).unwrap(),
             node_id.clone(),
             node_config,
             test_runtime.config(),

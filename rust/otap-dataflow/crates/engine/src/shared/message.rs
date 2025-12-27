@@ -4,10 +4,10 @@
 //! Abstraction to represent generic shared senders and receivers.
 
 use crate::channel_metrics::{
-    ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
+    CHANNEL_IMPL_FLUME, CHANNEL_IMPL_TOKIO, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC,
+    CHANNEL_TYPE_MPSC, ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
-    SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle, CHANNEL_IMPL_FLUME,
-    CHANNEL_IMPL_TOKIO, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
+    SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle,
 };
 use crate::context::PipelineContext;
 use otap_df_channel::error::{RecvError, SendError};
@@ -41,7 +41,6 @@ impl<T> Clone for SharedSender<T> {
 
 impl<T> SharedSender<T> {
     /// Creates a new shared MPSC sender.
-    #[must_use]
     pub fn mpsc(sender: tokio::sync::mpsc::Sender<T>) -> Self {
         Self {
             inner: SharedSenderInner::Mpsc(sender),
@@ -75,7 +74,6 @@ impl<T> SharedSender<T> {
     }
 
     /// Creates a new shared MPMC sender.
-    #[must_use]
     pub fn mpmc(sender: flume::Sender<T>) -> Self {
         Self {
             inner: SharedSenderInner::Mpmc(sender),
@@ -214,8 +212,7 @@ impl<T> SharedReceiver<T> {
             .metrics_registry()
             .register::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
-            metrics,
-            capacity,
+            metrics, capacity,
         )));
         channel_metrics.register(ChannelMetricsHandle::SharedReceiver(handle.clone()));
         let mut receiver = Self::mpsc(receiver);
@@ -252,8 +249,7 @@ impl<T> SharedReceiver<T> {
             .metrics_registry()
             .register::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
-            metrics,
-            capacity,
+            metrics, capacity,
         )));
         channel_metrics.register(ChannelMetricsHandle::SharedReceiver(handle.clone()));
         let mut receiver = Self::mpmc(receiver);
@@ -280,9 +276,7 @@ impl<T> SharedReceiver<T> {
     /// Receives a message from the channel.
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         let result = match &mut self.inner {
-            SharedReceiverInner::Mpsc(receiver) => {
-                receiver.recv().await.ok_or(RecvError::Closed)
-            }
+            SharedReceiverInner::Mpsc(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
             SharedReceiverInner::Mpmc(receiver) => receiver.recv().map_err(|_| RecvError::Closed),
         };
 

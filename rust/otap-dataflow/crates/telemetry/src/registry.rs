@@ -363,13 +363,13 @@ impl MetricsRegistryHandle {
     /// Retains zero-valued metrics if `keep_all_zeroes` is true.
     pub fn visit_metrics_and_reset_with_zeroes<F>(&self, f: F, keep_all_zeroes: bool)
     where
-            for<'a> F:
-    FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         let mut reg = self.metric_registry.lock();
         reg.visit_metrics_and_reset(f, keep_all_zeroes);
     }
-    
+
     /// Generates a SemConvRegistry from the current MetricsRegistry.
     /// AttributeFields are deduplicated based on their key.
     #[must_use]
@@ -640,8 +640,8 @@ mod tests {
         let mut collected_values = Vec::new();
 
         handle.visit_metrics_and_reset(|desc, _attrs, iter| {
-                    visit_count += 1;
-                    assert_eq!(desc.name, "test_metrics");
+            visit_count += 1;
+            assert_eq!(desc.name, "test_metrics");
 
             for (field, value) in iter {
                 collected_values.push((field.name, value));
