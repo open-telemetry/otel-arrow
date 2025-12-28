@@ -125,6 +125,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_tls_stream_success() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
@@ -180,6 +184,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_tls_stream_handshake_failure_filtered() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
@@ -279,6 +287,10 @@ mod tests {
     /// This tests the DoS protection feature where slow/malicious clients
     /// that don't complete the TLS handshake are timed out.
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_handshake_respects_timeout() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
@@ -357,6 +369,10 @@ mod tests {
     /// Multiple slow clients should not prevent a fast client from completing.
     /// This tests the buffer_unordered concurrency mechanism.
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_concurrent_handshakes_not_blocked() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();

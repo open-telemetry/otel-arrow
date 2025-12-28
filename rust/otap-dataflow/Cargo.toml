@@ -39,6 +39,7 @@ serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+sysinfo.workspace = true
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
@@ -134,6 +135,7 @@ slotmap = "1.0.7"
 smallvec = { version = "1.15" , features = ["union"] }
 socket2 = { version = "0.6.1", features = ["all"] }
 syn = { version = "2.0", features = ["full", "extra-traits"] }
+sysinfo = "0.37"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
