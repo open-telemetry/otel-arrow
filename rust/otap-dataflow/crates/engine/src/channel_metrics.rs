@@ -30,9 +30,10 @@ pub struct ChannelSenderMetrics {
     /// Count of send failures due to a closed channel.
     #[metric(name = "send.error_closed", unit = "{1}")]
     pub send_error_closed: Counter<u64>,
-    /// Total bytes successfully sent (when message size is known).
-    #[metric(name = "send.bytes", unit = "{By}")]
-    pub send_bytes: Counter<u64>,
+    // Total bytes successfully sent (when message size is known).
+    // TODO: Populate in a future PR when message sizes are tracked.
+    // #[metric(name = "send.bytes", unit = "{By}")]
+    // pub send_bytes: Counter<u64>,
 }
 
 #[metric_set(name = "channel.receiver")]
@@ -47,12 +48,14 @@ pub struct ChannelReceiverMetrics {
     /// Count of receive attempts after the channel was closed.
     #[metric(name = "recv.error_closed", unit = "{1}")]
     pub recv_error_closed: Counter<u64>,
-    /// Total bytes successfully received (when message size is known).
-    #[metric(name = "recv.bytes", unit = "{By}")]
-    pub recv_bytes: Counter<u64>,
-    /// Current number of buffered messages.
-    #[metric(name = "queue.depth", unit = "{message}")]
-    pub queue_depth: Gauge<u64>,
+    // Total bytes successfully received (when message size is known).
+    // TODO: Populate in a future PR when message sizes are tracked.
+    // #[metric(name = "recv.bytes", unit = "{By}")]
+    // pub recv_bytes: Counter<u64>,
+    // Current number of buffered messages.
+    // TODO: Populate in a future PR when queue depth is tracked.
+    // #[metric(name = "queue.depth", unit = "{message}")]
+    // pub queue_depth: Gauge<u64>,
     /// Maximum channel capacity (buffer size).
     #[metric(name = "capacity", unit = "{message}")]
     pub capacity: Gauge<u64>,
@@ -192,5 +195,116 @@ impl ChannelMetricsRegistry {
 
     pub(crate) fn into_handles(self) -> Vec<ChannelMetricsHandle> {
         self.handles
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::{ControllerContext, PipelineContext};
+    use crate::local::message::{LocalReceiver, LocalSender};
+    use otap_df_channel::error::{RecvError, SendError};
+    use otap_df_channel::mpsc;
+    use otap_df_config::node::NodeKind;
+    use otap_df_telemetry::metrics::MetricSetHandler;
+    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
+
+    fn test_context() -> PipelineContext {
+        let registry = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry);
+        controller_ctx
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
+            .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver)
+    }
+
+    fn take_local_sender_handle(
+        handles: &[ChannelMetricsHandle],
+    ) -> LocalChannelSenderMetricsHandle {
+        handles
+            .iter()
+            .find_map(|handle| match handle {
+                ChannelMetricsHandle::LocalSender(handle) => Some(handle.clone()),
+                _ => None,
+            })
+            .expect("missing local sender metrics handle")
+    }
+
+    fn take_local_receiver_handle(
+        handles: &[ChannelMetricsHandle],
+    ) -> LocalChannelReceiverMetricsHandle {
+        handles
+            .iter()
+            .find_map(|handle| match handle {
+                ChannelMetricsHandle::LocalReceiver(handle) => Some(handle.clone()),
+                _ => None,
+            })
+            .expect("missing local receiver metrics handle")
+    }
+
+    #[test]
+    fn channel_sender_metrics_record_send_outcomes() {
+        let pipeline_ctx = test_context();
+        let mut registry = ChannelMetricsRegistry::default();
+        let (sender, receiver) = mpsc::Channel::new(1);
+        let sender = LocalSender::mpsc_with_metrics(
+            sender,
+            &pipeline_ctx,
+            &mut registry,
+            "test:sender".into(),
+            CHANNEL_KIND_PDATA,
+        );
+        sender.try_send(1).unwrap();
+        assert!(matches!(sender.try_send(2), Err(SendError::Full(_))));
+        drop(receiver);
+        assert!(matches!(sender.try_send(3), Err(SendError::Closed(_))));
+
+        let handles = registry.into_handles();
+        let sender_handle = take_local_sender_handle(&handles);
+        let metrics = sender_handle.borrow();
+        assert_eq!(metrics.metrics.send_count.get(), 1);
+        assert_eq!(metrics.metrics.send_error_full.get(), 1);
+        assert_eq!(metrics.metrics.send_error_closed.get(), 1);
+    }
+
+    #[test]
+    fn channel_receiver_metrics_record_recv_outcomes_and_capacity() {
+        let pipeline_ctx = test_context();
+        let mut registry = ChannelMetricsRegistry::default();
+        let (sender, receiver) = mpsc::Channel::new(1);
+        let sender = LocalSender::mpsc(sender);
+        let mut receiver = LocalReceiver::mpsc_with_metrics(
+            receiver,
+            &pipeline_ctx,
+            &mut registry,
+            "test:receiver".into(),
+            CHANNEL_KIND_PDATA,
+            1,
+        );
+
+        assert!(matches!(receiver.try_recv(), Err(RecvError::Empty)));
+        sender.try_send(1).unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(1)));
+        drop(sender);
+        assert!(matches!(receiver.try_recv(), Err(RecvError::Closed)));
+
+        let handles = registry.into_handles();
+        let receiver_handle = take_local_receiver_handle(&handles);
+        {
+            let metrics = receiver_handle.borrow();
+            assert_eq!(metrics.metrics.recv_count.get(), 1);
+            assert_eq!(metrics.metrics.recv_error_empty.get(), 1);
+            assert_eq!(metrics.metrics.recv_error_closed.get(), 1);
+        }
+        let (snapshot_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        receiver_handle.borrow_mut().report(&mut reporter).unwrap();
+        let snapshot = snapshot_rx.recv().unwrap();
+        let descriptor = ChannelReceiverMetrics::default().descriptor();
+        let capacity_index = descriptor
+            .metrics
+            .iter()
+            .position(|field| field.name == "capacity")
+            .expect("capacity metric not found");
+        assert_eq!(snapshot.get_metrics()[capacity_index].to_u64_lossy(), 1);
     }
 }

@@ -341,9 +341,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
 
-                    for metrics in &self.channel_metrics {
-                        if let Err(err) = metrics.report(&mut self.metrics_reporter) {
-                            otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                    if self.telemetry.channel_metrics {
+                        for metrics in &self.channel_metrics {
+                            if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                                otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                            }
                         }
                     }
 

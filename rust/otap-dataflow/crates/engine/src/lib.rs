@@ -611,7 +611,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 let pdata_receivers = dest_contexts
                     .iter()
                     .map(|ctx| {
-                        let receiver = LocalReceiver::new_mpmc_with_metrics(
+                        let receiver = LocalReceiver::mpmc_with_metrics(
                             pdata_receiver.clone(),
                             ctx,
                             channel_metrics,

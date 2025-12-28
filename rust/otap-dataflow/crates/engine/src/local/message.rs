@@ -216,7 +216,7 @@ impl<T> LocalReceiver<T> {
 
     /// Creates a new local MPMC receiver.
     #[must_use]
-    pub fn new_mpmc(receiver: mpmc::Receiver<T>) -> Self {
+    pub fn mpmc(receiver: mpmc::Receiver<T>) -> Self {
         Self {
             inner: LocalReceiverInner::Mpmc(receiver),
             metrics: None,
@@ -224,7 +224,7 @@ impl<T> LocalReceiver<T> {
     }
 
     /// Creates a new local MPMC receiver with metrics attached.
-    pub(crate) fn new_mpmc_with_metrics(
+    pub(crate) fn mpmc_with_metrics(
         receiver: mpmc::Receiver<T>,
         pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
@@ -246,7 +246,7 @@ impl<T> LocalReceiver<T> {
             metrics, capacity,
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
-        let mut receiver = Self::new_mpmc(receiver);
+        let mut receiver = Self::mpmc(receiver);
         receiver.set_metrics(handle);
         receiver
     }

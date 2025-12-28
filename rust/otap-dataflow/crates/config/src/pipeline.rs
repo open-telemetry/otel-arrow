@@ -118,6 +118,12 @@ pub struct TelemetrySettings {
     /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
     #[serde(default = "default_true")]
     pub tokio_metrics: bool,
+
+    /// Enable capture of channel-level metrics.
+    ///
+    /// When disabled, the engine does not report channel sender/receiver metrics.
+    #[serde(default = "default_true")]
+    pub channel_metrics: bool,
 }
 
 const fn default_true() -> bool {
@@ -129,6 +135,7 @@ impl Default for TelemetrySettings {
         Self {
             pipeline_metrics: true,
             tokio_metrics: true,
+            channel_metrics: true,
         }
     }
 }
