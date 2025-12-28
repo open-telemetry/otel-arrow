@@ -69,7 +69,7 @@ impl<T> SharedSender<T> {
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
-        sender.set_metrics(handle);
+        sender.metrics = Some(handle);
         sender
     }
 
@@ -102,13 +102,8 @@ impl<T> SharedSender<T> {
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
-        sender.set_metrics(handle);
+        sender.metrics = Some(handle);
         sender
-    }
-
-    /// Attaches metrics to this sender.
-    pub(crate) fn set_metrics(&mut self, metrics: SharedChannelSenderMetricsHandle) {
-        self.metrics = Some(metrics);
     }
 
     pub(crate) fn into_mpsc(self) -> Result<tokio::sync::mpsc::Sender<T>, Self> {
@@ -216,7 +211,7 @@ impl<T> SharedReceiver<T> {
         )));
         channel_metrics.register(ChannelMetricsHandle::SharedReceiver(handle.clone()));
         let mut receiver = Self::mpsc(receiver);
-        receiver.set_metrics(handle);
+        receiver.metrics = Some(handle);
         receiver
     }
 
@@ -253,13 +248,8 @@ impl<T> SharedReceiver<T> {
         )));
         channel_metrics.register(ChannelMetricsHandle::SharedReceiver(handle.clone()));
         let mut receiver = Self::mpmc(receiver);
-        receiver.set_metrics(handle);
+        receiver.metrics = Some(handle);
         receiver
-    }
-
-    /// Attaches metrics to this receiver.
-    pub(crate) fn set_metrics(&mut self, metrics: SharedChannelReceiverMetricsHandle) {
-        self.metrics = Some(metrics);
     }
 
     pub(crate) fn into_mpsc(self) -> Result<tokio::sync::mpsc::Receiver<T>, Self> {

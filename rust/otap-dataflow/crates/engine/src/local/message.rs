@@ -205,7 +205,7 @@ impl<T> LocalReceiver<T> {
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
         let mut receiver = Self::mpsc(receiver);
-        receiver.set_metrics(handle);
+        receiver.metrics = Some(handle);
         receiver
     }
 
@@ -242,13 +242,8 @@ impl<T> LocalReceiver<T> {
         )));
         channel_metrics.register(ChannelMetricsHandle::LocalReceiver(handle.clone()));
         let mut receiver = Self::mpmc(receiver);
-        receiver.set_metrics(handle);
+        receiver.metrics = Some(handle);
         receiver
-    }
-
-    /// Attaches metrics to this receiver.
-    pub(crate) fn set_metrics(&mut self, metrics: LocalChannelReceiverMetricsHandle) {
-        self.metrics = Some(metrics);
     }
 
     pub(crate) fn into_mpsc(self) -> Result<mpsc::Receiver<T>, Self> {
