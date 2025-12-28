@@ -71,7 +71,7 @@ impl<T> LocalSender<T> {
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
-        sender.set_metrics(handle);
+        sender.metrics = Some(handle);
         sender
     }
 
@@ -104,13 +104,8 @@ impl<T> LocalSender<T> {
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
-        sender.set_metrics(handle);
+        sender.metrics = Some(handle);
         sender
-    }
-
-    /// Attaches metrics to this sender.
-    pub(crate) fn set_metrics(&mut self, metrics: LocalChannelSenderMetricsHandle) {
-        self.metrics = Some(metrics);
     }
 
     pub(crate) fn into_mpsc(self) -> Result<mpsc::Sender<T>, Self> {
