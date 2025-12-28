@@ -140,7 +140,11 @@ impl<PData> ReceiverWrapper<PData> {
         self,
         pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
     ) -> Self {
+        if !channel_metrics_enabled {
+            return self;
+        }
         match self {
             ReceiverWrapper::Local {
                 node_id,

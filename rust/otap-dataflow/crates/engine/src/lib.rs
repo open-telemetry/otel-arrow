@@ -318,6 +318,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             core_id = core_id
         );
 
+        let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
@@ -338,9 +340,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         name.clone(),
                         node_config.clone(),
                     )?;
-                    receivers.push(
-                        wrapper.with_control_channel_metrics(&pipeline_ctx, &mut channel_metrics),
-                    );
+                    receivers.push(wrapper.with_control_channel_metrics(
+                        &pipeline_ctx,
+                        &mut channel_metrics,
+                        channel_metrics_enabled,
+                    ));
                 }
                 otap_df_config::node::NodeKind::Processor => {
                     let wrapper = self.create_processor(
@@ -351,9 +355,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         name.clone(),
                         node_config.clone(),
                     )?;
-                    processors.push(
-                        wrapper.with_control_channel_metrics(&pipeline_ctx, &mut channel_metrics),
-                    );
+                    processors.push(wrapper.with_control_channel_metrics(
+                        &pipeline_ctx,
+                        &mut channel_metrics,
+                        channel_metrics_enabled,
+                    ));
                 }
                 otap_df_config::node::NodeKind::Exporter => {
                     let wrapper = self.create_exporter(
@@ -364,9 +370,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         name.clone(),
                         node_config.clone(),
                     )?;
-                    exporters.push(
-                        wrapper.with_control_channel_metrics(&pipeline_ctx, &mut channel_metrics),
-                    );
+                    exporters.push(wrapper.with_control_channel_metrics(
+                        &pipeline_ctx,
+                        &mut channel_metrics,
+                        channel_metrics_enabled,
+                    ));
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
@@ -447,6 +455,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 source_ctx,
                 &dest_contexts,
                 &mut channel_metrics,
+                channel_metrics_enabled,
             )?;
 
             // Prepare assignments
@@ -537,6 +546,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         source_ctx: &PipelineContext,
         dest_contexts: &[PipelineContext],
         channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
     ) -> Result<(Sender<PData>, Vec<Receiver<PData>>), Error> {
         let source_is_shared = src_node.is_shared();
         let any_dest_is_shared = dest_nodes.iter().any(|dest| dest.is_shared());
@@ -547,107 +557,149 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let channel_kind = CHANNEL_KIND_PDATA;
         let capacity = buffer_size.get() as u64;
 
-        match (use_shared_channels, num_destinations > 1) {
-            (true, true) => {
-                let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
-                let pdata_sender = SharedSender::mpmc_with_metrics(
-                    pdata_sender,
-                    source_ctx,
-                    channel_metrics,
-                    channel_id.clone(),
-                    channel_kind,
-                );
-                let pdata_receivers = dest_contexts
-                    .iter()
-                    .map(|ctx| {
-                        let receiver = SharedReceiver::mpmc_with_metrics(
-                            pdata_receiver.clone(),
-                            ctx,
-                            channel_metrics,
-                            channel_id.clone(),
-                            channel_kind,
-                            capacity,
-                        );
-                        Receiver::Shared(receiver)
-                    })
-                    .collect::<Vec<_>>();
-                Ok((Sender::Shared(pdata_sender), pdata_receivers))
+        if channel_metrics_enabled {
+            match (use_shared_channels, num_destinations > 1) {
+                (true, true) => {
+                    let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                    let pdata_sender = SharedSender::mpmc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|ctx| {
+                            let receiver = SharedReceiver::mpmc_with_metrics(
+                                pdata_receiver.clone(),
+                                ctx,
+                                channel_metrics,
+                                channel_id.clone(),
+                                channel_kind,
+                                capacity,
+                            );
+                            Receiver::Shared(receiver)
+                        })
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Shared(pdata_sender), pdata_receivers))
+                }
+                (true, false) => {
+                    let (pdata_sender, pdata_receiver) =
+                        tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                    let pdata_sender = SharedSender::mpsc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let ctx = dest_contexts.first().expect("dest_contexts is empty");
+                    let pdata_receiver = SharedReceiver::mpsc_with_metrics(
+                        pdata_receiver,
+                        ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                        capacity,
+                    );
+                    Ok((
+                        Sender::Shared(pdata_sender),
+                        vec![Receiver::Shared(pdata_receiver)],
+                    ))
+                }
+                (false, true) => {
+                    // ToDo(LQ): Use a local SPMC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpmc::Channel::new(buffer_size);
+                    let pdata_sender = LocalSender::mpmc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|ctx| {
+                            let receiver = LocalReceiver::mpmc_with_metrics(
+                                pdata_receiver.clone(),
+                                ctx,
+                                channel_metrics,
+                                channel_id.clone(),
+                                channel_kind,
+                                capacity,
+                            );
+                            Receiver::Local(receiver)
+                        })
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Local(pdata_sender), pdata_receivers))
+                }
+                (false, false) => {
+                    // ToDo(LQ): Use a local SPSC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                    let pdata_sender = LocalSender::mpsc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let ctx = dest_contexts.first().expect("dest_contexts is empty");
+                    let pdata_receiver = LocalReceiver::mpsc_with_metrics(
+                        pdata_receiver,
+                        ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                        capacity,
+                    );
+                    Ok((
+                        Sender::Local(pdata_sender),
+                        vec![Receiver::Local(pdata_receiver)],
+                    ))
+                }
             }
-            (true, false) => {
-                let (pdata_sender, pdata_receiver) =
-                    tokio::sync::mpsc::channel::<PData>(buffer_size.get());
-                let pdata_sender = SharedSender::mpsc_with_metrics(
-                    pdata_sender,
-                    source_ctx,
-                    channel_metrics,
-                    channel_id.clone(),
-                    channel_kind,
-                );
-                let ctx = dest_contexts.first().expect("dest_contexts is empty");
-                let pdata_receiver = SharedReceiver::mpsc_with_metrics(
-                    pdata_receiver,
-                    ctx,
-                    channel_metrics,
-                    channel_id.clone(),
-                    channel_kind,
-                    capacity,
-                );
-                Ok((
-                    Sender::Shared(pdata_sender),
-                    vec![Receiver::Shared(pdata_receiver)],
-                ))
-            }
-            (false, true) => {
-                // ToDo(LQ): Use a local SPMC channel when available.
-                let (pdata_sender, pdata_receiver) =
-                    otap_df_channel::mpmc::Channel::new(buffer_size);
-                let pdata_sender = LocalSender::mpmc_with_metrics(
-                    pdata_sender,
-                    source_ctx,
-                    channel_metrics,
-                    channel_id.clone(),
-                    channel_kind,
-                );
-                let pdata_receivers = dest_contexts
-                    .iter()
-                    .map(|ctx| {
-                        let receiver = LocalReceiver::mpmc_with_metrics(
-                            pdata_receiver.clone(),
-                            ctx,
-                            channel_metrics,
-                            channel_id.clone(),
-                            channel_kind,
-                            capacity,
-                        );
-                        Receiver::Local(receiver)
-                    })
-                    .collect::<Vec<_>>();
-                Ok((Sender::Local(pdata_sender), pdata_receivers))
-            }
-            (false, false) => {
-                // ToDo(LQ): Use a local SPSC channel when available.
-                let (pdata_sender, pdata_receiver) =
-                    otap_df_channel::mpsc::Channel::new(buffer_size.get());
-                let pdata_sender = LocalSender::mpsc_with_metrics(
-                    pdata_sender,
-                    source_ctx,
-                    channel_metrics,
-                    channel_id.clone(),
-                    channel_kind,
-                );
-                let ctx = dest_contexts.first().expect("dest_contexts is empty");
-                let pdata_receiver = LocalReceiver::mpsc_with_metrics(
-                    pdata_receiver,
-                    ctx,
-                    channel_metrics,
-                    channel_id.clone(),
-                    channel_kind,
-                    capacity,
-                );
-                Ok((
-                    Sender::Local(pdata_sender),
-                    vec![Receiver::Local(pdata_receiver)],
-                ))
+        } else {
+            match (use_shared_channels, num_destinations > 1) {
+                (true, true) => {
+                    let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                    let pdata_sender = SharedSender::mpmc(pdata_sender);
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|_| Receiver::Shared(SharedReceiver::mpmc(pdata_receiver.clone())))
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Shared(pdata_sender), pdata_receivers))
+                }
+                (true, false) => {
+                    let (pdata_sender, pdata_receiver) =
+                        tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                    Ok((
+                        Sender::Shared(SharedSender::mpsc(pdata_sender)),
+                        vec![Receiver::Shared(SharedReceiver::mpsc(pdata_receiver))],
+                    ))
+                }
+                (false, true) => {
+                    // ToDo(LQ): Use a local SPMC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpmc::Channel::new(buffer_size);
+                    let pdata_sender = LocalSender::mpmc(pdata_sender);
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|_| Receiver::Local(LocalReceiver::mpmc(pdata_receiver.clone())))
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Local(pdata_sender), pdata_receivers))
+                }
+                (false, false) => {
+                    // ToDo(LQ): Use a local SPSC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                    Ok((
+                        Sender::Local(LocalSender::mpsc(pdata_sender)),
+                        vec![Receiver::Local(LocalReceiver::mpsc(pdata_receiver))],
+                    ))
+                }
             }
         }
     }
