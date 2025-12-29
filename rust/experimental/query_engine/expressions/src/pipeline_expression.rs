@@ -481,6 +481,13 @@ impl PipelineFunctionParameter {
         self.parameter_type.clone()
     }
 
+    pub fn get_value_type(&self) -> Option<ValueType> {
+        match &self.parameter_type {
+            PipelineFunctionParameterType::Scalar(value_type) => value_type.clone(),
+            PipelineFunctionParameterType::MutableValue(value_type) => value_type.clone(),
+        }
+    }
+
     pub(crate) fn fmt_with_indent(
         &self,
         f: &mut std::fmt::Formatter<'_>,

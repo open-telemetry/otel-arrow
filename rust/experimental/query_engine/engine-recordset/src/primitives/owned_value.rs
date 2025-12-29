@@ -157,6 +157,33 @@ impl From<&dyn MapValue> for MapValueStorage<OwnedValue> {
     }
 }
 
+pub(crate) fn try_convert_value(
+    value: Value<'_>,
+    target_value_type: &ValueType,
+) -> Option<OwnedValue> {
+    match target_value_type {
+        ValueType::Integer => value
+            .convert_to_integer()
+            .map(|v| OwnedValue::Integer(IntegerValueStorage::new(v))),
+        ValueType::Boolean => value
+            .convert_to_bool()
+            .map(|v| OwnedValue::Boolean(BooleanValueStorage::new(v))),
+        ValueType::Double => value
+            .convert_to_double()
+            .map(|v| OwnedValue::Double(DoubleValueStorage::new(v))),
+        ValueType::DateTime => value
+            .convert_to_datetime()
+            .map(|v| OwnedValue::DateTime(DateTimeValueStorage::new(v))),
+        ValueType::TimeSpan => value
+            .convert_to_timespan()
+            .map(|v| OwnedValue::TimeSpan(TimeSpanValueStorage::new(v))),
+        ValueType::String => Some(OwnedValue::String(StringValueStorage::new(
+            value.to_string(),
+        ))),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

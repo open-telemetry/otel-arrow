@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::LazyLock,
+};
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
@@ -376,7 +379,7 @@ pub(crate) fn parse_scalar_unary_expression(
 
             if let Some(typeof_rule) = extract_json_rules.next() {
                 let typeof_location = to_query_location(&typeof_rule);
-                match crate::shared_expressions::parse_typeof_expression(typeof_rule)? {
+                match crate::shared_expressions::parse_typeof_expression(typeof_rule) {
                     Some(t) => {
                         let c = ConversionScalarExpression::new(
                             typeof_location.clone(),
@@ -407,6 +410,165 @@ pub(crate) fn parse_scalar_unary_expression(
                     ConversionScalarExpression::new(location, inner_expression),
                 ))
             }
+        }
+        Rule::invoke_function_expression => {
+            let query_location = to_query_location(&rule);
+
+            let mut udf_rules = rule.into_inner();
+
+            let identifier_rule = udf_rules.next().unwrap();
+
+            let name = identifier_rule.as_str().trim();
+            let function = match scope.get_function_id(name) {
+                None => {
+                    return Err(ParserError::QueryLanguageDiagnostic {
+                        location: to_query_location(&identifier_rule).clone(),
+                        diagnostic_id: "KS211",
+                        message: format!("The name '{name}' does not refer to any known function"),
+                    });
+                }
+                Some(id) => id,
+            };
+
+            let function_parameter_names = function.get_parameter_names();
+
+            let pipeline = scope.get_pipeline();
+            let function_definition = pipeline.get_function(function.get_id()).unwrap();
+            let function_parameters = function_definition.get_parameters();
+
+            let mut arguments = BTreeMap::new();
+
+            let mut found_named = false;
+            let mut position = 0;
+
+            for argument_rule in udf_rules {
+                let mut rules = argument_rule.into_inner();
+
+                while let Some(argument_rule) = rules.next() {
+                    match argument_rule.as_rule() {
+                        Rule::identifier_literal => {
+                            found_named = true;
+
+                            let name = argument_rule.as_str();
+
+                            let scalar = parse_scalar_expression(rules.next().unwrap(), scope)?;
+
+                            match function_parameter_names
+                                .iter()
+                                .enumerate()
+                                .find(|(_, p)| p.as_ref() == name)
+                            {
+                                Some((index, _)) => {
+                                    if arguments.insert(index, scalar).is_some() {
+                                        return Err(ParserError::SyntaxError(
+                                            to_query_location(&argument_rule).clone(),
+                                            format!(
+                                                "A value was already provided for the '{name}' parameter"
+                                            ),
+                                        ));
+                                    }
+                                }
+                                None => {
+                                    return Err(ParserError::QueryLanguageDiagnostic {
+                                        location: to_query_location(&argument_rule).clone(),
+                                        diagnostic_id: "KS196",
+                                        message: "The argument name does not refer to a declared parameter".into(),
+                                    });
+                                }
+                            }
+                        }
+                        Rule::scalar_expression => {
+                            if found_named {
+                                return Err(ParserError::QueryLanguageDiagnostic {
+                                    location: to_query_location(&argument_rule).clone(),
+                                    diagnostic_id: "KS195",
+                                    message: "All arguments after an unordered named argument must be named".into(),
+                                });
+                            }
+
+                            let scalar = parse_scalar_expression(argument_rule, scope)?;
+
+                            arguments.insert(position, scalar);
+                            position += 1;
+                        }
+                        _ => {
+                            panic!("Unexpected rule in invoke_function_expression: {argument_rule}")
+                        }
+                    }
+                }
+            }
+
+            let function_default_values = function.get_default_values();
+
+            for (index, parameter) in function_parameter_names.iter().enumerate() {
+                if let std::collections::btree_map::Entry::Vacant(e) = arguments.entry(index) {
+                    if let Some(value) = function_default_values.get(parameter) {
+                        e.insert(value.clone());
+                    } else {
+                        return Err(ParserError::QueryLanguageDiagnostic {
+                            location: query_location,
+                            diagnostic_id: "KS197",
+                            message: format!("The argument for parameter '{parameter}' is missing",),
+                        });
+                    }
+                }
+            }
+
+            if arguments.len() != function_parameter_names.len() {
+                return Err(ParserError::QueryLanguageDiagnostic {
+                    location: query_location,
+                    diagnostic_id: "KS119",
+                    message: format!(
+                        "The function '{}' expects {} arguments",
+                        name,
+                        function_parameter_names.len()
+                    ),
+                });
+            }
+
+            let final_arguments = arguments
+                .into_iter()
+                .map(
+                    |(index, expression)| match function_parameters[index].get_parameter_type() {
+                        PipelineFunctionParameterType::Scalar(_) => {
+                            Ok(InvokeFunctionArgument::Scalar(expression))
+                        }
+                        PipelineFunctionParameterType::MutableValue(_) => match expression {
+                            ScalarExpression::Source(s) => {
+                                Ok(InvokeFunctionArgument::MutableValue(
+                                    MutableValueExpression::Source(SourceScalarExpression::new(
+                                        s.get_query_location().clone(),
+                                        s.get_value_accessor().clone(),
+                                    )),
+                                ))
+                            }
+                            ScalarExpression::Variable(v) => {
+                                Ok(InvokeFunctionArgument::MutableValue(
+                                    MutableValueExpression::Variable(
+                                        VariableScalarExpression::new(
+                                            v.get_query_location().clone(),
+                                            v.get_name().clone(),
+                                            v.get_value_accessor().clone(),
+                                        ),
+                                    ),
+                                ))
+                            }
+                            e => Err(ParserError::QueryLanguageDiagnostic {
+                                location: e.get_query_location().clone(),
+                                diagnostic_id: "KS111",
+                                message: "Tabular value expected".into(),
+                            }),
+                        },
+                    },
+                )
+                .collect::<Result<Vec<InvokeFunctionArgument>, ParserError>>()?;
+
+            ScalarExpression::InvokeFunction(InvokeFunctionScalarExpression::new(
+                query_location.clone(),
+                function.get_return_value_type(),
+                function.get_id(),
+                final_arguments,
+            ))
         }
         Rule::accessor_expression => {
             // Note: When used as a scalar expression it is valid for an
@@ -519,7 +681,14 @@ pub(crate) fn try_resolve_identifier(
 
             Ok(None)
         }
-        ScalarExpression::Argument(_) => todo!(),
+        ScalarExpression::Argument(a) => {
+            let name = scope
+                .get_argument_name(a.get_argument_id())
+                .expect("Argument not found")
+                .0;
+
+            parse_identifier_from_accessor(name.as_ref(), a.get_value_accessor(), scope)
+        }
         ScalarExpression::InvokeFunction(_) => Ok(None),
     };
 
@@ -1345,6 +1514,306 @@ mod tests {
                     ),
                 )),
             )),
+        );
+    }
+
+    #[test]
+    fn test_invoke_function_scalar_expression() {
+        let run_test_success = |input: &str, expected: InvokeFunctionScalarExpression| {
+            println!("Testing: {input}");
+
+            let mut state = ParserState::new(input);
+
+            state.push_function(
+                "f_noop",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![],
+                    None,
+                    vec![],
+                ),
+                Vec::new(),
+                HashMap::new(),
+            );
+            state.push_function(
+                "f_int_param",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(Some(ValueType::Integer)),
+                    )],
+                    Some(ValueType::Integer),
+                    vec![],
+                ),
+                vec!["a".into()],
+                HashMap::new(),
+            );
+            state.push_function(
+                "f_int_param_with_default",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(Some(ValueType::Integer)),
+                    )],
+                    Some(ValueType::Integer),
+                    vec![],
+                ),
+                vec!["a".into()],
+                HashMap::from([(
+                    "a".into(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                )]),
+            );
+            state.push_function(
+                "f_multiple_defaults",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![
+                        PipelineFunctionParameter::new(
+                            QueryLocation::new_fake(),
+                            PipelineFunctionParameterType::Scalar(Some(ValueType::Integer)),
+                        ),
+                        PipelineFunctionParameter::new(
+                            QueryLocation::new_fake(),
+                            PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                        ),
+                    ],
+                    Some(ValueType::Integer),
+                    vec![],
+                ),
+                vec!["a".into(), "b".into()],
+                HashMap::from([
+                    (
+                        "a".into(),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                    ),
+                    (
+                        "b".into(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                        )),
+                    ),
+                ]),
+            );
+            state.push_function(
+                "f_mut_param",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(Some(ValueType::Map)),
+                    )],
+                    None,
+                    vec![],
+                ),
+                vec!["a".into()],
+                HashMap::new(),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let actual = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
+
+            assert_eq!(ScalarExpression::InvokeFunction(expected), actual);
+        };
+
+        let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
+            println!("Testing: {input}");
+
+            let mut state = ParserState::new(input);
+            state.push_function(
+                "f_int_param",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(Some(ValueType::Integer)),
+                    )],
+                    Some(ValueType::Integer),
+                    vec![],
+                ),
+                vec!["a".into()],
+                HashMap::new(),
+            );
+            state.push_function(
+                "f_multiple_defaults",
+                PipelineFunction::new_with_expressions(
+                    QueryLocation::new_fake(),
+                    vec![
+                        PipelineFunctionParameter::new(
+                            QueryLocation::new_fake(),
+                            PipelineFunctionParameterType::Scalar(Some(ValueType::Integer)),
+                        ),
+                        PipelineFunctionParameter::new(
+                            QueryLocation::new_fake(),
+                            PipelineFunctionParameterType::Scalar(Some(ValueType::String)),
+                        ),
+                    ],
+                    Some(ValueType::Integer),
+                    vec![],
+                ),
+                vec!["a".into(), "b".into()],
+                HashMap::from([
+                    (
+                        "a".into(),
+                        ScalarExpression::Static(StaticScalarExpression::Integer(
+                            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                        )),
+                    ),
+                    (
+                        "b".into(),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "hello world"),
+                        )),
+                    ),
+                ]),
+            );
+
+            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+
+            let error = parse_scalar_expression(result.next().unwrap(), &state).unwrap_err();
+
+            if let Some(expected_id) = expected_id {
+                if let ParserError::QueryLanguageDiagnostic {
+                    location: _,
+                    diagnostic_id: id,
+                    message: msg,
+                } = error
+                {
+                    assert_eq!(expected_id, id);
+                    assert_eq!(expected_msg, msg);
+                } else {
+                    panic!("Expected QueryLanguageDiagnostic");
+                }
+            } else if let ParserError::SyntaxError(_, msg) = error {
+                assert_eq!(expected_msg, msg);
+            } else {
+                panic!("Unexpected error type");
+            }
+        };
+
+        run_test_success(
+            "f_noop()",
+            InvokeFunctionScalarExpression::new(QueryLocation::new_fake(), None, 0, vec![]),
+        );
+
+        run_test_success(
+            "f_int_param(1)",
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                ))],
+            ),
+        );
+
+        run_test_success(
+            "f_int_param_with_default()",
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                2,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        1,
+                    )),
+                ))],
+            ),
+        );
+
+        run_test_success(
+            "f_int_param('1')",
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                1,
+                vec![InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "1",
+                    )),
+                ))],
+            ),
+        );
+
+        run_test_success(
+            "f_multiple_defaults(b='asdf')",
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                Some(ValueType::Integer),
+                3,
+                vec![
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            1,
+                        )),
+                    )),
+                    InvokeFunctionArgument::Scalar(ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "asdf",
+                        )),
+                    )),
+                ],
+            ),
+        );
+
+        run_test_success(
+            "f_mut_param(source)",
+            InvokeFunctionScalarExpression::new(
+                QueryLocation::new_fake(),
+                None,
+                4,
+                vec![InvokeFunctionArgument::MutableValue(
+                    MutableValueExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new(),
+                    )),
+                )],
+            ),
+        );
+
+        run_test_failure(
+            "f_multiple_defaults(a=1, a=1)",
+            None,
+            "A value was already provided for the 'a' parameter",
+        );
+
+        run_test_failure(
+            "f_multiple_defaults(a=1, 1)",
+            Some("KS195"),
+            "All arguments after an unordered named argument must be named",
+        );
+
+        run_test_failure(
+            "f_multiple_defaults(c=1)",
+            Some("KS196"),
+            "The argument name does not refer to a declared parameter",
+        );
+
+        run_test_failure(
+            "f_multiple_defaults(1,2,3)",
+            Some("KS119"),
+            "The function 'f_multiple_defaults' expects 2 arguments",
+        );
+
+        run_test_failure(
+            "f_int_param()",
+            Some("KS197"),
+            "The argument for parameter 'a' is missing",
         );
     }
 }
