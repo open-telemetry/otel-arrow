@@ -12,6 +12,24 @@ include a specific overflow field for non-critical attributes.
 It is possible that this implementation could be folded into
 `attributes_processor` but at the moment it is an isolated component.
 
+### Important Notes
+
+- The condense operation may be non-deterministic for the same logical data
+  (producing `x=1;y=2` or `y=2;x=1`). This is currently deemed intentional and
+  acceptable if considering the condensed destination key is aligned with an
+  expected overflow field. Users working with this overflow field will likely
+  split or parse this overflow field at later stages as needed without a
+  dependency on ordering.
+
+## Feature Flag
+
+This processor requires the `condense-attributes-processor` feature flag to be
+enabled:
+
+```bash
+cargo build --features condense-attributes-processor
+```
+
 ## Configuration
 
 The processor accepts the following configuration options:
@@ -103,12 +121,3 @@ condensed. The excluded attributes are preserved in their original form.
 
 - `condensed` = "attr2=42;attr3=true"
 - `attr1` = "value1"
-
-## Feature Flag
-
-This processor requires the `condense-attributes-processor` feature flag to be
-enabled:
-
-```bash
-cargo build --features condense-attributes-processor
-```
