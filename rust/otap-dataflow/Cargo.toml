@@ -179,6 +179,11 @@ reqwest = { version = "0.12.24", default-features = false }
 time = "0.3.44"
 wiremock = "0.6.5"
 
+# KQL processor
+data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engine-recordset-otlp-bridge" }
+data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
+data_engine_expressions = { path = "../experimental/query_engine/expressions" }
+
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
 default = ["jemalloc"]
@@ -196,6 +201,8 @@ experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
+# Experimental processors (opt-in)
+kql-processor = ["otap-df-otap/kql-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints
