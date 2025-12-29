@@ -60,6 +60,7 @@ pub struct Config {
 /// Processor that condenses multiple attributes into a single attribute based on predefined rules.
 pub struct CondenseAttributesProcessor {
     config: Config,
+    rows_to_preserve: Vec<usize>,
 }
 
 fn engine_err(msg: &str) -> Error {
@@ -101,7 +102,10 @@ impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance
     #[must_use]
     pub fn new(config: Config) -> Self {
-        Self { config }
+        Self {
+            config,
+            rows_to_preserve: Vec::new(),
+        }
     }
 
     /// Creates a new CondenseAttributesProcessor instance from configuration
@@ -172,7 +176,7 @@ impl CondenseAttributesProcessor {
         }))
     }
 
-    fn condense(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
+    fn condense(&mut self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
             None => return Ok(0),
@@ -303,8 +307,11 @@ impl CondenseAttributesProcessor {
             }
         };
 
+        // Reuse rows_to_preserve buffer to avoid reallocation on each call
+        self.rows_to_preserve.clear();
+        // parent_to_attrs uses borrowed &str keys from Arrow arrays, so cannot be easily reused across calls.
+        // TODO is reusing a HashMap<u16, Vec<(String, String)>> worth it?
         let mut parent_to_attrs: HashMap<u16, Vec<(&str, String)>> = HashMap::new();
-        let mut rows_to_preserve: Vec<usize> = Vec::new();
 
         for i in 0..num_rows {
             if parent_id_arr.is_null(i) {
@@ -325,7 +332,7 @@ impl CondenseAttributesProcessor {
             };
 
             if !should_condense {
-                rows_to_preserve.push(i);
+                self.rows_to_preserve.push(i);
                 continue;
             }
 
@@ -378,7 +385,7 @@ impl CondenseAttributesProcessor {
         }
 
         // Add preserved attributes
-        for &i in &rows_to_preserve {
+        for &i in &self.rows_to_preserve {
             let parent_id = parent_id_arr.value(i);
             let key = get_key(i).expect("key was validated as non-null");
             let value_type = type_arr.value(i);
