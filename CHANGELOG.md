@@ -22,6 +22,10 @@ Versioning](https://semver.org/spec/v2.0.0.html).
     [#1470](https://github.com/open-telemetry/otel-arrow/pull/1470)
 - Upgrade to v0.142.0/v1.48.0 of collector dependencies.
   [#1682](https://github.com/open-telemetry/otel-arrow/pull/1682)
+- Upgrade `arrow-go` to `v18.5.0`.
+  [#1702](https://github.com/open-telemetry/otel-arrow/pull/1702)
+  - Note: Includes small changes to JSON serialization of timestamps due to
+    upstream bugfix.
 
 ## [0.45.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.45.0) - 2025-11-11
 
