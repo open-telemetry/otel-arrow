@@ -226,6 +226,7 @@ where
     TRecord: Record + 'static,
 {
     pub parent_execution_context: &'c ExecutionContext<'a, 'b, TRecord>,
+    pub function: &'a PipelineFunction,
     pub arguments: &'a [InvokeFunctionArgument],
 }
 
@@ -240,25 +241,56 @@ where
             .get(id)
             .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
 
-        match argument {
-            InvokeFunctionArgument::Scalar(s) => {
-                execute_scalar_expression(self.parent_execution_context, s)
-            }
+        let (value, expression): (ResolvedValue, &dyn Expression) = match argument {
+            InvokeFunctionArgument::Scalar(s) => (
+                execute_scalar_expression(self.parent_execution_context, s)?,
+                s,
+            ),
             InvokeFunctionArgument::MutableValue(m) => {
                 // Note: In this branch mutable values are retured as immutables which is totally fine
                 match m {
-                    MutableValueExpression::Argument(a) => {
-                        execute_argument_scalar_expression(self.parent_execution_context, a)
-                    }
-                    MutableValueExpression::Source(s) => {
-                        execute_source_scalar_expression(self.parent_execution_context, m, s)
-                    }
-                    MutableValueExpression::Variable(v) => {
-                        execute_variable_scalar_expression(self.parent_execution_context, m, v)
-                    }
+                    MutableValueExpression::Argument(a) => (
+                        execute_argument_scalar_expression(self.parent_execution_context, a)?,
+                        a,
+                    ),
+                    MutableValueExpression::Source(s) => (
+                        execute_source_scalar_expression(self.parent_execution_context, m, s)?,
+                        s,
+                    ),
+                    MutableValueExpression::Variable(v) => (
+                        execute_variable_scalar_expression(self.parent_execution_context, m, v)?,
+                        m,
+                    ),
                 }
             }
-        }
+        };
+
+        Ok(
+            if let Some(expected_value_type) = self
+                .function
+                .get_parameters()
+                .get(id)
+                .unwrap_or_else(|| panic!())
+                .get_value_type()
+                && expected_value_type != value.get_value_type()
+            {
+                if let Some(value) = try_convert_value(value.to_value(), &expected_value_type) {
+                    self.parent_execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Verbose,
+                        expression,
+                        || format!("Value automatically converted to '{expected_value_type}' argument type"));
+                    ResolvedValue::Computed(value)
+                } else {
+                    self.parent_execution_context.add_diagnostic_if_enabled(
+                        RecordSetEngineDiagnosticLevel::Warn,
+                        expression,
+                        || format!("Value could not be converted to '{expected_value_type}' argument type. Null will be returned"));
+                    ResolvedValue::Computed(OwnedValue::Null)
+                }
+            } else {
+                value
+            },
+        )
     }
 
     fn get_argument_mut_borrow_source(&self, id: usize) -> Option<BorrowSource> {
@@ -284,17 +316,38 @@ where
             .get(id)
             .unwrap_or_else(|| panic!("Argument for id '{id}' was not found"));
 
-        match argument {
-            InvokeFunctionArgument::Scalar(s) => Err(ExpressionError::NotSupported(
-                s.get_query_location().clone(),
-                format!("Argument for id '{id}' cannot be mutated"),
-            )),
+        let (value, expression): (ResolvedMutableArgument, &dyn Expression) = match argument {
+            InvokeFunctionArgument::Scalar(s) => {
+                return Err(ExpressionError::NotSupported(
+                    s.get_query_location().clone(),
+                    format!("Argument for id '{id}' cannot be mutated"),
+                ));
+            }
             InvokeFunctionArgument::MutableValue(m) => {
                 let value = execute_mutable_value_expression(self.parent_execution_context, m)?;
 
-                Ok(ResolvedMutableArgument { value })
+                (ResolvedMutableArgument { value }, m)
             }
-        }
+        };
+
+        Ok(
+            if let Some(expected_value_type) = self
+                .function
+                .get_parameters()
+                .get(id)
+                .unwrap_or_else(|| panic!())
+                .get_value_type()
+                && expected_value_type != value.get_value_type()
+            {
+                self.parent_execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Warn,
+                    expression,
+                    || format!("Value did not match expected '{expected_value_type}' argument type. Null will be returned"));
+                ResolvedMutableArgument { value: None }
+            } else {
+                value
+            },
+        )
     }
 
     fn copy_value_if_required_for_write(
