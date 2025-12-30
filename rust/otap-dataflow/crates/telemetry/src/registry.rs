@@ -259,7 +259,7 @@ impl MetricsRegistry {
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
-            if keep_all_zeroes | values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
@@ -397,7 +397,7 @@ impl MetricsRegistryHandle {
         let reg = self.metric_registry.lock();
         for entry in reg.metrics.values() {
             let values = &entry.metric_values;
-            if keep_all_zeroes | values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 

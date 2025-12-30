@@ -167,7 +167,7 @@ impl ChannelMetricsHandle {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
-            ChannelMetricsHandle::SharedSender(metrics) => match metrics.lock() {
+            ChannelMetricsHandle::SharedSender(metrics) => match metrics.try_lock() {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
@@ -175,7 +175,7 @@ impl ChannelMetricsHandle {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
-            ChannelMetricsHandle::SharedReceiver(metrics) => match metrics.lock() {
+            ChannelMetricsHandle::SharedReceiver(metrics) => match metrics.try_lock() {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
