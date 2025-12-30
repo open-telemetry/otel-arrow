@@ -1193,7 +1193,7 @@ mod config_tests {
         }
     }
 
-        #[test]
+    #[test]
     fn test_config_parsing_destination_key_in_source_keys() {
         let cfg = json!({
             "destination_key": "condensed",
