@@ -58,12 +58,24 @@ impl<'de> Deserialize<'de> for MetricsPullExporterConfig {
 #[serde(deny_unknown_fields)]
 pub struct PrometheusExporterConfig {
     /// The host address where the Prometheus exporter will expose metrics.
+    #[serde(default = "default_host")]
     pub host: String,
+
     /// The port on which the Prometheus exporter will listen for scrape requests.
+    #[serde(default = "default_port")]
     pub port: u16,
+
     /// The HTTP path where metrics will be exposed.
     #[serde(default = "default_metrics_path")]
     pub path: String,
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    9090
 }
 
 fn default_metrics_path() -> String {
@@ -133,21 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn test_prometheus_exporter_missing_field_config_deserialize() {
-        let yaml_str = r#"
-        host: "0.0.0.0"
-        "#;
-        let result: Result<PrometheusExporterConfig, _> = serde_yaml::from_str(yaml_str);
-        match result {
-            Ok(_) => panic!("Deserialization should have failed for missing port"),
-            Err(err) => {
-                let err_msg = err.to_string();
-                assert!(err_msg.contains("missing field `port`"));
-            }
-        }
-    }
-
-    #[test]
     fn test_prometheus_exporter_unknown_field_config_deserialize() {
         let yaml_str = r#"
         host: "0.0.0.0"
@@ -162,5 +159,14 @@ mod tests {
                 assert!(err_msg.contains("unknown field `extra_field`"));
             }
         }
+    }
+
+    #[test]
+    fn test_prometheus_exporter_config_defaults() {
+        let yaml_str = r#""#;
+        let config: PrometheusExporterConfig = serde_yaml::from_str(yaml_str).unwrap();
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 9090);
+        assert_eq!(config.path, "/metrics");
     }
 }

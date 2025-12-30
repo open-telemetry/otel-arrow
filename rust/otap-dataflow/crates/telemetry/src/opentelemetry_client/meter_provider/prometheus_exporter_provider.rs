@@ -108,7 +108,7 @@ impl PrometheusExporterProvider {
         Router::new().route(path, get(Self::get_metrics))
     }
 
-    /// Handler for the `/metrics` endpoint.
+    /// Handler for the metrics endpoint. Ex: `/metrics`.
     async fn get_metrics(State(registry): State<Registry>) -> Result<Response, StatusCode> {
         let encoder = TextEncoder::new();
         let metric_families = registry.gather();
