@@ -7,7 +7,7 @@
 The Condense Attributes Processor is an experimental OTAP processor that
 condenses multiple log attributes into a single string attribute. This is a
 niche operation useful when working with firmly-structured data shapes that
-include a specific overflow field for non-critical attributes.
+include a specific catch-all field for non-critical attributes.
 
 It is possible that this implementation could be folded into
 `attributes_processor` but at the moment it is an isolated component.
@@ -17,9 +17,9 @@ It is possible that this implementation could be folded into
 - The condense operation may be non-deterministic for the same logical data
   (producing `x=1;y=2` or `y=2;x=1`). This is currently deemed intentional and
   acceptable if considering the condensed destination key is aligned with an
-  expected overflow field. Users working with this overflow field will likely
-  split or parse this overflow field at later stages as needed without a
-  dependency on ordering.
+  expected catch-all field. Users working with this catch-all field will likely
+  split or parse the content at later stages as needed without a dependency on
+  ordering.
 
 ## Feature Flag
 
@@ -41,8 +41,14 @@ The processor accepts the following configuration options:
 | `source_keys` | array of strings | No | If provided, only attributes with these keys will be condensed. Other attributes are preserved as-is. |
 | `exclude_keys` | array of strings | No | If provided, attributes with these keys will NOT be condensed. They are preserved as-is while all others are condensed. |
 
-**Note:** `source_keys` and `exclude_keys` are mutually exclusive. If both are
-provided, the processor will return an error.
+**Important Notes:**
+
+- `source_keys` and `exclude_keys` are mutually exclusive. If both are provided,
+  the processor will return an error.
+- `destination_key` cannot be included in `source_keys` or `exclude_keys`.
+  Configuration validation will fail if this occurs.
+- If an input attribute has the same key as `destination_key`, it will be
+  automatically skipped (not condensed) to prevent circular references.
 
 ## Behavior
 

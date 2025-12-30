@@ -168,6 +168,30 @@ impl CondenseAttributesProcessor {
             });
         }
 
+        // Validate that destination_key is not in source_keys
+        if let Some(ref keys) = source_keys {
+            if keys.contains(&destination_key) {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "destination_key '{}' cannot be included in source_keys",
+                        destination_key
+                    ),
+                });
+            }
+        }
+
+        // Validate that destination_key is not in exclude_keys
+        if let Some(ref keys) = exclude_keys {
+            if keys.contains(&destination_key) {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "destination_key '{}' cannot be included in exclude_keys",
+                        destination_key
+                    ),
+                });
+            }
+        }
+
         Ok(Self::new(Config {
             destination_key,
             delimiter,
@@ -176,6 +200,8 @@ impl CondenseAttributesProcessor {
         }))
     }
 
+    /// Condenses attributes in the given record batch according to the processor configuration.
+    /// Returns the number of individual attributes that were condensed.
     fn condense(&mut self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
@@ -310,7 +336,7 @@ impl CondenseAttributesProcessor {
         // Reuse rows_to_preserve buffer to avoid reallocation on each call
         self.rows_to_preserve.clear();
         // parent_to_attrs uses borrowed &str keys from Arrow arrays, so cannot be easily reused across calls.
-        // TODO is reusing a HashMap<u16, Vec<(String, String)>> worth it?
+        // TODO: is reusing a HashMap<u16, Vec<(String, String)>> worth it?
         let mut parent_to_attrs: HashMap<u16, Vec<(&str, String)>> = HashMap::new();
 
         for i in 0..num_rows {
@@ -323,6 +349,12 @@ impl CondenseAttributesProcessor {
                 Some(k) => k,
                 None => continue,
             };
+
+            // Always skip attributes that match the destination_key to prevent circular references
+            if key == self.config.destination_key {
+                // TODO: Add proper instrumentation/logging
+                continue;
+            }
 
             // Check if we should include this key
             let should_condense = match (&self.config.source_keys, &self.config.exclude_keys) {
@@ -508,6 +540,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                 let condensed_records: OtapArrowRecords =
                     match signal {
                         SignalType::Logs => match self.condense(&mut records) {
+                            // TODO: Add instrumentation for condensed count
                             Ok(_condensed) => records,
                             Err(e) => return Err(e),
                         },
@@ -751,6 +784,49 @@ mod condense_tests {
             KeyValue::new("attr2", AnyValue::new_int(42)),
             KeyValue::new("attr3", AnyValue::new_bool(true)),
         ];
+
+        test_condense_single_log(input, cfg, expected_attrs);
+    }
+
+    #[test]
+    fn test_condense_destination_key_already_exists_ignores() {
+        let input = build_log_with_attrs(vec![
+            KeyValue::new("attr1", AnyValue::new_string("value1")),
+            KeyValue::new("condensed", AnyValue::new_string("old_value")),
+            KeyValue::new("attr2", AnyValue::new_int(42)),
+        ]);
+
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";"
+        });
+
+        let expected_attrs = vec![KeyValue::new(
+            "condensed",
+            AnyValue::new_string("attr1=value1;attr2=42"),
+        )];
+
+        test_condense_single_log(input, cfg, expected_attrs);
+    }
+
+    #[test]
+    fn test_condense_destination_key_not_in_source_keys_ignores() {
+        let input = build_log_with_attrs(vec![
+            KeyValue::new("attr1", AnyValue::new_string("value1")),
+            KeyValue::new("condensed", AnyValue::new_string("old_value")),
+            KeyValue::new("attr2", AnyValue::new_int(42)),
+        ]);
+
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";",
+            "source_keys": ["attr1", "attr2"]
+        });
+
+        let expected_attrs = vec![KeyValue::new(
+            "condensed",
+            AnyValue::new_string("attr1=value1;attr2=42"),
+        )];
 
         test_condense_single_log(input, cfg, expected_attrs);
     }
@@ -1112,6 +1188,44 @@ mod config_tests {
         match result {
             Err(ConfigError::InvalidUserConfig { error }) => {
                 assert!(error.contains("exclude_keys must be an array"));
+            }
+            _ => panic!("expected InvalidUserConfig error"),
+        }
+    }
+
+        #[test]
+    fn test_config_parsing_destination_key_in_source_keys() {
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";",
+            "source_keys": ["attr1", "condensed"]
+        });
+
+        let result = CondenseAttributesProcessor::from_config(&cfg);
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidUserConfig { error }) => {
+                assert!(error.contains("destination_key"));
+                assert!(error.contains("source_keys"));
+            }
+            _ => panic!("expected InvalidUserConfig error"),
+        }
+    }
+
+    #[test]
+    fn test_config_parsing_destination_key_in_exclude_keys() {
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";",
+            "exclude_keys": ["attr1", "condensed"]
+        });
+
+        let result = CondenseAttributesProcessor::from_config(&cfg);
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::InvalidUserConfig { error }) => {
+                assert!(error.contains("destination_key"));
+                assert!(error.contains("exclude_keys"));
             }
             _ => panic!("expected InvalidUserConfig error"),
         }
