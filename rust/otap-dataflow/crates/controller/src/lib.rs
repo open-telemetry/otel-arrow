@@ -328,19 +328,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 // Check for overlapping ranges
                 for (i, r1) in set.iter().enumerate() {
                     for r2 in set.iter().skip(i + 1) {
-                        // Two ranges overlap if one starts before or at the point where the other ends,
-                        // and the other starts before or at the point where the first ends
+                        // Two ranges overlap if they share any common cores
                         if r1.start <= r2.end && r2.start <= r1.end {
+                            let overlap_start = r1.start.max(r2.start);
+                            let overlap_end = r1.end.min(r2.end);
                             return Err(Error::InvalidCoreAllocation {
                                 alloc: quota.core_allocation.clone(),
                                 message: format!(
                                     "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
-                                    r1.start,
-                                    r1.end,
-                                    r2.start,
-                                    r2.end,
-                                    r1.start.max(r2.start),
-                                    r1.end.min(r2.end)
+                                    r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
                                 ),
                                 available: available_core_ids.iter().map(|c| c.id).collect(),
                             });
