@@ -299,21 +299,12 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 _ => Ok(()),
             },
             Message::PData(pdata) => {
-                if let Some(m) = self.metrics.as_mut() {
-                    m.msgs_consumed.inc();
-                }
-
                 // Fast path: no actions to apply
                 if self.is_noop() {
                     let res = effect_handler
                         .send_message(pdata)
                         .await
                         .map_err(|e| e.into());
-                    if res.is_ok() {
-                        if let Some(m) = self.metrics.as_mut() {
-                            m.msgs_forwarded.inc();
-                        }
-                    }
                     return res;
                 }
 
@@ -358,11 +349,6 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     .send_message(OtapPdata::new(context, records.into()))
                     .await
                     .map_err(|e| e.into());
-                if res.is_ok() {
-                    if let Some(m) = self.metrics.as_mut() {
-                        m.msgs_forwarded.inc();
-                    }
-                }
                 res
             }
         }

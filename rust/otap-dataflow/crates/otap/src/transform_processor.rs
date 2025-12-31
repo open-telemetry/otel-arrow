@@ -173,7 +173,6 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
             },
             Message::PData(pdata) => {
-                self.metrics.msgs_consumed.inc();
                 let (context, payload) = pdata.into_parts();
                 let payload = if !self.should_process(&payload) {
                     // skip handling this pdata
@@ -200,8 +199,7 @@ impl Processor<OtapPdata> for TransformProcessor {
 
                 effect_handler
                     .send_message(OtapPdata::new(context, payload))
-                    .await
-                    .inspect(|_| self.metrics.msgs_forwarded.inc())?;
+                    .await?;
             }
         };
 
