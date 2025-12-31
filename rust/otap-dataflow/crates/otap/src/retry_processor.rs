@@ -356,12 +356,10 @@ pub fn create_retry_processor(
 
     let retry = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config)?;
 
-    let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
-
     Ok(ProcessorWrapper::local(
         retry,
         node,
-        user_config,
+        node_config,
         processor_config,
     ))
 }

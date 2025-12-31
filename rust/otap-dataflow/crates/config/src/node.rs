@@ -9,7 +9,7 @@
 //! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
 //! data flows from this node to one or more target nodes.
 
-use crate::{Description, NodeId, PortName, Urn};
+use crate::{Description, NodeId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,7 +34,7 @@ pub struct NodeUserConfig {
 
     /// The URN identifying the plugin (factory) to use for this node.
     /// This determines which implementation is loaded and instantiated.
-    pub plugin_urn: Urn,
+    pub plugin_urn: NodeUrn,
 
     /// An optional description of this node.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,7 +125,7 @@ impl From<NodeKind> for Cow<'static, str> {
 
 impl NodeUserConfig {
     /// Creates a new Receiver `NodeUserConfig` with the plugin URN.
-    pub fn new_receiver_config<U: Into<Urn>>(plugin_urn: U) -> Self {
+    pub fn new_receiver_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
         Self {
             kind: NodeKind::Receiver,
             plugin_urn: plugin_urn.into(),
@@ -137,7 +137,7 @@ impl NodeUserConfig {
     }
 
     /// Creates a new Exporter `NodeUserConfig` with the plugin URN.
-    pub fn new_exporter_config<U: Into<Urn>>(plugin_urn: U) -> Self {
+    pub fn new_exporter_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
         Self {
             kind: NodeKind::Exporter,
             plugin_urn: plugin_urn.into(),
@@ -149,7 +149,7 @@ impl NodeUserConfig {
     }
 
     /// Creates a new Processor `NodeUserConfig` with the plugin URN.
-    pub fn new_processor_config<U: Into<Urn>>(plugin_urn: U) -> Self {
+    pub fn new_processor_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
         Self {
             kind: NodeKind::Processor,
             plugin_urn: plugin_urn.into(),
@@ -162,7 +162,7 @@ impl NodeUserConfig {
 
     /// Creates a new `NodeUserConfig` with the specified kind, plugin URN, and user configuration.
     #[must_use]
-    pub fn with_user_config(kind: NodeKind, plugin_urn: Urn, user_config: Value) -> Self {
+    pub fn with_user_config(kind: NodeKind, plugin_urn: NodeUrn, user_config: Value) -> Self {
         Self {
             kind,
             plugin_urn,
@@ -202,5 +202,30 @@ mod tests {
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(cfg.kind, NodeKind::Receiver));
         assert!(cfg.out_ports.is_empty());
+    }
+
+    #[test]
+    fn test_yaml_node_config() {
+        let yaml = r#"
+kind: processor
+plugin_urn: "urn:otap:processor:signal_type_router"
+out_ports:
+  logs:
+    destinations:
+      - exporter
+    dispatch_strategy: round_robin
+  metrics:
+    destinations:
+      - debug
+    dispatch_strategy: round_robin
+  traces:
+    destinations:
+      - debug
+    dispatch_strategy: round_robin
+config: {}
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(cfg.kind, NodeKind::Processor));
+        assert_eq!(cfg.out_ports.len(), 3);
     }
 }

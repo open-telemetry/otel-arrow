@@ -9,7 +9,7 @@
 use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeKind;
-use otap_df_config::{PortName, Urn};
+use otap_df_config::{NodeUrn, PortName};
 use otap_df_state::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
@@ -252,7 +252,7 @@ pub enum Error {
     #[error("Unknown receiver plugin `{plugin_urn}`")]
     UnknownReceiver {
         /// The name of the unknown receiver plugin.
-        plugin_urn: Urn,
+        plugin_urn: NodeUrn,
     },
 
     /// The specified processor already exists in the pipeline.
@@ -283,7 +283,7 @@ pub enum Error {
     #[error("Unknown processor plugin `{plugin_urn}`")]
     UnknownProcessor {
         /// The name of the unknown processor plugin.
-        plugin_urn: Urn,
+        plugin_urn: NodeUrn,
     },
 
     /// The specified exporter already exists in the pipeline.
@@ -320,7 +320,7 @@ pub enum Error {
     #[error("Unknown exporter plugin `{plugin_urn}`")]
     UnknownExporter {
         /// The name of the unknown exporter plugin.
-        plugin_urn: Urn,
+        plugin_urn: NodeUrn,
     },
 
     /// Unknown node.
