@@ -1,3 +1,8 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Validation test module to validate the encoding/decoding process for otlp messages
+
 // ToDo: Add support to simulate a pipeline with various processors
 // ToDo: Move the validation process to it's own CICD job (outside of the tests)
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
