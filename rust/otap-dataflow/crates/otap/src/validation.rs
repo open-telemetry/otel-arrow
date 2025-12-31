@@ -88,7 +88,7 @@ mod test {
         let semconv_specs = match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
             WResult::Ok(semconv_specs) => semconv_specs,
             WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
-            WResult::FatalErr(err) => {
+            WResult::FatalErr(_err) => {
                 panic!("Failed to load semantic convention specs");
             }
         };
@@ -104,17 +104,16 @@ mod test {
             match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true) {
                 WResult::Ok(resolved_schema) => resolved_schema,
                 WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-                WResult::FatalErr(err) => {
+                WResult::FatalErr(_err) => {
                     panic!("Failed to resolve semantic convetion schema");
                 }
             };
 
-        let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
+        ResolvedRegistry::try_from_resolved_registry(
             &resolved_schema.registry,
             resolved_schema.catalog(),
         )
         .expect("can get resolved registry from official semantic convention repo");
-        resolved_registry
     }
 
     // validate the encoding and decoding
