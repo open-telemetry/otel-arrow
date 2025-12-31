@@ -8,6 +8,7 @@ use crate::attributes::{
 };
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
@@ -270,6 +271,7 @@ impl PipelineContext {
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
             node_id: self.node_id.clone(),
+            node_urn: self.node_urn.clone(),
             node_kind: self.node_kind,
             internal_logs_receiver: Some(logs_receiver),
         }
