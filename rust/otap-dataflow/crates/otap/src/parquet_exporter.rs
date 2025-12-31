@@ -897,8 +897,8 @@ mod test {
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
         // Keep the receiver alive so EffectHandler can send telemetry/timer requests without error.
@@ -1049,8 +1049,8 @@ mod test {
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) =
             create_not_send_channel::<OtapPdata>(test_runtime.config().control_channel.capacity);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
         exporter
@@ -1196,8 +1196,8 @@ mod test {
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let _pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let _pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
@@ -1416,6 +1416,7 @@ mod test {
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
             .with_node_context(
                 "parquet_exporter".into(),
+                PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
             );
 
@@ -1438,8 +1439,8 @@ mod test {
 
         // pdata channel
         let (pdata_tx_ch, pdata_rx_ch) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx_ch));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx_ch));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx_ch));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx_ch));
         exporter
             .set_pdata_receiver(test_node("exp"), pdata_rx)
             .expect("Failed to set PData Receiver");
