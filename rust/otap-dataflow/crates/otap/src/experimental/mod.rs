@@ -14,3 +14,7 @@ pub mod geneva_exporter;
 /// Azure Monitor Exporter for Azure Logs Ingestion API
 #[cfg(feature = "azure-monitor-exporter")]
 pub mod azure_monitor_exporter;
+
+/// Condense Attributes processor
+#[cfg(feature = "condense-attributes-processor")]
+pub mod condense_attributes_processor;
