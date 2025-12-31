@@ -113,7 +113,7 @@ mod test {
             &resolved_schema.registry,
             resolved_schema.catalog(),
         )
-        .expect("can get resolved registry from official semantic convention repo");
+        .expect("can get resolved registry from official semantic convention repo")
     }
 
     // validate the encoding and decoding
