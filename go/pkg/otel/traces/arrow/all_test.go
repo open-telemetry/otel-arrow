@@ -137,8 +137,8 @@ func TestEvent(t *testing.T) {
 	}
 	attrsRecord.Release()
 
-	expectedEvents := `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001Z"}
-,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002Z"}
+	expectedEvents := `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01T00:00:00.000000001Z"}
+,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01T00:00:00.000000002Z"}
 ]`
 
 	expectedAttrs := `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
@@ -276,10 +276,10 @@ func TestTraces(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ns","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001Z","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ns","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003Z","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
-,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ns","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":1,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003Z","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
-,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ns","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003Z","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
+	expected := `[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ns","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01T00:00:00.000000001Z","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ns","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01T00:00:00.000000003Z","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
+,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ns","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":1,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01T00:00:00.000000003Z","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
+,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ns","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01T00:00:00.000000003Z","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
 ]`
 
 	jsonassert.JSONCanonicalEq(stdTesting, expected, actual)
@@ -325,11 +325,11 @@ func TestTraces(t *testing.T) {
 ,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
 ]`
 		case v1.ArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001Z"}
-,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001Z"}
-,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001Z"}
-,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001Z"}
-,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002Z"}
+			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01T00:00:00.000000001Z"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01T00:00:00.000000001Z"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01T00:00:00.000000001Z"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01T00:00:00.000000001Z"}
+,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01T00:00:00.000000002Z"}
 ]`
 		case v1.ArrowPayloadType_SPAN_EVENT_ATTRS:
 			expected = `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
