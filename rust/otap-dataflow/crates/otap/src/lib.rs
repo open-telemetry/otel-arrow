@@ -71,6 +71,10 @@ mod fixtures;
 #[cfg(test)]
 pub mod testing;
 
+/// validation process to verify that encoding/decoding works properly with otlp request
+#[cfg(test)]
+pub mod validation;
+
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
