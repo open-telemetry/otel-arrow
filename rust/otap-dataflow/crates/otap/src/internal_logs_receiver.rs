@@ -25,6 +25,8 @@ use std::sync::Arc;
 /// The URN for the internal logs receiver
 pub const INTERNAL_LOGS_RECEIVER_URN: &str = "urn:otel:otap:internal_logs:receiver";
 
+type InternalLogReceiver = flume::Receiver<OtapPayload>;
+
 /// A Receiver that receives internal logs data.
 pub struct InternalLogsReceiver {
     /// Configuration for the internal logs receiver
@@ -32,7 +34,7 @@ pub struct InternalLogsReceiver {
     config: Config,
 
     /// The channel to receive internal logs data from the OpenTelemetry SDK.
-    internal_logs_receiver: crossbeam_channel::Receiver<OtapPayload>,
+    internal_logs_receiver: InternalLogReceiver,
 
     /// The node id of this receiver
     node_id: NodeId,
@@ -160,8 +162,7 @@ mod tests {
         let pipeline_group_id: PipelineGroupId = "test_group".into();
         let pipeline_id: PipelineId = "test_pipeline".into();
 
-        let (_internal_logs_sender, internal_logs_receiver) =
-            crossbeam_channel::unbounded::<OtapPayload>();
+        let (_internal_logs_sender, internal_logs_receiver) = flume::unbounded::<OtapPayload>();
         let pipeline_ctx = controller_context
             .pipeline_context_with(pipeline_group_id, pipeline_id, 0, 0)
             .with_internal_logs_receiver(internal_logs_receiver);

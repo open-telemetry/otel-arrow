@@ -85,7 +85,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         let (internal_logs_sender, internal_logs_receiver) =
-            crossbeam_channel::bounded(settings.default_pipeline_ctrl_msg_channel_size);
+            flume::bounded(settings.default_pipeline_ctrl_msg_channel_size);
 
         let opentelemetry_client =
             OpentelemetryClient::new(telemetry_config, internal_logs_sender)?;

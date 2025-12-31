@@ -81,6 +81,8 @@ static HOST_ID: LazyLock<Cow<'static, str>> =
 static CONTAINER_ID: LazyLock<Cow<'static, str>> =
     LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
+type InternalLogReceiver = flume::Receiver<OtapPayload>;
+
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
@@ -102,7 +104,7 @@ pub struct PipelineContext {
     node_id: NodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
-    internal_logs_receiver: Option<crossbeam_channel::Receiver<OtapPayload>>,
+    internal_logs_receiver: Option<InternalLogReceiver>,
 }
 
 impl ControllerContext {
@@ -260,10 +262,7 @@ impl PipelineContext {
 
     /// Returns a new pipeline context with the given internal telemetry notifier handle.
     #[must_use]
-    pub fn with_internal_logs_receiver(
-        &mut self,
-        logs_receiver: crossbeam_channel::Receiver<OtapPayload>,
-    ) -> Self {
+    pub fn with_internal_logs_receiver(&mut self, logs_receiver: InternalLogReceiver) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
             core_id: self.core_id,
@@ -279,7 +278,7 @@ impl PipelineContext {
 
     /// Returns the internal logs receiver, if any.
     #[must_use]
-    pub fn internal_logs_receiver(&self) -> Option<crossbeam_channel::Receiver<OtapPayload>> {
+    pub fn internal_logs_receiver(&self) -> Option<InternalLogReceiver> {
         self.internal_logs_receiver.clone()
     }
 }
@@ -292,7 +291,7 @@ mod tests {
     fn test_with_internal_logs_receiver() {
         let controller_ctx = ControllerContext::new(MetricsRegistryHandle::default());
 
-        let (_internal_logs_sender, internal_logs_receiver) = crossbeam_channel::unbounded();
+        let (_internal_logs_sender, internal_logs_receiver) = flume::unbounded();
 
         let pipeline_ctx = controller_ctx
             .pipeline_context_with(

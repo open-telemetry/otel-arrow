@@ -18,12 +18,11 @@ use otap_df_config::pipeline::service::telemetry::{
     },
     metrics::readers::periodic::otlp::OtlpProtocol,
 };
-use otap_df_pdata::OtapPayload;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
 
-use crate::error::Error;
+use crate::{error::Error, opentelemetry_client::InternalLogSender};
 
 /// Provider for configuring OpenTelemetry Logger.
 pub struct LoggerProvider {
@@ -69,7 +68,7 @@ impl LoggerProvider {
         sdk_resource: Resource,
         logger_config: &LogsConfig,
         initial_runtime: Option<tokio::runtime::Runtime>,
-        internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<LoggerProvider, Error> {
         let mut sdk_logger_builder = SdkLoggerProvider::builder().with_resource(sdk_resource);
 
@@ -132,7 +131,7 @@ impl LoggerProvider {
         sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
         processor_config: &otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig,
         runtime: Option<tokio::runtime::Runtime>,
-        internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<
         (
             opentelemetry_sdk::logs::LoggerProviderBuilder,
@@ -158,7 +157,7 @@ impl LoggerProvider {
         mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
         batch_config: &BatchLogProcessorConfig,
         mut runtime: Option<tokio::runtime::Runtime>,
-        internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<
         (
             opentelemetry_sdk::logs::LoggerProviderBuilder,
@@ -265,7 +264,7 @@ impl LoggerProvider {
 
     fn configure_internal_logs_exporter(
         mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
-        internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<opentelemetry_sdk::logs::LoggerProviderBuilder, Error> {
         let exporter = internal_exporter::InternalLogsExporter::new(internal_logs_sender);
         sdk_logger_builder = sdk_logger_builder.with_batch_exporter(exporter);
@@ -291,7 +290,7 @@ mod tests {
                 ),
             ],
         };
-        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let sender = dummy_sender();
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
 
@@ -320,7 +319,7 @@ mod tests {
                 ),
             ],
         };
-        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let sender = dummy_sender();
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, runtime_option) = logger_provider.into_parts();
 
@@ -340,7 +339,7 @@ mod tests {
             level: LogLevel::default(),
             processors: vec![],
         };
-        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let sender = dummy_sender();
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
 
@@ -375,5 +374,10 @@ mod tests {
 
     fn emit_log() {
         error!(name: "my-event-name", target: "my-system", event_id = 20, user_name = "otel", user_email = "otel@opentelemetry.io");
+    }
+
+    /// Returns a dummy internal logs sender for testing.
+    fn dummy_sender() -> InternalLogSender {
+        flume::unbounded().0
     }
 }

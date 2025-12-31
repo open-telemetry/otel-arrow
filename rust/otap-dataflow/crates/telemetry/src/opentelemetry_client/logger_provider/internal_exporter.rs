@@ -19,10 +19,12 @@ use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 use prost::Message;
 use prost::bytes::BytesMut;
 
+use crate::opentelemetry_client::InternalLogSender;
+
 /// An OpenTelemetry log exporter that sends internal logs to the pipeline engine.
 #[derive(Debug)]
 pub struct InternalLogsExporter {
-    internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
+    internal_logs_sender: InternalLogSender,
     sdk_resource: Option<SdkResource>,
 }
 
@@ -49,7 +51,7 @@ impl InternalLogsExporter {
     /// Creates a new instance of the InternalLogsExporter.
     /// internal_logs_sender: The channel sender to send internal logs to the pipeline engine.
     #[must_use]
-    pub fn new(internal_logs_sender: crossbeam_channel::Sender<OtapPayload>) -> Self {
+    pub fn new(internal_logs_sender: InternalLogSender) -> Self {
         InternalLogsExporter {
             internal_logs_sender,
             sdk_resource: None,
@@ -261,7 +263,7 @@ mod tests {
 
     #[test]
     fn test_internal_logs_exporter_export() {
-        let (internal_logs_sender, internal_logs_receiver) = crossbeam_channel::unbounded();
+        let (internal_logs_sender, internal_logs_receiver) = flume::unbounded();
         let mut exporter = InternalLogsExporter::new(internal_logs_sender);
 
         let sdk_resource = SdkResource::builder()

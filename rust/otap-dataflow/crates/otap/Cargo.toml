@@ -17,6 +17,7 @@ arrow.workspace = true
 arrow-ipc.workspace = true
 async-trait.workspace = true
 ciborium.workspace = true
+flume.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 http.workspace = true
@@ -85,7 +86,6 @@ rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
-crossbeam-channel = { workspace = true }
 
 [features]
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:base64", "dep:arc-swap", "dep:notify"]
@@ -108,7 +108,6 @@ experimental-processors = []
 condense-attributes-processor = ["experimental-processors"]
 
 [dev-dependencies]
-flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 rcgen.workspace = true

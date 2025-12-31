@@ -18,6 +18,8 @@ use crate::{
     opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
 };
 
+type InternalLogSender = flume::Sender<OtapPayload>;
+
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
     /// The tokio runtime used to run the OpenTelemetry SDK OTLP exporter.
@@ -32,7 +34,7 @@ impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
     pub fn new(
         config: &TelemetryConfig,
-        internal_logs_sender: crossbeam_channel::Sender<OtapPayload>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
@@ -149,7 +151,7 @@ mod tests {
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let sender = dummy_sender();
         let client = OpentelemetryClient::new(&config, sender)?;
         let meter = global::meter("test-meter");
 
@@ -184,7 +186,7 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let sender = crossbeam_channel::unbounded().0; // Dummy sender for test
+        let sender = dummy_sender();
         let client = OpentelemetryClient::new(&config, sender)?;
         let meter = global::meter("test-meter");
 
@@ -227,5 +229,10 @@ mod tests {
             OpentelemetryClient::to_sdk_value(&array_attr),
             opentelemetry::Value::Array(opentelemetry::Array::I64(vec![1, 2, 3]))
         );
+    }
+
+    /// Returns a dummy internal logs sender for testing.
+    fn dummy_sender() -> InternalLogSender {
+        flume::unbounded().0
     }
 }
