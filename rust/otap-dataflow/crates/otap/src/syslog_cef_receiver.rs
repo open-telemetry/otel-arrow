@@ -1165,7 +1165,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::MpscSender(out_tx),
+                otap_df_engine::local::message::LocalSender::mpsc(out_tx),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1181,7 +1181,7 @@ mod telemetry_tests {
 
             let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(16);
             let ctrl_rx = otap_df_engine::message::Receiver::Local(
-                otap_df_engine::local::message::LocalReceiver::MpscReceiver(ctrl_rx),
+                otap_df_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
             );
             let ctrl_chan = otap_df_engine::local::receiver::ControlChannel::new(ctrl_rx);
 
@@ -1257,7 +1257,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::MpscSender(tx),
+                otap_df_engine::local::message::LocalSender::mpsc(tx),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1273,7 +1273,7 @@ mod telemetry_tests {
 
             let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(8);
             let ctrl_rx = otap_df_engine::message::Receiver::Local(
-                otap_df_engine::local::message::LocalReceiver::MpscReceiver(ctrl_rx),
+                otap_df_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
             );
             let ctrl_chan = otap_df_engine::local::receiver::ControlChannel::new(ctrl_rx);
 
