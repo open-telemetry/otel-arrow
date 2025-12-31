@@ -128,16 +128,16 @@ mod test {
             // generate data and simulate the protocol and compare result
             let logs = OtlpProtoMessage::Logs(fake_otlp_logs(LOG_SIGNAL_COUNT, &registry));
             let logs_output = otel_proto_simulator.simulate_proto(&logs);
-            assert_equivalent(&vec![logs], &vec![logs_output]);
+            assert_equivalent(&[logs], &[logs_output]);
 
             let metrics =
                 OtlpProtoMessage::Metrics(fake_otlp_metrics(METRIC_SIGNAL_COUNT, &registry));
             let metrics_output = otel_proto_simulator.simulate_proto(&metrics);
-            assert_equivalent(&vec![metrics], &vec![metrics_output]);
+            assert_equivalent(&[metrics], &[metrics_output]);
 
             let traces = OtlpProtoMessage::Traces(fake_otlp_traces(TRACE_SIGNAL_COUNT, &registry));
             let traces_output = otel_proto_simulator.simulate_proto(&traces);
-            assert_equivalent(&vec![traces], &vec![traces_output]);
+            assert_equivalent(&[traces], &[traces_output]);
         }
     }
 }
