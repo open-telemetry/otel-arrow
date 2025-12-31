@@ -208,15 +208,15 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             ProcessorWrapper::Local { .. } => {
                 let (sender, receiver) = otap_df_channel::mpsc::Channel::new(100);
                 (
-                    Sender::Local(LocalSender::MpscSender(sender)),
-                    Receiver::Local(LocalReceiver::MpscReceiver(receiver)),
+                    Sender::Local(LocalSender::mpsc(sender)),
+                    Receiver::Local(LocalReceiver::mpsc(receiver)),
                 )
             }
             ProcessorWrapper::Shared { .. } => {
                 let (sender, receiver) = tokio::sync::mpsc::channel(100);
                 (
-                    Sender::Shared(SharedSender::MpscSender(sender)),
-                    Receiver::Shared(SharedReceiver::MpscReceiver(receiver)),
+                    Sender::Shared(SharedSender::mpsc(sender)),
+                    Receiver::Shared(SharedReceiver::mpsc(receiver)),
                 )
             }
         };
@@ -233,11 +233,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let dummy_receiver = match &processor {
             ProcessorWrapper::Local { .. } => {
                 let (_, receiver) = otap_df_channel::mpsc::Channel::new(1);
-                Receiver::Local(LocalReceiver::MpscReceiver(receiver))
+                Receiver::Local(LocalReceiver::mpsc(receiver))
             }
             ProcessorWrapper::Shared { .. } => {
                 let (_, receiver) = tokio::sync::mpsc::channel(1);
-                Receiver::Shared(SharedReceiver::MpscReceiver(receiver))
+                Receiver::Shared(SharedReceiver::mpsc(receiver))
             }
         };
         let _ = processor.set_pdata_receiver(test_node(self.config().name.clone()), dummy_receiver);

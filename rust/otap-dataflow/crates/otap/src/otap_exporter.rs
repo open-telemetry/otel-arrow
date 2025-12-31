@@ -635,9 +635,6 @@ mod tests {
         let config = json!({
             "grpc_endpoint": grpc_endpoint,
             "compression_method": "none",
-            "tls": {
-                "insecure": true
-            }
         });
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
@@ -811,9 +808,6 @@ mod tests {
                 &serde_json::json!({
                     "grpc_endpoint": grpc_endpoint,
                     "compression_method": "none",
-                    "tls": {
-                        "insecure": true
-                    }
                 }),
             )
             .unwrap(),
@@ -824,8 +818,8 @@ mod tests {
 
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)

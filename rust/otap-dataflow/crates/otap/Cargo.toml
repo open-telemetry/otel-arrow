@@ -93,7 +93,7 @@ experimental-exporters = []
 # Experimental exporters
 geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
 azure-monitor-exporter = [
-    "experimental-exporters", 
+    "experimental-exporters",
     "dep:opentelemetry-proto",
     "dep:azure_identity",
     "dep:flate2",
@@ -102,6 +102,9 @@ azure-monitor-exporter = [
     "dep:ahash",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
+# Experimental processors
+experimental-processors = []
+condense-attributes-processor = ["experimental-processors"]
 
 [dev-dependencies]
 flume.workspace = true
