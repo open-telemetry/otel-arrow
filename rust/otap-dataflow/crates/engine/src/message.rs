@@ -106,7 +106,7 @@ impl<T> Clone for Sender<T> {
 impl<T> Sender<T> {
     /// Creates a new local MPSC sender.
     pub fn new_local_mpsc_sender(mpsc_sender: mpsc::Sender<T>) -> Self {
-        Sender::Local(LocalSender::MpscSender(mpsc_sender))
+        Sender::Local(LocalSender::mpsc(mpsc_sender))
     }
 
     /// Sends a message to the channel.
@@ -138,7 +138,7 @@ impl<T> Receiver<T> {
     /// Creates a new local MPMC receiver.
     #[must_use]
     pub fn new_local_mpsc_receiver(mpsc_receiver: mpsc::Receiver<T>) -> Self {
-        Receiver::Local(LocalReceiver::MpscReceiver(mpsc_receiver))
+        Receiver::Local(LocalReceiver::mpsc(mpsc_receiver))
     }
 
     /// Receives a message from the channel.

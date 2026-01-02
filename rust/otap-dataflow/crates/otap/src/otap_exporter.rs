@@ -811,8 +811,8 @@ mod tests {
 
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)

@@ -10,7 +10,7 @@ use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::service::ServiceConfig;
-use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
+use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -118,6 +118,12 @@ pub struct TelemetrySettings {
     /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
     #[serde(default = "default_true")]
     pub tokio_metrics: bool,
+
+    /// Enable capture of channel-level metrics.
+    ///
+    /// When disabled, the engine does not report channel sender/receiver metrics.
+    #[serde(default = "default_true")]
+    pub channel_metrics: bool,
 }
 
 const fn default_true() -> bool {
@@ -129,6 +135,7 @@ impl Default for TelemetrySettings {
         Self {
             pipeline_metrics: true,
             tokio_metrics: true,
+            channel_metrics: true,
         }
     }
 }
@@ -422,7 +429,7 @@ impl PipelineConfigBuilder {
 
     /// Add a node with a given id and kind.
     /// Optionally provide config.
-    pub fn add_node<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_node<S: Into<NodeId>, U: Into<NodeUrn>>(
         mut self,
         id: S,
         kind: NodeKind,
@@ -450,7 +457,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add a receiver node.
-    pub fn add_receiver<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_receiver<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -460,7 +467,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add a processor node.
-    pub fn add_processor<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_processor<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -470,7 +477,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add an exporter node.
-    pub fn add_exporter<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_exporter<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,

@@ -3,6 +3,7 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
+use crate::channel_metrics::ChannelMetricsHandle;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
@@ -38,6 +39,8 @@ pub struct RuntimePipeline<PData: Debug> {
     /// A precomputed map of all node IDs to their Node trait objects (? @@@) for efficient access
     /// Indexed by NodeIndex
     nodes: NodeDefs<PData, PipeNode>,
+    /// Channel metrics handles collected during build.
+    channel_metrics: Vec<ChannelMetricsHandle>,
 }
 
 fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
@@ -75,7 +78,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             processors,
             exporters,
             nodes,
+            channel_metrics: Default::default(),
         }
+    }
+
+    pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
+        self.channel_metrics = channel_metrics;
     }
 
     /// Returns the number of nodes in the pipeline.
@@ -103,6 +111,15 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
+        let RuntimePipeline {
+            config,
+            receivers,
+            processors,
+            exporters,
+            nodes: _nodes,
+            channel_metrics,
+        } = self;
+
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -114,7 +131,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
         // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
         // they can communicate with the runtime pipeline.
-        for exporter in self.exporters {
+        for exporter in exporters {
             control_senders.register(
                 exporter.node_id(),
                 NodeType::Exporter,
@@ -132,7 +149,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                     })
             }));
         }
-        for processor in self.processors {
+        for processor in processors {
             control_senders.register(
                 processor.node_id(),
                 NodeType::Processor,
@@ -146,7 +163,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                     .await
             }));
         }
-        for receiver in self.receivers {
+        for receiver in receivers {
             control_senders.register(
                 receiver.node_id(),
                 NodeType::Receiver,
@@ -167,7 +184,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
         // Create a task to process pipeline control messages, i.e. messages sent from nodes to
         // the pipeline engine.
-        let internal_telemetry = self.config.pipeline_settings().telemetry.clone();
+        let internal_telemetry = config.pipeline_settings().telemetry.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
                 pipeline_key,
@@ -177,6 +194,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 event_reporter,
                 metrics_reporter,
                 internal_telemetry,
+                channel_metrics,
             );
             manager.run().await
         }));
