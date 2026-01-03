@@ -276,7 +276,7 @@ async fn otlp_exporter_connects_through_connect_proxy_eager() {
             ..TlsClientConfig::default()
         }),
         proxy: Some(ProxyConfig {
-            https_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port())),
+            https_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port()).into()),
             ..ProxyConfig::default()
         }),
         ..GrpcClientSettings::default()
@@ -320,7 +320,7 @@ async fn otlp_exporter_connects_through_connect_proxy_lazy() {
             ..TlsClientConfig::default()
         }),
         proxy: Some(ProxyConfig {
-            https_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port())),
+            https_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port()).into()),
             ..ProxyConfig::default()
         }),
         ..GrpcClientSettings::default()
@@ -369,7 +369,7 @@ async fn otlp_exporter_connects_through_connect_proxy_http_endpoint() {
     let settings = GrpcClientSettings {
         grpc_endpoint: format!("http://localhost:{}", srv_addr.port()),
         proxy: Some(ProxyConfig {
-            http_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port())),
+            http_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port()).into()),
             ..ProxyConfig::default()
         }),
         ..GrpcClientSettings::default()
@@ -401,7 +401,7 @@ async fn otlp_exporter_respects_no_proxy() {
     let settings = GrpcClientSettings {
         grpc_endpoint: format!("http://localhost:{}", srv_addr.port()),
         proxy: Some(ProxyConfig {
-            http_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port())),
+            http_proxy: Some(format!("http://{}:{}", proxy_addr.ip(), proxy_addr.port()).into()),
             // Should bypass proxy for localhost
             no_proxy: Some("localhost".to_string()),
             ..ProxyConfig::default()

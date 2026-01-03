@@ -20,6 +20,7 @@ use http::Uri;
 use ipnet::IpNet;
 use serde::Deserialize;
 use socket2::{Socket, TcpKeepalive};
+use std::borrow::Cow;
 use std::env;
 use std::io;
 use std::net::IpAddr;
@@ -27,6 +28,79 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+
+/// A URL-like string that should be treated as sensitive.
+///
+/// `Debug` and `Display` redact credentials by default.
+/// Use [`SensitiveUrl::expose`] when the original value is required.
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(transparent)]
+pub struct SensitiveUrl(String);
+
+impl SensitiveUrl {
+    /// Creates a new sensitive URL wrapper.
+    ///
+    /// Note: this does not validate the URL; validation (if needed) happens at use sites.
+    #[must_use]
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Returns the underlying URL string.
+    ///
+    /// Prefer using `Display`/`Debug` when logging.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    fn redacted(&self) -> Cow<'_, str> {
+        let url = self.expose();
+
+        // Redact credentials in the authority if present.
+        // This intentionally mirrors the existing behavior of `ProxyConfig`'s logging.
+        if let Ok(uri) = url.parse::<Uri>() {
+            if let Some(authority) = uri.authority() {
+                let auth_str = authority.as_str();
+                if let Some((_, host)) = auth_str.rsplit_once('@') {
+                    return Cow::Owned(url.replace(auth_str, &format!("[REDACTED]@{host}")));
+                }
+            }
+        }
+
+        if let Some((_, host)) = url.rsplit_once('@') {
+            return Cow::Owned(format!("[REDACTED]@{host}"));
+        }
+
+        Cow::Borrowed(url)
+    }
+}
+
+impl std::fmt::Display for SensitiveUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.redacted().as_ref())
+    }
+}
+
+impl std::fmt::Debug for SensitiveUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SensitiveUrl")
+            .field(&self.redacted())
+            .finish()
+    }
+}
+
+impl From<String> for SensitiveUrl {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for SensitiveUrl {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
 
 /// Errors that can occur during proxy connection.
 #[derive(Debug, Error)]
@@ -64,18 +138,28 @@ pub enum ProxyError {
 pub struct ProxyConfig {
     /// HTTP proxy URL (e.g., "http://proxy.example.com:3128")
     /// If not set, reads from HTTP_PROXY/http_proxy environment variable.
+    ///
+    /// Note: This is the URL of the proxy server itself. The proxy connection is currently
+    /// plain HTTP (no TLS to the proxy). For HTTPS targets, we still use HTTP CONNECT to
+    /// establish a tunnel and then perform TLS inside the tunnel.
     #[serde(default)]
-    pub http_proxy: Option<String>,
+    pub http_proxy: Option<SensitiveUrl>,
 
-    /// HTTPS proxy URL (e.g., "http://proxy.example.com:3128")
+    /// Proxy URL to use for *HTTPS targets* (e.g., "http://proxy.example.com:3128").
     /// If not set, reads from HTTPS_PROXY/https_proxy environment variable.
+    ///
+    /// Note: Despite the name, this does **not** mean we connect to the proxy over HTTPS.
+    /// It means this proxy is selected when the target scheme is `https`.
+    /// The TLS handshake for the target happens inside the tunnel established via HTTP CONNECT.
     #[serde(default)]
-    pub https_proxy: Option<String>,
+    pub https_proxy: Option<SensitiveUrl>,
 
     /// Fallback proxy URL for all protocols.
     /// If not set, reads from ALL_PROXY/all_proxy environment variable.
+    ///
+    /// Note: This is the proxy server URL (not a signal to use TLS to the proxy).
     #[serde(default)]
-    pub all_proxy: Option<String>,
+    pub all_proxy: Option<SensitiveUrl>,
 
     /// Comma-separated list of hosts that should bypass the proxy.
     /// Supports wildcards (e.g., "*.local,localhost,127.0.0.1").
@@ -92,15 +176,18 @@ impl ProxyConfig {
             http_proxy: env::var("HTTP_PROXY")
                 .or_else(|_| env::var("http_proxy"))
                 .ok()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty())
+                .map(SensitiveUrl::from),
             https_proxy: env::var("HTTPS_PROXY")
                 .or_else(|_| env::var("https_proxy"))
                 .ok()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty())
+                .map(SensitiveUrl::from),
             all_proxy: env::var("ALL_PROXY")
                 .or_else(|_| env::var("all_proxy"))
                 .ok()
-                .filter(|s| !s.is_empty()),
+                .filter(|s| !s.is_empty())
+                .map(SensitiveUrl::from),
             no_proxy: env::var("NO_PROXY")
                 .or_else(|_| env::var("no_proxy"))
                 .ok()
@@ -124,30 +211,10 @@ impl ProxyConfig {
 
 impl std::fmt::Display for ProxyConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redact = |s: &Option<String>| -> String {
-            match s {
-                Some(url) => {
-                    if let Ok(uri) = url.parse::<Uri>() {
-                        if let Some(authority) = uri.authority() {
-                            let auth_str = authority.as_str();
-                            if let Some((_, host)) = auth_str.rsplit_once('@') {
-                                return url.replace(auth_str, &format!("[REDACTED]@{}", host));
-                            }
-                        }
-                    }
-                    if let Some((_, host)) = url.rsplit_once('@') {
-                        return format!("[REDACTED]@{}", host);
-                    }
-                    url.clone()
-                }
-                None => "None".to_string(),
-            }
-        };
-
         f.debug_struct("ProxyConfig")
-            .field("http_proxy", &redact(&self.http_proxy))
-            .field("https_proxy", &redact(&self.https_proxy))
-            .field("all_proxy", &redact(&self.all_proxy))
+            .field("http_proxy", &self.http_proxy)
+            .field("https_proxy", &self.https_proxy)
+            .field("all_proxy", &self.all_proxy)
             .field("no_proxy", &self.no_proxy)
             .finish()
     }
@@ -159,39 +226,29 @@ impl ProxyConfig {
     pub(crate) fn get_proxy_for_uri(&self, uri: &Uri) -> Option<&str> {
         let host = uri.host().unwrap_or("");
 
+        let scheme = uri.scheme_str().unwrap_or("http");
+        let port = uri.port_u16().unwrap_or(match scheme {
+            "https" => 443,
+            _ => 80,
+        });
+
         // Check if host should bypass proxy
-        if self.should_bypass(host) {
-            otap_df_telemetry::otel_debug!("Proxy.Bypass", host = host);
+        if self.should_bypass(host, port) {
+            otap_df_telemetry::otel_debug!("Proxy.Bypass", host = host, port = port);
             return None;
         }
 
         // Select proxy based on scheme
-        let scheme = uri.scheme_str().unwrap_or("http");
-        let proxy_url = match scheme {
-            "https" => self.https_proxy.as_deref().or(self.all_proxy.as_deref()),
-            _ => self.http_proxy.as_deref().or(self.all_proxy.as_deref()),
+        let proxy = match scheme {
+            "https" => self.https_proxy.as_ref().or(self.all_proxy.as_ref()),
+            _ => self.http_proxy.as_ref().or(self.all_proxy.as_ref()),
         };
 
-        if let Some(url) = proxy_url {
+        if let Some(url) = proxy {
             if log::log_enabled!(log::Level::Debug) {
-                // Redact credentials before logging
-                let safe_url = if let Ok(uri) = url.parse::<Uri>() {
-                    if let Some(authority) = uri.authority() {
-                        let auth_str = authority.as_str();
-                        if let Some((_, host)) = auth_str.rsplit_once('@') {
-                            url.replace(auth_str, &format!("[REDACTED]@{}", host))
-                        } else {
-                            url.to_string()
-                        }
-                    } else {
-                        url.to_string()
-                    }
-                } else {
-                    url.to_string()
-                };
                 otap_df_telemetry::otel_debug!(
                     "Proxy.Using",
-                    proxy = safe_url,
+                    proxy = url.to_string(),
                     target = uri.to_string()
                 );
             }
@@ -199,7 +256,7 @@ impl ProxyConfig {
             otap_df_telemetry::otel_debug!("Proxy.None", target = uri.to_string());
         }
 
-        proxy_url
+        proxy.map(|u| u.expose())
     }
 
     /// Checks if a host should bypass the proxy based on NO_PROXY rules.
@@ -211,19 +268,64 @@ impl ProxyConfig {
     /// - "example.com" - exact hostname matching
     /// - "192.168.1.1" - exact IP matching
     /// - "192.168.0.0/16" - CIDR notation for IP ranges
-    fn should_bypass(&self, host: &str) -> bool {
+    /// - "example.com:443" - exact hostname match with a specific port
+    /// - "[::1]:4317" - IPv6 literal match with a specific port
+    fn should_bypass(&self, host: &str, port: u16) -> bool {
         let no_proxy = match &self.no_proxy {
             Some(np) => np,
             None => return false,
         };
 
+        fn split_host_and_port(pattern: &str) -> (Cow<'_, str>, Option<u16>) {
+            // Bracketed IPv6: [::1]:4317
+            if let Some(rest) = pattern.strip_prefix('[') {
+                if let Some(end) = rest.find(']') {
+                    let host = &rest[..end];
+                    let after = &rest[end + 1..];
+                    if let Some(port_str) = after.strip_prefix(':') {
+                        if !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit()) {
+                            if let Ok(p) = port_str.parse::<u16>() {
+                                return (Cow::Borrowed(host), Some(p));
+                            }
+                        }
+                    }
+                    return (Cow::Borrowed(host), None);
+                }
+            }
+
+            // CIDRs never have ports.
+            if pattern.contains('/') {
+                return (Cow::Borrowed(pattern), None);
+            }
+
+            // Hostname/IPv4 with port: example.com:443, 127.0.0.1:4317
+            if let Some((lhs, rhs)) = pattern.rsplit_once(':') {
+                if !lhs.contains(':')
+                    && !rhs.is_empty()
+                    && rhs.chars().all(|c| c.is_ascii_digit())
+                    && rhs.len() <= 5
+                {
+                    if let Ok(p) = rhs.parse::<u16>() {
+                        return (Cow::Borrowed(lhs), Some(p));
+                    }
+                }
+            }
+
+            (Cow::Borrowed(pattern), None)
+        }
+
         // TODO(perf): Pre-parse NO_PROXY rules to avoid allocations in hot path
-        let host_lower = host.to_lowercase();
+        // Normalize host:
+        // - accept bracketed IPv6 literals from `http::Uri::host()` (e.g. "[::1]")
+        // - accept absolute FQDNs with trailing dot (e.g. "example.com.")
+        let host_norm = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .trim_end_matches('.');
+        let host_lower = host_norm.to_lowercase();
 
         // Try to parse host as an IP address for CIDR matching
-        // Handle IPv6 literals which might be wrapped in brackets (e.g., "[::1]")
-        let host_for_ip_parse = host.trim_start_matches('[').trim_end_matches(']');
-        let host_ip = host_for_ip_parse.parse::<IpAddr>().ok();
+        let host_ip = host_norm.parse::<IpAddr>().ok();
 
         for pattern in no_proxy.split(',') {
             let pattern = pattern.trim().to_lowercase();
@@ -231,36 +333,45 @@ impl ProxyConfig {
                 continue;
             }
 
+            let (pattern_host, pattern_port) = split_host_and_port(&pattern);
+            if let Some(pattern_port) = pattern_port {
+                if pattern_port != port {
+                    continue;
+                }
+            }
+
+            let pattern_host = pattern_host.as_ref().trim_end_matches('.');
+
             // Handle "*" wildcard for all hosts
-            if pattern == "*" {
+            if pattern_host == "*" {
                 return true;
             }
 
             // Handle CIDR notation (e.g., "192.168.0.0/16", "10.0.0.0/8")
-            if pattern.contains('/') {
-                if let Ok(net) = pattern.parse::<IpNet>() {
+            if pattern_host.contains('/') {
+                if let Ok(net) = pattern_host.parse::<IpNet>() {
                     if let Some(ip) = host_ip {
                         if net.contains(&ip) {
                             return true;
                         }
                     }
                 } else {
-                    otap_df_telemetry::otel_warn!("Proxy.InvalidCidr", pattern = pattern);
+                    otap_df_telemetry::otel_warn!("Proxy.InvalidCidr", pattern = pattern_host);
                 }
                 continue;
             }
 
             // Handle wildcard prefix patterns like "*.example.com"
-            if let Some(suffix) = pattern.strip_prefix("*.") {
+            if let Some(suffix) = pattern_host.strip_prefix("*.") {
                 if host_lower.ends_with(&format!(".{suffix}")) || host_lower == suffix {
                     return true;
                 }
-            } else if let Some(suffix) = pattern.strip_prefix('.') {
+            } else if let Some(suffix) = pattern_host.strip_prefix('.') {
                 // Handle ".example.com" (matches subdomains and the domain itself)
-                if host_lower.ends_with(&pattern) || host_lower == suffix {
+                if host_lower.ends_with(pattern_host) || host_lower == suffix {
                     return true;
                 }
-            } else if host_lower == pattern {
+            } else if host_lower == pattern_host {
                 // Exact match (hostname or IP)
                 return true;
             }
@@ -282,9 +393,12 @@ impl ProxyConfig {
 
 /// Parses a proxy URL and returns (host, port, auth_header_value).
 fn parse_proxy_url(proxy_url: &str) -> Result<(String, u16, Option<String>), ProxyError> {
-    let uri: Uri = proxy_url
-        .parse()
-        .map_err(|_| ProxyError::InvalidProxyUrl(proxy_url.to_string()))?;
+    // Avoid leaking credentials in error messages.
+    let proxy_url_redacted = SensitiveUrl::new(proxy_url).to_string();
+
+    let uri: Uri = proxy_url.parse().map_err(|_| {
+        ProxyError::InvalidProxyUrl(format!("failed to parse proxy URL ({proxy_url_redacted})"))
+    })?;
 
     // Reject https:// proxy URLs - we don't support TLS to the proxy server itself
     if uri.scheme_str() == Some("https") {
@@ -292,13 +406,15 @@ fn parse_proxy_url(proxy_url: &str) -> Result<(String, u16, Option<String>), Pro
             "https:// proxy URLs are not supported (proxy URL: {}). \
 Use http:// instead - the CONNECT tunnel will still encrypt \
 traffic to the final destination for https:// targets.",
-            proxy_url
+            proxy_url_redacted
         )));
     }
 
     let host = uri
         .host()
-        .ok_or_else(|| ProxyError::InvalidProxyUrl(format!("missing host in {proxy_url}")))?
+        .ok_or_else(|| {
+            ProxyError::InvalidProxyUrl(format!("missing host in proxy URL ({proxy_url_redacted})"))
+        })?
         .to_string();
 
     let port = uri.port_u16().unwrap_or(3128); // Default proxy port
@@ -353,9 +469,11 @@ async fn http_connect_tunnel_on_stream(
         target_host.to_string()
     };
 
+    // TODO(proxy): make User-Agent configurable via ProxyConfig / exporter settings.
     let mut connect_request = format!(
         "CONNECT {formatted_target}:{target_port} HTTP/1.1\r\n\
          Host: {formatted_target}:{target_port}\r\n\
+         User-Agent: otap-dataflow\r\n\
          Connection: Keep-Alive\r\n"
     );
 
@@ -365,15 +483,12 @@ async fn http_connect_tunnel_on_stream(
 
     connect_request.push_str("\r\n");
 
-    if proxy_auth.is_some() {
-        otap_df_telemetry::otel_debug!(
-            "Proxy.ConnectRequest",
-            target = format!("{formatted_target}:{target_port}"),
-            has_auth = true
-        );
-    } else {
-        otap_df_telemetry::otel_debug!("Proxy.ConnectRequest", request = connect_request.trim());
-    }
+    // Avoid logging the raw request to reduce the risk of leaking headers or internal targets.
+    otap_df_telemetry::otel_debug!(
+        "Proxy.ConnectRequest",
+        target = format!("{formatted_target}:{target_port}"),
+        has_auth = proxy_auth.is_some()
+    );
 
     let (reader, mut writer) = stream.into_split();
     writer.write_all(connect_request.as_bytes()).await?;
@@ -389,17 +504,21 @@ async fn http_connect_tunnel_on_stream(
 
     otap_df_telemetry::otel_debug!("Proxy.ConnectResponse", status_line = status_line.trim());
 
-    // Parse "HTTP/1.1 200 Connection established"
-    let parts: Vec<&str> = status_line.trim().splitn(3, ' ').collect();
-    if parts.len() < 2 {
-        return Err(ProxyError::InvalidResponse(format!(
-            "invalid status line: {status_line}"
-        )));
-    }
+    // Parse "HTTP/1.1 200 Connection established".
+    // Be robust to multiple ASCII spaces/tabs between tokens.
+    let mut parts = status_line.trim().split_ascii_whitespace();
+    let _http_version = parts.next();
+    let status_str = parts.next().ok_or_else(|| {
+        ProxyError::InvalidResponse(format!("invalid status line: {status_line}"))
+    })?;
 
-    let status: u16 = parts[1]
+    // The (optional) reason phrase is not required by all proxies.
+    // We keep it only for error reporting.
+    let message = parts.collect::<Vec<_>>().join(" ");
+
+    let status: u16 = status_str
         .parse()
-        .map_err(|_| ProxyError::InvalidResponse(format!("invalid status code: {}", parts[1])))?;
+        .map_err(|_| ProxyError::InvalidResponse(format!("invalid status code: {status_str}")))?;
 
     // Read remaining headers (skip until empty line)
     // Limit the number of headers and their size to prevent potential DoS/memory exhaustion
@@ -437,7 +556,6 @@ async fn http_connect_tunnel_on_stream(
     }
 
     if !(200..300).contains(&status) {
-        let message = parts.get(2).unwrap_or(&"").to_string();
         return Err(ProxyError::ConnectFailed { status, message });
     }
 
@@ -541,7 +659,8 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                     "Proxy.ConnectFailed",
                     host = proxy_host,
                     port = proxy_port,
-                    error = e.to_string()
+                    error_kind = format!("{:?}", e.kind()),
+                    raw_os_error = e.raw_os_error().map(|c| c.to_string()).unwrap_or_default()
                 );
                 ProxyError::ProxyConnectionFailed(e)
             })?;
@@ -589,26 +708,26 @@ mod tests {
     #[test]
     fn test_no_proxy_bypass() {
         let config = ProxyConfig {
-            http_proxy: Some("http://proxy:3128".to_string()),
+            http_proxy: Some("http://proxy:3128".into()),
             https_proxy: None,
             all_proxy: None,
             no_proxy: Some("localhost,*.local,127.0.0.1,.example.com".to_string()),
         };
 
-        assert!(config.should_bypass("localhost"));
-        assert!(config.should_bypass("test.local"));
-        assert!(config.should_bypass("127.0.0.1"));
-        assert!(config.should_bypass("sub.example.com"));
-        assert!(config.should_bypass("example.com"));
-        assert!(!config.should_bypass("example.org"));
-        assert!(!config.should_bypass("proxy.example.org"));
+        assert!(config.should_bypass("localhost", 80));
+        assert!(config.should_bypass("test.local", 80));
+        assert!(config.should_bypass("127.0.0.1", 80));
+        assert!(config.should_bypass("sub.example.com", 80));
+        assert!(config.should_bypass("example.com", 80));
+        assert!(!config.should_bypass("example.org", 80));
+        assert!(!config.should_bypass("proxy.example.org", 80));
     }
 
     #[test]
     fn test_proxy_selection() {
         let config = ProxyConfig {
-            http_proxy: Some("http://http-proxy:3128".to_string()),
-            https_proxy: Some("http://https-proxy:3128".to_string()),
+            http_proxy: Some("http://http-proxy:3128".into()),
+            https_proxy: Some("http://https-proxy:3128".into()),
             all_proxy: None,
             no_proxy: Some("localhost".to_string()),
         };
@@ -629,11 +748,74 @@ mod tests {
     }
 
     #[test]
+    fn test_no_proxy_host_port_matching() {
+        let config = ProxyConfig {
+            http_proxy: None,
+            https_proxy: None,
+            all_proxy: Some("http://proxy:3128".into()),
+            no_proxy: Some("example.com:443,example.net:80,[::1]:4317".to_string()),
+        };
+
+        assert!(config.should_bypass("example.com", 443));
+        assert!(config.should_bypass("example.net", 80));
+
+        let https_default_port: Uri = "https://example.com".parse().unwrap();
+        let https_other_port: Uri = "https://example.com:444".parse().unwrap();
+        let http_default_port: Uri = "http://example.net".parse().unwrap();
+        let ipv6_port: Uri = "http://[::1]:4317".parse().unwrap();
+
+        let host = https_default_port.host().unwrap_or("");
+        let scheme = https_default_port.scheme_str().unwrap_or("http");
+        let derived_port = https_default_port.port_u16().unwrap_or(match scheme {
+            "https" => 443,
+            _ => 80,
+        });
+        assert_eq!(scheme, "https");
+        assert_eq!(host, "example.com");
+        assert_eq!(derived_port, 443);
+        assert!(config.should_bypass(host, derived_port));
+
+        // Default ports are applied based on scheme.
+        assert_eq!(
+            config.get_proxy_for_uri(&https_default_port),
+            None,
+            "https default port should bypass"
+        );
+        assert_eq!(
+            config.get_proxy_for_uri(&https_other_port),
+            Some("http://proxy:3128")
+        );
+        assert_eq!(
+            config.get_proxy_for_uri(&http_default_port),
+            None,
+            "http default port should bypass"
+        );
+        assert_eq!(
+            config.get_proxy_for_uri(&ipv6_port),
+            None,
+            "ipv6 host:port should bypass"
+        );
+    }
+
+    #[test]
+    fn test_no_proxy_trailing_dot_hostname() {
+        let config = ProxyConfig {
+            http_proxy: None,
+            https_proxy: None,
+            all_proxy: Some("http://proxy:3128".into()),
+            no_proxy: Some("example.com".to_string()),
+        };
+
+        let fqdn_with_dot: Uri = "https://example.com.".parse().unwrap();
+        assert_eq!(config.get_proxy_for_uri(&fqdn_with_dot), None);
+    }
+
+    #[test]
     fn test_all_proxy_fallback() {
         let config = ProxyConfig {
             http_proxy: None,
             https_proxy: None,
-            all_proxy: Some("http://all-proxy:3128".to_string()),
+            all_proxy: Some("http://all-proxy:3128".into()),
             no_proxy: None,
         };
 
@@ -685,88 +867,100 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_proxy_url_error_redacts_credentials() {
+        let err = parse_proxy_url("https://user:pass@proxy.example.com:8443").unwrap_err();
+        match err {
+            ProxyError::InvalidProxyUrl(msg) => {
+                assert!(!msg.contains("user:pass"));
+                assert!(msg.contains("[REDACTED]@proxy.example.com"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_wildcard_no_proxy() {
         let config = ProxyConfig {
-            http_proxy: Some("http://proxy:3128".to_string()),
+            http_proxy: Some("http://proxy:3128".into()),
             https_proxy: None,
             all_proxy: None,
             no_proxy: Some("*".to_string()),
         };
 
-        assert!(config.should_bypass("anything.example.com"));
-        assert!(config.should_bypass("localhost"));
+        assert!(config.should_bypass("anything.example.com", 80));
+        assert!(config.should_bypass("localhost", 80));
     }
 
     #[test]
     fn test_no_proxy_cidr_ipv4() {
         let config = ProxyConfig {
-            http_proxy: Some("http://proxy:3128".to_string()),
+            http_proxy: Some("http://proxy:3128".into()),
             https_proxy: None,
             all_proxy: None,
             no_proxy: Some("192.168.0.0/16,10.0.0.0/8,172.16.0.0/12".to_string()),
         };
 
         // Should bypass for IPs in the CIDR ranges
-        assert!(config.should_bypass("192.168.1.1"));
-        assert!(config.should_bypass("192.168.255.254"));
-        assert!(config.should_bypass("10.0.0.1"));
-        assert!(config.should_bypass("10.255.255.255"));
-        assert!(config.should_bypass("172.16.0.1"));
-        assert!(config.should_bypass("172.31.255.255"));
+        assert!(config.should_bypass("192.168.1.1", 80));
+        assert!(config.should_bypass("192.168.255.254", 80));
+        assert!(config.should_bypass("10.0.0.1", 80));
+        assert!(config.should_bypass("10.255.255.255", 80));
+        assert!(config.should_bypass("172.16.0.1", 80));
+        assert!(config.should_bypass("172.31.255.255", 80));
 
         // Should NOT bypass for IPs outside the ranges
-        assert!(!config.should_bypass("8.8.8.8"));
-        assert!(!config.should_bypass("1.2.3.4"));
-        assert!(!config.should_bypass("172.32.0.1"));
-        assert!(!config.should_bypass("192.169.0.1"));
+        assert!(!config.should_bypass("8.8.8.8", 80));
+        assert!(!config.should_bypass("1.2.3.4", 80));
+        assert!(!config.should_bypass("172.32.0.1", 80));
+        assert!(!config.should_bypass("192.169.0.1", 80));
 
         // Hostnames should not match CIDR patterns
-        assert!(!config.should_bypass("example.com"));
+        assert!(!config.should_bypass("example.com", 80));
     }
 
     #[test]
     fn test_no_proxy_cidr_ipv6() {
         let config = ProxyConfig {
-            http_proxy: Some("http://proxy:3128".to_string()),
+            http_proxy: Some("http://proxy:3128".into()),
             https_proxy: None,
             all_proxy: None,
             no_proxy: Some("fe80::/10,::1/128".to_string()),
         };
 
         // Should bypass for IPs in the CIDR ranges
-        assert!(config.should_bypass("fe80::1"));
-        assert!(config.should_bypass("fe80::abcd:1234"));
-        assert!(config.should_bypass("::1"));
+        assert!(config.should_bypass("fe80::1", 80));
+        assert!(config.should_bypass("fe80::abcd:1234", 80));
+        assert!(config.should_bypass("::1", 80));
 
         // Should NOT bypass for IPs outside the ranges
-        assert!(!config.should_bypass("2001:db8::1"));
-        assert!(!config.should_bypass("::2"));
+        assert!(!config.should_bypass("2001:db8::1", 80));
+        assert!(!config.should_bypass("::2", 80));
     }
 
     #[test]
     fn test_no_proxy_mixed_patterns() {
         let config = ProxyConfig {
-            http_proxy: Some("http://proxy:3128".to_string()),
+            http_proxy: Some("http://proxy:3128".into()),
             https_proxy: None,
             all_proxy: None,
             no_proxy: Some("localhost,*.local,192.168.0.0/16,.example.com,127.0.0.1".to_string()),
         };
 
         // Hostname patterns
-        assert!(config.should_bypass("localhost"));
-        assert!(config.should_bypass("test.local"));
-        assert!(config.should_bypass("sub.example.com"));
+        assert!(config.should_bypass("localhost", 80));
+        assert!(config.should_bypass("test.local", 80));
+        assert!(config.should_bypass("sub.example.com", 80));
 
         // CIDR patterns
-        assert!(config.should_bypass("192.168.1.100"));
-        assert!(!config.should_bypass("192.169.1.100"));
+        assert!(config.should_bypass("192.168.1.100", 80));
+        assert!(!config.should_bypass("192.169.1.100", 80));
 
         // Exact IP
-        assert!(config.should_bypass("127.0.0.1"));
+        assert!(config.should_bypass("127.0.0.1", 80));
 
         // Should not match
-        assert!(!config.should_bypass("example.org"));
-        assert!(!config.should_bypass("8.8.8.8"));
+        assert!(!config.should_bypass("example.org", 80));
+        assert!(!config.should_bypass("8.8.8.8", 80));
     }
 
     #[tokio::test]

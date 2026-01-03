@@ -864,7 +864,10 @@ mod tests {
         let settings: GrpcClientSettings = serde_json::from_str(json).unwrap();
         assert!(settings.proxy.is_some());
         let proxy = settings.proxy.as_ref().unwrap();
-        assert_eq!(proxy.http_proxy.as_deref(), Some("http://proxy:3128"));
+        assert_eq!(
+            proxy.http_proxy.as_ref().map(|u| u.expose()),
+            Some("http://proxy:3128")
+        );
         assert_eq!(proxy.no_proxy.as_deref(), Some("localhost"));
     }
 
@@ -873,7 +876,7 @@ mod tests {
         let settings = GrpcClientSettings {
             grpc_endpoint: "http://localhost:4317".to_string(),
             proxy: Some(ProxyConfig {
-                http_proxy: Some("http://explicit-proxy:3128".to_string()),
+                http_proxy: Some("http://explicit-proxy:3128".into()),
                 ..Default::default()
             }),
             ..GrpcClientSettings::default()
@@ -882,7 +885,7 @@ mod tests {
         let effective = settings.effective_proxy_config();
         // Even if env vars are set, explicit should take precedence
         assert_eq!(
-            effective.http_proxy.as_deref(),
+            effective.http_proxy.as_ref().map(|u| u.expose()),
             Some("http://explicit-proxy:3128")
         );
     }
@@ -890,19 +893,19 @@ mod tests {
     #[test]
     fn test_has_proxy_logic() {
         let config = ProxyConfig {
-            http_proxy: Some("http://proxy".to_string()),
+            http_proxy: Some("http://proxy".into()),
             ..Default::default()
         };
         assert!(config.has_proxy());
 
         let config = ProxyConfig {
-            https_proxy: Some("http://proxy".to_string()),
+            https_proxy: Some("http://proxy".into()),
             ..Default::default()
         };
         assert!(config.has_proxy());
 
         let config = ProxyConfig {
-            all_proxy: Some("http://proxy".to_string()),
+            all_proxy: Some("http://proxy".into()),
             ..Default::default()
         };
         assert!(config.has_proxy());
