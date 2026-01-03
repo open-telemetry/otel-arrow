@@ -17,6 +17,7 @@ arrow.workspace = true
 arrow-ipc.workspace = true
 async-trait.workspace = true
 ciborium.workspace = true
+flume.workspace = true
 futures.workspace = true
 futures-timer.workspace = true
 http.workspace = true
@@ -107,7 +108,6 @@ experimental-processors = []
 condense-attributes-processor = ["experimental-processors"]
 
 [dev-dependencies]
-flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 rcgen.workspace = true

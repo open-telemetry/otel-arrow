@@ -58,6 +58,7 @@ pub mod error_exporter;
     feature = "experimental-processors"
 ))]
 pub mod experimental;
+pub mod internal_logs_receiver;
 
 /// testing utilities
 #[cfg(test)]

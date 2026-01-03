@@ -11,11 +11,14 @@ use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProv
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
 };
+use otap_df_pdata::OtapPayload;
 
 use crate::{
     error::Error,
     opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
 };
+
+type InternalLogSender = flume::Sender<OtapPayload>;
 
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
@@ -29,7 +32,10 @@ pub struct OpentelemetryClient {
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
-    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+    pub fn new(
+        config: &TelemetryConfig,
+        internal_logs_sender: InternalLogSender,
+    ) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
@@ -40,7 +46,12 @@ impl OpentelemetryClient {
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        let logger_provider = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
+        let logger_provider = LoggerProvider::configure(
+            sdk_resource,
+            &config.logs,
+            runtime,
+            internal_logs_sender.clone(),
+        )?;
 
         let (logger_provider, runtime) = logger_provider.into_parts();
 
@@ -140,7 +151,8 @@ mod tests {
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config)?;
+        let sender = dummy_sender();
+        let client = OpentelemetryClient::new(&config, sender)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -174,7 +186,8 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let client = OpentelemetryClient::new(&config)?;
+        let sender = dummy_sender();
+        let client = OpentelemetryClient::new(&config, sender)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -216,5 +229,10 @@ mod tests {
             OpentelemetryClient::to_sdk_value(&array_attr),
             opentelemetry::Value::Array(opentelemetry::Array::I64(vec![1, 2, 3]))
         );
+    }
+
+    /// Returns a dummy internal logs sender for testing.
+    fn dummy_sender() -> InternalLogSender {
+        flume::unbounded().0
     }
 }

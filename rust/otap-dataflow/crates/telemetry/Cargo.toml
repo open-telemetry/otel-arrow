@@ -21,6 +21,7 @@ unchecked-arithmetic = []
 [dependencies]
 axum = { workspace = true }
 otap-df-config = { workspace = true }
+otap-df-pdata = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -35,10 +36,12 @@ opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 opentelemetry-stdout = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "logs"] }
-opentelemetry-prometheus = { workspace = true }
+opentelemetry-proto = { workspace = true }
 opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
+prost = { workspace = true }
+opentelemetry-prometheus = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }

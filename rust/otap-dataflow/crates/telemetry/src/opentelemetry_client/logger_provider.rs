@@ -3,6 +3,8 @@
 
 //! Configures the OpenTelemetry logger provider based on the provided configuration.
 
+pub mod internal_exporter;
+
 use opentelemetry_appender_tracing::layer;
 use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
@@ -20,7 +22,7 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
 
-use crate::error::Error;
+use crate::{error::Error, opentelemetry_client::InternalLogSender};
 
 /// Provider for configuring OpenTelemetry Logger.
 pub struct LoggerProvider {
@@ -66,6 +68,7 @@ impl LoggerProvider {
         sdk_resource: Resource,
         logger_config: &LogsConfig,
         initial_runtime: Option<tokio::runtime::Runtime>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<LoggerProvider, Error> {
         let mut sdk_logger_builder = SdkLoggerProvider::builder().with_resource(sdk_resource);
 
@@ -74,8 +77,12 @@ impl LoggerProvider {
         let log_processors = &logger_config.processors;
 
         for processor in log_processors {
-            (sdk_logger_builder, runtime) =
-                Self::configure_log_processor(sdk_logger_builder, processor, runtime)?;
+            (sdk_logger_builder, runtime) = Self::configure_log_processor(
+                sdk_logger_builder,
+                processor,
+                runtime,
+                internal_logs_sender.clone(),
+            )?;
         }
 
         let sdk_logger_provider = sdk_logger_builder.build();
@@ -124,6 +131,7 @@ impl LoggerProvider {
         sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
         processor_config: &otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig,
         runtime: Option<tokio::runtime::Runtime>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<
         (
             opentelemetry_sdk::logs::LoggerProviderBuilder,
@@ -139,6 +147,7 @@ impl LoggerProvider {
                     sdk_logger_builder,
                     batch_config,
                     runtime,
+                    internal_logs_sender,
                 )
             }
         }
@@ -148,6 +157,7 @@ impl LoggerProvider {
         mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
         batch_config: &BatchLogProcessorConfig,
         mut runtime: Option<tokio::runtime::Runtime>,
+        internal_logs_sender: InternalLogSender,
     ) -> Result<
         (
             opentelemetry_sdk::logs::LoggerProviderBuilder,
@@ -164,6 +174,12 @@ impl LoggerProvider {
                     Self::configure_otlp_logs_exporter(sdk_logger_builder, otlp_config, runtime)?;
                 sdk_logger_builder = builder;
                 runtime = rt;
+            }
+            LogBatchProcessorExporterConfig::Internal => {
+                sdk_logger_builder = Self::configure_internal_logs_exporter(
+                    sdk_logger_builder,
+                    internal_logs_sender,
+                )?
             }
         }
         Ok((sdk_logger_builder, runtime))
@@ -245,6 +261,15 @@ impl LoggerProvider {
             .map_err(|e| Error::ConfigurationError(e.to_string()))?;
         Ok(exporter)
     }
+
+    fn configure_internal_logs_exporter(
+        mut sdk_logger_builder: opentelemetry_sdk::logs::LoggerProviderBuilder,
+        internal_logs_sender: InternalLogSender,
+    ) -> Result<opentelemetry_sdk::logs::LoggerProviderBuilder, Error> {
+        let exporter = internal_exporter::InternalLogsExporter::new(internal_logs_sender);
+        sdk_logger_builder = sdk_logger_builder.with_batch_exporter(exporter);
+        Ok(sdk_logger_builder)
+    }
 }
 
 #[cfg(test)]
@@ -265,7 +290,8 @@ mod tests {
                 ),
             ],
         };
-        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let sender = dummy_sender();
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
 
         emit_log();
@@ -293,7 +319,8 @@ mod tests {
                 ),
             ],
         };
-        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let sender = dummy_sender();
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, runtime_option) = logger_provider.into_parts();
 
         assert!(runtime_option.is_some());
@@ -312,7 +339,8 @@ mod tests {
             level: LogLevel::default(),
             processors: vec![],
         };
-        let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
+        let sender = dummy_sender();
+        let logger_provider = LoggerProvider::configure(resource, &logger_config, None, sender)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
 
         emit_log();
@@ -346,5 +374,10 @@ mod tests {
 
     fn emit_log() {
         error!(name: "my-event-name", target: "my-system", event_id = 20, user_name = "otel", user_email = "otel@opentelemetry.io");
+    }
+
+    /// Returns a dummy internal logs sender for testing.
+    fn dummy_sender() -> InternalLogSender {
+        flume::unbounded().0
     }
 }

@@ -8,6 +8,7 @@ use crate::attributes::{
 };
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
@@ -80,6 +81,8 @@ static HOST_ID: LazyLock<Cow<'static, str>> =
 static CONTAINER_ID: LazyLock<Cow<'static, str>> =
     LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
+type InternalLogReceiver = flume::Receiver<OtapPayload>;
+
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
@@ -101,6 +104,7 @@ pub struct PipelineContext {
     node_id: NodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
+    internal_logs_receiver: Option<InternalLogReceiver>,
 }
 
 impl ControllerContext {
@@ -153,6 +157,7 @@ impl PipelineContext {
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
+            internal_logs_receiver: None,
         }
     }
 
@@ -251,6 +256,52 @@ impl PipelineContext {
             node_id,
             node_urn,
             node_kind,
+            internal_logs_receiver: self.internal_logs_receiver.clone(),
         }
+    }
+
+    /// Returns a new pipeline context with the given internal telemetry notifier handle.
+    #[must_use]
+    pub fn with_internal_logs_receiver(&mut self, logs_receiver: InternalLogReceiver) -> Self {
+        Self {
+            controller_context: self.controller_context.clone(),
+            core_id: self.core_id,
+            thread_id: self.thread_id,
+            pipeline_group_id: self.pipeline_group_id.clone(),
+            pipeline_id: self.pipeline_id.clone(),
+            node_id: self.node_id.clone(),
+            node_urn: self.node_urn.clone(),
+            node_kind: self.node_kind,
+            internal_logs_receiver: Some(logs_receiver),
+        }
+    }
+
+    /// Returns the internal logs receiver, if any.
+    #[must_use]
+    pub fn internal_logs_receiver(&self) -> Option<InternalLogReceiver> {
+        self.internal_logs_receiver.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_with_internal_logs_receiver() {
+        let controller_ctx = ControllerContext::new(MetricsRegistryHandle::default());
+
+        let (_internal_logs_sender, internal_logs_receiver) = flume::unbounded();
+
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with(
+                "test_pipeline_group_id".into(),
+                "test_pipeline_id".into(),
+                0,
+                0,
+            )
+            .with_internal_logs_receiver(internal_logs_receiver);
+
+        assert!(pipeline_ctx.internal_logs_receiver().is_some());
     }
 }
