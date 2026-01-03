@@ -144,7 +144,7 @@ grpc_client:
 The `NO_PROXY` variable supports multiple pattern types:
 
 | Pattern | Example | Matches |
-|---------|---------|---------|
+| :--- | :--- | :--- |
 | Wildcard all | `*` | All hosts (disables proxy) |
 | Exact hostname | `localhost` | Exactly "localhost" |
 | Wildcard domain | `*.example.com` | `api.example.com`, `foo.example.com` |
@@ -274,51 +274,3 @@ Example log output:
 - [Proxy Authentication (RFC 7617)](https://datatracker.ietf.org/doc/html/rfc7617)
 - [OpenTelemetry Collector Proxy Docs](https://opentelemetry.io/docs/collector/configuration/#proxy-support)
 - [Tonic Custom Connector Guide](https://docs.rs/tonic/latest/tonic/transport/struct.Endpoint.html#method.connect_with_connector)
-
-## Example End-to-End Flow
-
-```yaml
-# Configuration
-grpc_client:
-  endpoint: "https://otlp.example.com:4317"
-  proxy:
-    https_proxy: "http://user:pass@proxy.corp.com:8080"
-    no_proxy: "localhost,*.internal"
-  tcp_keepalive: 30s
-```
-
-**Execution flow**:
-
-1. **Configuration merge**: Explicit config overrides env variables
-2. **Target resolution**: Extract `otlp.example.com:4317` from endpoint
-3. **Proxy selection**:
-   - Check NO_PROXY: `otlp.example.com` doesn't match `localhost` or `*.internal`
-   - Select HTTPS_PROXY: `http://user:pass@proxy.corp.com:8080`
-4. **Connection**:
-   - TCP connect to `proxy.corp.com:8080`
-   - Apply TCP keepalive (30s interval)
-5. **CONNECT handshake**:
-
-   ```http
-   CONNECT otlp.example.com:4317 HTTP/1.1
-   Host: otlp.example.com:4317
-   User-Agent: otap-dataflow
-   Proxy-Authorization: Basic dXNlcjpwYXNz
-   Connection: Keep-Alive
-   ```
-
-6. **Proxy response**: `HTTP/1.1 200 Connection established`
-7. **TLS handshake** (inside tunnel):
-   - ClientHello with ALPN: h2
-   - TLS negotiation
-   - Encrypted HTTP/2 connection established
-8. **gRPC calls**: Multiplexed over HTTP/2, encrypted via TLS, relayed by proxy
-
-**Logging** (credentials redacted):
-
-```log
-[DEBUG] Proxy.Using proxy=[REDACTED]@proxy.corp.com:8080 target=https://otlp.example.com:4317
-[DEBUG] Proxy.Connecting host=proxy.corp.com port=8080
-[DEBUG] Proxy.Connected
-[DEBUG] Proxy.ConnectRequest target=otlp.example.com:4317 has_auth=true
-```
