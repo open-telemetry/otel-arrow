@@ -32,16 +32,16 @@ The implementation uses the HTTP/1.1 CONNECT method to establish a bi-directiona
 #### Step 1: Tunnel Establishment (The Handshake)
 
 ```
-┌───────────┐                                          ┌───────────┐
-│  Exporter │ ─────── TCP connection ────────────────> │   Proxy   │
-│           │                                          │           │
-│           │ ──── CONNECT backend:4317 HTTP/1.1 ───>  │           │
-│           │ ──── Host: backend:4317 ───────────────> │           │
-│           │ ──── Connection: Keep-Alive ───────────> │           │          ┌──────────┐
-│           │                                          │           │ ─ TCP ─> │ Backend  │
-│           │                                          │           │          └──────────┘
-│           │ <─── HTTP/1.1 200 Connection established │           │
-└───────────┘                                          └───────────┘
++-----------+                                          +-----------+
+|  Exporter | ------- TCP connection ----------------> |   Proxy   |
+|           |                                          |           |
+|           | ---- CONNECT backend:4317 HTTP/1.1 --->  |           |
+|           | ---- Host: backend:4317 ---------------> |           |
+|           | ---- Connection: Keep-Alive -----------> |           |          +----------+
+|           |                                          |           | - TCP -> | Backend  |
+|           |                                          |           |          +----------+
+|           | <--- HTTP/1.1 200 Connection established |           |
++-----------+                                          +-----------+
 ```
 
 #### Step 2: Data Tunnel (Opaque Byte Stream)
@@ -49,28 +49,28 @@ The implementation uses the HTTP/1.1 CONNECT method to establish a bi-directiona
 Once the 200 response is received, the exporter uses the same TCP socket for actual protocol data. The proxy acts as a transparent TCP relay, forwarding bytes without interpretation:
 
 ```
-┌───────────┐       ┌───────────┐       ┌──────────────┐
-│ OTLP/OTAP │  TCP  │   Proxy   │  TCP  │   Backend    │
-│ Exporter  │══════>│  (relays) │══════>│   Server     │
-│           │<══════│           │<══════│              │
-└───────────┘       └───────────┘       └──────────────┘
-          ║                                     ║
-          ╚═════════════════════════════════════╝
++-----------+       +-----------+       +--------------+
+| OTLP/OTAP |  TCP  |   Proxy   |  TCP  |   Backend    |
+| Exporter  |======>|  (relays) |======>|   Server     |
+|           |<======|           |<======|              |
++-----------+       +-----------+       +--------------+
+          ||                                    ||
+          +======================================+
 
      Protocol inside the tunnel (opaque to proxy):
 
      Case 1 - TLS target (https://backend:4317):
-     ┌─────────────────────────────────────────┐
-     │ TLS Handshake (negotiates HTTP/2)      │
-     │ ├─ ALPN: h2                             │
-     │ └─ Encrypted HTTP/2 + gRPC frames       │
-     └─────────────────────────────────────────┘
+     +-----------------------------------------+
+     | TLS Handshake (negotiates HTTP/2)       |
+     | |- ALPN: h2                             |
+     | |- Encrypted HTTP/2 + gRPC frames       |
+     +-----------------------------------------+
 
      Case 2 - Cleartext target (http://backend:4317):
-     ┌─────────────────────────────────────────┐
-     │ HTTP/2 Cleartext (h2c)                  │
-     │ └─ HTTP/2 + gRPC frames (unencrypted)   │
-     └─────────────────────────────────────────┘
+     +-----------------------------------------+
+     | HTTP/2 Cleartext (h2c)                  |
+     | |- HTTP/2 + gRPC frames (unencrypted)   |
+     +-----------------------------------------+
 ```
 
 ### Key Design Points
@@ -182,7 +182,7 @@ For each connection request, the connector:
 
 ### TCP Socket Options
 
-Socket options (nodelay, keepalive) are applied using `socket2` because tokio's `TcpStream` doesn't expose detailed keepalive configuration. This requires a conversion chain: tokio → std → socket2 → std → tokio.
+Socket options (nodelay, keepalive) are applied using `socket2` because tokio's `TcpStream` doesn't expose detailed keepalive configuration. This requires a conversion chain: tokio -> std -> socket2 -> std -> tokio.
 
 **Performance note**: This happens once per connection establishment (not per RPC), so overhead is negligible.
 
