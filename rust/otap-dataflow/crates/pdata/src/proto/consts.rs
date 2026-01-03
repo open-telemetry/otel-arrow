@@ -8,12 +8,24 @@
 pub mod wire_types {
     /// Varint (int32, int64, uint32, uint64, sint32, sint64, bool)
     pub const VARINT: u64 = 0;
+
     /// 64-bit (fixed64, sfixed64, double)
     pub const FIXED64: u64 = 1;
+
     /// Length-delimited (string, bytes, embedded messages)
     pub const LEN: u64 = 2;
+
+    // Tags 3 and 4 have an obsolete definition, will never be seen.
+
     /// 32-bit (fixed32, sfixed32, float)
     pub const FIXED32: u64 = 5;
+
+    /// INVALID maybe used to signal errors. Tags 6 and 7 were never
+    /// defined in protobuf.
+    pub const INVALID: u64 = 7;
+
+    /// The bitmask of a protobuf tag encoding.
+    pub const PROTOBUF_TAG_BITMASK: u64 = 7;
 }
 
 /// field number for OTLP protobuf messages
