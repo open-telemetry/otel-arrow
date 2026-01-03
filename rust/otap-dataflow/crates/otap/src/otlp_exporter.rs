@@ -39,7 +39,7 @@ use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_debug, otel_info};
 use serde::Deserialize;
 use std::future::Future;
 use std::sync::Arc;
@@ -124,15 +124,17 @@ impl Exporter<OtapPdata> for OTLPExporter {
             message = "Starting OTLP Exporter"
         );
 
+        self.config.grpc.log_proxy_info();
+
         let exporter_id = effect_handler.exporter_id();
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        let endpoint = self
+        let channel = self
             .config
             .grpc
-            .build_endpoint_with_tls()
+            .connect_channel_lazy(None)
             .await
             .map_err(|e| {
                 let source_detail = format_error_sources(&e);
@@ -143,8 +145,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     source_detail,
                 }
             })?;
-
-        let channel = endpoint.connect_lazy();
 
         let compression = self.config.grpc.compression_encoding();
         let max_in_flight = self.config.max_in_flight.max(1);
@@ -194,7 +194,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
             let msg = if let Some(msg) = pending_msg.take() {
                 msg
             } else if inflight_exports.is_empty() {
-                msg_chan.recv().await?
+                let msg = msg_chan.recv().await?;
+                otel_debug!(
+                    "Exporter.Receive",
+                    message = "Received message from pipeline"
+                );
+                msg
             } else {
                 let completion_fut = inflight_exports.next_completion().fuse();
                 let recv_fut = msg_chan.recv().fuse();
@@ -213,7 +218,11 @@ impl Exporter<OtapPdata> for OTLPExporter {
                         }
                         continue;
                     }
-                    msg = recv_fut => msg?,
+                    msg = recv_fut => {
+                        let msg = msg?;
+                        otel_debug!("Exporter.Receive", message = "Received message from pipeline");
+                        msg
+                    },
                 }
             };
 
