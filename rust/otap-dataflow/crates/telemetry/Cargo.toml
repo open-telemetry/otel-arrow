@@ -19,6 +19,7 @@ unchecked-index = []
 unchecked-arithmetic = []
 
 [dependencies]
+axum = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-pdata = { workspace = true }
 flume = { workspace = true }
@@ -28,6 +29,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
+prometheus = { workspace = true }
 serde = { workspace = true }
 tonic = { workspace = true, optional = true }
 opentelemetry = { workspace = true }
@@ -39,3 +41,10 @@ opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 prost = { workspace = true }
+opentelemetry-prometheus = { workspace = true }
+opentelemetry-appender-tracing = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
+
+[dev-dependencies]
+tower = { workspace = true }
