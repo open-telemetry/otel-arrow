@@ -2,13 +2,16 @@
 
 ## Overview
 
-This document describes the HTTP CONNECT proxy tunneling implementation for OTLP and OTAP gRPC exporters. The implementation enables telemetry export through corporate HTTP proxies using the standard HTTP/1.1 CONNECT method.
+This document describes the HTTP CONNECT proxy tunneling implementation for OTLP
+and OTAP gRPC exporters. The implementation enables telemetry export through
+corporate HTTP proxies using the standard HTTP/1.1 CONNECT method.
 
 ## Motivation
 
 ### Why Custom Proxy Implementation?
 
-The OTAP dataflow project contains two categories of exporters with different proxy requirements:
+The OTAP dataflow project contains two categories of exporters with different
+proxy requirements:
 
 1. **HTTP-based exporters** (Azure Monitor, Geneva)
    - Use `reqwest` HTTP client
@@ -21,17 +24,20 @@ The OTAP dataflow project contains two categories of exporters with different pr
    - Require custom TCP connectors via `tower::service_fn`
    - Need manual HTTP CONNECT tunnel implementation
 
-This implementation fills the gap for gRPC-based exporters, enabling them to work in enterprise environments where all outbound traffic must traverse HTTP proxies.
+This implementation fills the gap for gRPC-based exporters, enabling them to
+work in enterprise environments where all outbound traffic must traverse HTTP
+proxies.
 
 ## Architecture
 
 ### HTTP CONNECT Tunneling Flow
 
-The implementation uses the HTTP/1.1 CONNECT method to establish a bi-directional tunnel through the proxy:
+The implementation uses the HTTP/1.1 CONNECT method to establish a
+bi-directional tunnel through the proxy:
 
 #### Step 1: Tunnel Establishment (The Handshake)
 
-```
+```text
 +-----------+                                          +-----------+
 |  Exporter | ------- TCP connection ----------------> |   Proxy   |
 |           |                                          |           |
@@ -46,9 +52,11 @@ The implementation uses the HTTP/1.1 CONNECT method to establish a bi-directiona
 
 #### Step 2: Data Tunnel (Opaque Byte Stream)
 
-Once the 200 response is received, the exporter uses the same TCP socket for actual protocol data. The proxy acts as a transparent TCP relay, forwarding bytes without interpretation:
+Once the 200 response is received, the exporter uses the same TCP socket for
+actual protocol data. The proxy acts as a transparent TCP relay, forwarding
+bytes without interpretation:
 
-```
+```text
 +-----------+       +-----------+       +--------------+
 | OTLP/OTAP |  TCP  |   Proxy   |  TCP  |   Backend    |
 | Exporter  |======>|  (relays) |======>|   Server     |
@@ -75,11 +83,16 @@ Once the 200 response is received, the exporter uses the same TCP socket for act
 
 ### Key Design Points
 
-1. **Single TCP connection**: The TCP connection to the proxy carries both the CONNECT handshake and the tunneled gRPC traffic
-2. **Transparent tunneling**: After CONNECT succeeds, the proxy doesn't inspect or modify the tunneled data
-3. **TLS inside tunnel**: For HTTPS targets, TLS handshake happens *inside* the established tunnel
-4. **HTTP/2 multiplexing**: Multiple concurrent gRPC calls multiplex over a single HTTP/2 connection
-5. **Socket options**: TCP settings (nodelay, keepalive) are applied to the proxy connection and affect the tunneled traffic
+1. **Single TCP connection**: The TCP connection to the proxy carries both the
+   CONNECT handshake and the tunneled gRPC traffic
+2. **Transparent tunneling**: After CONNECT succeeds, the proxy doesn't inspect
+   or modify the tunneled data
+3. **TLS inside tunnel**: For HTTPS targets, TLS handshake happens *inside* the
+   established tunnel
+4. **HTTP/2 multiplexing**: Multiple concurrent gRPC calls multiplex over a
+   single HTTP/2 connection
+5. **Socket options**: TCP settings (nodelay, keepalive) are applied to the
+   proxy connection and affect the tunneled traffic
 
 ## Configuration
 
@@ -101,7 +114,8 @@ export ALL_PROXY=http://proxy.corp.com:8080
 export NO_PROXY=localhost,127.0.0.1,*.internal,192.168.0.0/16
 ```
 
-**Note**: Variable names are case-insensitive. Both `HTTP_PROXY` and `http_proxy` are recognized.
+**Note**: Variable names are case-insensitive. Both `HTTP_PROXY` and
+`http_proxy` are recognized.
 
 ### YAML Configuration
 
@@ -142,11 +156,13 @@ The `NO_PROXY` variable supports multiple pattern types:
 | IPv6 with port | `[::1]:4317` | IPv6 localhost on port 4317 |
 
 **Example**:
+
 ```bash
 NO_PROXY="localhost,*.internal,192.168.0.0/16,10.0.0.0/8,example.com:8080"
 ```
 
 This bypasses proxy for:
+
 - `localhost`
 - Any host ending in `.internal`
 - All private IPs in 192.168.0.0/16 and 10.0.0.0/8
@@ -160,7 +176,8 @@ Basic authentication is supported via credentials in the proxy URL:
 export HTTP_PROXY=http://username:password@proxy.corp.com:8080
 ```
 
-**Security note**: Credentials are redacted in logs and error messages using the `SensitiveUrl` type.
+**Security note**: Credentials are redacted in logs and error messages using the
+`SensitiveUrl` type.
 
 ## Implementation
 
@@ -174,6 +191,7 @@ let channel = endpoint.connect_with_connector(connector).await?;
 ```
 
 For each connection request, the connector:
+
 1. Checks if proxy should be used (based on target URI and NO_PROXY rules)
 2. Establishes TCP connection (to proxy or direct)
 3. Performs CONNECT handshake if using proxy
@@ -182,18 +200,24 @@ For each connection request, the connector:
 
 ### TCP Socket Options
 
-Socket options (nodelay, keepalive) are applied using `socket2` because tokio's `TcpStream` doesn't expose detailed keepalive configuration. This requires a conversion chain: tokio -> std -> socket2 -> std -> tokio.
+Socket options (nodelay, keepalive) are applied using `socket2` because tokio's
+`TcpStream` doesn't expose detailed keepalive configuration. This requires a
+conversion chain: tokio -> std -> socket2 -> std -> tokio.
 
-**Performance note**: This happens once per connection establishment (not per RPC), so overhead is negligible.
+**Performance note**: This happens once per connection establishment (not per
+RPC), so overhead is negligible.
 
 ### Security Measures
 
-1. **Credential redaction**: `SensitiveUrl` type automatically redacts credentials in logs and error messages
+1. **Credential redaction**: `SensitiveUrl` type automatically redacts
+   credentials in logs and error messages
 2. **Structured logging**: Uses structured fields instead of raw request strings
-3. **Limited error exposure**: Logs only `ErrorKind` and `raw_os_error` from IO errors
+3. **Limited error exposure**: Logs only `ErrorKind` and `raw_os_error` from IO
+   errors
 
 Example log output:
-```
+
+```log
 [DEBUG] Proxy.Using proxy=[REDACTED]@proxy.corp.com:8080 target=https://api.example.com:4317
 [DEBUG] Proxy.ConnectRequest target=api.example.com:4317 has_auth=true
 [DEBUG] Proxy.Connected
@@ -207,7 +231,8 @@ Example log output:
    - Only `http://` proxy URLs are supported
    - Connection to the proxy server itself is always plain HTTP
    - TLS is supported for the target endpoint (inside the tunnel)
-   - See [#1710](https://github.com/open-telemetry/otel-arrow/issues/1710) for HTTPS proxy support
+   - See [#1710](https://github.com/open-telemetry/otel-arrow/issues/1710) for
+     HTTPS proxy support
 
 2. **SOCKS proxy not supported**
    - Only HTTP CONNECT method is supported
@@ -215,17 +240,23 @@ Example log output:
 
 ### Performance Considerations
 
-- **Connection establishment**: Proxy adds one additional round-trip (CONNECT handshake)
-- **Hot path**: Not a hot path - connection is established once and reused for all RPCs via HTTP/2 multiplexing
-- **NO_PROXY parsing**: Currently parses patterns on each request ([#1711](https://github.com/open-telemetry/otel-arrow/issues/1711) tracks optimization)
+- **Connection establishment**: Proxy adds one additional round-trip (CONNECT
+  handshake)
+- **Hot path**: Not a hot path - connection is established once and reused for
+  all RPCs via HTTP/2 multiplexing
+- **NO_PROXY parsing**: Currently parses patterns on each request
+  ([#1711](https://github.com/open-telemetry/otel-arrow/issues/1711) tracks
+  optimization)
 
 ## Future Enhancements
 
-1. **HTTPS proxy support** ([#1710](https://github.com/open-telemetry/otel-arrow/issues/1710))
+1. **HTTPS proxy support**
+   ([#1710](https://github.com/open-telemetry/otel-arrow/issues/1710))
    - TLS connection to proxy server
    - Required for some enterprise environments
 
-2. **NO_PROXY pre-parsing** ([#1711](https://github.com/open-telemetry/otel-arrow/issues/1711))
+2. **NO_PROXY pre-parsing**
+   ([#1711](https://github.com/open-telemetry/otel-arrow/issues/1711))
    - Parse patterns once at startup
    - Eliminate allocations in request path
 
@@ -267,13 +298,15 @@ grpc_client:
    - TCP connect to `proxy.corp.com:8080`
    - Apply TCP keepalive (30s interval)
 5. **CONNECT handshake**:
-   ```
+
+   ```http
    CONNECT otlp.example.com:4317 HTTP/1.1
    Host: otlp.example.com:4317
    User-Agent: otap-dataflow
    Proxy-Authorization: Basic dXNlcjpwYXNz
    Connection: Keep-Alive
    ```
+
 6. **Proxy response**: `HTTP/1.1 200 Connection established`
 7. **TLS handshake** (inside tunnel):
    - ClientHello with ALPN: h2
@@ -282,7 +315,8 @@ grpc_client:
 8. **gRPC calls**: Multiplexed over HTTP/2, encrypted via TLS, relayed by proxy
 
 **Logging** (credentials redacted):
-```
+
+```log
 [DEBUG] Proxy.Using proxy=[REDACTED]@proxy.corp.com:8080 target=https://otlp.example.com:4317
 [DEBUG] Proxy.Connecting host=proxy.corp.com port=8080
 [DEBUG] Proxy.Connected
