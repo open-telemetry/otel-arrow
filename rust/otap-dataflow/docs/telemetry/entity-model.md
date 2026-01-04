@@ -108,7 +108,11 @@ Attributes:
 - `channel.mode`: Concurrency mode of the channel ("local" or "shared").
 - `channel.type`: Channel type ("mpsc", "mpmc", "spsc", "spmc").
 - `channel.impl`: Channel implementation ("tokio", "flume", "internal").
+- `channel.sender.out.port`: Output port of the sender node.
 
 The `channel.id` format depends on the channel kind:
-- Control Channel: `{node.id}:control`
-- PData Channel: `{source_node.id}:{out_port}`
+- Control Channel: `control:{node.id}`
+- PData Channel: `pdata:{source_node.id}:{out_port}`
+
+Notes: `channel.sender.out.port` is not yet set but will be added later. The
+`channel.id` format is not yet enforced but will be standardized in the future.
