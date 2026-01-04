@@ -24,8 +24,7 @@ to be studied further at a later time.
 
 > Note: An RFC on the same topic was issued for the Go Collector. This document
 > is a refinement of
->
-that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+> that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
 ## System Overview
 
@@ -63,8 +62,11 @@ Each node features:
 > defined here, it is possible to envision an extremely efficient implementation
 > since we control all the dataflow nodes involved in an end-to-end trace.
 
-**Metrics are derived from spans before sampling**, ensuring high-fidelity
-monitoring regardless of trace sampling.
+~~**Metrics are derived from spans before sampling**, ensuring high-fidelity
+monitoring regardless of trace sampling.~~ This approach has not been adopted
+for the moment because it would involve too much memory allocation on the hot
+path.
+
 
 ## Mapping OTEL Tracing Primitives to the DAG
 
