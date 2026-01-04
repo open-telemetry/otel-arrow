@@ -102,6 +102,10 @@ Channels connect nodes within a pipeline. There are two types of channels:
 - PData Channel: Used for ingesting batches of telemetry signals (metrics, logs,
   events, spans)
 
+Channels are composed of 2 sub-entities: sender and receiver. These 2
+sub-entities share the same `channel.id`, attribute set, and differ only by the
+metric set they emit (e.g. `channel.sender` vs `channel.receiver`).
+
 Attributes:
 - `channel.id`: Unique channel identifier (in scope of the pipeline).
 - `channel.kind`: Channel payload kind ("control" or "pdata").
