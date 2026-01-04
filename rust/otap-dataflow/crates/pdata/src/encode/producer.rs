@@ -11,63 +11,116 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use arrow::ipc::writer::StreamWriter;
 use arrow_ipc::CompressionType;
-use arrow_ipc::writer::{DictionaryHandling, IpcWriteOptions};
+use arrow_ipc::writer::{
+    CompressionContext, DictionaryHandling, DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
+    write_message,
+};
 
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otap::schema::SchemaIdBuilder;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 
+
 /// handles serializing the stream of record batches for some payload type
 struct StreamProducer {
-    stream_writer: StreamWriter<Cursor<Vec<u8>>>,
     schema_id: i64,
+
+    buffer: Cursor<Vec<u8>>,
+
+    dictionary_tracker: DictionaryTracker,
+
+    data_gen: IpcDataGenerator,
+
     schema: SchemaRef,
-    ipc_write_options: IpcWriteOptions,
+
+    compression_context: CompressionContext,
 }
 
 impl StreamProducer {
     fn try_new(
         schema: SchemaRef,
         schema_id: i64,
-        ipc_write_options: IpcWriteOptions,
+        ipc_write_options: &IpcWriteOptions,
     ) -> Result<Self> {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
-        let stream_writer = StreamWriter::try_new_with_options(cursor, &schema, ipc_write_options.clone())
-            .map_err(|e| Error::BuildStreamWriter { source: e })?;
 
-        Ok(Self {
-            stream_writer,
+        // write the IPC stream header
+
+        let mut instance = Self {
+            buffer: cursor,
+            compression_context: CompressionContext::default(),
+            dictionary_tracker: DictionaryTracker::new(false),
+            data_gen: IpcDataGenerator::default(),
             schema_id,
             schema,
-            ipc_write_options,
-        })
+        };
+        instance.write_stream_header(ipc_write_options)?;
+
+        Ok(instance)
     }
 
-    fn serialize_batch(&mut self, record_batch: &RecordBatch) -> Result<Vec<u8>> {
-        self.stream_writer
-            .write(record_batch)
+    fn write_stream_header(&mut self, ipc_write_options: &IpcWriteOptions) -> Result<()> {
+        let encoded_message = self.data_gen.schema_to_bytes_with_dictionary_tracker(
+            self.schema.as_ref(), 
+            &mut self.dictionary_tracker, 
+            &ipc_write_options,
+        );
+
+        _ = write_message(&mut self.buffer, encoded_message, &ipc_write_options)
             .map_err(|e| Error::WriteRecordBatch { source: e })?;
-        let cursor = self.stream_writer.get_mut();
-        let pos = cursor.position() as usize;
-        let result = cursor.get_ref()[..pos].to_vec();
-        cursor.set_position(0);
+
+        Ok(())
+    }
+
+    fn write_batch(&mut self, ipc_write_options: &IpcWriteOptions, record_batch: &RecordBatch) -> Result<()> {
+        let (encoded_dictionaries, encoded_message) = self
+            .data_gen
+            .encode(
+                record_batch,
+                &mut self.dictionary_tracker,
+                ipc_write_options,
+                &mut self.compression_context,
+            )
+            .expect("Not configured to error on dictionary replacement");
+
+        for encoded_dict in encoded_dictionaries {
+            _ = write_message(&mut self.buffer, encoded_dict, ipc_write_options)
+                .map_err(|e| Error::WriteRecordBatch { source: e })?;
+        }
+        _ = write_message(&mut self.buffer, encoded_message, ipc_write_options)
+            .map_err(|e| Error::WriteRecordBatch { source: e })?;
+
+        Ok(())
+    }
+
+    fn serialize_batch(
+        &mut self,
+        ipc_write_options: &IpcWriteOptions,
+        record_batch: &RecordBatch,
+    ) -> Result<Vec<u8>> {
+        self.write_batch(ipc_write_options, record_batch)?;
+        
+        // copy serialized data from buffer and return it, while resetting buffer
+        let pos = self.buffer.position() as usize;
+        let result = self.buffer.get_ref()[..pos].to_vec();
+        self.buffer.set_position(0);
+
         Ok(result)
     }
 
-    fn reset_stream(&mut self) -> Result<()> {
-        self.stream_writer.finish().unwrap();
-        // self.stream_writer.finish();
-        let mut buf = Vec::new();
-        let cursor = self.stream_writer.get_ref();
-        let other_buf = cursor.get_ref();
-        buf.extend_from_slice(other_buf);
-        let cursor = Cursor::new(buf);
-        let stream_writer = StreamWriter::try_new_with_options(cursor, &self.schema, self.ipc_write_options.clone())
-            .map_err(|e| Error::BuildStreamWriter { source: e })?;
-        self.stream_writer = stream_writer;
+    fn reset_stream(&mut self, ipc_write_options: &IpcWriteOptions) -> Result<()> {
+        // reset buffer
+        self.buffer.set_position(0);
 
+        // reset dictionary tracker ...
+        // TODO we should eventually add a method to the dictionary tracker to reset it so we can
+        // reuse the existing instance instead of creating a new one and avoid extra allocations
+        self.dictionary_tracker = DictionaryTracker::new(false);
+
+        self.write_stream_header(ipc_write_options)?;
+        
         Ok(())
     }
 }
@@ -202,7 +255,7 @@ impl Producer {
                     let new_producer = StreamProducer::try_new(
                         schema,
                         payload_schema_id,
-                        self.ipc_write_options.clone(),
+                        &self.ipc_write_options,
                     )?;
 
                     // cleanup previous stream producer if any that have the same ArrowPayloadType.
@@ -221,7 +274,7 @@ impl Producer {
                 }
             };
 
-            let serialized_rb = stream_producer.serialize_batch(record_batch)?;
+            let serialized_rb = stream_producer.serialize_batch(&self.ipc_write_options, record_batch)?;
             arrow_payloads.push(ArrowPayload {
                 schema_id: format!("{}", stream_producer.schema_id),
                 r#type: *payload_type as i32,
@@ -244,7 +297,10 @@ impl Producer {
     pub fn reset_streams(&mut self) -> Result<()> {
         for producer in self.stream_producers.iter_mut() {
             if let Some(producer) = producer {
-                producer.producer.reset_stream()?;
+                producer.producer.reset_stream(&self.ipc_write_options)?;
+                
+                // increment the schema_id, which will signal to the consumer that it's a new stream
+                producer.producer.schema_id += 1;
             }
         }
 
