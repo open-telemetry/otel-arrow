@@ -34,7 +34,7 @@ project, but a shared reference for how to introduce and evolve telemetry:
 
 - [System Metrics Guide](metrics-guide.md)
 - [System Events Guide](events-guide.md)
-- [System Traces Proposal](tracing-proposal.md)
+- [System Traces Proposal](tracing-proposal.md) (not yet implemented)
 
 ## Implementation Details
 
