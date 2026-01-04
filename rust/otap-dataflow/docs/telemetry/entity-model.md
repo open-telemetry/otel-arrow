@@ -116,3 +116,40 @@ The `channel.id` format depends on the channel kind:
 
 Notes: `channel.sender.out.port` is not yet set but will be added later. The
 `channel.id` format is not yet enforced but will be standardized in the future.
+
+## Stability and Identity Guarantees
+
+Unless noted otherwise, identifiers are stable for the lifetime of their entity
+and may change on restart or reconfiguration.
+
+- `service.instance.id`: Unique per process start (changes on restart).
+- `service.name`: Stable per deployment; not guaranteed unique.
+- `host.name`: Human-readable hostname; not guaranteed globally unique and may
+  change if the host is renamed.
+- `container.id`: Stable for the container lifetime.
+- `process.pid`, `process.creation.time`: Stable for the process lifetime.
+- `numa_node.logical_number`, `cpu.logical_number`: Stable for a host boot; may
+  change with CPU or NUMA reconfiguration.
+- `thread.id`: Stable for the thread lifetime; may be reused after thread exit.
+- `pipeline_group.id`, `pipeline.id`, `node.id`: Stable across configuration
+  reloads; intended to remain consistent for the same logical pipeline graph.
+- `channel.id`: Identifies the source + output port only and is stable across
+  configuration reloads as long as the source node id and port are unchanged.
+- `channel.sender.out.port`: Stable across configuration reloads for a given
+  pipeline graph.
+
+## Entity Relationships
+
+Relationships are implicit and expressed through co-located attribute sets on
+the same signal. The entity model can be read as a containment chain plus a DAG
+of channels.
+
+Containment chain:
+Service -> Process -> Execution Engine -> Pipeline Group -> Pipeline -> Node
+
+Channels connect nodes:
+- `channel.id` identifies the source node + output port only; fan-out receivers
+  share the same `channel.id`.
+- Node identity is carried by the `node.*` attributes on each signal.
+- If explicit endpoint roles are needed, add a `channel.endpoint.role` attribute
+  (sender|receiver) or derive role from metric names (send/recv).
