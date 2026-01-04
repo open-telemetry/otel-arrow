@@ -151,5 +151,5 @@ Channels connect nodes:
 - `channel.id` identifies the source node + output port only; fan-out receivers
   share the same `channel.id`.
 - Node identity is carried by the `node.*` attributes on each signal.
-- If explicit endpoint roles are needed, add a `channel.endpoint.role` attribute
-  (sender|receiver) or derive role from metric names (send/recv).
+- Endpoint role is implied by the metric set (e.g. `channel.sender` vs
+  `channel.receiver`), not by a channel attribute.
