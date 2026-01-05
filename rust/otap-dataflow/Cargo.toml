@@ -37,9 +37,12 @@ thiserror.workspace = true
 quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
-mimalloc.workspace = true
-tikv-jemallocator.workspace = true
+mimalloc = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+sysinfo.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 
 [workspace.dependencies]
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
@@ -48,11 +51,14 @@ otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
+data_engine_expressions = { path = "../experimental/query_engine/expressions" }
+data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
 
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
 arrow = { version = "57.0", features=["prettyprint"] }
+arrow-buffer = { version = "57.0" }
 arrow-ipc = { version = "57.0", features=["zstd"] }
 arrow-schema = { version = "57.0" }
 arrow-array = { version = "57.0" }
@@ -90,6 +96,7 @@ mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
 tikv-jemallocator = { version = "0.6.1" }
 tikv-jemalloc-ctl = { version = "0.6.1" }
+memmap2 = "0.9"
 nix = { version = "0.30.1", features = ["process", "signal", "fs"] }
 notify = "8.0"  # Uses platform-native backend: inotify (Linux), kqueue (macOS), ReadDirectoryChanges (Windows)
 num_enum = "0.7"
@@ -101,12 +108,14 @@ opentelemetry-proto = { version = "0.31", default-features = false, features = [
 opentelemetry_sdk = "0.31.0"
 opentelemetry-stdout = "0.31.0"
 opentelemetry-otlp = "0.31.0"
+opentelemetry-prometheus = "0.31.0"
 parking_lot = "0.12.5"
 paste = "1"
 parquet = { version = "57.0", default-features = false, features = ["arrow", "async", "object_store"]}
 portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
+prometheus = "0.14.0"
 prost = "0.14"
 quote = "1.0"
 rand = "0.9.2"
@@ -127,7 +136,9 @@ simdutf8 = "0.1.5"
 slotmap = "1.0.7"
 smallvec = { version = "1.15" , features = ["union"] }
 socket2 = { version = "0.6.1", features = ["all"] }
+ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
+sysinfo = "0.37"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
@@ -149,6 +160,7 @@ tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 tower = "0.5.2"
 tower-service = "0.3"
+hyper-util = "0.1.17"
 trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
@@ -167,12 +179,15 @@ cpu-time = "1.0.0"
 azure_core = {version = "0.30.1", default-features = false }
 azure_identity = {version = "0.30.0", default-features = false }
 flate2 = "1.1.5"
-reqwest = { version = "0.12.24", default-features = false }
+reqwest = { version = "0.13.1", default-features = false }
 time = "0.3.44"
 wiremock = "0.6.5"
 
 [features]
-default = []
+# ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
+default = ["jemalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
@@ -185,6 +200,9 @@ experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 experimental-exporters = ["otap-df-otap/experimental-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
+# Experimental processors (opt-in)
+experimental-processors = ["otap-df-otap/experimental-processors"]
+condense-attributes-processor = ["otap-df-otap/condense-attributes-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints
@@ -193,6 +211,7 @@ rust_2021_compatibility = { level = "warn", priority = -1 }
 rust_2024_compatibility = { level = "warn", priority = -1 }
 future_incompatible = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }
 
 # Strict safety & quality standards
 missing_docs = "deny"

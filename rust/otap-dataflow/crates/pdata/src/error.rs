@@ -100,19 +100,19 @@ pub enum Error {
     #[error("Unsupported payload type, got: {}", actual)]
     UnsupportedPayloadType { actual: i32 },
 
-    #[error("Failed to build stream reader")]
+    #[error("Failed to build stream reader: {}", source)]
     BuildStreamReader { source: ArrowError },
 
-    #[error("Failed to build stream writer")]
+    #[error("Failed to build stream writer: {}", source)]
     BuildStreamWriter { source: ArrowError },
 
-    #[error("Failed to read record batch")]
+    #[error("Failed to read record batch: {}", source)]
     ReadRecordBatch { source: ArrowError },
 
-    #[error("Failed to write record batch")]
+    #[error("Failed to write record batch {}", source)]
     WriteRecordBatch { source: ArrowError },
 
-    #[error("Failed to batch OTAP data")]
+    #[error("Failed to batch OTAP data: {}", source)]
     Batching { source: ArrowError },
 
     #[error("Batch is empty")]

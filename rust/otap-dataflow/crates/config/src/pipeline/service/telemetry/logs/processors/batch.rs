@@ -3,15 +3,21 @@
 
 //! Log processors batch level configurations.
 
+pub mod otlp;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::pipeline::service::telemetry::logs::processors::batch::otlp::OtlpExporterConfig;
 
 /// Configuration for the batch log processor exporter.
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub enum LogBatchProcessorExporterConfig {
     /// Console log exporter
     Console,
-    // TODO: Add OTLP exporter.
+
+    /// OTLP log exporter
+    Otlp(OtlpExporterConfig),
 }
 
 impl<'de> Deserialize<'de> for LogBatchProcessorExporterConfig {
@@ -44,7 +50,11 @@ impl<'de> Deserialize<'de> for LogBatchProcessorExporterConfig {
                         let _: de::IgnoredAny = map.next_value()?;
                         Ok(LogBatchProcessorExporterConfig::Console)
                     }
-                    _ => Err(de::Error::unknown_variant(&key, &["console"])),
+                    "otlp" => {
+                        let otlp_config: OtlpExporterConfig = map.next_value()?;
+                        Ok(LogBatchProcessorExporterConfig::Otlp(otlp_config))
+                    }
+                    _ => Err(de::Error::unknown_variant(&key, &["console", "otlp"])),
                 }
             }
         }
@@ -58,13 +68,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_log_batch_processor_exporter_config_deserialize() {
+    fn test_log_batch_processor_console_exporter_config_deserialize()
+    -> Result<(), serde_yaml::Error> {
         let yaml_str = r#"
             console:
             "#;
-        let config: LogBatchProcessorExporterConfig = serde_yaml::from_str(yaml_str).unwrap();
-        match config {
-            LogBatchProcessorExporterConfig::Console => {}
-        }
+        let config: LogBatchProcessorExporterConfig = serde_yaml::from_str(yaml_str)?;
+        let LogBatchProcessorExporterConfig::Console = config else {
+            panic!("Expected console exporter config");
+        };
+        Ok(())
+    }
+
+    #[test]
+    fn test_log_batch_processor_otlp_exporter_config_deserialize() -> Result<(), serde_yaml::Error>
+    {
+        let yaml_str = r#"
+            otlp:
+              endpoint: "http://localhost:4317"
+            "#;
+        let config: LogBatchProcessorExporterConfig = serde_yaml::from_str(yaml_str)?;
+        let LogBatchProcessorExporterConfig::Otlp(_) = config else {
+            panic!("Expected OTLP exporter config");
+        };
+        Ok(())
     }
 }

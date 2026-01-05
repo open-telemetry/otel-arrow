@@ -7,17 +7,12 @@ on:
       - cron: '0 10 * * *'  # runs every day at 10 AM UTC
     workflow_dispatch:
 
-# Cancel in-progress runs on new commits to same PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
         steps:
         - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+          uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
           with:
             egress-policy: audit
 
@@ -92,22 +87,22 @@ jobs:
         - name: Run syslog performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/syslog-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-docker.yaml
 
         - name: Run backpressure performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/backpressure-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/backpressure-docker.yaml
 
         - name: Run filter performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/filter-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/filter-docker.yaml
 
         - name: Run filter performance test otelcol log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/otelcol-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
 
         - name: Upload syslog results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -180,63 +175,19 @@ jobs:
 
           - name: Consolidate syslog benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find syslog_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find syslog_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > syslog_output.json
-
-              echo "Consolidated benchmark data:"
-              cat syslog_output.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
 
           - name: Consolidate backpressure benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find backpressure_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find backpressure_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > backpressure_output.json
-
-              echo "Consolidated benchmark data:"
-              cat backpressure_output.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh backpressure_results backpressure_output.json
 
           - name: Consolidate filter benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find filter_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find filter_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > filter_output.json
-
-              echo "Consolidated benchmark data:"
-              cat filter_output.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
 
           - name: Consolidate otelcol filter benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find filter_otelcol_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find filter_otelcol_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > filter_otelcol_output.json
-
-              echo "Consolidated benchmark data:"
-              cat filter_otelcol_output.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
 
           - name: Update benchmark data
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7

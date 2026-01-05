@@ -301,12 +301,7 @@ where
             MapSelector::KeyOrKeyPattern(s) => {
                 let mut value = execute_scalar_expression(execution_context, s)?;
 
-                if value.copy_if_borrowed_from_target(execution_context, target) {
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        target,
-                        || format!("Copied the resolved key or pattern value '{value}' into temporary storage because the value came from the mutable target"));
-                }
+                value.copy_if_borrowed_from_target(execution_context, target);
 
                 let value_type = value.get_value_type();
 
@@ -356,12 +351,7 @@ where
     if let Some(selector) = selectors.next() {
         let mut value = execute_scalar_expression(execution_context, selector)?;
 
-        if value.copy_if_borrowed_from_target(execution_context, target) {
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                target,
-                || format!("Copied the resolved accessor value '{value}' into temporary storage because the value came from the mutable target"));
-        }
+        value.copy_if_borrowed_from_target(execution_context, target);
 
         let value_type = value.get_value_type();
 

@@ -9,7 +9,7 @@ without data loss.
 ## Proposed Solution: Quiver
 
 We propose building Quiver: a standalone, embeddable Arrow-based segment store
-packaged as a reusable Rust crate. Quiver *does not exist yet*; this document
+packaged as a reusable Rust crate. Quiver *is not fully implemented yet*; this document
 defines its initial design, scope, and open questions. While it will be
 developed first for `otap-dataflow`, we intend to keep it decoupled so it can
 integrate into other telemetry pipelines or streaming systems that need durable
@@ -22,11 +22,12 @@ value: a fixed set of payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`,
 
 ### Core Concepts
 
-**Segment Store**: Immutable Arrow IPC files containing batches of telemetry.
-Each segment:
+**Segment Store**: Immutable files containing multiple Arrow IPC file streams
+with batches of telemetry.
+Each segment file:
 
-- Groups multiple `RecordBundle` arrivals (8-64MB target size) and persists the
-  per-slot Arrow streams they reference.
+- Groups multiple `RecordBundle` arrivals (32MB default target size) and persists
+ the per-slot Arrow streams they reference.
 - Supports many payload types and evolving schemas inside the same segment via
   a stream directory + batch manifest.
 - Contains metadata: time ranges, signal type (via adapter), schema fingerprints,
@@ -458,6 +459,48 @@ Quiver segments are containers around Arrow IPC streams plus a manifest
 that describes how those streams reassemble back into the `RecordBundle`
 abstraction used by the embedding pipeline.
 
+#### Why a Custom Format Instead of Plain Arrow IPC?
+
+Arrow IPC (both streaming and file formats) requires all `RecordBatch`es in a
+single stream to share the same schema. This constraint conflicts with OTAP's
+data model in several ways:
+
+1. **Multiple payload types per bundle**: Each `RecordBundle` (OTAP batch)
+   contains multiple payload slots (`Logs`, `LogAttrs`, `ScopeAttrs`,
+   `ResourceAttrs`, etc.), each with a completely different schema. These
+   cannot coexist in a single Arrow IPC stream.
+
+2. **Schema evolution within a payload type**: Even for a single payload slot,
+   the schema can change from one bundle to the next:
+   - Optional columns may appear or disappear (e.g., `str` attribute column
+     omitted when no string attributes are present)
+   - Dictionary-encoded columns may switch between `Dictionary<u8, Utf8>`,
+     `Dictionary<u16, Utf8>`, or native `Utf8` based on cardinality
+
+3. **Optional payloads**: Some slots may be absent entirely for a given bundle
+   (e.g., no `ScopeAttrs` when scope attributes are empty).
+
+Alternative approaches considered:
+
+- **One Arrow IPC file per payload type**: Simple format, but explodes the
+  number of files to manage (one per slot x schema variation x segment).
+- **One Arrow IPC stream per `RecordBatch`**: Maximum flexibility, but repeats
+  schema metadata for every batch and prevents dictionary delta encoding.
+
+The Quiver segment format takes a middle path: interleave multiple Arrow IPC
+*file* streams (one per `(slot, schema_fingerprint)` pair) inside a single
+container file, with a manifest that records how to reconstruct each original
+`RecordBundle`. This preserves:
+
+- **Standard Arrow IPC reading**: Each stream is a valid Arrow IPC file that
+  can be handed directly to `arrow_ipc::FileReader` (via memory-mapped slice).
+- **Efficient storage**: Batches with the same schema share a stream, enabling
+  dictionary delta encoding and avoiding repeated schema metadata.
+- **Zero-copy access**: The entire segment can be memory-mapped; readers seek
+  to stream offsets without copying data.
+- **Bundle reconstruction**: The batch manifest records `(stream_id, chunk_index)`
+  per slot, allowing readers to reassemble the original `RecordBundle` ordering.
+
 #### Envelope Overview
 
 - The segment header contains two primary sections:
@@ -488,15 +531,160 @@ graph TD
     F --> |mmap| G[Segment Reader]
 ```
 
+#### Segment File Layout
+
+A segment file uses a variable-size footer with a fixed-size trailer, enabling
+future versions to extend the footer without breaking backwards compatibility:
+
+```text
++-------------------------------------------------------------------------+
+|                         Stream Data Region                              |
+|  Stream 0: Arrow IPC File bytes                                         |
+|  Stream 1: Arrow IPC File bytes                                         |
+|  ...                                                                    |
++-------------------------------------------------------------------------+
+|                         Stream Directory                                |
+|  Encoded as Arrow IPC (self-describing schema)                          |
+|  Columns: stream_id, slot_id, schema_fingerprint, byte_offset,          |
+|           byte_length, row_count, chunk_count                           |
++-------------------------------------------------------------------------+
+|                         Batch Manifest                                  |
+|  Encoded as Arrow IPC (self-describing schema)                          |
+|  Columns: bundle_index, slot_refs (List<Struct>)                        |
++-------------------------------------------------------------------------+
+|                         Footer (variable size, version-dependent)       |
+|  Version 1 (34 bytes):                                                  |
+|    - version: u16                                                       |
+|    - stream_count: u32                                                  |
+|    - bundle_count: u32                                                  |
+|    - directory_offset: u64                                              |
+|    - directory_length: u32                                              |
+|    - manifest_offset: u64                                               |
+|    - manifest_length: u32                                               |
+|  (Future versions may add fields here)                                  |
++-------------------------------------------------------------------------+
+|                         Trailer (fixed 16 bytes)                        |
+|    - footer_size: u32 (size of footer, not including trailer)           |
+|    - magic: b"QUIVER\0S" (8 bytes)                                      |
+|    - crc32: u32 (covers entire file from start through trailer,         |
+|                  except the CRC field itself)                           |
++-------------------------------------------------------------------------+
+```
+
+**Reading a segment file:**
+
+1. Seek to end of file, read the fixed 16-byte trailer
+2. Validate magic bytes (`QUIVER\0S`)
+3. Read `footer_size` to determine footer location
+4. Seek back `footer_size` bytes, read the variable-size footer
+5. Parse version from footer to determine how to interpret remaining fields
+6. Use directory/manifest offsets to locate metadata sections
+
+#### Segment File Naming
+
+Segment files are named using a zero-padded 16-digit sequence number with
+the `.qseg` extension:
+
+```text
+{segment_seq:016}.qseg
+```
+
+Examples:
+
+- `0000000000000000.qseg` (sequence 0)
+- `0000000000000001.qseg` (sequence 1)
+- `0000000000123456.qseg` (sequence 123456)
+
+The 16-digit zero-padding ensures lexicographic ordering matches numeric
+ordering, allowing simple directory listings to enumerate segments in order.
+The `SegmentSeq::to_filename_component()` method generates this format.
+
+#### Read-Only Enforcement
+
+Finalized segment files are immutable by design. After writing completes,
+`SegmentWriter` calls `sync_all()` (fsync) to ensure data is persisted to
+disk, then sets restrictive file permissions to prevent accidental modification:
+
+- **Unix**: Permissions are set to `0o440` (read-only for owner and group,
+  no access for others). This provides defense-in-depth against accidental
+  writes while still allowing the process and admin group to read.
+- **Non-Unix**: Uses the platform's `set_readonly(true)` mechanism.
+
+This immutability guarantee is critical for:
+
+- **CRC integrity**: Any modification would invalidate the file's checksum
+- **mmap safety**: Memory-mapped reads assume file contents don't change
+- **Concurrent readers**: Background processes can safely read segments without
+  coordination (though additional work is needed for safe deletion of segments
+  that may still be in use)
+
+#### Slot Reference Encoding
+
+The batch manifest stores slot references using Arrow's native `List<Struct>`
+type. Each manifest entry has a `slot_refs` column containing a list of
+structs, where each struct maps a slot to a specific chunk within a stream:
+
+```text
+slot_refs: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
+```
+
+Each struct in the list contains:
+
+- `slot_id` (UInt16): The logical payload slot (e.g., Logs=1, LogAttrs=2)
+- `stream_id` (UInt32): Index into the stream directory
+- `chunk_index` (UInt32): Which Arrow RecordBatch within that stream
+
+Example: A bundle with 4 slots would have a `slot_refs` list containing:
+
+| slot_id | stream_id | chunk_index |
+|---------|-----------|-------------|
+| 1       | 0         | 0           |
+| 2       | 1         | 0           |
+| 30      | 2         | 0           |
+| 31      | 3         | 0           |
+
+Using Arrow's nested types avoids string parsing and leverages the existing
+IPC decoder. The struct field types use the `ArrowPrimitive` trait to ensure
+type synchronization between the Rust newtypes (`SlotId`, `StreamId`,
+`ChunkIndex`) and their Arrow schema representation.
+
+#### Error Handling and Recovery
+
+Segment files are designed to be safely detectable as corrupt or incomplete:
+
+| Error Condition | Detection Mechanism | Recovery Action |
+|-----------------|---------------------|-----------------|
+| Truncated file | File too short for trailer (< 16 bytes) | `SegmentError::Truncated` - skip file |
+| Invalid magic | Trailer magic bytes mismatch | `SegmentError::InvalidFormat` - skip file |
+| CRC mismatch | Computed CRC != stored CRC | `SegmentError::ChecksumMismatch` - skip file |
+| Partial write | CRC mismatch (write interrupted) | `SegmentError::ChecksumMismatch` - skip file |
+| Invalid IPC | Arrow decoder failure | `SegmentError::Arrow` - skip file |
+| Missing stream | Stream ID not in directory | `SegmentError::StreamNotFound` |
+| Missing slot | Slot not in manifest entry | `SegmentError::SlotNotInBundle` |
+
+**Partial write safety**: The CRC32 at the end of the file is written last.
+If a write is interrupted (crash, power loss), one of three outcomes occurs:
+
+1. File is too short to contain a valid trailer -> detected as truncated
+2. File has garbage at the end -> CRC mismatch
+3. File was written completely -> CRC validates
+
+This design ensures that partially written segment files are never mistaken
+for valid data. The engine can safely skip corrupt segments during startup
+and continue operating with the valid ones.
+
 #### Arrow IPC Encoding
 
 - While a segment is open, Quiver appends messages to each stream using the
   Arrow **streaming** format so we can keep adding batches without rewriting
   footers.
-- On finalize, each stream flushes any buffered messages, writes an Arrow
-  **file** footer, and aligns the slice on an 8-byte boundary. The header stores
-  the final offsets and lengths so readers can memory map the slice and hand it
-  directly to `arrow_ipc::FileReader`.
+- On finalize, each stream flushes any buffered messages and writes an Arrow
+  **file** footer. When writing to disk, each stream is aligned to a 64-byte
+  boundary. This ensures optimal cache-line alignment for zero-copy mmap reads
+  and efficient SIMD/AVX-512 access patterns. Arrow IPC uses 8-byte alignment
+  internally for data buffers; our 64-byte stream alignment ensures those
+  offsets remain optimally aligned in the mmap region for modern CPU
+  architectures.
 - During replay, the reader consults the manifest to rebuild each
   `RecordBundle`, hydrating only the payloads the consumer requested.
 
@@ -517,18 +705,23 @@ sequenceDiagram
 
 #### Dictionary Handling
 
-- Each `(slot, schema)` stream keeps dictionary encoding intact. While bundles
-  accumulate we capture the union of dictionary values per column. When
-  finalizing the segment we rebuild those columns against a deterministic
-  vocabulary and emit the Arrow IPC **file** with the canonical dictionary in
-  the header. Readers reopen the slice via `arrow_ipc::FileReader`, which
-  replays the seeded dictionaries before yielding the chunk referenced by the
-  manifest.
-- Dictionaries stay deterministic for the lifetime of a stream because the
-  final vocabulary is chosen from the accumulated batches. If a stream would
-  exceed configured cardinality limits we rotate to a fresh stream (resetting
-  dictionary ids) rather than serializing delta messages. That mirrors the
-  in-memory lifecycle in `otap-dataflow` and keeps chunks self-contained.
+- Each `(slot, schema)` stream preserves dictionary encoding exactly as received.
+  Quiver uses Arrow IPC's `DictionaryHandling::Resend` mode, where each batch
+  includes its full dictionary. This ensures **schema fidelity**: readers receive
+  the exact same dictionary key types (e.g., `UInt8` vs `UInt16`) that writers sent.
+- **Design rationale**: Dictionary unification (merging vocabularies across batches)
+  could widen key types when cardinality exceeds the original type's capacity.
+  For example, if batches arrive with `DictionaryArray<UInt8>` but the unified
+  vocabulary exceeds 255 values, unification would produce `DictionaryArray<UInt16>`.
+  This breaks round-trip schema guarantees, which is unacceptable for a persistence
+  layer whose job is faithful reproduction.
+- **Trade-offs**:
+  - *Pro*: Exact schema preservation - readers get back what writers sent
+  - *Pro*: Each batch is self-contained and independently readable
+  - *Con*: Larger file sizes due to duplicate dictionary values, which also
+    increases memory consumption when segments are memory-mapped for reading
+- This design decision may be revisited if future performance measurements
+  indicate that the size/memory overhead is a significant concern.
 
 #### DataFusion Integration
 

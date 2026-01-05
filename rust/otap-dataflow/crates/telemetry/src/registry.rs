@@ -7,6 +7,7 @@
 //! dynamic dispatch.
 
 use crate::attributes::AttributeSetHandler;
+use crate::descriptor::Temporality;
 use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField};
 use crate::metrics::{MetricSet, MetricSetHandler, MetricValue};
 use crate::semconv::SemConvRegistry;
@@ -219,10 +220,25 @@ impl MetricsRegistry {
                         // Gauges report absolute values; replace.
                         *current = *incoming;
                     }
-                    Instrument::Counter | Instrument::UpDownCounter | Instrument::Histogram => {
-                        // Sum-like instruments report deltas; accumulate.
+                    Instrument::Histogram => {
+                        // Histograms (currently represented as numeric aggregates) report per-interval changes.
                         current.add_in_place(*incoming);
                     }
+                    Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
+                        Some(Temporality::Delta) => {
+                            // Delta sums report per-interval changes => accumulate.
+                            current.add_in_place(*incoming);
+                        }
+                        Some(Temporality::Cumulative) => {
+                            // Cumulative sums report the current value => replace.
+                            *current = *incoming;
+                        }
+                        None => {
+                            debug_assert!(false, "sum-like instrument must have a temporality");
+                            // Prefer replacing to avoid runaway accumulation if misconfigured.
+                            *current = *incoming;
+                        }
+                    },
                 });
         } else {
             // TODO: consider logging missing key
@@ -236,14 +252,14 @@ impl MetricsRegistry {
 
     /// Visits only metric sets, yields a zero-alloc iterator
     /// of (MetricsField, value), then resets the values to zero.
-    pub(crate) fn visit_metrics_and_reset<F>(&mut self, mut f: F)
+    pub(crate) fn visit_metrics_and_reset<F>(&mut self, mut f: F, keep_all_zeroes: bool)
     where
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
-            if values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
@@ -339,8 +355,19 @@ impl MetricsRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
+        self.visit_metrics_and_reset_with_zeroes(f, false);
+    }
+
+    /// Visits metric sets, yields a zero-alloc iterator
+    /// of (MetricsField, value), then resets the values to zero.
+    /// Retains zero-valued metrics if `keep_all_zeroes` is true.
+    pub fn visit_metrics_and_reset_with_zeroes<F>(&self, f: F, keep_all_zeroes: bool)
+    where
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
         let mut reg = self.metric_registry.lock();
-        reg.visit_metrics_and_reset(f);
+        reg.visit_metrics_and_reset(f, keep_all_zeroes);
     }
 
     /// Generates a SemConvRegistry from the current MetricsRegistry.
@@ -352,7 +379,17 @@ impl MetricsRegistryHandle {
 
     /// Visits current metric sets without resetting them.
     /// This is useful for read-only access to metrics for HTTP endpoints.
-    pub fn visit_current_metrics<F>(&self, mut f: F)
+    pub fn visit_current_metrics<F>(&self, f: F)
+    where
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
+        self.visit_current_metrics_with_zeroes(f, false);
+    }
+
+    /// Visits current metric sets without resetting them, with optional zero retention.
+    /// This is useful for read-only access to metrics for HTTP endpoints.
+    pub fn visit_current_metrics_with_zeroes<F>(&self, mut f: F, keep_all_zeroes: bool)
     where
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
@@ -360,7 +397,7 @@ impl MetricsRegistryHandle {
         let reg = self.metric_registry.lock();
         for entry in reg.metrics.values() {
             let values = &entry.metric_values;
-            if values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 let attrs = entry.attribute_values.as_ref();
 
@@ -376,6 +413,7 @@ mod tests {
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
+        Temporality,
     };
     use std::fmt::Debug;
 
@@ -407,6 +445,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
@@ -414,6 +453,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 2",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ],
@@ -636,6 +676,7 @@ mod tests {
                 unit: "1",
                 brief: "Test metric 1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
@@ -643,6 +684,7 @@ mod tests {
                 unit: "1",
                 brief: "Test metric 2",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ];
@@ -674,6 +716,7 @@ mod tests {
             unit: "1",
             brief: "Test metric 1",
             instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }];
 
@@ -692,6 +735,7 @@ mod tests {
             unit: "1",
             brief: "Test metric 1",
             instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }];
 
@@ -780,6 +824,7 @@ mod tests {
                     unit: "1",
                     brief: "Test gauge 1",
                     instrument: Instrument::Gauge,
+                    temporality: None,
                     value_type: MetricValueType::U64,
                 },
                 MetricsField {
@@ -787,6 +832,7 @@ mod tests {
                     unit: "1",
                     brief: "Test counter 1",
                     instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Delta),
                     value_type: MetricValueType::U64,
                 },
             ],
@@ -825,5 +871,71 @@ mod tests {
         });
 
         assert_eq!(values, vec![MetricValue::U64(2), MetricValue::U64(13)]);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_observe_counter_replaces() {
+        #[derive(Debug)]
+        struct MockCumulativeCounterMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl MockCumulativeCounterMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![MetricValue::U64(0)],
+                }
+            }
+        }
+
+        impl Default for MockCumulativeCounterMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_OBSERVED_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_observed_metrics",
+            metrics: &[MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+            }],
+        };
+
+        impl MetricSetHandler for MockCumulativeCounterMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_OBSERVED_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let handle = MetricsRegistryHandle::new();
+        let metric_set: MetricSet<MockCumulativeCounterMetricSet> =
+            handle.register(MockAttributeSet::new("attr".to_string()));
+        let metrics_key = metric_set.key;
+
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(10)]);
+        handle.accumulate_snapshot(metrics_key, &[MetricValue::U64(15)]);
+
+        let mut collected = Vec::new();
+        handle.visit_metrics_and_reset(|_desc, _attrs, iter| {
+            for (_field, value) in iter {
+                collected.push(value);
+            }
+        });
+
+        assert_eq!(collected, vec![MetricValue::U64(15)]);
     }
 }

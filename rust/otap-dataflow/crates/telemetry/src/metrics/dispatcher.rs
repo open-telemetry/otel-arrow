@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     attributes::{AttributeSetHandler, AttributeValue},
-    descriptor::{Instrument, MetricValueType, MetricsField},
+    descriptor::{Instrument, MetricsField, Temporality},
     error::Error,
     metrics::MetricValue,
     registry::MetricsRegistryHandle,
@@ -57,7 +57,7 @@ impl MetricsDispatcher {
 
     fn dispatch_metrics(&self) -> Result<(), Error> {
         self.metrics_handler
-            .visit_current_metrics(|descriptor, attributes, metrics_iter| {
+            .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
                 let meter = global::meter(descriptor.name);
 
                 // There is no support for metric level attributes currently. Attaching resource level attributes to every metric.
@@ -101,13 +101,39 @@ impl MetricsDispatcher {
         meter: &Meter,
     ) {
         match field.instrument {
-            Instrument::Counter => self.add_opentelemetry_counter(field, value, attributes, meter),
+            Instrument::Counter => match field.temporality {
+                Some(Temporality::Delta) => {
+                    self.add_opentelemetry_counter(field, value, attributes, meter)
+                }
+                Some(Temporality::Cumulative) | None => {
+                    debug_assert!(
+                        field.temporality.is_some(),
+                        "sum-like instrument must have a temporality"
+                    );
+                    // Cumulative counters are exported as gauges to avoid double-counting.
+                    // Note for reviewers: This is a temporary workaround until we figure out a
+                    // better way to handle cumulative sums via the Rust Client SDK.
+                    self.add_opentelemetry_gauge(field, value, attributes, meter)
+                }
+            },
+            Instrument::UpDownCounter => match field.temporality {
+                Some(Temporality::Delta) => {
+                    self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
+                }
+                Some(Temporality::Cumulative) | None => {
+                    debug_assert!(
+                        field.temporality.is_some(),
+                        "sum-like instrument must have a temporality"
+                    );
+                    // Cumulative up-down counters are exported as gauges to avoid double-counting.
+                    // Note for reviewers: This is a temporary workaround until we figure out a
+                    // better way to handle cumulative sums via the Rust Client SDK.
+                    self.add_opentelemetry_gauge(field, value, attributes, meter)
+                }
+            },
             Instrument::Gauge => self.add_opentelemetry_gauge(field, value, attributes, meter),
             Instrument::Histogram => {
                 self.add_opentelemetry_histogram(field, value, attributes, meter)
-            }
-            Instrument::UpDownCounter => {
-                self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
             }
         }
     }
@@ -119,26 +145,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let counter = meter
                     .u64_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v,
-                    MetricValue::F64(v) => v as u64,
-                };
                 counter.add(v, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let counter = meter
                     .f64_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                counter.add(value.to_f64(), attributes);
+                counter.add(v, attributes);
             }
         }
     }
@@ -150,26 +172,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let gauge = meter
                     .u64_gauge(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v,
-                    MetricValue::F64(v) => v as u64,
-                };
                 gauge.record(v, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let gauge = meter
                     .f64_gauge(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                gauge.record(value.to_f64(), attributes);
+                gauge.record(v, attributes);
             }
         }
     }
@@ -181,26 +199,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let histogram = meter
                     .u64_histogram(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v,
-                    MetricValue::F64(v) => v as u64,
-                };
                 histogram.record(v, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let histogram = meter
                     .f64_histogram(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                histogram.record(value.to_f64(), attributes);
+                histogram.record(v, attributes);
             }
         }
     }
@@ -212,26 +226,22 @@ impl MetricsDispatcher {
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
-        match field.value_type {
-            MetricValueType::U64 => {
+        match value {
+            MetricValue::U64(v) => {
                 let up_down_counter = meter
                     .i64_up_down_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                let v = match value {
-                    MetricValue::U64(v) => v as i64,
-                    MetricValue::F64(v) => v as i64,
-                };
-                up_down_counter.add(v, attributes);
+                up_down_counter.add(v as i64, attributes);
             }
-            MetricValueType::F64 => {
+            MetricValue::F64(v) => {
                 let up_down_counter = meter
                     .f64_up_down_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .build();
-                up_down_counter.add(value.to_f64(), attributes);
+                up_down_counter.add(v, attributes);
             }
         }
     }
@@ -241,12 +251,12 @@ impl MetricsDispatcher {
 mod tests {
     use std::f64::consts::PI;
 
+    use super::*;
+    use crate::descriptor::MetricValueType;
     use crate::{
         attributes::AttributeIterator,
         descriptor::{AttributeField, AttributeValueType, AttributesDescriptor},
     };
-
-    use super::*;
 
     #[test]
     fn test_to_opentelemetry_key_value() {
@@ -365,6 +375,7 @@ mod tests {
             brief: "A test counter",
             unit: "1",
             instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -385,6 +396,7 @@ mod tests {
             brief: "A test gauge",
             unit: "1",
             instrument: Instrument::Gauge,
+            temporality: None,
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -405,6 +417,7 @@ mod tests {
             brief: "A test histogram",
             unit: "1",
             instrument: Instrument::Histogram,
+            temporality: None,
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);
@@ -425,6 +438,7 @@ mod tests {
             brief: "A test up_down_counter",
             unit: "1",
             instrument: Instrument::UpDownCounter,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
         let value = MetricValue::U64(42);

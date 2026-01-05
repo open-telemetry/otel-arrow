@@ -52,7 +52,7 @@ pub enum Error {
     CoreDetectionUnavailable,
 
     /// Invalid or out-of-bounds requested CPU core ID allocation.
-    #[error("Invalid core ID allocation [{alloc}]. Available core IDs: {available:?}")]
+    #[error("Invalid core ID allocation [{alloc}]: {message}. Available core IDs: {available:?}")]
     InvalidCoreAllocation {
         /// Invalid of out-of-bounds CPU core ID allocation.
         alloc: CoreAllocation,

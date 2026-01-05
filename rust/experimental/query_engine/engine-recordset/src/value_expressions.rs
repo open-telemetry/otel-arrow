@@ -184,6 +184,20 @@ where
     }
 }
 
+pub(crate) fn get_borrow_source<TRecord: Record>(
+    execution_context: &ExecutionContext<'_, '_, TRecord>,
+    mutable_value_expression: &MutableValueExpression,
+) -> Option<BorrowSource> {
+    match mutable_value_expression {
+        MutableValueExpression::Source(_) => Some(BorrowSource::Source),
+        MutableValueExpression::Variable(_) => Some(BorrowSource::Variable),
+        MutableValueExpression::Argument(a) => execution_context
+            .get_arguments()
+            .expect("Arguments were not found")
+            .get_argument_mut_borrow_source(a.get_argument_id()),
+    }
+}
+
 fn capture_selector_values_for_mutable_write<'a, 'b, 'c, TRecord: Record>(
     execution_context: &'b ExecutionContext<'a, '_, TRecord>,
     mutable_value_expression: &'a MutableValueExpression,
@@ -198,12 +212,7 @@ where
     for selector in selectors {
         let mut value = execute_scalar_expression(execution_context, selector)?;
 
-        if value.copy_if_borrowed_from_target(execution_context, mutable_value_expression) {
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                mutable_value_expression,
-                || format!("Copied the resolved selector value '{value}' into temporary storage because the value came from the mutable target"));
-        }
+        value.copy_if_borrowed_from_target(execution_context, mutable_value_expression);
 
         results.push((selector, value));
     }
@@ -784,8 +793,40 @@ mod tests {
                 )),
             ];
 
+            let func = PipelineFunction::new_external(
+                "f",
+                vec![
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::Scalar(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                    PipelineFunctionParameter::new(
+                        QueryLocation::new_fake(),
+                        PipelineFunctionParameterType::MutableValue(None),
+                    ),
+                ],
+                None,
+            );
+
             let execution_context_arguments = ExecutionContextArgumentContainer {
                 parent_execution_context: &execution_context,
+                function: &func,
                 arguments: &arguments,
             };
 

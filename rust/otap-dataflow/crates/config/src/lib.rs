@@ -58,11 +58,11 @@ pub type PipelineId = Cow<'static, str>;
 /// The id of a node in the pipeline.
 pub type NodeId = Cow<'static, str>;
 
+/// The URN of a node type.
+pub type NodeUrn = Cow<'static, str>;
+
 /// The name of a node out port in the pipeline.
 pub type PortName = Cow<'static, str>;
-
-/// The URN of a node type.
-pub type Urn = Cow<'static, str>;
 
 /// The description of a pipeline or a node.
 pub type Description = Cow<'static, str>;

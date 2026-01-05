@@ -64,10 +64,17 @@ The telemetry configuration includes:
 
 - **Metrics**: OpenTelemetry metrics for pipeline observability
   - **Readers**: Periodic or pull-based metric readers
-  - **Exporters**: Console, OTLP (gRPC/HTTP), or custom exporters
+    - **Periodic Readers**: Export metrics at regular intervals
+    - **Pull Readers**: Expose metrics via HTTP endpoint for scraping (e.g., Prometheus)
+  - **Exporters**: Console, OTLP (gRPC/HTTP), or Prometheus
   - **Views**: Metric aggregation and transformation rules
   - **Temporality**: Delta or cumulative aggregation
-- **Logs**: Internal logging configuration (planned)
+- **Logs**: Internal logging configuration
+  - **Level**: Off, Debug, Info, Warn, or Error
+  - **Processors**: Batch log processors with configurable exporters
+  - **Exporters**: Console, OTLP (gRPC/HTTP) for logs
+  - Integrates with Rust's `tracing` ecosystem
+  - Supports `RUST_LOG` environment variable for fine-grained control
 - **Resource Attributes**: Key-value pairs describing the service
   - Supports string, boolean, integer (i64), float (f64), and array types
   - Common attributes: `service.name`, `service.version`, `process.pid`, etc.
@@ -84,26 +91,74 @@ service:
       deployment.environment: "production"
     metrics:
       readers:
+        # Periodic reader - pushes metrics to OTLP endpoint
         - periodic:
             exporter:
               otlp:
                 endpoint: "http://localhost:4318"
                 protocol: "grpc/protobuf"
+            interval: "60s"
+        # Pull reader - exposes metrics for Prometheus scraping
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
       views:
         - selector:
             instrument_name: "logs.produced"
           stream:
             name: "otlp.logs.produced.count"
             description: "Count of logs produced"
+    logs:
+      level: "info"
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                endpoint: "http://localhost:4318"
+                protocol: "grpc/protobuf"
 ```
 
-### Supported Metric Exporters
+### Supported Exporters
+
+#### Metric Exporters
+
+##### Periodic Exporters
 
 - **Console**: Prints metrics to stdout (useful for debugging)
 - **OTLP**: OpenTelemetry Protocol exporters
   - **grpc/protobuf**: Binary protocol over gRPC
   - **http/protobuf**: Binary protobuf over HTTP
   - **http/json**: JSON over HTTP
+
+##### Pull Exporters
+
+- **Prometheus**: Exposes metrics via HTTP endpoint for Prometheus scraping
+  - Configurable host, port, and path
+  - Exposes metrics in Prometheus text format
+  - Example: `http://0.0.0.0:9090/metrics`
+  - Compatible with Prometheus, Grafana, and other scraping systems
+
+#### Log Exporters
+
+- **Console**: Prints logs to stdout with structured formatting
+- **OTLP**: OpenTelemetry Protocol exporters for logs
+  - **grpc/protobuf**: Binary protocol over gRPC
+  - **http/protobuf**: Binary protobuf over HTTP
+  - **http/json**: JSON over HTTP
+
+### Log Configuration
+
+The logging system integrates with Rust's `tracing` ecosystem:
+
+- **Log Levels**: Control verbosity (`off`, `debug`, `info`, `warn`, `error`)
+- **Environment Override**: `RUST_LOG` environment variable takes precedence
+  - Example: `RUST_LOG=info,h2=warn,hyper=warn` - info level with silenced HTTP logs
+- **Processors**: Batch log processors buffer and export logs efficiently
+- **Thread-aware**: Includes thread names and IDs in log output for debugging
+- **OpenTelemetry Bridge**: Logs are automatically converted to OpenTelemetry format
 
 ### Metric Views
 

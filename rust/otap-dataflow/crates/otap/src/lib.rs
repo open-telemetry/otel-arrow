@@ -52,8 +52,11 @@ pub mod noop_exporter;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
-/// Experimental exporters
-#[cfg(feature = "experimental-exporters")]
+/// Experimental exporters and processors
+#[cfg(any(
+    feature = "experimental-exporters",
+    feature = "experimental-processors"
+))]
 pub mod experimental;
 
 /// testing utilities
@@ -73,6 +76,9 @@ pub mod signal_type_router;
 
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
+
+pub mod transform_processor;
+
 /// compression formats
 pub mod compression;
 

@@ -70,7 +70,7 @@ mod tests {
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        MetricsDescriptor, MetricsField,
+        MetricsDescriptor, MetricsField, Temporality,
     };
     use crate::metrics::MetricSetHandler;
     use crate::metrics::MetricValue;
@@ -108,6 +108,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
             MetricsField {
@@ -115,6 +116,7 @@ mod tests {
                 unit: "1",
                 brief: "Test counter 2",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
         ],

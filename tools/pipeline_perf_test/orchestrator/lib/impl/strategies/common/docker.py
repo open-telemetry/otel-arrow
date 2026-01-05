@@ -140,6 +140,7 @@ def get_container_logs(
     ctx: Union[StepContext, ComponentHookContext],
     client: docker.DockerClient,
     runtime: ComponentDockerRuntime,
+    component: Optional[Component] = None,
 ):
     """Get docker container logs and save them to the runtime.
 
@@ -147,6 +148,7 @@ def get_container_logs(
         ctx: The current context
         client: The docker API client to use
         runtime: ComponentDockerRuntime for the container
+        component: Optional component for better log labeling
     """
     logger = ctx.get_logger(__name__)
     args = ctx.get_suite().get_runtime("args")
@@ -155,7 +157,8 @@ def get_container_logs(
         logs = container.logs(stdout=True, stderr=True, stream=False, timestamps=False)
         decoded = logs.decode("utf-8") if isinstance(logs, bytes) else str(logs)
         if args.debug:
-            logger.debug("Container Logs For %s:\n%s", runtime.container_id, decoded)
+            component_name = component.name if component else "unknown"
+            logger.debug("Container Logs For %s (ID: %s):\n%s", component_name, runtime.container_id, decoded)
         runtime.container_logs = decoded.splitlines()
         set_component_docker_runtime_data(ctx, runtime)
     except (NotFound, APIError) as e:

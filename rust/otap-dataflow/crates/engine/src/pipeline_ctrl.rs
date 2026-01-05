@@ -15,9 +15,11 @@ use crate::context::PipelineContext;
 use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use otap_df_config::pipeline::TelemetrySettings;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -180,18 +182,25 @@ pub struct PipelineCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
+    /// Channel metrics handles for periodic reporting.
+    channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+
+    /// Flags controlling capture of internal engine metrics.
+    telemetry: TelemetrySettings,
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         pipeline_key: DeployedPipelineKey,
         pipeline_context: PipelineContext,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        internal_telemetry: TelemetrySettings,
+        channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
         Self {
             pipeline_key,
@@ -203,6 +212,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
+            channel_metrics,
+            telemetry: internal_telemetry,
         }
     }
 
@@ -214,8 +225,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
     pub async fn run(mut self) -> Result<(), Error> {
-        let mut pipeline_metrics_monitor =
-            PipelineMetricsMonitor::new(self.pipeline_context.clone());
+        let internal_telemetry_enabled =
+            self.telemetry.pipeline_metrics || self.telemetry.tokio_metrics;
+        let mut pipeline_metrics_monitor = internal_telemetry_enabled
+            .then(|| PipelineMetricsMonitor::new(self.pipeline_context.clone()));
 
         loop {
             // Get the next expirations, if any.
@@ -303,13 +316,37 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         to_send.push((delayed.node_id, NodeControlMsg::DelayedData { when: delayed.when, data: delayed.data }));
                     }
 
-                    // Update and report pipeline metrics
-                    pipeline_metrics_monitor.update_metrics();
-                    if let Err(err) =
-                        self.metrics_reporter.report(pipeline_metrics_monitor.metrics_mut())
-                    {
-                        // Metric reporting failures are non-fatal; continue loop.
-                        let _ = err;
+                    // Update and report internal pipeline metrics
+                    if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
+                        if self.telemetry.pipeline_metrics {
+                            pipeline_metrics_monitor.update_pipeline_metrics();
+                            if let Err(err) = self
+                                .metrics_reporter
+                                .report(pipeline_metrics_monitor.metrics_mut())
+                            {
+                                // Metric reporting failures are non-fatal; continue loop.
+                                otel_warn!("pipeline.metrics.reporting.fail", error = err.to_string());
+                            }
+                        }
+
+                        if self.telemetry.tokio_metrics {
+                            pipeline_metrics_monitor.update_tokio_metrics();
+                            if let Err(err) = self
+                                .metrics_reporter
+                                .report(pipeline_metrics_monitor.tokio_metrics_mut())
+                            {
+                                // Metric reporting failures are non-fatal; continue loop.
+                                otel_warn!("tokio.metrics.reporting.fail", error = err.to_string());
+                            }
+                        }
+                    }
+
+                    if self.telemetry.channel_metrics {
+                        for metrics in &self.channel_metrics {
+                            if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                                otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                            }
+                        }
                     }
 
                     // Deliver all accumulated control messages (best-effort)
@@ -397,8 +434,8 @@ mod tests {
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         (
-            Sender::Shared(SharedSender::MpscSender(tx)),
-            Receiver::Shared(SharedReceiver::MpscReceiver(rx)),
+            Sender::Shared(SharedSender::mpsc(tx)),
+            Receiver::Shared(SharedReceiver::mpsc(rx)),
         )
     }
 
@@ -449,6 +486,8 @@ mod tests {
             control_senders,
             observed_state_store.reporter(),
             metrics_reporter,
+            pipeline_settings.telemetry.clone(),
+            Vec::new(),
         );
         (manager, pipeline_tx, control_receivers, nodes)
     }
@@ -861,6 +900,8 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(),
                     metrics_reporter,
+                    TelemetrySettings::default(),
+                    Vec::new(),
                 );
                 let duration = Duration::from_millis(50);
 

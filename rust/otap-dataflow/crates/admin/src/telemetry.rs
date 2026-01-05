@@ -98,6 +98,9 @@ pub struct MetricsQuery {
     /// Output format: json (default), json_compact, line_protocol, prometheus
     #[serde(default)]
     format: Option<OutputFormat>,
+    /// When true, metric set which have all zero values are kept in the output. Default: false.
+    #[serde(default = "default_false")]
+    keep_all_zeroes: bool,
 }
 
 /// Query parameters for /telemetry/metrics/aggregate
@@ -131,6 +134,11 @@ const fn default_true() -> bool {
     true
 }
 
+#[inline]
+const fn default_false() -> bool {
+    false
+}
+
 /// Handler for the /live-schema endpoint.
 ///
 /// This reflects the current live schema of the metrics registry.
@@ -160,9 +168,9 @@ pub async fn get_metrics(
         OutputFormat::Json => {
             // Snapshot with optional reset
             let metric_sets = if q.reset {
-                collect_metrics_snapshot_and_reset(&state.metrics_registry)
+                collect_metrics_snapshot_and_reset(&state.metrics_registry, q.keep_all_zeroes)
             } else {
-                collect_metrics_snapshot(&state.metrics_registry)
+                collect_metrics_snapshot(&state.metrics_registry, q.keep_all_zeroes)
             };
 
             let response = MetricsWithMetadata {
@@ -572,34 +580,40 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
 }
 
 /// Collects a snapshot of current metrics without resetting them.
-fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWithMetadata> {
+fn collect_metrics_snapshot(
+    registry: &MetricsRegistryHandle,
+    keep_all_zeroes: bool,
+) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
-        let mut metrics = Vec::new();
+    registry.visit_current_metrics_with_zeroes(
+        |descriptor, attributes, metrics_iter| {
+            let mut metrics = Vec::new();
 
-        for (field, value) in metrics_iter {
-            metrics.push(MetricDataPointWithMetadata {
-                metadata: *field,
-                value,
-            });
-        }
-
-        if !metrics.is_empty() {
-            // Convert attributes to HashMap using the iterator
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+            for (field, value) in metrics_iter {
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: *field,
+                    value,
+                });
             }
 
-            metric_sets.push(MetricSetWithMetadata {
-                name: descriptor.name.to_owned(),
-                brief: String::new(), // MetricsDescriptor doesn't have description field
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                // Convert attributes to HashMap using the iterator
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSetWithMetadata {
+                    name: descriptor.name.to_owned(),
+                    brief: String::new(), // MetricsDescriptor doesn't have description field
+                    attributes: attrs_map,
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }
@@ -607,33 +621,37 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
 /// Collects a snapshot of current metrics and resets them afterwards.
 fn collect_metrics_snapshot_and_reset(
     registry: &MetricsRegistryHandle,
+    keep_all_zeroes: bool,
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-        let mut metrics = Vec::new();
+    registry.visit_metrics_and_reset_with_zeroes(
+        |descriptor, attributes, metrics_iter| {
+            let mut metrics = Vec::new();
 
-        for (field, value) in metrics_iter {
-            metrics.push(MetricDataPointWithMetadata {
-                metadata: *field,
-                value,
-            });
-        }
-
-        if !metrics.is_empty() {
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+            for (field, value) in metrics_iter {
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: *field,
+                    value,
+                });
             }
 
-            metric_sets.push(MetricSetWithMetadata {
-                name: descriptor.name.to_owned(),
-                brief: "".to_owned(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSetWithMetadata {
+                    name: descriptor.name.to_owned(),
+                    brief: "".to_owned(),
+                    attributes: attrs_map,
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }
@@ -964,7 +982,7 @@ fn escape_prom_help(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::descriptor::{Instrument, MetricsField};
+    use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -973,6 +991,7 @@ mod tests {
                 name: "requests_total",
                 unit: "1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 brief: "Total number of requests",
                 value_type: MetricValueType::U64,
             },
@@ -980,6 +999,7 @@ mod tests {
                 name: "errors_total",
                 unit: "1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 brief: "Total number of errors",
                 value_type: MetricValueType::U64,
             },
@@ -992,6 +1012,7 @@ mod tests {
             name: "connections_active",
             unit: "1",
             instrument: Instrument::Gauge,
+            temporality: None,
             brief: "Active database connections",
             value_type: MetricValueType::U64,
         }],

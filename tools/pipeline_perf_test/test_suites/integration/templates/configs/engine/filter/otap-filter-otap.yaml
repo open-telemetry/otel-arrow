@@ -27,33 +27,11 @@ nodes:
         dispatch_strategy: round_robin
     config:
       logs:
-        exclude:
-          match_type: strict
-          resource_attributes:
-            - key: fake_data_generator
-              value: v0
-          record_attributes:
-            - key: fake_data_generator
-              value: v0
-          severity_texts:
-            - WARN
-          severity_number: null
-          bodies:
-            - body_text
         include:
           match_type: strict
-          resource_attributes:
-            - key: fake_data_generator
-              value: v1
           record_attributes:
-            - key: gen_ai.system
-              value: openai
             - key: ios.app.state
               value: active
-          severity_texts: []
-          severity_number: null
-          bodies: []
-        log_record: []
 
   exporter:
     kind: exporter
@@ -63,3 +41,8 @@ nodes:
       compression_method: zstd
       arrow:
         payload_compression: none
+
+service:
+  telemetry:
+    logs:
+      level: "info"

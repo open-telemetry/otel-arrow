@@ -7,17 +7,12 @@ on:
         branches: [ main ]
     workflow_dispatch:
 
-# Cancel in-progress runs on new commits to same PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
         steps:
         - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+          uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
           with:
             egress-policy: audit
 
@@ -88,12 +83,15 @@ jobs:
         - name: Run pipeline performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
         - name: Run pipeline performance test log suite - Saturation
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/saturation-docker.yaml
+            for config in test_suites/integration/continuous/saturation-*.yaml; do
+              echo "Running saturation test: $config"
+              python orchestrator/run_orchestrator.py --config "$config"
+            done
 
         - name: Upload benchmark results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -105,7 +103,7 @@ jobs:
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
             name: benchmark-results-saturation
-            path: tools/pipeline_perf_test/results/continuous_saturation/gh-actions-benchmark/*.json
+            path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
@@ -139,33 +137,11 @@ jobs:
 
           - name: Consolidate pipeline benchmark data
             run: |
-              echo "Consolidating pipeline benchmark JSON files..."
-              find results-pipeline -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find results-pipeline -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output-pipeline.json
-
-              echo "Consolidated pipeline benchmark data:"
-              cat output-pipeline.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
 
           - name: Consolidate saturation benchmark data
             run: |
-              echo "Consolidating saturation benchmark JSON files..."
-              find results-saturation -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find results-saturation -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output-saturation.json
-
-              echo "Consolidated saturation benchmark data:"
-              cat output-saturation.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-saturation output-saturation.json
 
           - name: Update pipeline benchmark data and deploy to GitHub Pages
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7

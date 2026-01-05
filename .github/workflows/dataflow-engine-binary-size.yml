@@ -1,0 +1,122 @@
+name: Dataflow Engine Binary Size Tracking
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+
+jobs:
+  build-multiarch:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            docker-platform: linux/amd64
+            rustflags: "-C target-cpu=x86-64 -C strip=symbols"
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            docker-platform: linux/arm64
+            rustflags: "-C target-cpu=generic -C strip=symbols"
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build dataflow_engine for ${{ matrix.platform.name }}
+        run: |
+          git submodule init
+          git submodule update
+          cd rust/otap-dataflow
+          docker buildx build \
+            --platform ${{ matrix.platform.docker-platform }} \
+            --build-context otel-arrow=../../ \
+            --build-arg RUSTFLAGS="${{ matrix.platform.rustflags }}" \
+            -f Dockerfile \
+            -t df_engine:${{ matrix.platform.name }} \
+            --load \
+            .
+          cd ../..
+
+      - name: Get binary size and create report
+        run: |
+          SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/dataflow/df_engine)
+          SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE)
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+          echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE_MB MB)"
+
+          mkdir -p size-reports
+          cat > size-reports/${{ matrix.platform.name }}.json << EOF
+          [
+            {
+              "name": "${{ matrix.platform.name }}-binary-size",
+              "unit": "MB",
+              "value": $SIZE_MB
+            }
+          ]
+          EOF
+
+      - name: Upload size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: size-report-${{ matrix.platform.name }}
+          path: size-reports/${{ matrix.platform.name }}.json
+
+  summary:
+    runs-on: ubuntu-24.04
+    needs: build-multiarch
+    if: always()
+    permissions:
+      # deployments permission to deploy GitHub pages website
+      deployments: write
+      # contents permission to update benchmark contents in gh-pages branch
+      contents: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Download all size reports
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: size-report-*
+          merge-multiple: true
+          path: all-reports
+
+      - name: Consolidate and display results
+        run: |
+          # Merge all JSON files into a single array using jq
+          jq -s 'map(.[0])' all-reports/*.json > consolidated-sizes.json
+
+          echo "## Dataflow Engine Binary Size"
+          echo "| Platform | Size |"
+          echo "|----------|------|"
+          for json in all-reports/*.json; do
+            PLATFORM=$(jq -r '.[0].name' "$json" | sed 's/-binary-size//')
+            SIZE_BYTES=$(jq -r '.[0].value' "$json")
+            SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE_BYTES)
+            echo "| $PLATFORM | $SIZE_HR |"
+          done
+
+      - name: Update binary size benchmarks
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: consolidated-sizes.json
+          gh-pages-branch: benchmarks
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/binary-size"
+          auto-push: ${{ github.event_name == 'schedule' }}
+          comment-on-alert: true
+          alert-threshold: "110%"
