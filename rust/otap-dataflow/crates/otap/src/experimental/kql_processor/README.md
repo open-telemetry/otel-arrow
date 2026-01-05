@@ -1,7 +1,18 @@
-# KQL Processor
+# EXPERIMENTAL KQL "RecordSet" Processor
 
-An experimental otap-dataflow processor that filters and transforms
-OpenTelemetry data using Kusto Query Language (KQL) expressions.
+An OTAP-Dataflow processor that filters and transforms OpenTelemetry
+data using Kusto Query Language (KQL) expressions over OpenTelemetry data
+in an opinionated way.
+
+## Caveats: Notes!
+
+The underlying engine does not use Apache Arrow or DataFusion. This
+is not an optimized code path in the OTAP Dataflow engine.
+
+The underlying engine implements a data model that is not perfectly
+aligned with OpenTelemetry. This component is capable of emitting
+arbitrary data that, while being expressed in an OTLP bytes encoding,
+is not well-specified OpenTelemetry data.
 
 ## Overview
 
@@ -15,7 +26,7 @@ and production quality however not an optimized implementation.
 
 - **Filters**: Use KQL `where` clauses to filter logs, traces, and metrics
 - **Transformations**: Apply KQL `extend` and `project` operations to modify data
-- **Aggregations**: Perform KQL `summarize` operations for data aggregation
+- **Aggregations**: Perform KQL `summarize` operations for data aggregation.
 
 ## Configuration
 
