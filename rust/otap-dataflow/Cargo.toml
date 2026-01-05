@@ -50,6 +50,7 @@ otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
+otap-df-pdata = { path = "crates/pdata" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }

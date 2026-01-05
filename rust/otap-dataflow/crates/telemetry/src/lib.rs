@@ -41,6 +41,7 @@ pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
 pub mod semconv;
+pub mod tracing_integration;
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates

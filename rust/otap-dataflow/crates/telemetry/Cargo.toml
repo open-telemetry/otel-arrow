@@ -19,8 +19,11 @@ unchecked-index = []
 unchecked-arithmetic = []
 
 [dependencies]
-axum = { workspace = true }
+otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
+
+axum = { workspace = true }
+bytes = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
