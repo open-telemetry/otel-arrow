@@ -45,4 +45,22 @@ mod tests {
         assert!(KqlParser::parse("let a = 1").is_err());
         assert!(KqlParser::parse("i | extend a = 1 i | extend b = 2").is_err());
     }
+
+    // TODO could move this to a separate file
+    #[test]
+    pub fn test_parse_conditional() {
+        let result = KqlParser::parse(
+            r#"
+            logs | if (severity_text == "ERROR") { 
+                extend attributes["important"] = "very" | extend attributes["important"] = "very"
+            } else if (severity_text == "WARN") {
+                extend attributes["important"] = "somewhat"
+            } else {
+                extend attributes["important"] = "somewhat"
+            }
+        "#,
+        );
+
+        println!("{:#?}", result);
+    }
 }

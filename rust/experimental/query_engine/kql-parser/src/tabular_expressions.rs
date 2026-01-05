@@ -11,6 +11,7 @@ use regex::Regex;
 use crate::{
     Rule,
     aggregate_expressions::parse_aggregate_expression,
+    if_else_expression::parse_if_else_expression,
     logical_expressions::parse_logical_expression,
     scalar_expression::{parse_scalar_expression, try_resolve_identifier},
     scalar_primitive_expressions::{parse_accessor_expression, parse_string_literal},
@@ -554,6 +555,9 @@ pub(crate) fn parse_tabular_expression_rule(
         }
         Rule::summarize_expression => {
             expressions.push(parse_summarize_expression(tabular_expression_rule, scope)?)
+        }
+        Rule::if_else_expression => {
+            expressions.push(parse_if_else_expression(tabular_expression_rule, scope)?);
         }
         _ => panic!("Unexpected rule in tabular_expression: {tabular_expression_rule}"),
     }
