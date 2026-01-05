@@ -93,13 +93,10 @@ mod test {
                 resource::v1::Resource,
             },
         },
-        testing::round_trip::otlp_to_otap,
+        testing::round_trip::to_logs_data,
     };
 
-    use crate::pipeline::{
-        Pipeline,
-        test::{exec_logs_pipeline, to_logs_data},
-    };
+    use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
 
     fn generate_logs_test_data() -> LogsData {
         LogsData::new(vec![ResourceLogs::new(

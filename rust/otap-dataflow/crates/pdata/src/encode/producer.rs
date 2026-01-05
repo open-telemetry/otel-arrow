@@ -48,8 +48,6 @@ impl StreamProducer {
         let buf = Vec::new();
         let cursor = Cursor::new(buf);
 
-        // write the IPC stream header
-
         let mut instance = Self {
             buffer: cursor,
             compression_context: CompressionContext::default(),
@@ -58,6 +56,8 @@ impl StreamProducer {
             schema_id,
             schema,
         };
+
+        // write the stream header
         instance.write_stream_header(ipc_write_options)?;
 
         Ok(instance)
@@ -344,11 +344,10 @@ mod test {
     use crate::Consumer;
     use crate::otap::{Logs, from_record_messages};
     use crate::otlp::attributes::AttributeValueType;
-    use crate::proto::OtlpProtoMessage;
     use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-    use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::schema::{FieldExt, consts};
-    use crate::testing::round_trip::otlp_to_otap;
+    use crate::testing::round_trip::to_otap_logs;
 
     use super::*;
     use std::sync::Arc;
@@ -438,22 +437,6 @@ mod test {
 
     #[test]
     fn test_producer_reset_streams() {
-        // TODO move these
-        pub fn to_logs_data(log_records: Vec<LogRecord>) -> LogsData {
-            LogsData {
-                resource_logs: vec![ResourceLogs {
-                    scope_logs: vec![ScopeLogs {
-                        log_records,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-            }
-        }
-        pub fn to_otap_logs(log_records: Vec<LogRecord>) -> OtapArrowRecords {
-            otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
-        }
-
         let batches = [
             to_otap_logs(vec![
                 LogRecord::build()
@@ -481,7 +464,10 @@ mod test {
             ]),
         ];
 
-        let mut producer = Producer::new();
+        // let mut producer = Producer::new();
+        let mut producer = Producer::new_with_options(ProducerOptions {
+            ipc_compression: Some(CompressionType::ZSTD),
+        });
 
         let mut encoded_bars = vec![];
         for mut batch in batches.clone() {
