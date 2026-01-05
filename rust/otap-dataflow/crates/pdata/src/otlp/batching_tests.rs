@@ -17,7 +17,7 @@ use std::num::NonZeroU64;
 fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
     // Clone the inputs for later equivalence checking.
     let inputs_otlp: Vec<_> = inputs_otlp.collect();
-    let signal_type = inputs_otlp.get(0).expect("ok").signal_type();
+    let signal_type = inputs_otlp.first().expect("ok").signal_type();
 
     let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp.iter().map(otlp_message_to_bytes).collect();
     let inputs_toplevel: usize = inputs_otlp
