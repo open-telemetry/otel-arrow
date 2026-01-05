@@ -16,8 +16,8 @@ Below is a quick guide for defining and using a metric set.
 - Annotate your struct with `#[metric_set(name = "<metrics.group.name>")]`.
 - For each metric field, choose one of the supported instruments and add
   `#[metric(unit = "{unit}")]`.
-  - Supported instruments: `Counter<u64>` (`UpDownCounter<u64>`, `Gauge<u64>`
-    soon).
+  - Supported instruments: `Counter<u64|f64>`, `UpDownCounter<u64|f64>`,
+    `ObserveCounter<u64|f64>`, `ObserveUpDownCounter<u64|f64>`, `Gauge<u64|f64>`.
   - Units follow a simple string convention (e.g., `{msg}`, `{record}`,
     `{span}`).
 - Optional: Document each field with a Rust doc comment; it becomes the metric
@@ -30,7 +30,7 @@ Below is a quick guide for defining and using a metric set.
 Example (from the OTAP Perf Exporter):
 
 ```rust
-use otap_df_telemetry::instrument::{Counter, UpDownCounter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry_macros::metric_set;
 
 /// Pdata-oriented metrics for the OTAP PerfExporter.
@@ -68,8 +68,10 @@ Notes:
 - The macro injects `#[repr(C, align(64))]` for better cache-line isolation.
 - The macro also derives the required handler to integrate with the metrics
   registry.
-- Support status: `UpDownCounter` and `Gauge` exist but are not yet fully
-  supported end-to-end.
+- Delta instruments (`Counter` and `UpDownCounter`) are meant to be reset after
+  reporting.
+- Observe instruments (`Observe*`) and `Gauge` are meant to be replaced on each
+  report/observation (not accumulated).
 
 ### Macro expansion (simplified)
 
@@ -91,29 +93,33 @@ impl otap_df_telemetry::metrics::MetricSetHandler for PerfExporterPdataMetrics {
     fn descriptor(&self) -> &'static otap_df_telemetry::descriptor::MetricsDescriptor {
         static DESCRIPTOR: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
             name: "perf.exporter.pdata.metrics",
-            metrics: &[
-                otap_df_telemetry::descriptor::MetricsField {
-                    name: "batches",
-                    unit: "{msg}",
-                    brief: "Number of pdata batches received.",
-                    instrument: otap_df_telemetry::descriptor::Instrument::Counter,
-                },
-                otap_df_telemetry::descriptor::MetricsField {
-                    name: "invalid.batches",
-                    unit: "{msg}",
-                    brief: "Number of invalid pdata batches received.",
-                    instrument: otap_df_telemetry::descriptor::Instrument::Counter,
-                },
+                metrics: &[
+                    otap_df_telemetry::descriptor::MetricsField {
+                        name: "batches",
+                        unit: "{msg}",
+                        brief: "Number of pdata batches received.",
+                        instrument: otap_df_telemetry::descriptor::Instrument::Counter,
+                        temporality: Some(otap_df_telemetry::descriptor::Temporality::Delta),
+                        value_type: otap_df_telemetry::descriptor::MetricValueType::U64,
+                    },
+                    otap_df_telemetry::descriptor::MetricsField {
+                        name: "invalid.batches",
+                        unit: "{msg}",
+                        brief: "Number of invalid pdata batches received.",
+                        instrument: otap_df_telemetry::descriptor::Instrument::Counter,
+                        temporality: Some(otap_df_telemetry::descriptor::Temporality::Delta),
+                        value_type: otap_df_telemetry::descriptor::MetricValueType::U64,
+                    },
                 // ... other fields
             ],
         };
         &DESCRIPTOR
     }
 
-    fn snapshot_values(&self) -> Vec<u64> {
+    fn snapshot_values(&self) -> Vec<otap_df_telemetry::metrics::MetricValue> {
         let mut out = Vec::with_capacity(self.descriptor().metrics.len());
-        out.push(self.batches.get());
-        out.push(self.invalid_batches.get());
+        out.push(otap_df_telemetry::metrics::MetricValue::from(self.batches.get()));
+        out.push(otap_df_telemetry::metrics::MetricValue::from(self.invalid_batches.get()));
         // ... other fields
         out
     }
@@ -125,8 +131,8 @@ impl otap_df_telemetry::metrics::MetricSetHandler for PerfExporterPdataMetrics {
     }
 
     fn needs_flush(&self) -> bool {
-        if self.batches.get() != 0 { return true; }
-        if self.invalid_batches.get() != 0 { return true; }
+        if !otap_df_telemetry::metrics::MetricValue::from(self.batches.get()).is_zero() { return true; }
+        if !otap_df_telemetry::metrics::MetricValue::from(self.invalid_batches.get()).is_zero() { return true; }
         // ... other fields
         false
     }

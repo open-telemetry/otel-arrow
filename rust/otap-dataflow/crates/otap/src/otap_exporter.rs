@@ -111,13 +111,17 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
     ) -> Result<TerminalState, Error> {
         otel_info!(
             "Exporter.Start",
-            grpc_endpoint = self.config.grpc_endpoint.as_str(),
+            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
             message = "Starting OTAP Exporter"
         );
 
         let exporter_id = effect_handler.exporter_id();
-        let mut endpoint =
-            Channel::from_shared(self.config.grpc_endpoint.clone()).map_err(|e| {
+        let channel = self
+            .config
+            .grpc
+            .connect_channel_lazy(self.config.timeout)
+            .await
+            .map_err(|e| {
                 let source_detail = format_error_sources(&e);
                 Error::ExporterError {
                     exporter: exporter_id,
@@ -126,13 +130,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     source_detail,
                 }
             })?;
-
-        // Apply timeout if configured
-        if let Some(timeout) = self.config.timeout {
-            endpoint = endpoint.timeout(timeout);
-        }
-
-        let channel = endpoint.connect_lazy();
 
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -630,7 +627,7 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
         let config = json!({
             "grpc_endpoint": grpc_endpoint,
-            "compression_method": "none"
+            "compression_method": "none",
         });
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
@@ -667,7 +664,7 @@ mod tests {
         let exporter =
             OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
 
-        assert_eq!(exporter.config.grpc_endpoint, "http://localhost:4317");
+        assert_eq!(exporter.config.grpc.grpc_endpoint, "http://localhost:4317");
         match exporter.config.compression_method {
             Some(ref method) => match method {
                 CompressionMethod::Gzip => {} // success
@@ -781,9 +778,9 @@ mod tests {
         );
     }
 
-    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1611
-    #[cfg(not(windows))]
+    // Skipping on Windows due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
+    #[cfg_attr(windows, ignore = "Skipping on Windows due to flakiness")]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
@@ -803,7 +800,7 @@ mod tests {
                 pipeline_ctx,
                 &serde_json::json!({
                     "grpc_endpoint": grpc_endpoint,
-                    "compression_method": "none"
+                    "compression_method": "none",
                 }),
             )
             .unwrap(),
@@ -814,8 +811,8 @@ mod tests {
 
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)

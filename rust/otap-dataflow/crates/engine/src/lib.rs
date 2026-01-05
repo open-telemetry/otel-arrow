@@ -3,7 +3,9 @@
 
 //! Async Pipeline Engine
 
+use crate::error::{ProcessorErrorKind, ReceiverErrorKind};
 use crate::{
+    channel_metrics::{CHANNEL_KIND_PDATA, ChannelMetricsRegistry},
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     error::Error,
@@ -24,6 +26,8 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
+use otap_df_telemetry::otel_debug;
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -36,6 +40,7 @@ pub mod processor;
 pub mod receiver;
 
 mod attributes;
+mod channel_metrics;
 pub mod config;
 pub mod context;
 pub mod control;
@@ -298,38 +303,79 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut receiver_names = HashMap::new();
         let mut processor_names = HashMap::new();
         let mut exporter_names = HashMap::new();
+        let mut node_contexts = HashMap::new();
         let mut nodes = NodeDefs::default();
+        let mut channel_metrics = ChannelMetricsRegistry::default();
+
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+
+        otel_debug!(
+            "pipeline.build.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id
+        );
+
+        let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            let pipeline_ctx = pipeline_ctx.with_node_context(name.clone(), node_config.kind);
+            let pipeline_ctx = pipeline_ctx.with_node_context(
+                name.clone(),
+                node_config.plugin_urn.clone(),
+                node_config.kind,
+            );
+            let _ = node_contexts.insert(name.clone(), pipeline_ctx.clone());
 
             match node_config.kind {
-                otap_df_config::node::NodeKind::Receiver => self.create_receiver(
-                    pipeline_ctx,
-                    &mut receiver_names,
-                    &mut nodes,
-                    &mut receivers,
-                    name.clone(),
-                    node_config.clone(),
-                )?,
-                otap_df_config::node::NodeKind::Processor => self.create_processor(
-                    pipeline_ctx,
-                    &mut processor_names,
-                    &mut nodes,
-                    &mut processors,
-                    name.clone(),
-                    node_config.clone(),
-                )?,
-                otap_df_config::node::NodeKind::Exporter => self.create_exporter(
-                    pipeline_ctx,
-                    &mut exporter_names,
-                    &mut nodes,
-                    &mut exporters,
-                    name.clone(),
-                    node_config.clone(),
-                )?,
+                otap_df_config::node::NodeKind::Receiver => {
+                    let wrapper = self.create_receiver(
+                        &pipeline_ctx,
+                        &mut receiver_names,
+                        &mut nodes,
+                        receivers.len(),
+                        name.clone(),
+                        node_config.clone(),
+                    )?;
+                    receivers.push(wrapper.with_control_channel_metrics(
+                        &pipeline_ctx,
+                        &mut channel_metrics,
+                        channel_metrics_enabled,
+                    ));
+                }
+                otap_df_config::node::NodeKind::Processor => {
+                    let wrapper = self.create_processor(
+                        &pipeline_ctx,
+                        &mut processor_names,
+                        &mut nodes,
+                        processors.len(),
+                        name.clone(),
+                        node_config.clone(),
+                    )?;
+                    processors.push(wrapper.with_control_channel_metrics(
+                        &pipeline_ctx,
+                        &mut channel_metrics,
+                        channel_metrics_enabled,
+                    ));
+                }
+                otap_df_config::node::NodeKind::Exporter => {
+                    let wrapper = self.create_exporter(
+                        &pipeline_ctx,
+                        &mut exporter_names,
+                        &mut nodes,
+                        exporters.len(),
+                        name.clone(),
+                        node_config.clone(),
+                    )?;
+                    exporters.push(wrapper.with_control_channel_metrics(
+                        &pipeline_ctx,
+                        &mut channel_metrics,
+                        channel_metrics_enabled,
+                    ));
+                }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     return Err(Error::UnsupportedNodeKind {
@@ -352,6 +398,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         }
         let mut assignments = Vec::new();
         for hyper_edge in edges {
+            let source_node_id = hyper_edge.source.clone();
+            otel_debug!(
+                "hyper_edge.wireup.start",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                core_id = core_id,
+                source_node_id = source_node_id.name.as_ref(),
+                port = hyper_edge.port.as_ref(),
+                dest_node_ids = format!("{:?}", hyper_edge.destinations),
+            );
+
             // Get source node
             let src_node =
                 pipeline
@@ -363,6 +420,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             // Get destination nodes: note the order of dest_nodes matches hyper_edge.destinations
             // and preserved by select_channel_type(). The zip() below depends on both of these.
             let mut dest_nodes = Vec::with_capacity(hyper_edge.destinations.len());
+            let mut dest_contexts = Vec::with_capacity(hyper_edge.destinations.len());
             for name in &hyper_edge.destinations {
                 let node = processor_names
                     .get(name)
@@ -374,13 +432,30 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     })
                     .ok_or_else(|| Error::UnknownNode { node: name.clone() })?;
                 dest_nodes.push(node);
+                let ctx = node_contexts
+                    .get(name)
+                    .ok_or_else(|| Error::UnknownNode { node: name.clone() })?
+                    .clone();
+                dest_contexts.push(ctx);
             }
 
             // Select channel type
+            let channel_id = format!("{}:{}", hyper_edge.source.name, hyper_edge.port);
+            let source_ctx =
+                node_contexts
+                    .get(&hyper_edge.source.name)
+                    .ok_or_else(|| Error::UnknownNode {
+                        node: hyper_edge.source.name.clone(),
+                    })?;
             let (pdata_sender, pdata_receivers) = Self::select_channel_type(
                 src_node,
                 &dest_nodes,
                 NonZeroUsize::new(1000).expect("Buffer size must be non-zero"),
+                channel_id.into(),
+                source_ctx,
+                &dest_contexts,
+                &mut channel_metrics,
+                channel_metrics_enabled,
             )?;
 
             // Prepare assignments
@@ -395,6 +470,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 sender: pdata_sender,
                 destinations,
             });
+
+            otel_debug!(
+                "hyper_edge.wireup.complete",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                core_id = core_id,
+                source_node_id = source_node_id.name.as_ref(),
+            );
         }
 
         // Second pass: perform all assignments
@@ -404,6 +487,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .ok_or_else(|| Error::UnknownNode {
                     node: assignment.source_id.name.clone(),
                 })?;
+            otel_debug!(
+                "pdata.sender.set",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                core_id = core_id,
+                node_id = assignment.source_id.name.as_ref(),
+                port = assignment.port.as_ref(),
+            );
             src_node.set_pdata_sender(
                 assignment.source_id,
                 assignment.port.clone(),
@@ -415,9 +506,26 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     .ok_or_else(|| Error::UnknownNode {
                         node: dest.name.clone(),
                     })?;
+                otel_debug!(
+                    "pdata.receiver.set",
+                    pipeline_group_id = pipeline_group_id.as_ref(),
+                    pipeline_id = pipeline_id.as_ref(),
+                    core_id = core_id,
+                    node_id = dest.name.as_ref(),
+                );
+
                 dest_node.set_pdata_receiver(dest, receiver)?;
             }
         }
+        pipeline.set_channel_metrics(channel_metrics.into_handles());
+
+        otel_debug!(
+            "pipeline.build.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id
+        );
+
         Ok(pipeline)
     }
 
@@ -434,54 +542,164 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         src_node: &dyn Node<PData>,
         dest_nodes: &Vec<&dyn Node<PData>>,
         buffer_size: NonZeroUsize,
+        channel_id: Cow<'static, str>,
+        source_ctx: &PipelineContext,
+        dest_contexts: &[PipelineContext],
+        channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
     ) -> Result<(Sender<PData>, Vec<Receiver<PData>>), Error> {
         let source_is_shared = src_node.is_shared();
         let any_dest_is_shared = dest_nodes.iter().any(|dest| dest.is_shared());
         let use_shared_channels = source_is_shared || any_dest_is_shared;
         let num_destinations = dest_nodes.len();
+        debug_assert_eq!(num_destinations, dest_contexts.len());
 
-        if use_shared_channels {
-            // Shared channels
-            if num_destinations > 1 {
-                let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
-                let pdata_receivers = (0..num_destinations)
-                    .map(|_| Receiver::Shared(SharedReceiver::MpmcReceiver(pdata_receiver.clone())))
-                    .collect::<Vec<_>>();
-                Ok((
-                    Sender::Shared(SharedSender::MpmcSender(pdata_sender)),
-                    pdata_receivers,
-                ))
-            } else {
-                let (pdata_sender, pdata_receiver) =
-                    tokio::sync::mpsc::channel::<PData>(buffer_size.get());
-                Ok((
-                    Sender::Shared(SharedSender::MpscSender(pdata_sender)),
-                    vec![Receiver::Shared(SharedReceiver::MpscReceiver(
+        let channel_kind = CHANNEL_KIND_PDATA;
+        let capacity = buffer_size.get() as u64;
+
+        if channel_metrics_enabled {
+            match (use_shared_channels, num_destinations > 1) {
+                (true, true) => {
+                    let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                    let pdata_sender = SharedSender::mpmc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|ctx| {
+                            let receiver = SharedReceiver::mpmc_with_metrics(
+                                pdata_receiver.clone(),
+                                ctx,
+                                channel_metrics,
+                                channel_id.clone(),
+                                channel_kind,
+                                capacity,
+                            );
+                            Receiver::Shared(receiver)
+                        })
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Shared(pdata_sender), pdata_receivers))
+                }
+                (true, false) => {
+                    let (pdata_sender, pdata_receiver) =
+                        tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                    let pdata_sender = SharedSender::mpsc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let ctx = dest_contexts.first().expect("dest_contexts is empty");
+                    let pdata_receiver = SharedReceiver::mpsc_with_metrics(
                         pdata_receiver,
-                    ))],
-                ))
+                        ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                        capacity,
+                    );
+                    Ok((
+                        Sender::Shared(pdata_sender),
+                        vec![Receiver::Shared(pdata_receiver)],
+                    ))
+                }
+                (false, true) => {
+                    // ToDo(LQ): Use a local SPMC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpmc::Channel::new(buffer_size);
+                    let pdata_sender = LocalSender::mpmc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|ctx| {
+                            let receiver = LocalReceiver::mpmc_with_metrics(
+                                pdata_receiver.clone(),
+                                ctx,
+                                channel_metrics,
+                                channel_id.clone(),
+                                channel_kind,
+                                capacity,
+                            );
+                            Receiver::Local(receiver)
+                        })
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Local(pdata_sender), pdata_receivers))
+                }
+                (false, false) => {
+                    // ToDo(LQ): Use a local SPSC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                    let pdata_sender = LocalSender::mpsc_with_metrics(
+                        pdata_sender,
+                        source_ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                    );
+                    let ctx = dest_contexts.first().expect("dest_contexts is empty");
+                    let pdata_receiver = LocalReceiver::mpsc_with_metrics(
+                        pdata_receiver,
+                        ctx,
+                        channel_metrics,
+                        channel_id.clone(),
+                        channel_kind,
+                        capacity,
+                    );
+                    Ok((
+                        Sender::Local(pdata_sender),
+                        vec![Receiver::Local(pdata_receiver)],
+                    ))
+                }
             }
         } else {
-            // Local channels
-            if num_destinations > 1 {
-                // ToDo(LQ): Use a local SPMC channel when available.
-                let (pdata_sender, pdata_receiver) =
-                    otap_df_channel::mpmc::Channel::new(buffer_size);
-                let pdata_receivers = (0..num_destinations)
-                    .map(|_| Receiver::Local(LocalReceiver::MpmcReceiver(pdata_receiver.clone())))
-                    .collect::<Vec<_>>();
-                Ok((
-                    Sender::Local(LocalSender::MpmcSender(pdata_sender)),
-                    pdata_receivers,
-                ))
-            } else {
-                // ToDo(LQ): Use a local SPSC channel when available.
-                let (pdata_sender, pdata_receiver) =
-                    otap_df_channel::mpsc::Channel::new(buffer_size.get());
-                Ok((
-                    Sender::Local(LocalSender::MpscSender(pdata_sender)),
-                    vec![Receiver::Local(LocalReceiver::MpscReceiver(pdata_receiver))],
-                ))
+            match (use_shared_channels, num_destinations > 1) {
+                (true, true) => {
+                    let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                    let pdata_sender = SharedSender::mpmc(pdata_sender);
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|_| Receiver::Shared(SharedReceiver::mpmc(pdata_receiver.clone())))
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Shared(pdata_sender), pdata_receivers))
+                }
+                (true, false) => {
+                    let (pdata_sender, pdata_receiver) =
+                        tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                    Ok((
+                        Sender::Shared(SharedSender::mpsc(pdata_sender)),
+                        vec![Receiver::Shared(SharedReceiver::mpsc(pdata_receiver))],
+                    ))
+                }
+                (false, true) => {
+                    // ToDo(LQ): Use a local SPMC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpmc::Channel::new(buffer_size);
+                    let pdata_sender = LocalSender::mpmc(pdata_sender);
+                    let pdata_receivers = dest_contexts
+                        .iter()
+                        .map(|_| Receiver::Local(LocalReceiver::mpmc(pdata_receiver.clone())))
+                        .collect::<Vec<_>>();
+                    Ok((Sender::Local(pdata_sender), pdata_receivers))
+                }
+                (false, false) => {
+                    // ToDo(LQ): Use a local SPSC channel when available.
+                    let (pdata_sender, pdata_receiver) =
+                        otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                    Ok((
+                        Sender::Local(LocalSender::mpsc(pdata_sender)),
+                        vec![Receiver::Local(LocalReceiver::mpsc(pdata_receiver))],
+                    ))
+                }
             }
         }
     }
@@ -489,13 +707,25 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Creates a receiver node and adds it to the list of runtime nodes.
     fn create_receiver(
         &self,
-        pipeline_ctx: PipelineContext,
+        pipeline_ctx: &PipelineContext,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
-        receivers: &mut Vec<ReceiverWrapper<PData>>,
+        receiver_index: usize,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
-    ) -> Result<(), Error> {
+    ) -> Result<ReceiverWrapper<PData>, Error> {
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+
+        otel_debug!(
+            "receiver.create.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
         // Validate plugin URN structure during registration
         otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
@@ -515,29 +745,61 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_id = nodes.next(
             name.clone(),
             NodeType::Receiver,
-            PipeNode::new(receivers.len()),
+            PipeNode::new(receiver_index),
         )?;
         if names.insert(name.clone(), node_id.clone()).is_some() {
             return Err(Error::ReceiverAlreadyExists { receiver: node_id });
         }
 
-        receivers.push(
-            create(pipeline_ctx, node_id, node_config, &runtime_config)
-                .map_err(|e| Error::ConfigError(Box::new(e)))?,
+        let receiver = create(
+            (*pipeline_ctx).clone(),
+            node_id.clone(),
+            node_config,
+            &runtime_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        if receiver.user_config().out_ports.is_empty() {
+            return Err(Error::ReceiverError {
+                receiver: node_id,
+                kind: ReceiverErrorKind::Configuration,
+                error: "The `out_ports` field is empty. This is either an invalid configuration or a receiver factory that does not provide the correct configuration.".to_owned(),
+                source_detail: "".to_string(),
+            });
+        }
+
+        otel_debug!(
+            "receiver.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
         );
-        Ok(())
+
+        Ok(receiver)
     }
 
     /// Creates a processor node and adds it to the list of runtime nodes.
     fn create_processor(
         &self,
-        pipeline_ctx: PipelineContext,
+        pipeline_ctx: &PipelineContext,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
-        processors: &mut Vec<ProcessorWrapper<PData>>,
+        processor_index: usize,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
-    ) -> Result<(), Error> {
+    ) -> Result<ProcessorWrapper<PData>, Error> {
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+
+        otel_debug!(
+            "processor.create.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
         // Validate plugin URN structure during registration
         otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
@@ -557,34 +819,61 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_id = nodes.next(
             name.clone(),
             NodeType::Processor,
-            PipeNode::new(processors.len()),
+            PipeNode::new(processor_index),
         )?;
         if names.insert(name.clone(), node_id.clone()).is_some() {
             return Err(Error::ProcessorAlreadyExists { processor: node_id });
         }
-        processors.push(
-            create(
-                pipeline_ctx,
-                node_id,
-                node_config.clone(),
-                &processor_config,
-            )
-            .map_err(|e| Error::ConfigError(Box::new(e)))?,
+
+        let processor = create(
+            (*pipeline_ctx).clone(),
+            node_id.clone(),
+            node_config.clone(),
+            &processor_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        if processor.user_config().out_ports.is_empty() {
+            return Err(Error::ProcessorError {
+                processor: node_id,
+                kind: ProcessorErrorKind::Configuration,
+                error: "The `out_ports` field is empty. This is either an invalid configuration or a processor factory that does not provide the correct configuration.".to_owned(),
+                source_detail: "".to_string(),
+            });
+        }
+
+        otel_debug!(
+            "processor.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
         );
 
-        Ok(())
+        Ok(processor)
     }
 
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
         &self,
-        pipeline_ctx: PipelineContext,
+        pipeline_ctx: &PipelineContext,
         names: &mut HashMap<NodeName, NodeId>,
         nodes: &mut NodeDefs<PData, PipeNode>,
-        exporters: &mut Vec<ExporterWrapper<PData>>,
+        exporter_index: usize,
         name: NodeName,
         node_config: Arc<NodeUserConfig>,
-    ) -> Result<(), Error> {
+    ) -> Result<ExporterWrapper<PData>, Error> {
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+
+        otel_debug!(
+            "exporter.create.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
         // Validate plugin URN structure during registration
         otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
@@ -604,17 +893,29 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_id = nodes.next(
             name.clone(),
             NodeType::Exporter,
-            PipeNode::new(exporters.len()),
+            PipeNode::new(exporter_index),
         )?;
 
         if names.insert(name.clone(), node_id.clone()).is_some() {
             return Err(Error::ExporterAlreadyExists { exporter: node_id });
         }
-        exporters.push(
-            create(pipeline_ctx, node_id, node_config, &exporter_config)
-                .map_err(|e| Error::ConfigError(Box::new(e)))?,
+        let exporter = create(
+            (*pipeline_ctx).clone(),
+            node_id,
+            node_config,
+            &exporter_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
+        otel_debug!(
+            "exporter.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
         );
-        Ok(())
+
+        Ok(exporter)
     }
 }
 

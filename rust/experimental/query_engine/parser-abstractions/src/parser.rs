@@ -20,7 +20,11 @@ pub trait Parser {
 
 type ParserFunctionDefinition = (
     Box<str>,
-    Vec<(PipelineFunctionParameter, Option<ScalarExpression>)>,
+    Vec<(
+        Box<str>,
+        PipelineFunctionParameter,
+        Option<ScalarExpression>,
+    )>,
     Option<ValueType>,
 );
 
@@ -65,11 +69,17 @@ impl ParserOptions {
     pub fn with_external_function(
         mut self,
         name: &str,
-        parameters: Vec<(PipelineFunctionParameter, Option<ScalarExpression>)>,
+        mut parameters: Vec<(&str, PipelineFunctionParameter, Option<ScalarExpression>)>,
         return_value_type: Option<ValueType>,
     ) -> ParserOptions {
-        self.functions
-            .push((name.into(), parameters, return_value_type));
+        self.functions.push((
+            name.into(),
+            parameters
+                .drain(..)
+                .map(|(name, def, default)| (name.into(), def, default))
+                .collect(),
+            return_value_type,
+        ));
         self
     }
 

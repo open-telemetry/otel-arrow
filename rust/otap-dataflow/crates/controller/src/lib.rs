@@ -269,27 +269,80 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
+        let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
+        let num_cores = available_core_ids.len();
+
         match quota.core_allocation {
             CoreAllocation::AllCores => Ok(available_core_ids),
             CoreAllocation::CoreCount { count } => {
-                let count = if count == 0 {
-                    available_core_ids.len()
+                if count == 0 {
+                    Ok(available_core_ids)
+                } else if count > num_cores {
+                    Err(Error::InvalidCoreAllocation {
+                        alloc: quota.core_allocation.clone(),
+                        message: format!(
+                            "Requested {} cores but only {} cores available on this system",
+                            count, num_cores
+                        ),
+                        available: available_core_ids.iter().map(|c| c.id).collect(),
+                    })
                 } else {
-                    count.min(available_core_ids.len())
-                };
-                Ok(available_core_ids.into_iter().take(count).collect())
+                    Ok(available_core_ids.into_iter().take(count).collect())
+                }
             }
             CoreAllocation::CoreSet { ref set } => {
-                set.iter().try_for_each(|r| {
+                // Validate all ranges first
+                for r in set.iter() {
                     if r.start > r.end {
                         return Err(Error::InvalidCoreAllocation {
                             alloc: quota.core_allocation.clone(),
-                            message: "Start of range is greater than end".to_owned(),
+                            message: format!(
+                                "Invalid core range: start ({}) is greater than end ({})",
+                                r.start, r.end
+                            ),
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         });
                     }
-                    Ok(())
-                })?;
+                    if r.start > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.start, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                    if r.end > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.end, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                }
+
+                // Check for overlapping ranges
+                for (i, r1) in set.iter().enumerate() {
+                    for r2 in set.iter().skip(i + 1) {
+                        // Two ranges overlap if they share any common cores
+                        if r1.start <= r2.end && r2.start <= r1.end {
+                            let overlap_start = r1.start.max(r2.start);
+                            let overlap_end = r1.end.min(r2.end);
+                            return Err(Error::InvalidCoreAllocation {
+                                alloc: quota.core_allocation.clone(),
+                                message: format!(
+                                    "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
+                                    r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
+                                ),
+                                available: available_core_ids.iter().map(|c| c.id).collect(),
+                            });
+                        }
+                    }
+                }
 
                 // Filter cores in range
                 let selected: Vec<_> = available_core_ids
@@ -526,5 +579,126 @@ mod tests {
         let expected_core_ids = available_core_ids.clone();
         let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
+    }
+
+    #[test]
+    fn select_with_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 5 },
+                CoreRange { start: 4, end: 7 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_fully_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 6 },
+                CoreRange { start: 3, end: 5 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_identical_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 3, end: 5 },
+                CoreRange { start: 3, end: 5 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_adjacent_ranges_succeeds() {
+        // Adjacent but non-overlapping ranges should work
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreSet {
+                set: vec![
+                    CoreRange { start: 2, end: 3 },
+                    CoreRange { start: 4, end: 5 },
+                ],
+            },
+        };
+        let available_core_ids = available_core_ids();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn select_with_multiple_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 1, end: 3 },
+                CoreRange { start: 2, end: 4 },
+                CoreRange { start: 5, end: 6 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

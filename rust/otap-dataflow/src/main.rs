@@ -10,8 +10,31 @@ use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
+use sysinfo::System;
+
+#[cfg(all(
+    not(windows),
+    feature = "jemalloc",
+    feature = "mimalloc",
+    not(any(test, doc)),
+    not(clippy)
+))]
+compile_error!(
+    "Features `jemalloc` and `mimalloc` are mutually exclusive. \
+     To build with mimalloc, use: cargo build --release --no-default-features --features mimalloc"
+);
+
+#[cfg(feature = "mimalloc")]
+use mimalloc::MiMalloc;
+
+#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
+#[cfg(all(not(windows), feature = "jemalloc", not(feature = "mimalloc")))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
@@ -98,6 +121,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
     let pipeline_id: PipelineId = "default_pipeline".into();
 
+    println!("{}", system_info());
+
     // Load pipeline configuration from file
     let pipeline_cfg = PipelineConfig::from_file(
         pipeline_group_id.clone(),
@@ -108,7 +133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
 
-    // Map CLI arguments to the new enum structure
+    // Map CLI arguments to the core allocation enum
     let core_allocation = if let Some(range) = args.core_id_range {
         range
     } else if args.num_cores == 0 {
@@ -121,12 +146,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let quota = Quota { core_allocation };
 
-    // Print what we're doing
+    // Print the requested core configuration
     match &quota.core_allocation {
-        CoreAllocation::AllCores => println!("Starting pipeline using all available cores"),
-        CoreAllocation::CoreCount { count } => println!("Starting pipeline with {count} cores"),
+        CoreAllocation::AllCores => println!("Requested core allocation: all available cores"),
+        CoreAllocation::CoreCount { count } => println!("Requested core allocation: {count} cores"),
         CoreAllocation::CoreSet { .. } => {
-            println!("Starting pipeline on core ID set {}", quota.core_allocation);
+            println!("Requested core allocation: {}", quota.core_allocation);
         }
     }
 
@@ -146,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("{e}");
+            eprintln!("Pipeline failed to run: {e}");
             std::process::exit(1);
         }
     }
@@ -163,6 +188,19 @@ fn system_info() -> String {
     } else {
         "release"
     };
+
+    let memory_allocator = if cfg!(feature = "mimalloc") {
+        "mimalloc"
+    } else if cfg!(all(feature = "jemalloc", not(windows))) {
+        "jemalloc"
+    } else {
+        "system"
+    };
+
+    let mut sys = System::new_all();
+    sys.refresh_memory();
+    let total_memory_gb = sys.total_memory() as f64 / 1_073_741_824.0;
+    let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
 
     let debug_warning = if cfg!(debug_assertions) {
         "\n\n⚠️  WARNING: This binary was compiled in debug mode.
@@ -197,15 +235,11 @@ fn system_info() -> String {
     exporters_sorted.sort();
 
     format!(
-        "Examples:
-  {} --pipeline configs/otlp-perf.yaml --num-cores 4
-  {} --pipeline configs/otlp-perf.yaml --core-id-range 2-5
-  {} -p configs/otlp-perf.yaml
-
-System Information:
+        "System Information:
   Available CPU cores: {}
+  Available memory: {:.2} GB / {:.2} GB
   Build mode: {}
-  Default memory allocator: mimalloc
+  Memory allocator: {}
 
 Available Plugin URNs:
   Receivers: {}
@@ -213,11 +247,11 @@ Available Plugin URNs:
   Exporters: {}
 
 Configuration files can be found in the configs/ directory.{}",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_NAME"),
         available_cores,
+        available_memory_gb,
+        total_memory_gb,
         build_mode,
+        memory_allocator,
         receivers_sorted.join(", "),
         processors_sorted.join(", "),
         exporters_sorted.join(", "),

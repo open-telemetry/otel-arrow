@@ -161,14 +161,55 @@ impl Default for WalConfig {
 }
 
 /// Segment tuning parameters.
+///
+/// Segments are finalized (sealed and written to disk) when *either* trigger fires:
+///
+/// 1. **Size trigger**: The open segment's estimated payload size reaches
+///    [`target_size_bytes`](Self::target_size_bytes).
+/// 2. **Time trigger**: The segment has been open longer than
+///    [`max_open_duration`](Self::max_open_duration).
+///
+/// This dual-trigger approach balances efficiency and latency:
+///
+/// - **High-throughput workloads** hit the size trigger frequently, producing
+///   consistently-sized segments with good compression and low metadata overhead.
+/// - **Low-throughput or bursty workloads** hit the time trigger, ensuring data
+///   becomes visible to downstream subscribers within a bounded latency even when
+///   volume is insufficient to fill a segment.
+///
+/// # Tuning Guidance
+///
+/// | Scenario | Recommendation |
+/// |----------|----------------|
+/// | High throughput (>10 MB/s) | Increase `target_size_bytes` to 64-128 MB for better compression |
+/// | Latency-sensitive | Decrease `max_open_duration` to 1-2 seconds |
+/// | Memory-constrained | Decrease `target_size_bytes` (each core buffers up to this amount) |
+/// | Low volume (<1 MB/s) | Default is fine; `max_open_duration` dominates |
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SegmentConfig {
-    /// Target payload size for a finalized segment.
+    /// Target payload size (in bytes) for a finalized segment.
+    ///
+    /// When the open segment's estimated size reaches this threshold, finalization
+    /// is triggered. Larger values improve compression and reduce per-segment
+    /// overhead, but increase memory usage and latency to visibility.
+    ///
+    /// Default: 32 MB. Recommended range: 8-128 MB.
     pub target_size_bytes: NonZeroU64,
-    /// Optional time-slicing to prevent long-lived open segments.
+
+    /// Maximum time a segment may remain open before forced finalization.
+    ///
+    /// This ensures bounded latency for downstream visibility even when ingest
+    /// volume is low. At high throughput, [`target_size_bytes`](Self::target_size_bytes)
+    /// typically triggers first.
+    ///
+    /// Default: 5 seconds.
     pub max_open_duration: Duration,
+
     /// Soft cap on the number of streams active within a segment.
+    ///
+    /// Each unique `(slot, schema_fingerprint)` pair creates a new stream.
+    /// Exceeding this limit may trigger early finalization to bound memory.
     pub max_stream_count: u32,
 }
 

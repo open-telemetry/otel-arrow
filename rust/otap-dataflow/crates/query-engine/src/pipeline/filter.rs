@@ -843,7 +843,7 @@ impl FilterExec {
 }
 
 impl Composite<FilterExec> {
-    fn execute(
+    pub(crate) fn execute(
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_ctx: &SessionContext,
@@ -1181,14 +1181,37 @@ impl AdaptivePhysicalExprExec {
             .into_array(record_batch.num_rows())?;
 
         // ensure it actually evaluated to a boolean expression, and if so return that as selection vec
-        as_boolean_array(&arr)
+        let boolean_arr = as_boolean_array(&arr)
             .cloned()
             .map_err(|_| Error::ExecutionError {
                 cause: format!(
                     "Cannot create selection vector from non-boolean predicates. Found {}",
                     arr.data_type()
                 ),
-            })
+            })?;
+
+        // the underlying compute kernels that will be used for the physical exprs will produce
+        // nulls if the incoming value is null. For the expressions we support, we want this to
+        // be `false`, so the null buffer must be removed
+        let (result_bool_values, null_buffer) = boolean_arr.into_parts();
+        let boolean_arr = match null_buffer {
+            // no nulls, just return the selection vec as is:
+            None => BooleanArray::new(result_bool_values, None),
+
+            // combine nulls into selection vec:
+            Some(null_buffer) => {
+                // Note: arrow-rs doesn't make any guarantees that the null values in a boolean
+                // array are `false` in the values buffer so we can't simply drop the null buffer
+                // in the case null values don't pass the filter.
+                let mut null_mask = BooleanArray::new(null_buffer.into_inner(), None);
+                if self.missing_data_passes {
+                    null_mask = not(&null_mask)?;
+                }
+                and(&BooleanArray::new(result_bool_values, None), &null_mask)?
+            }
+        };
+
+        Ok(boolean_arr)
     }
 }
 
@@ -1490,256 +1513,212 @@ impl FilterPipelineStage {
     pub fn new(filter_exec: Composite<FilterExec>) -> Self {
         Self { filter_exec }
     }
-
-    /// After filtering has been applied to the parent record batch, go into the child record batch
-    /// and remove rows with parent_id pointing to parents that were filtered out
-    fn filter_child_batch<T: ChildBatchFilterIdHelper>(
-        &self,
-        otap_batch: &mut OtapArrowRecords,
-        child_payload_type: ArrowPayloadType,
-    ) -> Result<()>
-    where
-        <T as ArrowPrimitiveType>::Native: Into<u32>,
-    {
-        let parent_rb = match parent_payload_type(child_payload_type) {
-            None => {
-                // shouldn't happen
-                return Err(Error::ExecutionError {
-                    cause: "filter_child_batch called with root payload type".into(),
-                });
-            }
-            Some(ParentPayloadType::Root) => otap_batch.root_record_batch(),
-            Some(ParentPayloadType::NonRoot(parent_payload_type)) => {
-                otap_batch.get(parent_payload_type)
-            }
-        };
-
-        let parent_rb = match parent_rb {
-            Some(rb) => rb,
-            None => {
-                if otap_batch.get(child_payload_type).is_some() {
-                    // the parent record batch has been removed (completely filtered out), so
-                    // there is nothing to link to, this child batch, so we can remove it
-                    otap_batch.remove(child_payload_type);
-                }
-
-                return Ok(());
-            }
-        };
-
-        let child_rb = match otap_batch.get(child_payload_type) {
-            Some(rb) => rb,
-            None => {
-                // if child batch doesn't exist, then there are no records to filter
-                return Ok(());
-            }
-        };
-
-        let id_col =
-            T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(||
-            // this would be considered an unexpected state for this batch. We have a child
-            // record batch that is supposed to have it's parent_id pointing to an ID column
-            // on the root batch which does not exist
-            Error::ExecutionError {
-                cause: format!(
-                    "Invalid batch - ID column not found on root batch {:?}",
-                    otap_batch.root_payload_type()
-                )
-            })?;
-
-        // build the selection vector for the child record batch. This uses common code shared
-        // with the filter processor
-        let id_mask = id_col.iter().flatten().map(|i| i.into()).collect();
-        let child_parent_ids =
-            child_rb
-                .column_by_name(consts::PARENT_ID)
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: "parent_id column not found on child batch".into(),
-                })?;
-
-        let child_selection_vec = T::build_selection_vec(child_parent_ids, id_mask)?;
-
-        if child_selection_vec.true_count() == 0 {
-            // the child record batch has been completely filtered out
-            otap_batch.remove(child_payload_type);
-        } else {
-            // create the new child record batch from rows that were selected and update the OTAP batch
-            let new_child_rb =
-                filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
-                    Error::ExecutionError {
-                        cause: format!("error filtering child batch {:?}", e),
-                    }
-                })?;
-            otap_batch.set(child_payload_type, new_child_rb);
-        }
-
-        Ok(())
-    }
 }
 
-#[async_trait]
+pub(crate) fn filter_otap_batch(
+    selection_vec: &BooleanArray,
+    mut otap_batch: OtapArrowRecords,
+) -> Result<OtapArrowRecords> {
+    let root_batch = match otap_batch.root_record_batch() {
+        Some(rb) => rb,
+        None => {
+            // if batch is empty, no filtering to do
+            return Ok(otap_batch);
+        }
+    };
+
+    // check if nothing was filtered
+    if selection_vec.true_count() == root_batch.num_rows() {
+        // Nothing was filtered out, return original batch
+        return Ok(otap_batch);
+    }
+
+    // check if the filter removed all records
+    if selection_vec.false_count() == root_batch.num_rows() {
+        // here we return an empty OTAP batch with the same signal type
+        return Ok(match otap_batch.root_payload_type() {
+            ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
+            ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
+            _ => OtapArrowRecords::Metrics(Metrics::default()),
+        });
+    }
+
+    // take the rows from the root batch that were selected
+    let new_root_batch = filter_record_batch(root_batch, selection_vec)?;
+
+    // replace the root batch
+    otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
+
+    // update the child batches after filtering has been applied to parent
+    match otap_batch.root_payload_type() {
+        ArrowPayloadType::Logs => {
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::LogAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
+        }
+        ArrowPayloadType::Spans => {
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanEvents)?;
+            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::SpanEventAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SpanLinks)?;
+            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::SpanLinkAttrs)?;
+        }
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::MetricAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ScopeAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::ResourceAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::SummaryDataPoints)?;
+            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::SummaryDpAttrs)?;
+            filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::NumberDataPoints)?;
+            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::NumberDpAttrs)?;
+            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::NumberDpExemplars)?;
+            filter_child_batch::<UInt32Type>(
+                &mut otap_batch,
+                ArrowPayloadType::NumberDpExemplarAttrs,
+            )?;
+            filter_child_batch::<UInt16Type>(
+                &mut otap_batch,
+                ArrowPayloadType::HistogramDataPoints,
+            )?;
+            filter_child_batch::<UInt32Type>(&mut otap_batch, ArrowPayloadType::HistogramDpAttrs)?;
+            filter_child_batch::<UInt32Type>(
+                &mut otap_batch,
+                ArrowPayloadType::HistogramDpExemplars,
+            )?;
+            filter_child_batch::<UInt32Type>(
+                &mut otap_batch,
+                ArrowPayloadType::HistogramDpExemplarAttrs,
+            )?;
+            filter_child_batch::<UInt16Type>(
+                &mut otap_batch,
+                ArrowPayloadType::ExpHistogramDataPoints,
+            )?;
+            filter_child_batch::<UInt32Type>(
+                &mut otap_batch,
+                ArrowPayloadType::ExpHistogramDpAttrs,
+            )?;
+            filter_child_batch::<UInt32Type>(
+                &mut otap_batch,
+                ArrowPayloadType::ExpHistogramDpExemplars,
+            )?;
+            filter_child_batch::<UInt32Type>(
+                &mut otap_batch,
+                ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            )?;
+        }
+        signal_type => {
+            return Err(Error::ExecutionError {
+                cause: format!(
+                    "signal type {:?} not yet supported by FilterPipelineStage",
+                    signal_type
+                ),
+            });
+        }
+    };
+
+    Ok(otap_batch)
+}
+
+/// After filtering has been applied to the parent record batch, go into the child record batch
+/// and remove rows with parent_id pointing to parents that were filtered out
+fn filter_child_batch<T: ChildBatchFilterIdHelper>(
+    otap_batch: &mut OtapArrowRecords,
+    child_payload_type: ArrowPayloadType,
+) -> Result<()>
+where
+    <T as ArrowPrimitiveType>::Native: Into<u32>,
+{
+    let parent_rb = match parent_payload_type(child_payload_type) {
+        None => {
+            // shouldn't happen
+            return Err(Error::ExecutionError {
+                cause: "filter_child_batch called with root payload type".into(),
+            });
+        }
+        Some(ParentPayloadType::Root) => otap_batch.root_record_batch(),
+        Some(ParentPayloadType::NonRoot(parent_payload_type)) => {
+            otap_batch.get(parent_payload_type)
+        }
+    };
+
+    let parent_rb = match parent_rb {
+        Some(rb) => rb,
+        None => {
+            if otap_batch.get(child_payload_type).is_some() {
+                // the parent record batch has been removed (completely filtered out), so
+                // there is nothing to link to, this child batch, so we can remove it
+                otap_batch.remove(child_payload_type);
+            }
+
+            return Ok(());
+        }
+    };
+
+    let child_rb = match otap_batch.get(child_payload_type) {
+        Some(rb) => rb,
+        None => {
+            // if child batch doesn't exist, then there are no records to filter
+            return Ok(());
+        }
+    };
+
+    let id_col = T::get_id_col_from_parent(parent_rb, child_payload_type)?.ok_or_else(||
+        // this would be considered an unexpected state for this batch. We have a child
+        // record batch that is supposed to have it's parent_id pointing to an ID column
+        // on the root batch which does not exist
+        Error::ExecutionError {
+            cause: format!(
+                "Invalid batch - ID column not found on root batch {:?}",
+                otap_batch.root_payload_type()
+            )
+        })?;
+
+    // build the selection vector for the child record batch. This uses common code shared
+    // with the filter processor
+    let id_mask = id_col.iter().flatten().map(|i| i.into()).collect();
+    let child_parent_ids =
+        child_rb
+            .column_by_name(consts::PARENT_ID)
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "parent_id column not found on child batch".into(),
+            })?;
+
+    let child_selection_vec = T::build_selection_vec(child_parent_ids, id_mask)?;
+
+    if child_selection_vec.true_count() == 0 {
+        // the child record batch has been completely filtered out
+        otap_batch.remove(child_payload_type);
+    } else {
+        // create the new child record batch from rows that were selected and update the OTAP batch
+        let new_child_rb = filter_record_batch(child_rb, &child_selection_vec).map_err(|e| {
+            Error::ExecutionError {
+                cause: format!("error filtering child batch {:?}", e),
+            }
+        })?;
+        otap_batch.set(child_payload_type, new_child_rb);
+    }
+
+    Ok(())
+}
+
+#[async_trait(?Send)]
 impl PipelineStage for FilterPipelineStage {
     async fn execute(
         &mut self,
-        mut otap_batch: OtapArrowRecords,
+        otap_batch: OtapArrowRecords,
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
     ) -> Result<OtapArrowRecords> {
-        let root_batch = match otap_batch.root_record_batch() {
-            Some(rb) => rb,
-            None => {
-                // if batch is empty, no filtering to do
-                return Ok(otap_batch);
-            }
-        };
-
-        let selection_vec = self.filter_exec.execute(&otap_batch, session_context)?;
-
-        // check if nothing was filtered
-        if selection_vec.true_count() == root_batch.num_rows() {
-            // Nothing was filtered out, return original batch
+        if otap_batch.root_record_batch().is_none() {
+            // if batch is empty, no filtering to do
             return Ok(otap_batch);
         }
 
-        // check if the filter removed all records
-        if selection_vec.false_count() == root_batch.num_rows() {
-            // here we return an empty OTAP batch with the same signal type
-            return Ok(match otap_batch.root_payload_type() {
-                ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
-                ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
-                _ => OtapArrowRecords::Metrics(Metrics::default()),
-            });
-        }
-
-        // take the rows from the root batch that were selected
-        let new_root_batch = filter_record_batch(root_batch, &selection_vec)?;
-
-        // replace the root batch
-        otap_batch.set(otap_batch.root_payload_type(), new_root_batch);
-
-        // update the child batches after filtering has been applied to parent
-        match otap_batch.root_payload_type() {
-            ArrowPayloadType::Logs => {
-                self.filter_child_batch::<UInt16Type>(&mut otap_batch, ArrowPayloadType::LogAttrs)?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ScopeAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ResourceAttrs,
-                )?;
-            }
-            ArrowPayloadType::Spans => {
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SpanAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ScopeAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ResourceAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SpanEvents,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SpanEventAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SpanLinks,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SpanLinkAttrs,
-                )?;
-            }
-            ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::MetricAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ScopeAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ResourceAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SummaryDataPoints,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::SummaryDpAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::NumberDataPoints,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::NumberDpAttrs,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::NumberDpExemplars,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::NumberDpExemplarAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::HistogramDataPoints,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::HistogramDpAttrs,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::HistogramDpExemplars,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::HistogramDpExemplarAttrs,
-                )?;
-                self.filter_child_batch::<UInt16Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ExpHistogramDataPoints,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ExpHistogramDpAttrs,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ExpHistogramDpExemplars,
-                )?;
-                self.filter_child_batch::<UInt32Type>(
-                    &mut otap_batch,
-                    ArrowPayloadType::ExpHistogramDpExemplarAttrs,
-                )?;
-            }
-            signal_type => {
-                return Err(Error::ExecutionError {
-                    cause: format!(
-                        "signal type {:?} not yet supported by FilterPipelineStage",
-                        signal_type
-                    ),
-                });
-            }
-        };
+        let selection_vec = self.filter_exec.execute(&otap_batch, session_context)?;
+        let otap_batch = filter_otap_batch(&selection_vec, otap_batch)?;
 
         Ok(otap_batch)
     }
@@ -1751,7 +1730,11 @@ mod test {
 
     use super::*;
 
-    use arrow::array::{DictionaryArray, Int32Array, RecordBatch, StringArray, UInt8Array};
+    use arrow::array::{
+        DictionaryArray, Int32Array, NullBufferBuilder, OffsetBufferBuilder, RecordBatch,
+        StringArray, UInt8Array,
+    };
+    use arrow::buffer::MutableBuffer;
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
@@ -1766,45 +1749,18 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{
         Exemplar, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge, Histogram,
-        HistogramDataPoint, Metric, MetricsData, NumberDataPoint, Summary, SummaryDataPoint,
+        HistogramDataPoint, Metric, NumberDataPoint, Summary, SummaryDataPoint,
     };
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
-    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status, TracesData};
-    use otap_df_pdata::testing::round_trip::otlp_to_otap;
-    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use prost::Message;
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
+    use otap_df_pdata::testing::round_trip::{
+        otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+    };
 
-    use crate::pipeline::test::{to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces};
-
-    /// helper function for converting [`OtapArrowRecords`] to [`LogsData`]
-    pub fn otap_to_logs_data(otap_batch: OtapArrowRecords) -> LogsData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        LogsData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    /// helper function for converting [`OtapArrowRecords`] to [`TracesData`]
-    pub fn otap_to_traces_data(otap_batch: OtapArrowRecords) -> TracesData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        TracesData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    /// helper function for converting [`OtapArrowRecords`] to [`MetricsData`]
-    pub fn otap_to_metrics_data(otap_batch: OtapArrowRecords) -> MetricsData {
-        let otap_payload: OtapPayload = otap_batch.into();
-        let otlp_bytes: OtlpProtoBytes = otap_payload.try_into().unwrap();
-        MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
-    }
-
-    pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
-        let parser_result = KqlParser::parse(kql_expr).unwrap();
-        let mut pipeline = Pipeline::new(parser_result.pipeline);
-        let result = pipeline.execute(otap_batch).await.unwrap();
-        otap_to_logs_data(result)
-    }
+    use crate::pipeline::test::{
+        exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
+    };
 
     #[tokio::test]
     async fn test_simple_filter() {
@@ -3072,6 +3028,56 @@ mod test {
         pretty_assertions::assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone()],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_nulls() {
+        let log_records = vec![
+            LogRecord::build()
+                .event_name("1")
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .event_name("2")
+                .severity_text("ERROR")
+                .finish(),
+            LogRecord::build()
+                .event_name("3")
+                // severity_text == null
+                .finish(),
+        ];
+
+        // check simple filter to ensure we filter out the value with null in the column
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == \"ERROR\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone()],
+        );
+
+        // test a few scenarios where if we had null in the selection vector (which we
+        // shouldn't have), they would not pass:
+        let result = exec_logs_pipeline(
+            "logs | where not(severity_text == \"ERROR\")",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone(), log_records[2].clone()],
+        );
+        let result = exec_logs_pipeline(
+            "logs | where severity_text == \"ERROR\" or event_name == \"3\"",
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+        pretty_assertions::assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[1].clone(), log_records[2].clone()],
         );
     }
 
@@ -4395,6 +4401,57 @@ mod test {
         .unwrap();
         let result = phys_expr.evaluate_filter(&rb2, &session_ctx).unwrap();
         assert_eq!(result, BooleanArray::from_iter([true, true, false]));
+    }
+
+    #[tokio::test]
+    async fn test_adaptive_physical_expr_columns_null_values() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            consts::SEVERITY_TEXT,
+            DataType::Utf8,
+            true,
+        )]));
+
+        // Note - this array is constructed in a specific way that ensures that when doing
+        // something like `eq(arr, &StringArray::new_scalar("WARN"))`, we produce a values
+        // buffer that has `true` in a null position. This is used to test  that we use the
+        // correct logic when combining the null buffer with the values buffer.
+        let mut offsets = OffsetBufferBuilder::new(4);
+        offsets.push_length(4);
+        offsets.push_length(4);
+        offsets.push_length(4);
+        offsets.push_length(4);
+        let mut values = MutableBuffer::new(16);
+        values.extend_from_slice(b"WARN");
+        values.extend_from_slice(b"INFO");
+        values.extend_from_slice(b"WARN");
+        values.extend_from_slice(b"INFO");
+        let mut nulls = NullBufferBuilder::new(4);
+        nulls.append(true);
+        nulls.append(false);
+        nulls.append(false);
+        nulls.append(true);
+        let string_arr = StringArray::new(offsets.finish(), values.into(), nulls.finish());
+
+        let input = RecordBatch::try_new(schema.clone(), vec![Arc::new(string_arr)]).unwrap();
+
+        let session_ctx = Pipeline::create_session_context();
+
+        // in this expression, we want to produce a selection vec that considers null to be false
+        let logical_expr = col(consts::SEVERITY_TEXT).eq(lit("WARN"));
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([true, false, false, false]));
+
+        // some smoke tests for other null handling scenarios
+        let logical_expr = col(consts::SEVERITY_TEXT).is_null();
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([false, true, true, false]));
+
+        let logical_expr = col(consts::SEVERITY_TEXT).is_not_null();
+        let mut phys_expr = AdaptivePhysicalExprExec::try_new(logical_expr).unwrap();
+        let result = phys_expr.evaluate_filter(&input, &session_ctx).unwrap();
+        assert_eq!(result, BooleanArray::from_iter([true, false, false, true]));
     }
 
     /// A physical Expr that should not get called. This can be used to test that some

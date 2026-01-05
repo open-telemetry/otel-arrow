@@ -226,6 +226,12 @@ logical_unary_expressions = {
 
 extract_json_expression = { "extract_json" ~ "(" ~ scalar_expression ~ "," ~ scalar_expression ~ ("," ~ typeof_expression)? ~ ")" }
 
+invoke_function_argument_expression = {
+	(identifier_literal ~ "=" ~ scalar_expression)
+    | scalar_expression
+}
+invoke_function_expression = { identifier_literal ~ "(" ~ (invoke_function_argument_expression ~ ("," ~ invoke_function_argument_expression)*)? ~ ")" }
+
 /* Note: Order is imporant here. Once Pest has matched something it won't go
 backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
@@ -242,6 +248,7 @@ scalar_unary_expression = {
     | logical_unary_expressions
     | parse_unary_expressions
     | extract_json_expression
+    | invoke_function_expression
     | accessor_expression
     | "(" ~ scalar_expression ~ ")"
 }
@@ -334,10 +341,45 @@ tabular_expression = {
     identifier_literal ~ ("|" ~ tabular_expressions)*
 }
 
-let_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
+variable_definition_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
+
+user_defined_function_parameter_definition_expression = {
+	identifier_literal
+    ~ ":"
+    ~ (
+    	(type_literal ~ ("=" ~ scalar_expression)?)
+        | user_defined_function_tabular_parameter_definition_expression
+      )
+}
+
+user_defined_function_tabular_parameter_definition_expression = {
+	"("
+    ~ (
+    	"*"
+        | (identifier_literal ~ ":" ~ type_literal ~ ("," ~ identifier_literal ~ ":" ~ type_literal)*)
+      )
+    ~ ")"
+}
+
+user_defined_function_body_definition_expression = {
+    (user_defined_function_expressions ~ (";" ~ user_defined_function_expressions)* ~ ";")?
+    ~ (scalar_expression)?
+    ~ ";"?
+}
+
+user_defined_function_expressions = _{
+	variable_definition_expression
+}
+
+user_defined_function_definition_expression = {
+	"let" ~ identifier_literal ~ "=" ~ "("
+    ~ (user_defined_function_parameter_definition_expression ~ ("," ~ user_defined_function_parameter_definition_expression)*)?
+    ~ ")"
+    ~ "{" ~ user_defined_function_body_definition_expression ~ "}"
+}
 
 query_expressions = _{
-    let_expression|tabular_expression
+    variable_definition_expression|user_defined_function_definition_expression|tabular_expression
 }
 
 query = {

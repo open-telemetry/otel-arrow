@@ -18,8 +18,11 @@ use otap_df_pdata::proto::opentelemetry::logs::v1::{LogRecord, LogsData, Resourc
 use otap_df_pdata::testing::fixtures::logs_with_varying_attributes_and_properties;
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 use roaring::RoaringBitmap;
+
+#[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

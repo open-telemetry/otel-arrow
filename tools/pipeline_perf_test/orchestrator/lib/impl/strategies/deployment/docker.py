@@ -269,7 +269,7 @@ components:
             raise RuntimeError(
                 f"No container ID found for component '{component.name}' - cannot stop container, it may not have started correctly."
             )
-        get_container_logs(ctx, client, runtime)
+        get_container_logs(ctx, client, runtime, component)
         stop_and_remove_container(ctx, client, container_id)
 
 

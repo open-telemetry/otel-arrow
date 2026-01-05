@@ -14,8 +14,11 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::schema::consts;
+
+#[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 

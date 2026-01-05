@@ -7,14 +7,15 @@
 # for the components that are included in the build, which are all of
 # those with sources in this repository plus a few commonly useful
 # accessories (e.g., the profiler extension).
-FROM golang:1.25@sha256:698183780de28062f4ef46f82a79ec0ae69d2d22f7b160cf69f71ea8d98bf25d AS sandbox
+FROM golang:1.25@sha256:6cc2338c038bc20f96ab32848da2b5c0641bb9bb5363f2c33e9b7c8838f9a208 AS sandbox
 
 WORKDIR /otel-arrow
 COPY . .
 ENV CGO_ENABLED=0
 
-# Note the version MUST MATCH otelarrowcol-build.yaml
-RUN go install go.opentelemetry.io/collector/cmd/builder@v0.140.0
+# Note the version should match the builder version referenced in the Makefile.
+# The version is overridden when running `make builder`.
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.142.0
 
 # This command generates main.go, go.mod but does not update deps.
 RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowcol-build.yaml
@@ -24,7 +25,7 @@ WORKDIR /otel-arrow/collector/cmd/otelarrowcol
 RUN go mod tidy && go build -o /otel-arrow/otelarrowcol .
 
 # This build uses an Alpine Linux container.
-FROM alpine@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412 AS release
+FROM alpine@sha256:865b95f46d98cf867a156fe4a135ad3fe50d2056aa3f25ed31662dff6da4eb62 AS release
 COPY --from=sandbox /otel-arrow/otelarrowcol /
 
 # Network ports

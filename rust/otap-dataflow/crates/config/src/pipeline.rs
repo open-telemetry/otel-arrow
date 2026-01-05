@@ -10,7 +10,7 @@ use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::service::ServiceConfig;
-use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
+use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,6 +92,52 @@ pub struct PipelineSettings {
     /// Health policy.
     #[serde(default)]
     pub health_policy: HealthPolicy,
+
+    /// Pipeline-level telemetry settings.
+    ///
+    /// These flags control capture of pipeline runtime metrics emitted by the pipeline
+    /// execution loop (e.g. per-pipeline CPU/memory metrics and Tokio runtime metrics).
+    ///
+    /// This is distinct from `service.telemetry`, which configures exporting of OpenTelemetry
+    /// signals to external backends.
+    #[serde(default)]
+    pub telemetry: TelemetrySettings,
+}
+
+/// Configuration for pipeline-internal telemetry capture.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TelemetrySettings {
+    /// Enable capture of per-pipeline internal metrics.
+    ///
+    /// When disabled, the engine does not update or report the `pipeline.metrics` metric set.
+    #[serde(default = "default_true")]
+    pub pipeline_metrics: bool,
+
+    /// Enable capture of Tokio runtime internal metrics.
+    ///
+    /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
+    #[serde(default = "default_true")]
+    pub tokio_metrics: bool,
+
+    /// Enable capture of channel-level metrics.
+    ///
+    /// When disabled, the engine does not report channel sender/receiver metrics.
+    #[serde(default = "default_true")]
+    pub channel_metrics: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self {
+            pipeline_metrics: true,
+            tokio_metrics: true,
+            channel_metrics: true,
+        }
+    }
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -112,6 +158,7 @@ impl Default for PipelineSettings {
             default_pdata_channel_size: default_pdata_channel_size(),
             observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
+            telemetry: TelemetrySettings::default(),
         }
     }
 }
@@ -382,7 +429,7 @@ impl PipelineConfigBuilder {
 
     /// Add a node with a given id and kind.
     /// Optionally provide config.
-    pub fn add_node<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_node<S: Into<NodeId>, U: Into<NodeUrn>>(
         mut self,
         id: S,
         kind: NodeKind,
@@ -410,7 +457,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add a receiver node.
-    pub fn add_receiver<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_receiver<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -420,7 +467,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add a processor node.
-    pub fn add_processor<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_processor<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -430,7 +477,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add an exporter node.
-    pub fn add_exporter<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_exporter<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
