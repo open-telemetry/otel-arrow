@@ -597,7 +597,11 @@ mod tests {
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
-                assert!(message.contains("overlap"), "Expected overlap error message, got: {}", message);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -619,7 +623,11 @@ mod tests {
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
-                assert!(message.contains("overlap"), "Expected overlap error message, got: {}", message);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -641,7 +649,11 @@ mod tests {
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
-                assert!(message.contains("overlap"), "Expected overlap error message, got: {}", message);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
@@ -680,7 +692,11 @@ mod tests {
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
-                assert!(message.contains("overlap"), "Expected overlap error message, got: {}", message);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }
