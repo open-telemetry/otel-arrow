@@ -26,10 +26,9 @@ Metrics are for entity behavior, not request identity.
   events and can be counted with metrics only when attributes stay stable.
 - Requests and transactions are high-cardinality and short-lived. Use traces,
   events, or exemplars instead of encoding request identifiers in metrics.
-
-Prefer metrics when the signal is high volume or when trends matter more than
-individual occurrences. Use events or traces for discrete, low-volume
-occurrences.
+- Prefer metrics when the signal is high volume or when trends matter more than
+  individual occurrences. Use events or traces for discrete, low-volume
+  occurrences.
 
 ## Metric and Metric Set
 
@@ -62,11 +61,14 @@ this project, non-entity attributes are prohibited in core metrics.
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and
 units are mandatory. Units must follow UCUM-like conventions and use braces
-notation for semantic units (e.g. `{signal}`, `{message}`).
+notation for semantic units (e.g. `{batch}`, `{signal}`). See the [Units](#units)
+section below for details.
 
 Metric set naming should follow the pattern `<entity>` or
-`<entity>.<subentity>` when applicable (e.g. `pipeline`, `channel.sender`,
-`channel.receiver`).
+`<entity>.<subentity>` when applicable. Examples of metric sets in this project:
+- `pipeline`, `node`
+- `node.retry`, `node.batch`, `node.otlp_receiver`, `node.otlp_exporter`, ...
+- `channel.sender`, `channel.receiver`
 
 ## Attributes and Entity Context
 
@@ -106,3 +108,40 @@ When context is useful but high-cardinality, normalize it:
 - Units are specified and valid.
 - Attributes are stable and cardinality is bounded.
 - The metric can be interpreted using the entity model attributes.
+
+## Units
+
+Units must be specified for every metric as part of its metadata. They must
+follow UCUM-like conventions and use braces notation for semantic units.
+
+The most common units in this project are:
+- `By`: bytes
+- `s`: seconds (preferred over `ms` for time durations)
+- `{batch}`: batches of telemetry signals
+- `{signal}`: individual telemetry signals (metrics, logs, traces)
+- `{metric}`: individual metric data points
+- `{log}`: individual log records
+- `{event}`: individual event records (log with an event name)
+- `{span}`: individual trace spans
+
+## Performance Considerations
+
+Metric sets are optimized for low overhead:
+- The same attribute set is shared across all metrics in a metric set.
+- A metric set instance registers its attributes once during setup, and the
+  collection phase reports only scalar values.
+- On the hot path, we increment or set values in pre-allocated non-atomic slots,
+  avoiding dynamic lookups and allocations.
+- Metric sets are per-core to avoid cross-core contention, and the cold path
+  (flush, aggregate, encode) is NUMA-aware and batch-oriented.
+- Reset-on-flush and sparse enumeration minimize work by touching only non-zero
+  fields and dirty counters.
+
+More details about the telemetry SDK implementation are in
+[crates/telemetry](../../crates/telemetry/README.md).
+
+## ToDo
+
+- Add dynamic bounded attribute support based on closed sets (enums). For 
+  example, `pipeline.state` with values `starting|running|stopped` or
+  `signal.type` with values `metric|log|trace`.
