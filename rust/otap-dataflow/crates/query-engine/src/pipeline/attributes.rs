@@ -93,7 +93,7 @@ mod test {
                 resource::v1::Resource,
             },
         },
-        testing::round_trip::to_logs_data,
+        testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
     use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
