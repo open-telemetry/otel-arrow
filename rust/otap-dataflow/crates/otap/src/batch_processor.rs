@@ -1511,7 +1511,8 @@ mod tests {
         };
         assert!(cfg.validate().is_ok());
 
-        // Only batch size: OTLP OK (OTLP invalid OK)
+        // The OTLP configuration is invalid, but that's OK because
+        // format is OTAP.
         let cfg = Config {
             otap: FormatConfig::new_items(100, 0),
             otlp: FormatConfig::new_items(0, 0),
