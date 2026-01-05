@@ -13,7 +13,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    if: ${{ github.actor == 'renovate[bot]' }}
+    if: ${{ github.actor == 'renovate[bot]' && github.event.pull_request.head.repo.fork == false }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
