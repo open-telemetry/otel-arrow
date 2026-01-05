@@ -110,6 +110,7 @@ allow = [
     "CDLA-Permissive-2.0", # See https://github.com/cncf/foundation/issues/1007
     "CC0-1.0",
     "ISC",  # Used by the `is_ci`, similar to MIT license
+    "OpenSSL"
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the

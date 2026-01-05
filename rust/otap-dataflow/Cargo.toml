@@ -179,7 +179,7 @@ cpu-time = "1.0.0"
 azure_core = {version = "0.30.1", default-features = false }
 azure_identity = {version = "0.30.0", default-features = false }
 flate2 = "1.1.5"
-reqwest = { version = "0.12.24", default-features = false }
+reqwest = { version = "0.13.1", default-features = false }
 time = "0.3.44"
 wiremock = "0.6.5"
 

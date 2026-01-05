@@ -76,7 +76,7 @@ geneva-uploader = { version = "0.3.0", optional = true }
 # Azure Monitor Exporter dependencies
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, optional = true, features = ["rustls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 ahash = { workspace = true, optional = true }
 
