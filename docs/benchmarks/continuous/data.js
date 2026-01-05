@@ -1,272 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1767638771549,
+  "lastUpdate": 1767639886326,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "mblanchard@macrosssoftware.com",
-            "name": "Mikel Blanchard",
-            "username": "CodeBlanch"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "fb0dcd74f000bd88a0813ff8990b307393a65b62",
-          "message": "[query-engine] Expand expressions to support user-defined functions (#1478)\n\nRelates to #1479\n\n## Changes\n\n* Make it possible to declare and invoke user-defined functions in query\nexpression tree\n\n## Details\n\nImplementation and KQL parsing will come as follow-ups.",
-          "timestamp": "2025-11-26T18:08:37Z",
-          "tree_id": "d28fc9ee0ae2060bd7a69f98ba39d776d82c8d1b",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/fb0dcd74f000bd88a0813ff8990b307393a65b62"
-        },
-        "date": 1764181428647,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_total",
-            "value": 0,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Log Count"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_avg",
-            "value": 41.53393529344309,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_max",
-            "value": 41.91707061667183,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU Percentage"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 46.53046875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 48.5625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Counts"
-          },
-          {
-            "name": "logs_received_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Counts"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 18094363.91812206,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 5728556.601622942,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_total",
-            "value": 0,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Log Count"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_avg",
-            "value": 44.37523089241676,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_max",
-            "value": 45.55072755264173,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU Percentage"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 38.26171875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 38.953125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Counts"
-          },
-          {
-            "name": "logs_received_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Counts"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 14403428.198230024,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 13828601.582066152,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_total",
-            "value": 0,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Log Count"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_avg",
-            "value": 17.14803104785717,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_max",
-            "value": 17.964979840446134,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU Percentage"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 43.321875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 44.46875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Counts"
-          },
-          {
-            "name": "logs_received_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Counts"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 5761863.597015804,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 5705953.549375685,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_total",
-            "value": 0,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Log Count"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_avg",
-            "value": 50.60040646475108,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_max",
-            "value": 51.868347590482834,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU Percentage"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 30.649609375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 30.75390625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Counts"
-          },
-          {
-            "name": "logs_received_total",
-            "value": 2400000,
-            "unit": "count",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Counts"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 5842066.167835136,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 13789975.345488096,
-            "unit": "bits/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -34110,6 +33846,390 @@ window.BENCHMARK_DATA = {
             "value": 714499.1830624948,
             "unit": "bytes/sec",
             "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "813c4858716e4cdd27ef86f4c9a8fedda6f5c0bd",
+          "message": "chore(deps): update github workflow dependencies (#1709)\n\n> **Note:** This PR body was truncated due to platform limits.\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n|\n[actions/create-github-app-token](https://redirect.github.com/actions/create-github-app-token)\n| action | patch | `v2.2.0` → `v2.2.1` |\n| [actions/setup-node](https://redirect.github.com/actions/setup-node) |\naction | minor | `v6.0.0` → `v6.1.0` |\n|\n[actions/setup-python](https://redirect.github.com/actions/setup-python)\n| action | minor | `v5` → `v5.6.0` |\n|\n[codecov/codecov-action](https://redirect.github.com/codecov/codecov-action)\n| action | patch | `v5.5.1` → `v5.5.2` |\n|\n[docker/setup-buildx-action](https://redirect.github.com/docker/setup-buildx-action)\n| action | minor | `v3.7.1` → `v3.12.0` |\n| dtolnay/rust-toolchain | action | digest | `6d653ac` → `f7ccc83` |\n|\n[github/codeql-action](https://redirect.github.com/github/codeql-action)\n| action | patch | `v4.31.6` → `v4.31.9` |\n| [go](https://redirect.github.com/actions/go-versions) | uses-with |\npatch | `1.25.4` → `1.25.5` |\n| [python](https://redirect.github.com/actions/python-versions) |\nuses-with | minor | `3.11` → `3.14` |\n|\n[step-security/harden-runner](https://redirect.github.com/step-security/harden-runner)\n| action | minor | `v2.13.2` → `v2.14.0` |\n|\n[taiki-e/install-action](https://redirect.github.com/taiki-e/install-action)\n| action | minor | `v2.62.60` → `v2.65.13` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>actions/create-github-app-token\n(actions/create-github-app-token)</summary>\n\n###\n[`v2.2.1`](https://redirect.github.com/actions/create-github-app-token/releases/tag/v2.2.1)\n\n[Compare\nSource](https://redirect.github.com/actions/create-github-app-token/compare/v2.2.0...v2.2.1)\n\n##### Bug Fixes\n\n- **deps:** bump the production-dependencies group with 2 updates\n([#&#8203;311](https://redirect.github.com/actions/create-github-app-token/issues/311))\n([b212e6a](https://redirect.github.com/actions/create-github-app-token/commit/b212e6a739dec02d8488610fbaf8f049f82ee999))\n\n</details>\n\n<details>\n<summary>actions/setup-node (actions/setup-node)</summary>\n\n###\n[`v6.1.0`](https://redirect.github.com/actions/setup-node/releases/tag/v6.1.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-node/compare/v6.0.0...v6.1.0)\n\n#### What's Changed\n\n##### Enhancement:\n\n- Remove always-auth configuration handling by\n[@&#8203;priyagupta108](https://redirect.github.com/priyagupta108) in\n[#&#8203;1436](https://redirect.github.com/actions/setup-node/pull/1436)\n\n##### Dependency updates:\n\n- Upgrade\n[@&#8203;actions/cache](https://redirect.github.com/actions/cache) from\n4.0.3 to 4.1.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1384](https://redirect.github.com/actions/setup-node/pull/1384)\n- Upgrade actions/checkout from 5 to 6 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1439](https://redirect.github.com/actions/setup-node/pull/1439)\n- Upgrade js-yaml from 3.14.1 to 3.14.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot)\\[bot] in\n[#&#8203;1435](https://redirect.github.com/actions/setup-node/pull/1435)\n\n##### Documentation update:\n\n- Add example for restore-only cache in documentation by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;1419](https://redirect.github.com/actions/setup-node/pull/1419)\n\n**Full Changelog**:\n<https://github.com/actions/setup-node/compare/v6...v6.1.0>\n\n</details>\n\n<details>\n<summary>actions/setup-python (actions/setup-python)</summary>\n\n###\n[`v5.6.0`](https://redirect.github.com/actions/setup-python/releases/tag/v5.6.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5.5.0...v5.6.0)\n\n#### What's Changed\n\n- Workflow updates related to Ubuntu 20.04 by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;1065](https://redirect.github.com/actions/setup-python/pull/1065)\n- Fix for Candidate Not Iterable Error by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;1082](https://redirect.github.com/actions/setup-python/pull/1082)\n- Upgrade semver and\n[@&#8203;types/semver](https://redirect.github.com/types/semver) by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1091](https://redirect.github.com/actions/setup-python/pull/1091)\n- Upgrade prettier from 2.8.8 to 3.5.3 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1046](https://redirect.github.com/actions/setup-python/pull/1046)\n- Upgrade ts-jest from 29.1.2 to 29.3.2 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1081](https://redirect.github.com/actions/setup-python/pull/1081)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5...v5.6.0>\n\n###\n[`v5.5.0`](https://redirect.github.com/actions/setup-python/releases/tag/v5.5.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5.4.0...v5.5.0)\n\n#### What's Changed\n\n##### Enhancements:\n\n- Support free threaded Python versions like '3.13t' by\n[@&#8203;colesbury](https://redirect.github.com/colesbury) in\n[#&#8203;973](https://redirect.github.com/actions/setup-python/pull/973)\n- Enhance Workflows: Include ubuntu-arm runners, Add e2e Testing for\nfree threaded and Upgrade\n[@&#8203;action/cache](https://redirect.github.com/action/cache) from\n4.0.0 to 4.0.3 by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;1056](https://redirect.github.com/actions/setup-python/pull/1056)\n- Add support for .tool-versions file in setup-python by\n[@&#8203;mahabaleshwars](https://redirect.github.com/mahabaleshwars) in\n[#&#8203;1043](https://redirect.github.com/actions/setup-python/pull/1043)\n\n##### Bug fixes:\n\n- Fix architecture for pypy on Linux ARM64 by\n[@&#8203;mayeut](https://redirect.github.com/mayeut) in\n[#&#8203;1011](https://redirect.github.com/actions/setup-python/pull/1011)\n  This update maps arm64 to aarch64 for Linux ARM64 PyPy installations.\n\n##### Dependency updates:\n\n- Upgrade [@&#8203;vercel/ncc](https://redirect.github.com/vercel/ncc)\nfrom 0.38.1 to 0.38.3 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1016](https://redirect.github.com/actions/setup-python/pull/1016)\n- Upgrade\n[@&#8203;actions/glob](https://redirect.github.com/actions/glob) from\n0.4.0 to 0.5.0 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1015](https://redirect.github.com/actions/setup-python/pull/1015)\n\n#### New Contributors\n\n- [@&#8203;colesbury](https://redirect.github.com/colesbury) made their\nfirst contribution in\n[#&#8203;973](https://redirect.github.com/actions/setup-python/pull/973)\n- [@&#8203;mahabaleshwars](https://redirect.github.com/mahabaleshwars)\nmade their first contribution in\n[#&#8203;1043](https://redirect.github.com/actions/setup-python/pull/1043)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5...v5.5.0>\n\n###\n[`v5.4.0`](https://redirect.github.com/actions/setup-python/releases/tag/v5.4.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5.3.0...v5.4.0)\n\n#### What's Changed\n\n##### Enhancements:\n\n- Update cache error message by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;968](https://redirect.github.com/actions/setup-python/pull/968)\n- Enhance Workflows: Add Ubuntu-24, Remove Python 3.8 by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;985](https://redirect.github.com/actions/setup-python/pull/985)\n- Configure Dependabot settings by\n[@&#8203;HarithaVattikuti](https://redirect.github.com/HarithaVattikuti)\nin\n[#&#8203;1008](https://redirect.github.com/actions/setup-python/pull/1008)\n\n##### Documentation changes:\n\n- Readme update - recommended permissions by\n[@&#8203;benwells](https://redirect.github.com/benwells) in\n[#&#8203;1009](https://redirect.github.com/actions/setup-python/pull/1009)\n- Improve Advanced Usage examples by\n[@&#8203;lrq3000](https://redirect.github.com/lrq3000) in\n[#&#8203;645](https://redirect.github.com/actions/setup-python/pull/645)\n\n##### Dependency updates:\n\n- Upgrade `undici` from 5.28.4 to 5.28.5 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1012](https://redirect.github.com/actions/setup-python/pull/1012)\n- Upgrade `urllib3` from 1.25.9 to 1.26.19 in /**tests**/data by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;895](https://redirect.github.com/actions/setup-python/pull/895)\n- Upgrade `actions/publish-immutable-action` from 0.0.3 to 0.0.4 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1014](https://redirect.github.com/actions/setup-python/pull/1014)\n- Upgrade `@actions/http-client` from 2.2.1 to 2.2.3 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1020](https://redirect.github.com/actions/setup-python/pull/1020)\n- Upgrade `requests` from 2.24.0 to 2.32.2 in /**tests**/data by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;1019](https://redirect.github.com/actions/setup-python/pull/1019)\n- Upgrade `@actions/cache` to `^4.0.0` by\n[@&#8203;priyagupta108](https://redirect.github.com/priyagupta108) in\n[#&#8203;1007](https://redirect.github.com/actions/setup-python/pull/1007)\n\n#### New Contributors\n\n- [@&#8203;benwells](https://redirect.github.com/benwells) made their\nfirst contribution in\n[#&#8203;1009](https://redirect.github.com/actions/setup-python/pull/1009)\n-\n[@&#8203;HarithaVattikuti](https://redirect.github.com/HarithaVattikuti)\nmade their first contribution in\n[#&#8203;1008](https://redirect.github.com/actions/setup-python/pull/1008)\n- [@&#8203;lrq3000](https://redirect.github.com/lrq3000) made their\nfirst contribution in\n[#&#8203;645](https://redirect.github.com/actions/setup-python/pull/645)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5...v5.4.0>\n\n###\n[`v5.3.0`](https://redirect.github.com/actions/setup-python/releases/tag/v5.3.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5.2.0...v5.3.0)\n\n#### What's Changed\n\n- Add workflow file for publishing releases to immutable action package\nby [@&#8203;Jcambass](https://redirect.github.com/Jcambass) in\n[#&#8203;941](https://redirect.github.com/actions/setup-python/pull/941)\n- Upgrade IA publish by\n[@&#8203;Jcambass](https://redirect.github.com/Jcambass) in\n[#&#8203;943](https://redirect.github.com/actions/setup-python/pull/943)\n\n##### Bug Fixes:\n\n- Normalise Line Endings to Ensure Cross-Platform Consistency by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;938](https://redirect.github.com/actions/setup-python/pull/938)\n- Revise `isGhes` logic by\n[@&#8203;jww3](https://redirect.github.com/jww3) in\n[#&#8203;963](https://redirect.github.com/actions/setup-python/pull/963)\n- Bump pillow from 7.2 to 10.2.0 by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;956](https://redirect.github.com/actions/setup-python/pull/956)\n\n##### Enhancements:\n\n- Enhance workflows and documentation updates by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;965](https://redirect.github.com/actions/setup-python/pull/965)\n- Bump default versions to latest by\n[@&#8203;jeffwidman](https://redirect.github.com/jeffwidman) in\n[#&#8203;905](https://redirect.github.com/actions/setup-python/pull/905)\n\n#### New Contributors\n\n- [@&#8203;Jcambass](https://redirect.github.com/Jcambass) made their\nfirst contribution in\n[#&#8203;941](https://redirect.github.com/actions/setup-python/pull/941)\n- [@&#8203;jww3](https://redirect.github.com/jww3) made their first\ncontribution in\n[#&#8203;963](https://redirect.github.com/actions/setup-python/pull/963)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5...v5.3.0>\n\n###\n[`v5.2.0`](https://redirect.github.com/actions/setup-python/releases/tag/v5.2.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5.1.1...v5.2.0)\n\n#### What's Changed\n\n##### Bug fixes:\n\n- Add `.zip` extension to Windows package downloads for `Expand-Archive`\nCompatibility by\n[@&#8203;priyagupta108](https://redirect.github.com/priyagupta108) in\n[#&#8203;916](https://redirect.github.com/actions/setup-python/pull/916)\nThis addresses compatibility issues on Windows self-hosted runners by\nensuring that the filenames for Python and PyPy package downloads\nexplicitly include the .zip extension, allowing the Expand-Archive\ncommand to function correctly.\n- Add arch to cache key by\n[@&#8203;Zxilly](https://redirect.github.com/Zxilly) in\n[#&#8203;896](https://redirect.github.com/actions/setup-python/pull/896)\nThis addresses issues with caching by adding the architecture (arch) to\nthe cache key, ensuring that cache keys are accurate to prevent\nconflicts.\nNote: This change may break previous cache keys as they will no longer\nbe compatible with the new format.\n\n##### Documentation changes:\n\n- Fix display of emojis in contributors doc by\n[@&#8203;sciencewhiz](https://redirect.github.com/sciencewhiz) in\n[#&#8203;899](https://redirect.github.com/actions/setup-python/pull/899)\n- Documentation update for caching poetry dependencies by\n[@&#8203;gowridurgad](https://redirect.github.com/gowridurgad) in\n[#&#8203;908](https://redirect.github.com/actions/setup-python/pull/908)\n\n##### Dependency updates:\n\n- Bump [@&#8203;iarna/toml](https://redirect.github.com/iarna/toml)\nversion from 2.2.5 to 3.0.0 by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;912](https://redirect.github.com/actions/setup-python/pull/912)\n- Bump pyinstaller from 3.6 to 5.13.1 by\n[@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y) in\n[#&#8203;923](https://redirect.github.com/actions/setup-python/pull/923)\n\n#### New Contributors\n\n- [@&#8203;sciencewhiz](https://redirect.github.com/sciencewhiz) made\ntheir first contribution in\n[#&#8203;899](https://redirect.github.com/actions/setup-python/pull/899)\n- [@&#8203;priyagupta108](https://redirect.github.com/priyagupta108)\nmade their first contribution in\n[#&#8203;916](https://redirect.github.com/actions/setup-python/pull/916)\n- [@&#8203;Zxilly](https://redirect.github.com/Zxilly) made their first\ncontribution in\n[#&#8203;896](https://redirect.github.com/actions/setup-python/pull/896)\n- [@&#8203;aparnajyothi-y](https://redirect.github.com/aparnajyothi-y)\nmade their first contribution in\n[#&#8203;923](https://redirect.github.com/actions/setup-python/pull/923)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5...v5.2.0>\n\n###\n[`v5.1.1`](https://redirect.github.com/actions/setup-python/releases/tag/v5.1.1)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5.1.0...v5.1.1)\n\n#### What's Changed\n\n##### Bug fixes:\n\n- fix(ci): update all failing workflows by\n[@&#8203;mayeut](https://redirect.github.com/mayeut) in\n[#&#8203;863](https://redirect.github.com/actions/setup-python/pull/863)\nThis update ensures compatibility and optimal performance of workflows\non the latest macOS version.\n\n##### Documentation changes:\n\n- Documentation update for cache by\n[@&#8203;gowridurgad](https://redirect.github.com/gowridurgad) in\n[#&#8203;873](https://redirect.github.com/actions/setup-python/pull/873)\n\n##### Dependency updates:\n\n- Bump braces from 3.0.2 to 3.0.3 and undici from 5.28.3 to 5.28.4 by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) in\n[#&#8203;893](https://redirect.github.com/actions/setup-python/pull/893)\n\n#### New Contributors\n\n- [@&#8203;gowridurgad](https://redirect.github.com/gowridurgad) made\ntheir first contribution in\n[#&#8203;873](https://redirect.github.com/actions/setup-python/pull/873)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5...v5.1.1>\n\n###\n[`v5.1.0`](https://redirect.github.com/actions/setup-python/releases/tag/v5.1.0)\n\n[Compare\nSource](https://redirect.github.com/actions/setup-python/compare/v5...v5.1.0)\n\n#### What's Changed\n\n- Leveraging the raw API to retrieve the version-manifest, as it does\nnot impose a rate limit and hence facilitates unrestricted consumption\nwithout the need for a token for Github Enterprise Servers by\n[@&#8203;Shegox](https://redirect.github.com/Shegox) in\n[#&#8203;766](https://redirect.github.com/actions/setup-python/pull/766).\n- Dependency updates by\n[@&#8203;dependabot](https://redirect.github.com/dependabot) and\n[@&#8203;HarithaVattikuti](https://redirect.github.com/HarithaVattikuti)\nin\n[#&#8203;817](https://redirect.github.com/actions/setup-python/pull/817)\n- Documentation changes for version in README by\n[@&#8203;basnijholt](https://redirect.github.com/basnijholt) in\n[#&#8203;776](https://redirect.github.com/actions/setup-python/pull/776)\n- Documentation changes for link in README by\n[@&#8203;ukd1](https://redirect.github.com/ukd1) in\n[#&#8203;793](https://redirect.github.com/actions/setup-python/pull/793)\n- Documentation changes for link in Advanced Usage by\n[@&#8203;Jamim](https://redirect.github.com/Jamim) in\n[#&#8203;782](https://redirect.github.com/actions/setup-python/pull/782)\n- Documentation changes for avoiding rate limit issues on GHES by\n[@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali) in\n[#&#8203;835](https://redirect.github.com/actions/setup-python/pull/835)\n\n#### New Contributors\n\n- [@&#8203;basnijholt](https://redirect.github.com/basnijholt) made\ntheir first contribution in\n[#&#8203;776](https://redirect.github.com/actions/setup-python/pull/776)\n- [@&#8203;ukd1](https://redirect.github.com/ukd1) made their first\ncontribution in\n[#&#8203;793](https://redirect.github.com/actions/setup-python/pull/793)\n- [@&#8203;Jamim](https://redirect.github.com/Jamim) made their first\ncontribution in\n[#&#8203;782](https://redirect.github.com/actions/setup-python/pull/782)\n- [@&#8203;Shegox](https://redirect.github.com/Shegox) made their first\ncontribution in\n[#&#8203;766](https://redirect.github.com/actions/setup-python/pull/766)\n- [@&#8203;priya-kinthali](https://redirect.github.com/priya-kinthali)\nmade their first contribution in\n[#&#8203;835](https://redirect.github.com/actions/setup-python/pull/835)\n\n**Full Changelog**:\n<https://github.com/actions/setup-python/compare/v5.0.0...v5.1.0>\n\n</details>\n\n<details>\n<summary>codecov/codecov-action (codecov/codecov-action)</summary>\n\n###\n[`v5.5.2`](https://redirect.github.com/codecov/codecov-action/blob/HEAD/CHANGELOG.md#v552)\n\n[Compare\nSource](https://redirect.github.com/codecov/codecov-action/compare/v5.5.1...v5.5.2)\n\n##### What's Changed\n\n**Full Changelog**:\n<https://github.com/codecov/codecov-action/compare/v5.5.1..v5.5.2>\n\n</details>\n\n<details>\n<summary>docker/setup-buildx-action\n(docker/setup-buildx-action)</summary>\n\n###\n[`v3.12.0`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v3.12.0)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v3.11.1...v3.12.0)\n\n- Deprecate `install` input by\n[@&#8203;crazy-max](https://redirect.github.com/crazy-max) in\n[#&#8203;455](https://redirect.github.com/docker/setup-buildx-action/pull/455)\n- Bump\n[@&#8203;docker/actions-toolkit](https://redirect.github.com/docker/actions-toolkit)\nfrom 0.62.1 to 0.63.0 in\n[#&#8203;434](https://redirect.github.com/docker/setup-buildx-action/pull/434)\n- Bump brace-expansion from 1.1.11 to 1.1.12 in\n[#&#8203;436](https://redirect.github.com/docker/setup-buildx-action/pull/436)\n- Bump form-data from 2.5.1 to 2.5.5 in\n[#&#8203;432](https://redirect.github.com/docker/setup-buildx-action/pull/432)\n- Bump undici from 5.28.4 to 5.29.0 in\n[#&#8203;435](https://redirect.github.com/docker/setup-buildx-action/pull/435)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v3.11.1...v3.12.0>\n\n###\n[`v3.11.1`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v3.11.1)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v3.11.0...v3.11.1)\n\n- Fix `keep-state` not being respected by\n[@&#8203;crazy-max](https://redirect.github.com/crazy-max) in\n[#&#8203;429](https://redirect.github.com/docker/setup-buildx-action/pull/429)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v3.11.0...v3.11.1>\n\n###\n[`v3.11.0`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v3.11.0)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v3.10.0...v3.11.0)\n\n- Keep BuildKit state support by\n[@&#8203;crazy-max](https://redirect.github.com/crazy-max) in\n[#&#8203;427](https://redirect.github.com/docker/setup-buildx-action/pull/427)\n- Remove aliases created when installing by default by\n[@&#8203;hashhar](https://redirect.github.com/hashhar) in\n[#&#8203;139](https://redirect.github.com/docker/setup-buildx-action/pull/139)\n- Bump\n[@&#8203;docker/actions-toolkit](https://redirect.github.com/docker/actions-toolkit)\nfrom 0.56.0 to 0.62.1 in\n[#&#8203;422](https://redirect.github.com/docker/setup-buildx-action/pull/422)\n[#&#8203;425](https://redirect.github.com/docker/setup-buildx-action/pull/425)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v3.10.0...v3.11.0>\n\n###\n[`v3.10.0`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v3.10.0)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v3.9.0...v3.10.0)\n\n- Bump\n[@&#8203;docker/actions-toolkit](https://redirect.github.com/docker/actions-toolkit)\nfrom 0.54.0 to 0.56.0 in\n[#&#8203;408](https://redirect.github.com/docker/setup-buildx-action/pull/408)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v3.9.0...v3.10.0>\n\n###\n[`v3.9.0`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v3.9.0)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v3.8.0...v3.9.0)\n\n- Bump\n[@&#8203;docker/actions-toolkit](https://redirect.github.com/docker/actions-toolkit)\nfrom 0.48.0 to 0.54.0 in\n[#&#8203;402](https://redirect.github.com/docker/setup-buildx-action/pull/402)\n[#&#8203;404](https://redirect.github.com/docker/setup-buildx-action/pull/404)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v3.8.0...v3.9.0>\n\n###\n[`v3.8.0`](https://redirect.github.com/docker/setup-buildx-action/releases/tag/v3.8.0)\n\n[Compare\nSource](https://redirect.github.com/docker/setup-buildx-action/compare/v3.7.1...v3.8.0)\n\n- Make cloud prefix optional to download buildx if driver is cloud by\n[@&#8203;crazy-max](https://redirect.github.com/crazy-max) in\n[#&#8203;390](https://redirect.github.com/docker/setup-buildx-action/pull/390)\n- Bump [@&#8203;actions/core](https://redirect.github.com/actions/core)\nfrom 1.10.1 to 1.11.1 in\n[#&#8203;370](https://redirect.github.com/docker/setup-buildx-action/pull/370)\n- Bump\n[@&#8203;docker/actions-toolkit](https://redirect.github.com/docker/actions-toolkit)\nfrom 0.39.0 to 0.48.0 in\n[#&#8203;389](https://redirect.github.com/docker/setup-buildx-action/pull/389)\n- Bump cross-spawn from 7.0.3 to 7.0.6 in\n[#&#8203;382](https://redirect.github.com/docker/setup-buildx-action/pull/382)\n\n**Full Changelog**:\n<https://github.com/docker/setup-buildx-action/compare/v3.7.1...v3.8.0>\n\n</details>\n\n<details>\n<summary>github/codeql-action (github/codeql-action)</summary>\n\n###\n[`v4.31.9`](https://redirect.github.com/github/codeql-action/compare/v4.31.8...v4.31.9)\n\n[Compare\nSource](https://redirect.github.com/github/codeql-action/compare/v4.31.8...v4.31.9)\n\n###\n[`v4.31.8`](https://redirect.github.com/github/codeql-action/releases/tag/v4.31.8)\n\n[Compare\nSource](https://redirect.github.com/github/codeql-action/compare/v4.31.7...v4.31.8)\n\n##### CodeQL Action Changelog\n\nSee the [releases\npage](https://redirect.github.com/github/codeql-action/releases) for the\nrelevant changes to the CodeQL CLI and language packs.\n\n##### 4.31.8 - 11 Dec 2025\n\n- Update default CodeQL bundle version to 2.23.8.\n[#&#8203;3354](https://redirect.github.com/github/codeql-action/pull/3354)\n\nSee the full\n[CHANGELOG.md](https://redirect.github.com/github/codeql-action/blob/v4.31.8/CHANGELOG.md)\nfor more information.\n\n###\n[`v4.31.7`](https://redirect.github.com/github/codeql-action/releases/tag/v4.31.7)\n\n[Compare\nSource](https://redirect.github.com/github/codeql-action/compare/v4.31.6...v4.31.7)\n\n##### CodeQL Action Changelog\n\nSee the [releases\npage](https://redirect.github.com/github/codeql-action/releases) for the\nrelevant changes to the CodeQL CLI and language packs.\n\n##### 4.31.7 - 05 Dec 2025\n\n- Update default CodeQL bundle version to 2.23.7.\n[#&#8203;3343](https://redirect.github.com/github/codeql-action/pull/3343)\n\nSee the full\n[CHANGELOG.md](https://redirect.github.com/github/codeql-action/blob/v4.31.7/CHANGELOG.md)\nfor more information.\n\n</details>\n\n<details>\n<summary>actions/go-versions (go)</summary>\n\n###\n[`v1.25.5`](https://redirect.github.com/actions/go-versions/releases/tag/1.25.5-19880500865):\n1.25.5\n\n[Compare\nSource](https://redirect.github.com/actions/go-versions/compare/1.25.4-19122936812...1.25.5-19880500865)\n\nGo 1.25.5\n\n</details>\n\n<details>\n<summary>actions/python-versions (python)</summary>\n\n###\n[`v3.14.2`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.2-20014991423):\n3.14.2\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.1-19879739908...3.14.2-20014991423)\n\nPython 3.14.2\n\n###\n[`v3.14.1`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.1-19879739908):\n3.14.1\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.14.0-18313368925...3.14.1-19879739908)\n\nPython 3.14.1\n\n###\n[`v3.14.0`](https://redirect.github.com/actions/python-versions/releases/tag/3.14.0-18313368925):\n3.14.0\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.11-20014977833...3.14.0-18313368925)\n\nPython 3.14.0\n\n###\n[`v3.13.11`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.11-20014977833):\n3.13.11\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.10-19879712315...3.13.11-20014977833)\n\nPython 3.13.11\n\n###\n[`v3.13.10`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.10-19879712315):\n3.13.10\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.9-18515951191...3.13.10-19879712315)\n\nPython 3.13.10\n\n###\n[`v3.13.9`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.9-18515951191):\n3.13.9\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.8-18331000654...3.13.9-18515951191)\n\nPython 3.13.9\n\n###\n[`v3.13.8`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.8-18331000654):\n3.13.8\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.7-16980743123...3.13.8-18331000654)\n\nPython 3.13.8\n\n###\n[`v3.13.7`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.7-16980743123):\n3.13.7\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.6-16792117939...3.13.7-16980743123)\n\nPython 3.13.7\n\n###\n[`v3.13.6`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.6-16792117939):\n3.13.6\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.5-15601068749...3.13.6-16792117939)\n\nPython 3.13.6\n\n###\n[`v3.13.5`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.5-15601068749):\n3.13.5\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.4-15433317575...3.13.5-15601068749)\n\nPython 3.13.5\n\n###\n[`v3.13.4`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.4-15433317575):\n3.13.4\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.3-14344076652...3.13.4-15433317575)\n\nPython 3.13.4\n\n###\n[`v3.13.3`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.3-14344076652):\n3.13.3\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.2-13708744326...3.13.3-14344076652)\n\nPython 3.13.3\n\n###\n[`v3.13.2`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.2-13708744326):\n3.13.2\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.1-13437882550...3.13.2-13708744326)\n\nPython 3.13.2\n\n###\n[`v3.13.1`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.1-13437882550):\n3.13.1\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.13.0-13707372259...3.13.1-13437882550)\n\nPython 3.13.1\n\n###\n[`v3.13.0`](https://redirect.github.com/actions/python-versions/releases/tag/3.13.0-13707372259):\n3.13.0\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.12-18393146713...3.13.0-13707372259)\n\nPython 3.13.0\n\n###\n[`v3.12.12`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.12-18393146713):\n3.12.12\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.11-15433310049...3.12.12-18393146713)\n\nPython 3.12.12\n\n###\n[`v3.12.11`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.11-15433310049):\n3.12.11\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.10-14343898437...3.12.11-15433310049)\n\nPython 3.12.11\n\n###\n[`v3.12.10`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.10-14343898437):\n3.12.10\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.9-13149478207...3.12.10-14343898437)\n\nPython 3.12.10\n\n###\n[`v3.12.9`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.9-13149478207):\n3.12.9\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.8-12154062663...3.12.9-13149478207)\n\nPython 3.12.9\n\n###\n[`v3.12.8`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.8-12154062663):\n3.12.8\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.7-11128208086...3.12.8-12154062663)\n\nPython 3.12.8\n\n###\n[`v3.12.7`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.7-11128208086):\n3.12.7\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.6-10765725458...3.12.7-11128208086)\n\nPython 3.12.7\n\n###\n[`v3.12.6`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.6-10765725458):\n3.12.6\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.5-10375840348...3.12.6-10765725458)\n\nPython 3.12.6\n\n###\n[`v3.12.5`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.5-10375840348):\n3.12.5\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.4-9947065640...3.12.5-10375840348)\n\nPython 3.12.5\n\n###\n[`v3.12.4`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.4-9947065640):\n3.12.4\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.3-11057844995...3.12.4-9947065640)\n\nPython 3.12.4\n\n###\n[`v3.12.3`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.3-11057844995):\n3.12.3\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.2-11057786931...3.12.3-11057844995)\n\nPython 3.12.3\n\n###\n[`v3.12.2`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.2-11057786931):\n3.12.2\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.1-11057762749...3.12.2-11057786931)\n\nPython 3.12.2\n\n###\n[`v3.12.1`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.1-11057762749):\n3.12.1\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.12.0-11057302691...3.12.1-11057762749)\n\nPython 3.12.1\n\n###\n[`v3.12.0`](https://redirect.github.com/actions/python-versions/releases/tag/3.12.0-11057302691):\n3.12.0\n\n[Compare\nSource](https://redirect.github.com/actions/python-versions/compare/3.11.14-18393181605...3.12.0-11057302691)\n\nPython 3.12.0\n\n</details>\n\n<details>\n<summary>step-security/harden-runner\n(step-security/harden-runner)</summary>\n\n###\n[`v2.14.0`](https://redirect.github.com/step-security/harden-runner/releases/tag/v2.14.0)\n\n[Compare\nSource](https://redirect.github.com/step-security/harden-runner/compare/v2.13.3...v2.14.0)\n\n##### What's Changed\n\n- Selective installation: Harden-Runner now skips installation on\nGitHub-hosted runners when the repository has a custom property\nskip\\_harden\\_runner, allowing organizations to opt out specific repos.\n- Avoid double install: The action no longer installs Harden-Runner if\nit’s already present on a GitHub-hosted runner, which could happen when\na composite action also installs it.\n\n**Full Changelog**:\n<https://github.com/step-security/harden-runner/compare/v2.13.3...v2.14.0>\n\n###\n[`v2.13.3`](https://redirect.github.com/step-security/harden-runner/releases/tag/v2.13.3)\n\n[Compare\nSource](https://redirect.github.com/step-security/harden-runner/compare/v2.13.2...v2.13.3)\n\n##### What's Changed\n\n- Fixed an issue where process events were not uploaded in certain edge\ncases.\n\n**Full Changelog**:\n<https://github.com/step-security/harden-runner/compare/v2.13.2...v2.13.3>\n\n</details>\n\n<details>\n<summary>taiki-e/install-action (taiki-e/install-action)</summary>\n\n###\n[`v2.65.13`](https://redirect.github.com/taiki-e/install-action/blob/HEAD/CHANGELOG.md#100---2021-12-30)\n\n[Compare\nSource](https://redirect.github.com/taiki-e/install-action/compare/v2.65.12...v2.65.13)\n\nInitial release\n\n[Unreleased]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.13...HEAD\n\n[2.65.13]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.12...v2.65.13\n\n[2.65.12]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.11...v2.65.12\n\n[2.65.11]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.10...v2.65.11\n\n[2.65.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.9...v2.65.10\n\n[2.65.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.8...v2.65.9\n\n[2.65.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.7...v2.65.8\n\n[2.65.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.6...v2.65.7\n\n[2.65.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.5...v2.65.6\n\n[2.65.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.4...v2.65.5\n\n[2.65.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.3...v2.65.4\n\n[2.65.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.2...v2.65.3\n\n[2.65.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.1...v2.65.2\n\n[2.65.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.65.0...v2.65.1\n\n[2.65.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.64.2...v2.65.0\n\n[2.64.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.64.1...v2.64.2\n\n[2.64.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.64.0...v2.64.1\n\n[2.64.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.63.3...v2.64.0\n\n[2.63.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.63.2...v2.63.3\n\n[2.63.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.63.1...v2.63.2\n\n[2.63.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.63.0...v2.63.1\n\n[2.63.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.67...v2.63.0\n\n[2.62.67]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.66...v2.62.67\n\n[2.62.66]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.65...v2.62.66\n\n[2.62.65]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.64...v2.62.65\n\n[2.62.64]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.63...v2.62.64\n\n[2.62.63]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.62...v2.62.63\n\n[2.62.62]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.61...v2.62.62\n\n[2.62.61]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.60...v2.62.61\n\n[2.62.60]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.59...v2.62.60\n\n[2.62.59]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.58...v2.62.59\n\n[2.62.58]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.57...v2.62.58\n\n[2.62.57]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.56...v2.62.57\n\n[2.62.56]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.55...v2.62.56\n\n[2.62.55]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.54...v2.62.55\n\n[2.62.54]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.53...v2.62.54\n\n[2.62.53]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.52...v2.62.53\n\n[2.62.52]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.51...v2.62.52\n\n[2.62.51]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.50...v2.62.51\n\n[2.62.50]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.49...v2.62.50\n\n[2.62.49]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.48...v2.62.49\n\n[2.62.48]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.47...v2.62.48\n\n[2.62.47]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.46...v2.62.47\n\n[2.62.46]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.45...v2.62.46\n\n[2.62.45]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.44...v2.62.45\n\n[2.62.44]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.43...v2.62.44\n\n[2.62.43]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.42...v2.62.43\n\n[2.62.42]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.41...v2.62.42\n\n[2.62.41]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.40...v2.62.41\n\n[2.62.40]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.39...v2.62.40\n\n[2.62.39]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.38...v2.62.39\n\n[2.62.38]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.37...v2.62.38\n\n[2.62.37]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.36...v2.62.37\n\n[2.62.36]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.35...v2.62.36\n\n[2.62.35]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.34...v2.62.35\n\n[2.62.34]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.33...v2.62.34\n\n[2.62.33]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.32...v2.62.33\n\n[2.62.32]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.31...v2.62.32\n\n[2.62.31]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.30...v2.62.31\n\n[2.62.30]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.29...v2.62.30\n\n[2.62.29]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.28...v2.62.29\n\n[2.62.28]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.27...v2.62.28\n\n[2.62.27]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.26...v2.62.27\n\n[2.62.26]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.25...v2.62.26\n\n[2.62.25]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.24...v2.62.25\n\n[2.62.24]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.23...v2.62.24\n\n[2.62.23]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.22...v2.62.23\n\n[2.62.22]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.21...v2.62.22\n\n[2.62.21]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.20...v2.62.21\n\n[2.62.20]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.19...v2.62.20\n\n[2.62.19]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.18...v2.62.19\n\n[2.62.18]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.17...v2.62.18\n\n[2.62.17]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.16...v2.62.17\n\n[2.62.16]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.15...v2.62.16\n\n[2.62.15]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.14...v2.62.15\n\n[2.62.14]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.13...v2.62.14\n\n[2.62.13]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.12...v2.62.13\n\n[2.62.12]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.11...v2.62.12\n\n[2.62.11]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.10...v2.62.11\n\n[2.62.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.9...v2.62.10\n\n[2.62.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.8...v2.62.9\n\n[2.62.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.7...v2.62.8\n\n[2.62.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.6...v2.62.7\n\n[2.62.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.5...v2.62.6\n\n[2.62.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.4...v2.62.5\n\n[2.62.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.3...v2.62.4\n\n[2.62.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.2...v2.62.3\n\n[2.62.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.1...v2.62.2\n\n[2.62.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.62.0...v2.62.1\n\n[2.62.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.13...v2.62.0\n\n[2.61.13]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.12...v2.61.13\n\n[2.61.12]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.11...v2.61.12\n\n[2.61.11]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.10...v2.61.11\n\n[2.61.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.9...v2.61.10\n\n[2.61.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.8...v2.61.9\n\n[2.61.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.7...v2.61.8\n\n[2.61.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.6...v2.61.7\n\n[2.61.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.5...v2.61.6\n\n[2.61.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.4...v2.61.5\n\n[2.61.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.3...v2.61.4\n\n[2.61.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.2...v2.61.3\n\n[2.61.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.1...v2.61.2\n\n[2.61.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.61.0...v2.61.1\n\n[2.61.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.60.0...v2.61.0\n\n[2.60.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.59.1...v2.60.0\n\n[2.59.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.59.0...v2.59.1\n\n[2.59.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.33...v2.59.0\n\n[2.58.33]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.32...v2.58.33\n\n[2.58.32]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.31...v2.58.32\n\n[2.58.31]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.30...v2.58.31\n\n[2.58.30]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.29...v2.58.30\n\n[2.58.29]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.28...v2.58.29\n\n[2.58.28]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.27...v2.58.28\n\n[2.58.27]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.26...v2.58.27\n\n[2.58.26]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.25...v2.58.26\n\n[2.58.25]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.24...v2.58.25\n\n[2.58.24]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.23...v2.58.24\n\n[2.58.23]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.22...v2.58.23\n\n[2.58.22]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.21...v2.58.22\n\n[2.58.21]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.20...v2.58.21\n\n[2.58.20]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.19...v2.58.20\n\n[2.58.19]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.18...v2.58.19\n\n[2.58.18]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.17...v2.58.18\n\n[2.58.17]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.16...v2.58.17\n\n[2.58.16]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.15...v2.58.16\n\n[2.58.15]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.14...v2.58.15\n\n[2.58.14]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.13...v2.58.14\n\n[2.58.13]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.12...v2.58.13\n\n[2.58.12]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.11...v2.58.12\n\n[2.58.11]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.10...v2.58.11\n\n[2.58.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.9...v2.58.10\n\n[2.58.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.8...v2.58.9\n\n[2.58.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.7...v2.58.8\n\n[2.58.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.6...v2.58.7\n\n[2.58.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.5...v2.58.6\n\n[2.58.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.4...v2.58.5\n\n[2.58.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.3...v2.58.4\n\n[2.58.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.2...v2.58.3\n\n[2.58.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.1...v2.58.2\n\n[2.58.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.58.0...v2.58.1\n\n[2.58.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.8...v2.58.0\n\n[2.57.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.7...v2.57.8\n\n[2.57.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.6...v2.57.7\n\n[2.57.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.5...v2.57.6\n\n[2.57.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.4...v2.57.5\n\n[2.57.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.3...v2.57.4\n\n[2.57.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.2...v2.57.3\n\n[2.57.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.1...v2.57.2\n\n[2.57.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.57.0...v2.57.1\n\n[2.57.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.24...v2.57.0\n\n[2.56.24]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.23...v2.56.24\n\n[2.56.23]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.22...v2.56.23\n\n[2.56.22]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.21...v2.56.22\n\n[2.56.21]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.20...v2.56.21\n\n[2.56.20]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.19...v2.56.20\n\n[2.56.19]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.18...v2.56.19\n\n[2.56.18]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.17...v2.56.18\n\n[2.56.17]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.16...v2.56.17\n\n[2.56.16]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.15...v2.56.16\n\n[2.56.15]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.14...v2.56.15\n\n[2.56.14]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.13...v2.56.14\n\n[2.56.13]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.12...v2.56.13\n\n[2.56.12]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.11...v2.56.12\n\n[2.56.11]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.10...v2.56.11\n\n[2.56.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.9...v2.56.10\n\n[2.56.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.8...v2.56.9\n\n[2.56.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.7...v2.56.8\n\n[2.56.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.6...v2.56.7\n\n[2.56.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.5...v2.56.6\n\n[2.56.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.4...v2.56.5\n\n[2.56.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.3...v2.56.4\n\n[2.56.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.2...v2.56.3\n\n[2.56.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.1...v2.56.2\n\n[2.56.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.56.0...v2.56.1\n\n[2.56.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.55.4...v2.56.0\n\n[2.55.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.55.3...v2.55.4\n\n[2.55.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.55.2...v2.55.3\n\n[2.55.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.55.1...v2.55.2\n\n[2.55.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.55.0...v2.55.1\n\n[2.55.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.54.3...v2.55.0\n\n[2.54.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.54.2...v2.54.3\n\n[2.54.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.54.1...v2.54.2\n\n[2.54.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.54.0...v2.54.1\n\n[2.54.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.53.2...v2.54.0\n\n[2.53.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.53.1...v2.53.2\n\n[2.53.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.53.0...v2.53.1\n\n[2.53.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.8...v2.53.0\n\n[2.52.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.7...v2.52.8\n\n[2.52.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.6...v2.52.7\n\n[2.52.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.5...v2.52.6\n\n[2.52.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.4...v2.52.5\n\n[2.52.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.3...v2.52.4\n\n[2.52.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.2...v2.52.3\n\n[2.52.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.1...v2.52.2\n\n[2.52.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.52.0...v2.52.1\n\n[2.52.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.51.3...v2.52.0\n\n[2.51.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.51.2...v2.51.3\n\n[2.51.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.51.1...v2.51.2\n\n[2.51.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.51.0...v2.51.1\n\n[2.51.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.10...v2.51.0\n\n[2.50.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.9...v2.50.10\n\n[2.50.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.8...v2.50.9\n\n[2.50.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.7...v2.50.8\n\n[2.50.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.6...v2.50.7\n\n[2.50.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.5...v2.50.6\n\n[2.50.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.4...v2.50.5\n\n[2.50.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.3...v2.50.4\n\n[2.50.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.2...v2.50.3\n\n[2.50.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.1...v2.50.2\n\n[2.50.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.50.0...v2.50.1\n\n[2.50.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.50...v2.50.0\n\n[2.49.50]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.49...v2.49.50\n\n[2.49.49]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.48...v2.49.49\n\n[2.49.48]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.47...v2.49.48\n\n[2.49.47]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.46...v2.49.47\n\n[2.49.46]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.45...v2.49.46\n\n[2.49.45]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.44...v2.49.45\n\n[2.49.44]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.43...v2.49.44\n\n[2.49.43]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.42...v2.49.43\n\n[2.49.42]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.41...v2.49.42\n\n[2.49.41]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.40...v2.49.41\n\n[2.49.40]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.39...v2.49.40\n\n[2.49.39]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.38...v2.49.39\n\n[2.49.38]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.37...v2.49.38\n\n[2.49.37]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.36...v2.49.37\n\n[2.49.36]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.35...v2.49.36\n\n[2.49.35]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.34...v2.49.35\n\n[2.49.34]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.33...v2.49.34\n\n[2.49.33]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.32...v2.49.33\n\n[2.49.32]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.31...v2.49.32\n\n[2.49.31]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.30...v2.49.31\n\n[2.49.30]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.29...v2.49.30\n\n[2.49.29]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.28...v2.49.29\n\n[2.49.28]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.27...v2.49.28\n\n[2.49.27]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.26...v2.49.27\n\n[2.49.26]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.25...v2.49.26\n\n[2.49.25]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.24...v2.49.25\n\n[2.49.24]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.23...v2.49.24\n\n[2.49.23]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.22...v2.49.23\n\n[2.49.22]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.21...v2.49.22\n\n[2.49.21]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.20...v2.49.21\n\n[2.49.20]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.19...v2.49.20\n\n[2.49.19]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.18...v2.49.19\n\n[2.49.18]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.17...v2.49.18\n\n[2.49.17]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.16...v2.49.17\n\n[2.49.16]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.15...v2.49.16\n\n[2.49.15]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.14...v2.49.15\n\n[2.49.14]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.13...v2.49.14\n\n[2.49.13]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.12...v2.49.13\n\n[2.49.12]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.11...v2.49.12\n\n[2.49.11]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.10...v2.49.11\n\n[2.49.10]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.9...v2.49.10\n\n[2.49.9]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.8...v2.49.9\n\n[2.49.8]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.7...v2.49.8\n\n[2.49.7]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.6...v2.49.7\n\n[2.49.6]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.5...v2.49.6\n\n[2.49.5]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.4...v2.49.5\n\n[2.49.4]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.3...v2.49.4\n\n[2.49.3]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.2...v2.49.3\n\n[2.49.2]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.1...v2.49.2\n\n[2.49.1]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.49.0...v2.49.1\n\n[2.49.0]:\nhttps://redirect.github.com/taiki-e/install-action/compare/v2.48.22...v2.4\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on the first day of the\nmonth\" (UTC), Automerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0Mi42OS4xIiwidXBkYXRlZEluVmVyIjoiNDIuNjkuMSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-01-05T18:10:24Z",
+          "tree_id": "f22444dc95bfdf00a36aa4a84b00e7b47b25894b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/813c4858716e4cdd27ef86f4c9a8fedda6f5c0bd"
+        },
+        "date": 1767639883728,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_total",
+            "value": 0,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Log Count"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_avg",
+            "value": 38.37565306322147,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_max",
+            "value": 38.990172193308545,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 38.37565306322147,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 38.990172193308545,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 49.57109375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 49.81640625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Counts"
+          },
+          {
+            "name": "logs_received_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Counts"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 124994.20651852786,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 124994.20651852786,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.000927,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2354365.513108483,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 733359.5453737397,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_total",
+            "value": 0,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Log Count"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_avg",
+            "value": 43.10263963109399,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_max",
+            "value": 43.608871327079804,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 43.10263963109399,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 43.608871327079804,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 40.070703125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 40.53125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Counts"
+          },
+          {
+            "name": "logs_received_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Counts"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 124994.01903618911,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 124994.01903618911,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.000957,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2204969.471299764,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2094968.5446640253,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_total",
+            "value": 0,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Log Count"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_avg",
+            "value": 17.605933613831905,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_max",
+            "value": 18.765919035399598,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 17.605933613831905,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 18.765919035399598,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.36953125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 46.9765625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Counts"
+          },
+          {
+            "name": "logs_received_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Counts"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 124991.83178379292,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 124991.83178379292,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001307,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 771094.2087294217,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 737372.8330520878,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_total",
+            "value": 0,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Log Count"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_avg",
+            "value": 53.072382678896965,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_max",
+            "value": 53.44015382995199,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU Percentage"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 53.072382678896965,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 53.44015382995199,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 37.553125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 39.7734375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Counts"
+          },
+          {
+            "name": "logs_received_total",
+            "value": 2500000,
+            "unit": "count",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Counts"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 124993.06288500987,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 124993.06288500987,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.00111,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 761124.6290932533,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2078065.1523781356,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
           }
         ]
       }
