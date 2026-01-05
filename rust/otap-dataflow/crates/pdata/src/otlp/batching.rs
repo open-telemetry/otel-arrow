@@ -90,19 +90,21 @@ pub fn make_bytes_batches(
     if total_size == 0 {
         return Err(Error::EmptyBatch);
     }
-    if inputs.len() == 1 {
-        return Ok(inputs);
-    }
     match max_bytes {
-        None => Ok(vec![OtlpProtoBytes::new_from_bytes(
-            signal,
-            inputs
-                .into_iter()
-                .fold(Vec::with_capacity(total_size), |mut acc, record| {
-                    acc.extend_from_slice(record.as_bytes());
-                    acc
-                }),
-        )]),
+        None => {
+            if inputs.len() == 1 {
+                return Ok(inputs);
+            }
+            Ok(vec![OtlpProtoBytes::new_from_bytes(
+                signal,
+                inputs
+                    .into_iter()
+                    .fold(Vec::with_capacity(total_size), |mut acc, record| {
+                        acc.extend_from_slice(record.as_bytes());
+                        acc
+                    }),
+            )])
+        }
         Some(max_nz) => {
             let max_size = max_nz.get() as usize;
             let mut batches = Vec::new();

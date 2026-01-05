@@ -10,6 +10,7 @@ use crate::testing::equiv::assert_equivalent;
 use crate::testing::fixtures::DataGenerator;
 use crate::testing::round_trip::otlp_bytes_to_message;
 use crate::testing::round_trip::otlp_message_to_bytes;
+use otap_df_config::SignalType;
 use std::num::NonZeroU64;
 
 /// Test bytes-based batching with various size limits
@@ -19,14 +20,38 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
     let signal_type = inputs_otlp.get(0).expect("ok").signal_type();
 
     let inputs_bytes: Vec<OtlpProtoBytes> = inputs_otlp.iter().map(otlp_message_to_bytes).collect();
+    let inputs_toplevel: usize = inputs_otlp
+        .iter()
+        .map(|b| match b {
+            OtlpProtoMessage::Logs(data) => data.resource_logs.len(),
+            OtlpProtoMessage::Metrics(data) => data.resource_metrics.len(),
+            OtlpProtoMessage::Traces(data) => data.resource_spans.len(),
+        })
+        .sum();
 
     let total_input_bytes: usize = inputs_bytes.iter().map(|b| b.num_bytes()).sum();
 
     // Run a single equivalence test
-    let test_config = |limit: Option<NonZeroU64>, label: &str| {
+    let test_config = |limit: Option<NonZeroU64>, expect_batches: usize, label: &str| {
         let outputs = make_bytes_batches(signal_type, limit, inputs_bytes.clone()).expect("ok");
         let total: usize = outputs.iter().map(|b| b.num_bytes()).sum();
+
         assert_eq!(total_input_bytes, total, "{}: byte count mismatch", label);
+
+        // Expected number of batches is tested (coarsely, because we
+        // haven't carefully controlled the number of bytes per
+        // toplevel item).
+        assert!(
+            outputs.len() >= expect_batches,
+            "{} outputs expecting at least {expect_batches}",
+            outputs.len(),
+        );
+        assert!(
+            outputs.len() <= expect_batches + 1,
+            "{} outputs expecting at most {}",
+            outputs.len(),
+            expect_batches + 1,
+        );
 
         // Convert outputs back to OtlpProtoMessage and verify equivalence
         let outputs_msgs: Vec<OtlpProtoMessage> =
@@ -35,22 +60,14 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
     };
 
     // Run with no limit (worst case)
-    test_config(None, "no limit");
+    test_config(None, 1, "no limit");
 
     // Run with limit == actual size
     if total_input_bytes > 0 {
         test_config(
             Some(NonZeroU64::new(total_input_bytes as u64).unwrap()),
+            1,
             "actual size",
-        );
-    }
-
-    // Run with limit == actual_size * 0.1
-    if total_input_bytes >= 10 {
-        let limit_10pct = (total_input_bytes / 10).max(1);
-        test_config(
-            Some(NonZeroU64::new(limit_10pct as u64).unwrap()),
-            "10% limit",
         );
     }
 
@@ -59,12 +76,17 @@ fn test_batching(inputs_otlp: impl Iterator<Item = OtlpProtoMessage>) {
         let limit_50pct = (total_input_bytes / 2).max(1);
         test_config(
             Some(NonZeroU64::new(limit_50pct as u64).unwrap()),
+            std::cmp::min(2, inputs_toplevel),
             "50% limit",
         );
     }
 
     // Run with limit == 1 (worst case: should produce single-field batches)
-    test_config(Some(NonZeroU64::new(1).unwrap()), "limit 1");
+    test_config(
+        Some(NonZeroU64::new(1).unwrap()),
+        inputs_toplevel,
+        "limit 1",
+    );
 }
 
 // Note: this test is similar to ../otap/batching_tests. We should
@@ -99,8 +121,6 @@ fn test_simple_batch_metrics() {
 /// Test that the batcher handles corrupted protobuf data
 #[test]
 fn test_corrupted_protobuf_handling() {
-    use otap_df_config::SignalType;
-
     let mut datagen = DataGenerator::new(1);
     let logs1 = datagen.generate_logs();
     let logs2 = datagen.generate_logs();

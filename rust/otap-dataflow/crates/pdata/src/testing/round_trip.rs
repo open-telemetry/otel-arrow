@@ -42,7 +42,7 @@ pub fn otlp_message_to_bytes(msg: &OtlpProtoMessage) -> OtlpProtoBytes {
     }
 }
 
-/// Transcode a protocol message object to OTLP bytes.
+/// Transcode OTLP bytes to a protocol message object.
 #[must_use]
 pub fn otlp_bytes_to_message(msg: OtlpProtoBytes) -> OtlpProtoMessage {
     match msg {

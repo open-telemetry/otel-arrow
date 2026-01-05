@@ -178,7 +178,8 @@ pub struct Config {
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
 
-    /// Batching format choice.
+    /// Batching format choice. Default is to preserve format, meaning
+    /// to batch OTAP and OTLP separately.
     #[serde(default = "default_batching_format")]
     pub format: BatchingFormat,
 }
@@ -309,7 +310,8 @@ impl FormatConfig {
             });
         }
 
-        // Presently we have only the OTAP mode of batching, which supports only Items.
+        // Check for a supported sizer. Presently, OTAP supports only
+        // items, OTLP supports only bytes.
         let (expect_sizer, with_msg) = match format {
             SignalFormat::OtapRecords => (Sizer::Items, "OTAP batch sizer: must be items"),
             SignalFormat::OtlpBytes => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
@@ -332,16 +334,21 @@ impl FormatConfig {
             }
         }
 
-        // Zero-timeout is a valid split-only configuration, but must have
+        // no_timeout indicates there is not a time-based flush criteria, which
+        // raises requirements:
         if no_timeout {
-            if let Some(min_size) = self.min_size {
+            // If min_size is set, we need a timeout to avoid
+            // indefinite delay.
+            if self.min_size.is_some() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!("min_size ({}) requires a timeout", min_size),
+                    error: format!("min_size set requires flush_timeout is set"),
                 });
             }
+            // If max_size is unset, we're doing nothing with a batch processor,
+            // so this is considered an error.
             if self.max_size.is_none() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: "max_size required for split-only (no timeout) configuration".into(),
+                    error: "flush_timeout unset requires max_size is set".into(),
                 });
             }
         }
