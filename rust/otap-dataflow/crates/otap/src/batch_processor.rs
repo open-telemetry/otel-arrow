@@ -223,7 +223,7 @@ const fn default_outbound_request_limit() -> NonZeroUsize {
 }
 
 const fn default_batching_format() -> BatchingFormat {
-    BatchingFormat::Otap
+    BatchingFormat::Preserve
 }
 
 const fn default_otap() -> FormatConfig {
@@ -2102,6 +2102,7 @@ mod tests {
                     "max_size": 2,
                     "sizer": "items",
                 },
+                "format": "otap",
                 "flush_timeout": "0s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
