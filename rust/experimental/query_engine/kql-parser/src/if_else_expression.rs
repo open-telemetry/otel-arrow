@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression, LogicalExpression,
-    QueryLocation, TransformExpression,
+    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression, Expression,
+    LogicalExpression, QueryLocation,
 };
 use data_engine_parser_abstractions::{ParserError, ParserScope, to_query_location};
 use pest::iterators::Pair;
@@ -21,9 +21,9 @@ pub fn parse_if_else_expression(
     let mut conditional_expr = ConditionalDataExpression::new(query_location);
 
     // keep track of the location of the current branch
-    let mut branch_loc_start = 0;
-    let mut branch_loc_line = 0;
-    let mut branch_log_col = 0;
+    let mut branch_location_start = 0;
+    let mut branch_location_line = 0;
+    let mut branch_location_col = 0;
 
     let mut next_condition: Option<LogicalExpression> = None;
     let mut next_branch: Vec<DataExpression> = Vec::new();
@@ -31,53 +31,80 @@ pub fn parse_if_else_expression(
     let inner = if_else_expression.into_inner();
     for rule in inner {
         match rule.as_rule() {
+            // parse the condition for the branch
             Rule::if_condition_expression => {
-                branch_loc_start = rule.as_span().start();
+                branch_location_start = rule.as_span().start();
                 let (line_number, column_number) = rule.line_col();
-                branch_loc_line = line_number;
-                branch_log_col = column_number;
+                branch_location_line = line_number;
+                branch_location_col = column_number;
 
-                // TODO no unwrap?
-                let condition_rule = rule.into_inner().next().unwrap();
-                let condition_expr = match condition_rule.as_rule() {
-                    Rule::logical_expression => parse_logical_expression(condition_rule, scope)?,
-                    // TODO no panic?
-                    _ => panic!("Unexpected rule in if_condition_expression: {condition_rule}"),
-                };
-                next_condition = Some(condition_expr);
+                let condition_rule = rule.into_inner().next().ok_or_else(|| {
+                    // under normal invocation of this function this shouldn't happen as this
+                    // missing expression should be caught by the parser
+                    ParserError::SyntaxError(
+                        conditional_expr.get_query_location().clone(),
+                        "expected if_condition_expression to contain one inner logical_expression"
+                            .to_string(),
+                    )
+                })?;
+                next_condition = Some(parse_logical_expression(condition_rule, scope)?);
             }
 
+            // parse the pipeline of data expressions for this branch
             Rule::if_else_branch_expression => {
                 let branch_loc_end = rule.as_span().end();
+
+                // parse all the rules
                 for tabular_rule in rule.into_inner() {
                     let mut expr = parse_tabular_expression_rule(tabular_rule, scope)?;
                     next_branch.append(&mut expr);
                 }
+
+                // take the data expressions for the branch and reset next_branch
                 let curr_branch = next_branch;
                 next_branch = Vec::new();
 
-                // TODO no unwrap
                 let query_location = QueryLocation::new(
-                    branch_loc_start,
+                    branch_location_start,
                     branch_loc_end,
-                    branch_loc_line,
-                    branch_log_col,
+                    branch_location_line,
+                    branch_location_col,
                 )
-                .unwrap();
+                .map_err(|e| {
+                    ParserError::SyntaxError(
+                        conditional_expr.get_query_location().clone(),
+                        format!("invalid query location {e}"),
+                    )
+                })?;
 
-                let data_expr_branch = ConditionalDataExpressionBranch::new(
-                    query_location,
-                    next_condition.take().unwrap(),
-                    curr_branch,
+                let condition = next_condition.take().ok_or_else(|| {
+                    // next_condition should always be Some here as we should see the
+                    // if_condition_expression first.Under normal invocation of this function
+                    // the order should be enforced by the parser
+                    ParserError::SyntaxError(
+                        conditional_expr.get_query_location().clone(),
+                        "expected if_condition_expression before if_else_branch_expression"
+                            .to_string(),
+                    )
+                })?;
+
+                conditional_expr = conditional_expr.with_branch(
+                    ConditionalDataExpressionBranch::new(query_location, condition, curr_branch),
                 );
-
-                conditional_expr = conditional_expr.with_branch(data_expr_branch);
             }
+
+            // parse the data expressions for the else branch
             Rule::else_expression => {
                 let mut else_branch_exprs = Vec::new();
-                // TODO no unwrap
-                // TODO check the type
-                let branch_rules = rule.into_inner().next().unwrap();
+                let branch_rules = rule.into_inner().next().ok_or_else(|| {
+                    // under normal invocation of this function this shouldn't happen as this
+                    // missing expression should be caught by the parser
+                    ParserError::SyntaxError(
+                        conditional_expr.get_query_location().clone(),
+                        "expected else_expression to contain one inner if_else_branch_expression"
+                            .to_string(),
+                    )
+                })?;
 
                 for tabular_rule in branch_rules.into_inner() {
                     let mut expr = parse_tabular_expression_rule(tabular_rule, scope)?;
@@ -85,8 +112,12 @@ pub fn parse_if_else_expression(
                 }
                 conditional_expr = conditional_expr.with_default_branch(else_branch_exprs);
             }
-            // TODO no panic?
-            _ => panic!("Unexpected rule in if_else_expression: {rule}"),
+            _ => {
+                return Err(ParserError::SyntaxError(
+                    conditional_expr.get_query_location().clone(),
+                    format!("invalid rule found in if_else_expression {rule}"),
+                ));
+            }
         }
     }
 
@@ -98,19 +129,65 @@ mod tests {
     use super::*;
     use crate::kql_parser::KqlParser;
     use data_engine_expressions::{
-        BooleanScalarExpression, EqualToLogicalExpression, MutableValueExpression,
-        ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, ValueAccessor,
+        EqualToLogicalExpression, MutableValueExpression, ScalarExpression, SetTransformExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TransformExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::Parser;
+
+    fn equals_logical_expr(field_name: &'static str, value: &'static str) -> LogicalExpression {
+        LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        field_name,
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                value,
+            ))),
+            false,
+        ))
+    }
+
+    fn assign_attribute_expression(
+        attr_key: &'static str,
+        attr_val: &'static str,
+    ) -> DataExpression {
+        DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                attr_val,
+            ))),
+            MutableValueExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), attr_key),
+                    )),
+                ]),
+            )),
+        )))
+    }
 
     #[test]
     pub fn test_parse_if_else_expression() {
         let query = r#"
             logs | if (severity_text == "ERROR") { 
-                extend attributes["important"] = "very" | extend attributes["triggers_alarm"] = true
+                extend attributes["important"] = "very" | extend attributes["triggers_alarm"] = "true"
             } else if (severity_text == "WARN") {
                 extend attributes["important"] = "somewhat"
+            } else if (severity_text == "INFO") {
+                extend attributes["important"] = "rarely"
             } else {
                 extend attributes["important"] = "no"
             }
@@ -120,180 +197,41 @@ mod tests {
         assert!(result.is_ok());
 
         let pipeline = result.unwrap().pipeline;
-        let first_expression = pipeline.get_expressions().first().unwrap();
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
 
-        match first_expression {
-            DataExpression::Conditional(conditional) => {
-                assert_eq!(conditional.get_branches().len(), 2);
-                assert!(conditional.get_default_branch().is_some());
-
-                // assert first branch parsed correctly
-                let if_branch = &conditional.get_branches()[0];
-                assert_eq!(
-                    if_branch.get_condition(),
-                    &LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Source(SourceScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "severity_text"
-                                ),)
-                            )])
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
-                        )),
-                        false,
-                    ))
-                );
-
-                assert_eq!(
-                    if_branch.get_expressions(),
-                    &[
-                        DataExpression::Transform(TransformExpression::Set(
-                            SetTransformExpression::new(
-                                QueryLocation::new_fake(),
-                                ScalarExpression::Static(StaticScalarExpression::String(
-                                    StringScalarExpression::new(QueryLocation::new_fake(), "very"),
-                                )),
-                                MutableValueExpression::Source(SourceScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ValueAccessor::new_with_selectors(vec![
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "attributes"
-                                            ),
-                                        )),
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "important"
-                                            ),
-                                        )),
-                                    ]),
-                                ))
-                            )
-                        )),
-                        DataExpression::Transform(TransformExpression::Set(
-                            SetTransformExpression::new(
-                                QueryLocation::new_fake(),
-                                ScalarExpression::Static(StaticScalarExpression::Boolean(
-                                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                                )),
-                                MutableValueExpression::Source(SourceScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    ValueAccessor::new_with_selectors(vec![
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "attributes"
-                                            ),
-                                        )),
-                                        ScalarExpression::Static(StaticScalarExpression::String(
-                                            StringScalarExpression::new(
-                                                QueryLocation::new_fake(),
-                                                "triggers_alarm"
-                                            ),
-                                        )),
-                                    ]),
-                                ))
-                            )
-                        ))
-                    ]
-                );
-
-                let else_if_branch = &conditional.get_branches()[1];
-                assert_eq!(
-                    else_if_branch.get_condition(),
-                    &LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Source(SourceScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "severity_text"
-                                ),)
-                            )])
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "WARN"),
-                        )),
-                        false,
-                    ))
-                );
-
-                assert_eq!(
-                    else_if_branch.get_expressions(),
-                    &[DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            ScalarExpression::Static(StaticScalarExpression::String(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "somewhat"),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "attributes"
-                                        ),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "important"
-                                        ),
-                                    )),
-                                ]),
-                            ))
-                        )
-                    )),]
-                );
-
-                let else_branch = conditional.get_default_branch().unwrap();
-                assert_eq!(
-                    else_branch,
-                    &[DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            ScalarExpression::Static(StaticScalarExpression::String(
-                                StringScalarExpression::new(QueryLocation::new_fake(), "no"),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "attributes"
-                                        ),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "important"
-                                        ),
-                                    )),
-                                ]),
-                            ))
-                        )
-                    )),]
-                )
-            }
-            _ => panic!("Expected ConditionalDataExpression"),
-        };
+        let expected = DataExpression::Conditional(
+            ConditionalDataExpression::new(QueryLocation::new_fake())
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "ERROR"),
+                    vec![
+                        assign_attribute_expression("important", "very"),
+                        assign_attribute_expression("triggers_alarm", "true"),
+                    ],
+                ))
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "WARN"),
+                    vec![assign_attribute_expression("important", "somewhat")],
+                ))
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "INFO"),
+                    vec![assign_attribute_expression("important", "rarely")],
+                ))
+                .with_default_branch(vec![assign_attribute_expression("important", "no")]),
+        );
+        assert_eq!(expressions[0], expected);
     }
 
     #[test]
-    pub fn test_parse_if_else_expression_if_only() {
+    pub fn test_parse_if_else_expression_no_else() {
         let query = r#"
             logs | if (severity_text == "ERROR") { 
-                extend attributes["triggers_alarm"] = true
+                extend attributes["important"] = "very" | extend attributes["triggers_alarm"] = "true"
+            } else if (severity_text == "WARN") {
+                extend attributes["important"] = "somewhat"
             }
         "#;
 
@@ -301,65 +239,84 @@ mod tests {
         assert!(result.is_ok());
 
         let pipeline = result.unwrap().pipeline;
-        let first_expression = pipeline.get_expressions().first().unwrap();
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
 
-        match first_expression {
-            DataExpression::Conditional(conditional) => {
-                assert_eq!(conditional.get_branches().len(), 1);
-                assert!(conditional.get_default_branch().is_none());
+        let expected = DataExpression::Conditional(
+            ConditionalDataExpression::new(QueryLocation::new_fake())
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "ERROR"),
+                    vec![
+                        assign_attribute_expression("important", "very"),
+                        assign_attribute_expression("triggers_alarm", "true"),
+                    ],
+                ))
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "WARN"),
+                    vec![assign_attribute_expression("important", "somewhat")],
+                )),
+        );
+        assert_eq!(expressions[0], expected);
+    }
 
-                // assert first branch parsed correctly
-                let if_branch = &conditional.get_branches()[0];
-                assert_eq!(
-                    if_branch.get_condition(),
-                    &LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                        QueryLocation::new_fake(),
-                        ScalarExpression::Source(SourceScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                                StaticScalarExpression::String(StringScalarExpression::new(
-                                    QueryLocation::new_fake(),
-                                    "severity_text"
-                                ),)
-                            )])
-                        )),
-                        ScalarExpression::Static(StaticScalarExpression::String(
-                            StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
-                        )),
-                        false,
-                    ))
-                );
-
-                assert_eq!(
-                    if_branch.get_expressions(),
-                    &[DataExpression::Transform(TransformExpression::Set(
-                        SetTransformExpression::new(
-                            QueryLocation::new_fake(),
-                            ScalarExpression::Static(StaticScalarExpression::Boolean(
-                                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
-                            )),
-                            MutableValueExpression::Source(SourceScalarExpression::new(
-                                QueryLocation::new_fake(),
-                                ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "attributes"
-                                        ),
-                                    )),
-                                    ScalarExpression::Static(StaticScalarExpression::String(
-                                        StringScalarExpression::new(
-                                            QueryLocation::new_fake(),
-                                            "triggers_alarm"
-                                        ),
-                                    )),
-                                ]),
-                            ))
-                        )
-                    ))]
-                );
+    #[test]
+    pub fn test_parse_if_else_expression_no_elseif() {
+        let query = r#"
+            logs | if (severity_text == "ERROR") { 
+                extend attributes["important"] = "very" | extend attributes["triggers_alarm"] = "true"
+            } else {
+                extend attributes["important"] = "no"
             }
-            _ => panic!("Expected ConditionalDataExpression"),
-        };
+        "#;
+
+        let result = KqlParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Conditional(
+            ConditionalDataExpression::new(QueryLocation::new_fake())
+                .with_branch(ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "ERROR"),
+                    vec![
+                        assign_attribute_expression("important", "very"),
+                        assign_attribute_expression("triggers_alarm", "true"),
+                    ],
+                ))
+                .with_default_branch(vec![assign_attribute_expression("important", "no")]),
+        );
+        assert_eq!(expressions[0], expected);
+    }
+
+    #[test]
+    pub fn test_parse_if_else_expression_if_only() {
+        let query = r#"
+            logs | if (severity_text == "ERROR") { 
+                extend attributes["triggers_alarm"] = "true"
+            }
+        "#;
+
+        let result = KqlParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let expressions = pipeline.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Conditional(
+            ConditionalDataExpression::new(QueryLocation::new_fake()).with_branch(
+                ConditionalDataExpressionBranch::new(
+                    QueryLocation::new_fake(),
+                    equals_logical_expr("severity_text", "ERROR"),
+                    vec![assign_attribute_expression("triggers_alarm", "true")],
+                ),
+            ),
+        );
+        assert_eq!(expressions[0], expected);
     }
 }
