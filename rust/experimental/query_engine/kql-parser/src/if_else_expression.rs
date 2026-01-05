@@ -46,6 +46,7 @@ pub fn parse_if_else_expression(
                 };
                 next_condition = Some(condition_expr);
             }
+
             Rule::if_else_branch_expression => {
                 let branch_loc_end = rule.as_span().end();
                 for tabular_rule in rule.into_inner() {
@@ -90,4 +91,275 @@ pub fn parse_if_else_expression(
     }
 
     Ok(DataExpression::Conditional(conditional_expr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kql_parser::KqlParser;
+    use data_engine_expressions::{
+        BooleanScalarExpression, EqualToLogicalExpression, MutableValueExpression,
+        ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, ValueAccessor,
+    };
+    use data_engine_parser_abstractions::Parser;
+
+    #[test]
+    pub fn test_parse_if_else_expression() {
+        let query = r#"
+            logs | if (severity_text == "ERROR") { 
+                extend attributes["important"] = "very" | extend attributes["triggers_alarm"] = true
+            } else if (severity_text == "WARN") {
+                extend attributes["important"] = "somewhat"
+            } else {
+                extend attributes["important"] = "no"
+            }
+        "#;
+
+        let result = KqlParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let first_expression = pipeline.get_expressions().first().unwrap();
+
+        match first_expression {
+            DataExpression::Conditional(conditional) => {
+                assert_eq!(conditional.get_branches().len(), 2);
+                assert!(conditional.get_default_branch().is_some());
+
+                // assert first branch parsed correctly
+                let if_branch = &conditional.get_branches()[0];
+                assert_eq!(
+                    if_branch.get_condition(),
+                    &LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "severity_text"
+                                ),)
+                            )])
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
+                        )),
+                        false,
+                    ))
+                );
+
+                assert_eq!(
+                    if_branch.get_expressions(),
+                    &[
+                        DataExpression::Transform(TransformExpression::Set(
+                            SetTransformExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::String(
+                                    StringScalarExpression::new(QueryLocation::new_fake(), "very"),
+                                )),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes"
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "important"
+                                            ),
+                                        )),
+                                    ]),
+                                ))
+                            )
+                        )),
+                        DataExpression::Transform(TransformExpression::Set(
+                            SetTransformExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                    BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                                )),
+                                MutableValueExpression::Source(SourceScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    ValueAccessor::new_with_selectors(vec![
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "attributes"
+                                            ),
+                                        )),
+                                        ScalarExpression::Static(StaticScalarExpression::String(
+                                            StringScalarExpression::new(
+                                                QueryLocation::new_fake(),
+                                                "triggers_alarm"
+                                            ),
+                                        )),
+                                    ]),
+                                ))
+                            )
+                        ))
+                    ]
+                );
+
+                let else_if_branch = &conditional.get_branches()[1];
+                assert_eq!(
+                    else_if_branch.get_condition(),
+                    &LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "severity_text"
+                                ),)
+                            )])
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "WARN"),
+                        )),
+                        false,
+                    ))
+                );
+
+                assert_eq!(
+                    else_if_branch.get_expressions(),
+                    &[DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "somewhat"),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attributes"
+                                        ),
+                                    )),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "important"
+                                        ),
+                                    )),
+                                ]),
+                            ))
+                        )
+                    )),]
+                );
+
+                let else_branch = conditional.get_default_branch().unwrap();
+                assert_eq!(
+                    else_branch,
+                    &[DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "no"),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attributes"
+                                        ),
+                                    )),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "important"
+                                        ),
+                                    )),
+                                ]),
+                            ))
+                        )
+                    )),]
+                )
+            }
+            _ => panic!("Expected ConditionalDataExpression"),
+        };
+    }
+
+    #[test]
+    pub fn test_parse_if_else_expression_if_only() {
+        let query = r#"
+            logs | if (severity_text == "ERROR") { 
+                extend attributes["triggers_alarm"] = true
+            }
+        "#;
+
+        let result = KqlParser::parse(query);
+        assert!(result.is_ok());
+
+        let pipeline = result.unwrap().pipeline;
+        let first_expression = pipeline.get_expressions().first().unwrap();
+
+        match first_expression {
+            DataExpression::Conditional(conditional) => {
+                assert_eq!(conditional.get_branches().len(), 1);
+                assert!(conditional.get_default_branch().is_none());
+
+                // assert first branch parsed correctly
+                let if_branch = &conditional.get_branches()[0];
+                assert_eq!(
+                    if_branch.get_condition(),
+                    &LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        ScalarExpression::Source(SourceScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                                StaticScalarExpression::String(StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "severity_text"
+                                ),)
+                            )])
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
+                        )),
+                        false,
+                    ))
+                );
+
+                assert_eq!(
+                    if_branch.get_expressions(),
+                    &[DataExpression::Transform(TransformExpression::Set(
+                        SetTransformExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Boolean(
+                                BooleanScalarExpression::new(QueryLocation::new_fake(), true),
+                            )),
+                            MutableValueExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attributes"
+                                        ),
+                                    )),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "triggers_alarm"
+                                        ),
+                                    )),
+                                ]),
+                            ))
+                        )
+                    ))]
+                );
+            }
+            _ => panic!("Expected ConditionalDataExpression"),
+        };
+    }
 }
