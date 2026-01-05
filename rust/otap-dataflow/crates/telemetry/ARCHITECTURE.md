@@ -2,184 +2,98 @@
 
 ## Architecture
 
-OTAP-Dataflow uses a highly-configurable internal telemetry data
-plane.  We believe in supporting many alternatives because users have
-a wide range of observability requirements, therefore we present a
-number of orthogonal choices when configuring internal telemetry.
+OTAP-Dataflow uses a configurable internal telemetry data plane.  We
+support alternatives to enable a range of observability requirements.
+The internal telemetry SDK is designed for the engine to safely
+consume its own telemetry, and we intend for the self-hosted telemetry
+pipeline to be the standard configuration.
 
-OTAP-Dataflow supports a self-hosted internal diagnostics data path,
-which means it is designed to safely consume its own telemetry. While
-this requires care and attention, the engine contains within
-`otap-df-otap` all the building blocks to "be" an OpenTelemetry SDK.
+Consuming self-generated ("telemetry presents a potential a kind of
+feedback loop, situations where a telemetry pipeline creates pressure
+on itself and must not explode. 
 
-Consuming internal telemetry presents a potential for self-induced
-telemetry, a harmful form of self-dependency. The OTAP-Dataflow
-internal telemetry pipeline is rigorously safeguarded against these
-pitfalls through:
+## Internal telemetry receiver
 
-- OTAP-Dataflow components downstream of an ITR cannot be configured
-  to send to an ITR node to avoid feedback
-- Thread-local variable to avoid self-induced log events the global
-  logs collection threads (both OpenTelemetry SDK or OTAP-Dataflow
-  cases)
-- Routing to on-core OTAP-Dataflow pipeline for log events within an
-  engine thread avoids blocking the engine and isolates the cores 
-  that are able to process their own telemetry.
-- Option to fall back to no-op and raw LoggerProviders.
+The Internal Telemetry Receiver or "ITR" is an OTAP-Dataflow receiver
+component that produces telemetry from internal sources. An internal
+telemetry pipeline consists of one or more ITR components and any of
+the connected processor and exporter components reachable from ITR
+source nodes.
+
+To begin with, every OTAP-Dataflow comonent is configured with an
+internal telemetry SDK meant for primary instrumentation of that
+component. Components are required to exclusively use the internal
+telemetry SDK for self-diagnostics, as they are considered first party
+in this exchange.
+
+The internal telemetry receiver is the SDK's counterpart, making it
+second party as it is responsible for routing internal telemetry. The
+ITR cannot use the internal telemetry SDK itself, an invisible member
+of the pipeline. The ITR can be instrumented using third-party
+instrumentation (e.g., `tracing`, `log` crates) provided it can
+guarantee there is no potential for feedback (e.g., a single
+`tracing::info()` statement at startup).
+
+## Pitfall avoidance
+
+The OTAP-Dataflow engine is safeguarded against many self-induced
+telemetry pitfalls, as follows:
+
+- OTAP-Dataflow components reachable from an ITR cannot be configured
+  to send to an ITR node. This avoids a direct feedback cycle for
+  internal telemetry because the components cannot reach
+  themselves. For example, ITR and downstream components may be
+  configured for raw logging, no metrics, etc.
+- ITR instances share access to one or more threads with associated
+  async runtime. They use these dedicated threads to isolate internal
+  telemetry processes that use third-party instrumentation.
+- A thread-local variable is used to redirect third-party
+  instrumentation in dedicated internal telemetry threads. Internal
+  telemetry threads automatically configure a safe configuration.
+- Components under observation (non-ITR components) have internal
+  telemetry events routed queues in the OTAP-Dataflow pipeline on the
+  same core, this avoids blocking the engine. First-party
+  instrumentation will be handled on the CPU core that produced the
+  telemetry under normal circumstances. This isolates cores that are
+  able to process their own internal telemetry.
+- Option to fall back to no-op, a non-blocking global provider, and/or
+  raw logging.
+
+## OTLP-bytes first
 
 As a key design decision, the OTAP-Dataflow internal telemetry data
-path takes an OTLP-first approach. This is appropriate for the
-OTAP-Dataflow engine because OTLP bytes is one of the builtin
-`OtapPayload` formats, and as soon as we have an OTLP bytes encoding
-we are able to send to any OTAP-Dataflow pipeline. To obtain these
-bytes, we will build a custom [Tokio `tracing` Event][TOKIOEVENT] handler.
+path produces OTLP-bytes first. Because OTLP bytes is one of the
+builtin `OtapPayload` formats, once we have the OTLP bytes encoding of
+an event we are able to send to an OTAP-Dataflow pipeline. To obtain
+these bytes, we will build a custom [Tokio `tracing`
+Event][TOKIOEVENT] handler to produce OTLP bytes before dispatching to
+an internal pipeline, used (in different configurations) for first and
+third-party instrumentation.
 
 [TOKIOEVENT]: https://docs.rs/tracing/latest/tracing/struct.Event.html
 
-As a matter of last resort, we support directly formatting a message
-for the console directly from OTLP bytes, based on the
-`otap_df_pdata::views::logs::LogsDataView` and associated types, which
-supports zero-copy traversal of OTLP bytes. We refer to "Raw" logging
-as a handler for OTLP bytes that prints synchronously, direcly to the
-console. Raw logging is used before the OTAP-Dataflow engine starts,
-and it is provided as an option for internal telemetry collection since
-it always avoids self-dependency.
+## Raw logging
 
-There are two internal logs data paths:
+We support formatting events for direct printing to the console from
+OTLP bytes, based on `otap_df_pdata::views::logs::LogsDataView` and
+associated types, a zero-copy approach. We refer to this most-basic
+form of printing to the console as raw logging because it is a safe
+configuration early in the lifetime of a process.
 
-- Tokio `tracing` global subscriber: third-party log events, instrumentation
-  in code without access to an OTAP-Dataflow `EffectHandler`.
-- `EffectHandler` supports a direct logging interface for components, these
-  are routed using local- or shared-specific synchronization logic, and these
-  interfaces will introduce attributes specific to the OTAP-Dataflow engine.
-  
-We establish a global logs collection thread (potentially multiple of
-them). The global collection thread is used as the primary collection
-point for multi-threaded applications, for processing Tokio `tracing`
-events in threads not belonging to OTAP-Dataflow.
+## Routing
 
-An internal telemetry `TelemetryRouter` concept will be developed, supporting 
-per-component configuration of [`TelemetrySettings` as this type of runtime
-configuration is called in the OpenTelemetry Collector][TELSETTINGS].
+The two internal logs data paths are:
 
-[TELSETTINGS]: https://github.com/open-telemetry/opentelemetry-collector/blob/bf28fa76882d0d6e40457db8bfffb86a4efcdfbf/component/telemetry.go#L14
-
-TelemetrySettings will be configurable, allowing fine-grain control
-over logging behavior in the components.  The router is configurable
-with:
-
-- No-op logging
-- Raw logging
-- Global logging (to OTel SDK)
-- Global logging (to dedicated OTAP-Datflow)
-- Internal routing (to EffectHandler logging buffer)
-
-We use a thread-local variable for routing Tokio `tracing` events
-through the effective `EffectHandler` instance, for OTAP-Dataflow
-threads. This prevents third-party log events from impacting the
-engine directly.
-
-Whether the OpenTelemetry SDK is used or the ITR is used instead, the
-global logs collection thread itself configures a special bit in the
-thread-local state to avoid self-induced logging events within any
-thread that is a last-resort for telemetry export. These threads are
-forbidden from logging.
-
-While we can extend this design to other OpenTelemetry signals, this
-design is focused on logs. We anticipate that the global logs
-collection thread described here will only process logs, that we will
-use other separate solutions for other signals. However, we anticipate
-adding similar configurability for `MeterProvider` and
-`TracingProvider` in the future.
-
-## Telemetry Data Paths
-
-```
-                    OTAP-Dataflow Telemetry Routing
-                    
-┌─────────────────────────────────────────────────────────────────┐
-│                      Telemetry Sources                          │
-└─────────────────────────────────────────────────────────────────┘
-        │                                    │
-        │                                    │
-        ▼                                    ▼
-┌──────────────────┐              ┌──────────────────────┐
-│ Tokio Subscriber │              │  Effect Handler      │
-│ tracing::info!() │              │  otel_info!(effect)  │
-│ (3rd party libs) │              │  (OTAP components)   │
-└────────┬─────────┘              └──────────┬───────────┘
-         │                                   │
-         │ Global                            │ Per-thread
-         │ Subscriber                        │ Buffer
-         ▼                                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│              TracingLogRecord (LogRecordView)                   │
-│              Structured data capture (no formatting)            │
-└─────────────────────────────────────────────────────────────────┘
-         │                                   │
-         │                                   │
-         ▼                                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   StatefulOtlpEncoder                           │
-│                   Streaming OTLP bytes encoding                 │
-└─────────────────────────────────────────────────────────────────┘
-         │                                   │
-         │                                   │
-         ▼                                   ▼
-    OTLP Bytes                          OTLP Bytes
-    (per-event)                         (batched)
-         │                                   │
-         │                                   │
-         └─────────┬─────────────────────────┘
-                   │
-                   │ Thread-local routing
-                   ▼
-         ┌─────────────────────┐
-         │ 1. On-Core ITR?     │
-         │    (if configured)  │
-         └──────┬─────────┬────┘
-                │         │
-          YES   │         │ NO or overflow
-                │         │
-                ▼         ▼
-         ┌──────────┐   ┌────────────────────┐
-         │  On-Core │   │ 2. Global Thread?  │
-         │   ITR    │   │    (if configured) │
-         └────┬─────┘   └──────┬──────┬──────┘
-              │                │      │
-              │          YES   │      │ NO or full
-              │                │      │
-              ▼                ▼      ▼
-    ┌──────────────────┐  ┌────────────┐  ┌──────────────┐
-    │ OTAP Pipeline    │  │ Global     │  │ 3. Raw       │
-    │ • Batch          │  │ Collection │  │    Logger    │
-    │ • Transform      │  │ Thread     │  │  (console)   │
-    │ • Export         │  └─────┬──────┘  └──────────────┘
-    │ (Internal        │        │
-    │  Telemetry)      │        │
-    └──────────────────┘        │
-                                ▼
-                    ┌───────────────────────┐
-                    │   Destination         │
-                    ├───────────────────────┤
-                    │ • SDK Exporters       │
-                    │   - Console           │
-                    │   - OTLP              │
-                    │   - File              │
-                    │   - Custom            │
-                    │                       │
-                    │ • Dedicated OTAP      │
-                    │   Pipeline            │
-                    │   (Full dataflow      │
-                    │    processing)        │
-                    └───────────────────────┘
-
-Legend:
-  • On-Core ITR: Fast path, core isolation, preferred for engine threads
-  • Global Thread: Overflow/fallback, handles 3rd party + overflow
-  • Raw Logger: Ultimate fallback, synchronous console, never fails
-  • OTLP Bytes: Universal format, native to OTAP pipeline
-```
+- Third-party: Tokio `tracing` global subscriber: third-party log
+  events, instrumentation in code without access to an OTAP-Dataflow
+  `EffectHandler`. These are handled in a dedicated internal telemetry
+  thread.
+- First-party: components with a local or shared `EffectHandler` use
+  dedicated macros (e.g., `otel_info!(effect, "interesting thing")`),
+  these use the configured internal telemetry SDK and for ordinary
+  components (not ITR-downstream) these are routed through the ITR the
+  same core. These are always non-blocking APIs, the internal SDK must
+  drop logs instead of blocking the pipeline.
 
 ## Development plan
 
@@ -273,8 +187,6 @@ thread, a raw logger, or do nothing (dropping the internal log
 record).
 
 ## Example configuration
-
-T.B.D. needs development:
 
 ```yaml
 service:
