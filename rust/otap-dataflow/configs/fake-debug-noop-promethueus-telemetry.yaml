@@ -1,4 +1,3 @@
-# Shows the batch processor.
 settings:
   default_pipeline_ctrl_msg_channel_size: 100
   default_node_ctrl_msg_channel_size: 100
@@ -11,31 +10,15 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - batch
-        dispatch_strategy: round_robin
-    config:
-      traffic_config:
-        max_signal_count: 10000
-        max_batch_size: 100
-        signals_per_second: 100
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  batch:
-    kind: processor
-    plugin_urn: "urn:otel:batch:processor"
-    out_ports:
-      out_port:
-        destinations:
           - debug
         dispatch_strategy: round_robin
     config:
-      otap:
-        # At the rate set above (100/s), min_size=1000 would emit a batch
-        # every 10 seconds.
-        min_size: 1000
-        sizer: items
-      # The timeout causes 100/s, so we produce around 300 signals/batch.
-      flush_timeout: 3s
+      traffic_config:
+        max_signal_count: 1000
+        max_batch_size: 1000
+        signals_per_second: 1000
+        log_weight: 100
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
@@ -45,9 +28,27 @@ nodes:
           - noop
         dispatch_strategy: round_robin
     config:
-      verbosity: detailed
-      mode: signal
+      verbosity: basic
   noop:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
     config:
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
+      views:
+        - selector:
+            instrument_name: "logs.produced"
+          stream:
+            name: "otlp.logs.produced.count"
+            description: "Count of logs produced"
+    resource:
+      service.name: "fake-debug-noop-service"

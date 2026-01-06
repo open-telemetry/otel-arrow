@@ -4,17 +4,23 @@
 //! Shared configuration for gRPC-based clients.
 
 use crate::compression::CompressionMethod;
+use crate::otap_grpc::proxy::ProxyConfig;
 
 #[cfg(feature = "experimental-tls")]
 use crate::tls_utils;
+use hyper_util::rt::TokioIo;
 use otap_df_config::byte_units;
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsClientConfig;
 use serde::Deserialize;
+use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 use tonic::codec::CompressionEncoding;
+use tonic::transport::Channel;
 use tonic::transport::Endpoint;
+use tower::service_fn;
 
 /// Common configuration shared across gRPC clients.
 #[derive(Debug, Deserialize, Clone)]
@@ -32,6 +38,9 @@ pub struct GrpcClientSettings {
     pub concurrency_limit: usize,
 
     /// Timeout for establishing TCP connections.
+    ///
+    /// When a proxy is configured, this timeout covers the entire connection process,
+    /// including the TCP connection to the proxy and the HTTP CONNECT handshake.
     #[serde(default = "default_connect_timeout", with = "humantime_serde")]
     pub connect_timeout: Duration,
 
@@ -94,6 +103,16 @@ pub struct GrpcClientSettings {
     /// Internal Tower buffer size for the gRPC client.
     #[serde(default)]
     pub buffer_size: Option<usize>,
+
+    /// HTTP/HTTPS proxy configuration.
+    /// If not specified, proxy settings are read from environment variables:
+    /// - `HTTP_PROXY` / `http_proxy`: Proxy for HTTP connections
+    /// - `HTTPS_PROXY` / `https_proxy`: Proxy for HTTPS connections
+    /// - `ALL_PROXY` / `all_proxy`: Fallback proxy for all connections
+    /// - `NO_PROXY` / `no_proxy`: Comma-separated list of hosts to bypass proxy
+    #[serde(default)]
+    #[doc(hidden)]
+    pub proxy: Option<ProxyConfig>,
 }
 
 /// Error returned when building a gRPC [`Endpoint`] (including TLS/mTLS setup).
@@ -105,11 +124,15 @@ pub enum GrpcEndpointError {
 
     /// IO error while reading certificates/keys for TLS.
     #[error("tls configuration error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[from] io::Error),
 
     /// TLS support is not compiled in.
     #[error("TLS support is disabled; enable the `experimental-tls` feature")]
     TlsFeatureDisabled,
+
+    /// Proxy configuration or connection error.
+    #[error("proxy error: {0}")]
+    Proxy(#[from] crate::otap_grpc::proxy::ProxyError),
 }
 
 impl GrpcClientSettings {
@@ -130,6 +153,10 @@ impl GrpcClientSettings {
         &self,
         grpc_endpoint: &str,
     ) -> Result<Endpoint, tonic::transport::Error> {
+        // Note: TCP settings (nodelay, keepalive) set here on the Endpoint are used
+        // by tonic's default connector (non-proxy case).
+        // When using a proxy, we provide a custom connector which ignores these Endpoint
+        // settings but applies the same configuration manually to the socket.
         let mut endpoint = Endpoint::from_shared(grpc_endpoint.to_string())?
             .concurrency_limit(self.effective_concurrency_limit())
             .connect_timeout(self.connect_timeout)
@@ -196,6 +223,123 @@ impl GrpcClientSettings {
             }
         }
     }
+
+    /// Returns the effective proxy configuration.
+    ///
+    /// If explicit proxy config is provided, it's merged with environment variables
+    /// (explicit values take precedence). If no explicit config is provided, reads
+    /// from environment variables only.
+    ///
+    /// # Performance
+    ///
+    /// This method reads environment variables (`HTTP_PROXY`, etc.) every time it is called.
+    /// It is intended to be called during client initialization (startup), not per-request.
+    #[must_use]
+    fn effective_proxy_config(&self) -> ProxyConfig {
+        match &self.proxy {
+            Some(config) => config.clone().merge_with_env(),
+            None => ProxyConfig::from_env(),
+        }
+    }
+
+    /// Logs an informational message if a proxy is configured for a plain text (http://) endpoint.
+    ///
+    /// This warns users that the configured proxy must support HTTP CONNECT for non-TLS targets,
+    /// which is a common source of connection failures with some proxy servers.
+    pub(crate) fn log_proxy_info(&self) {
+        let proxy = self.effective_proxy_config();
+        if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
+            let proxy_str = proxy.to_string();
+            otap_df_telemetry::otel_info!(
+                "Proxy.Configured",
+                endpoint = self.grpc_endpoint.as_str(),
+                proxy = proxy_str.as_str(),
+                message = "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. If your proxy does not support CONNECT for HTTP targets, consider using a transparent proxy or SOCKS proxy instead."
+            );
+        }
+    }
+
+    fn make_proxy_connector(
+        &self,
+        proxy: Arc<ProxyConfig>,
+    ) -> impl tower::Service<
+        http::Uri,
+        Response = TokioIo<tokio::net::TcpStream>,
+        Error = io::Error,
+        Future = impl Send + 'static,
+    > + Send
+    + Clone
+    + 'static {
+        // Capture settings at creation time.
+        // Note: If GrpcClientSettings are modified after this connector is created,
+        // those changes will NOT be reflected in the connector.
+        let tcp_nodelay = self.tcp_nodelay;
+        let tcp_keepalive = self.tcp_keepalive;
+        let tcp_keepalive_interval = self.tcp_keepalive_interval;
+        let tcp_keepalive_retries = self.tcp_keepalive_retries;
+
+        service_fn(move |uri: http::Uri| {
+            let proxy = Arc::clone(&proxy);
+            async move {
+                // The connection timeout is handled by the tonic::Endpoint configuration
+                // (via .connect_timeout()), which wraps this connector service.
+                // We don't need an additional timeout here.
+                crate::otap_grpc::proxy::connect_tcp_stream_with_proxy_config(
+                    &uri,
+                    proxy.as_ref(),
+                    tcp_nodelay,
+                    tcp_keepalive,
+                    tcp_keepalive_interval,
+                    tcp_keepalive_retries,
+                )
+                .await
+                .map(TokioIo::new)
+                .map_err(io::Error::other)
+            }
+        })
+    }
+
+    async fn prepare_connection(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> Result<(Endpoint, Arc<ProxyConfig>), GrpcEndpointError> {
+        let mut endpoint = self.build_endpoint_with_tls().await?;
+        if let Some(timeout) = timeout_override {
+            endpoint = endpoint.timeout(timeout);
+        }
+        let proxy = Arc::new(self.effective_proxy_config());
+        Ok((endpoint, proxy))
+    }
+
+    /// Builds a gRPC channel, using proxy tunneling when configured.
+    #[doc(hidden)]
+    pub async fn connect_channel(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> Result<Channel, GrpcEndpointError> {
+        let (endpoint, proxy) = self.prepare_connection(timeout_override).await?;
+        if proxy.has_proxy() {
+            let connector = self.make_proxy_connector(proxy);
+            Ok(endpoint.connect_with_connector(connector).await?)
+        } else {
+            Ok(endpoint.connect().await?)
+        }
+    }
+
+    /// Builds a lazy gRPC channel, using proxy tunneling when configured.
+    #[doc(hidden)]
+    pub async fn connect_channel_lazy(
+        &self,
+        timeout_override: Option<Duration>,
+    ) -> Result<Channel, GrpcEndpointError> {
+        let (endpoint, proxy) = self.prepare_connection(timeout_override).await?;
+        if proxy.has_proxy() {
+            let connector = self.make_proxy_connector(proxy);
+            Ok(endpoint.connect_with_connector_lazy(connector))
+        } else {
+            Ok(endpoint.connect_lazy())
+        }
+    }
 }
 
 impl Default for GrpcClientSettings {
@@ -219,6 +363,7 @@ impl Default for GrpcClientSettings {
             #[cfg(feature = "experimental-tls")]
             tls: None,
             buffer_size: None,
+            proxy: None,
         }
     }
 }
@@ -272,6 +417,7 @@ const fn default_keep_alive_while_idle() -> bool {
 #[allow(missing_docs)]
 mod tests {
     use super::*;
+
     #[cfg(feature = "experimental-tls")]
     use tempfile::NamedTempFile;
 
@@ -704,5 +850,64 @@ mod tests {
 
         let endpoint = futures::executor::block_on(settings.build_endpoint_with_tls()).unwrap();
         let _ = endpoint;
+    }
+
+    #[test]
+    fn test_proxy_config_deserialization() {
+        let json = r#"{
+            "grpc_endpoint": "http://localhost:4317",
+            "proxy": {
+                "http_proxy": "http://proxy:3128",
+                "no_proxy": "localhost"
+            }
+        }"#;
+        let settings: GrpcClientSettings = serde_json::from_str(json).unwrap();
+        assert!(settings.proxy.is_some());
+        let proxy = settings.proxy.as_ref().unwrap();
+        assert_eq!(
+            proxy.http_proxy.as_ref().map(|u| u.expose()),
+            Some("http://proxy:3128")
+        );
+        assert_eq!(proxy.no_proxy.as_deref(), Some("localhost"));
+    }
+
+    #[test]
+    fn test_effective_proxy_config_preserves_explicit() {
+        let settings = GrpcClientSettings {
+            grpc_endpoint: "http://localhost:4317".to_string(),
+            proxy: Some(ProxyConfig {
+                http_proxy: Some("http://explicit-proxy:3128".into()),
+                ..Default::default()
+            }),
+            ..GrpcClientSettings::default()
+        };
+
+        let effective = settings.effective_proxy_config();
+        // Even if env vars are set, explicit should take precedence
+        assert_eq!(
+            effective.http_proxy.as_ref().map(|u| u.expose()),
+            Some("http://explicit-proxy:3128")
+        );
+    }
+
+    #[test]
+    fn test_has_proxy_logic() {
+        let config = ProxyConfig {
+            http_proxy: Some("http://proxy".into()),
+            ..Default::default()
+        };
+        assert!(config.has_proxy());
+
+        let config = ProxyConfig {
+            https_proxy: Some("http://proxy".into()),
+            ..Default::default()
+        };
+        assert!(config.has_proxy());
+
+        let config = ProxyConfig {
+            all_proxy: Some("http://proxy".into()),
+            ..Default::default()
+        };
+        assert!(config.has_proxy());
     }
 }

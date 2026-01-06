@@ -85,7 +85,7 @@ based on the test suite's YAML configuration.
 The following sections walk through the anatomy of a plugin and how to implement
 each type.
 
-Reporting Strategies have additional considerations, and are covered seperately
+Reporting Strategies have additional considerations, and are covered separately
 in the [Reports Guide](./reports.md).
 
 ---
@@ -175,7 +175,7 @@ Every plugin class can define a `PLUGIN_META` attribute with the following field
 | `supported_contexts` | List of context types the plugin supports                      |
 | `installs_hooks`     | Hook types the plugin automatically installs (if any)          |
 | `yaml_example`       | Example YAML block showing how to use the plugin               |
-| `cli_flags`          | List of additional cli flags to inject into the argpase parser |
+| `cli_flags`          | List of additional cli flags to inject into the argparse parser |
 
 This metadata is used by documentation generators, validation tools, and helps
 developers quickly understand how to use the plugin.
@@ -279,7 +279,7 @@ scope.
 | `BaseContext`                    | Base Class for all Context Types      | Provides core features: logging, telemetry, runtime info                    |
 | `FrameworkElementContext`        | Inherited Class suite/step/scenario   | Base class for contexts created for Suite, Scenario, Steps main execution   |
 | `SuiteContext`                   | Indirect access by any descendant ctx | Root CTX instance in the hierarchy, holds shared runtimes, telemetry, etc   |
-| `ScendarioContext`               | Indirect access by any descendant ctx | Provides access to the test scenario defition                               |
+| `ScenarioContext`                | Indirect access by any descendant ctx | Provides access to the test scenario definition                             |
 | `StepContext`                    | Passed to All (non-hook) Strategies   | Provides access to the step, any related component, and access to ancestors |
 | `ComponentHookContext`           | Passed to Component-level hooks       | Includes access to the component being manipulated                          |
 | `FrameworkElementHookContext`    | Passed to Suite/scenario/step hooks   | Includes access to the element (suite, scenario, step) being manipulated    |
@@ -290,7 +290,7 @@ like so:
 ```shell
 |_ SuiteContext(FrameworkElementContext)
     |_ FrameworkElementHookContext(BaseContext) # If hook installed on Suite
-    |_ ScendarioContext(FrameworkElementContext)
+    |_ ScenarioContext(FrameworkElementContext)
         |_ FrameworkElementHookContext(BaseContext) # If hook installed on Scenario
         |_ StepContext(FrameworkElementContext)
             |_ FrameworkElementHookContext(BaseContext) # If hook installed on Step
@@ -306,7 +306,7 @@ The BaseContext provides the following useful methods on all Context Types:
 - get_component_by_name(name) - Retrieves named component from the suite object
 - get_suite() - Retrieves root test suite object.
 - get_metadata() - Returns the metadata dictionary for the context (merged with
-    it's ancestors)
+    its ancestors)
 - record_event(event_name, timestamp_unix_nanos, **kwargs) - Records a telemetry
     event enriched with context metadata.
 - get_logger(logger_name) - Returns a LoggerAdapter with context metadata injected.
