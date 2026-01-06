@@ -859,4 +859,68 @@ mod tests {
 
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_field_aliases_in_log_record_processing() {
+        let create_request = || {
+            ExportLogsServiceRequest::new().with_resource_logs(ResourceLogs::new().with_scope_logs(
+                ScopeLogs::new().with_log_records(vec![
+                    LogRecord::new()
+                        .with_severity_text("Info".into())
+                        .with_severity_number(9),
+                    LogRecord::new()
+                        .with_severity_text("Warning".into())
+                        .with_severity_number(13),
+                ]),
+            ))
+        };
+
+        let pipeline_alias = parse_kql_query_into_pipeline(
+            "source | where severity_text == 'Info' and severity_number == 9",
+            None,
+        )
+        .unwrap();
+        let (result_alias, _) = process_export_logs_service_request_using_pipeline(
+            None,
+            &pipeline_alias,
+            RecordSetEngineDiagnosticLevel::Error,
+            create_request(),
+        )
+        .unwrap();
+
+        let pipeline_canonical = parse_kql_query_into_pipeline(
+            "source | where SeverityText == 'Info' and SeverityNumber == 9",
+            None,
+        )
+        .unwrap();
+        let (result_canonical, _) = process_export_logs_service_request_using_pipeline(
+            None,
+            &pipeline_canonical,
+            RecordSetEngineDiagnosticLevel::Error,
+            create_request(),
+        )
+        .unwrap();
+
+        let alias_logs = &result_alias.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let canonical_logs = &result_canonical.unwrap().resource_logs[0].scope_logs[0].log_records;
+
+        assert_eq!(alias_logs.len(), 1);
+        assert_eq!(canonical_logs.len(), 1);
+        assert_eq!(
+            alias_logs[0].severity_text.as_ref().unwrap().get_value(),
+            canonical_logs[0]
+                .severity_text
+                .as_ref()
+                .unwrap()
+                .get_value()
+        );
+        assert_eq!(
+            alias_logs[0].severity_number.as_ref().unwrap().get_value(),
+            canonical_logs[0]
+                .severity_number
+                .as_ref()
+                .unwrap()
+                .get_value()
+        );
+    }
 }
