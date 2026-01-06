@@ -135,6 +135,16 @@ impl OtlpProtoMessage {
             Self::Traces(_) => SignalType::Traces,
         }
     }
+
+    /// Encode this message as bytes.
+    pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
+        use prost::Message;
+        match self {
+            Self::Logs(l) => l.encode(out),
+            Self::Metrics(m) => m.encode(out),
+            Self::Traces(t) => t.encode(out),
+        }
+    }
 }
 
 fn logs_num_items(logs: &opentelemetry::logs::v1::LogsData) -> usize {
