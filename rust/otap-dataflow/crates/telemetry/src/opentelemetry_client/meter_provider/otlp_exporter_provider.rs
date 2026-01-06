@@ -16,11 +16,11 @@ use otap_df_config::pipeline::service::telemetry::metrics::readers::{
 use crate::error::Error;
 
 /// Provider for OTLP exporter configuration.
-pub struct OtlpExporterProvider {}
+pub(crate) struct OtlpExporterProvider {}
 
 impl OtlpExporterProvider {
     /// Configure the OTLP exporter for the given MeterProviderBuilder.
-    pub fn configure_otlp_metric_exporter(
+    pub(crate) fn configure_otlp_metric_exporter(
         mut sdk_meter_builder: MeterProviderBuilder,
         otlp_config: &OtlpExporterConfig,
         interval: &std::time::Duration,
@@ -43,7 +43,6 @@ impl OtlpExporterProvider {
             .build();
         sdk_meter_builder = sdk_meter_builder.with_reader(reader);
 
-        //sdk_meter_builder = sdk_meter_builder.with_periodic_exporter(exporter);
         Ok((sdk_meter_builder, runtime))
     }
 
@@ -106,11 +105,17 @@ impl OtlpExporterProvider {
         otlp_config: &OtlpExporterConfig,
         protocol: Protocol,
     ) -> Result<opentelemetry_otlp::MetricExporter, Error> {
-        let exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
+        let mut builder = opentelemetry_otlp::MetricExporter::builder().with_http();
+        builder = builder
             .with_protocol(protocol)
             .with_endpoint(&otlp_config.endpoint)
-            .with_temporality(Self::to_sdk_temporality(&otlp_config.temporality))
+            .with_temporality(Self::to_sdk_temporality(&otlp_config.temporality));
+
+        if let Some(_tls_config) = &otlp_config.tls {
+            // TODO: Add TLS configuration for HTTP exporter.
+        }
+
+        let exporter = builder
             .build()
             .map_err(|e| Error::ConfigurationError(e.to_string()))?;
         Ok(exporter)
