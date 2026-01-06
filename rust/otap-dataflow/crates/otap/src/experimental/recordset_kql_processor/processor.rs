@@ -8,9 +8,8 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use data_engine_recordset_otlp_bridge::{
-    BridgeError, BridgeOptions,
-    process_protobuf_otlp_export_logs_service_request_using_registered_pipeline,
-    register_pipeline_for_kql_query,
+    BridgeError, BridgeOptions, BridgePipeline, parse_kql_query_into_pipeline,
+    process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -39,10 +38,7 @@ pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = Proces
 /// KQL processor that applies KQL queries to telemetry data
 pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
-
-    // Note! library uses a static for registration so all we store is a usize,
-    // TODO reconcile, otherwise memory management is unclear.
-    kql_query_id: usize,
+    pipeline: BridgePipeline,
 }
 
 impl RecordsetKqlProcessor {
@@ -52,8 +48,8 @@ impl RecordsetKqlProcessor {
         config: RecordsetKqlProcessorConfig,
     ) -> Result<Self, ConfigError> {
         let bridge_options = Self::parse_bridge_options(&config.bridge_options)?;
-        let kql_query_id =
-            register_pipeline_for_kql_query(&config.query, bridge_options).map_err(|errors| {
+        let pipeline =
+            parse_kql_query_into_pipeline(&config.query, bridge_options).map_err(|errors| {
                 ConfigError::InvalidUserConfig {
                     error: format!("Failed to parse KQL query: {:?}", errors),
                 }
@@ -65,10 +61,7 @@ impl RecordsetKqlProcessor {
             message = "KQL processor initialized successfully"
         );
 
-        Ok(Self {
-            config,
-            kql_query_id,
-        })
+        Ok(Self { config, pipeline })
     }
 
     /// Parse bridge options from JSON value
@@ -168,8 +161,8 @@ impl RecordsetKqlProcessor {
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
         let (included_records, _) =
-            process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
-                self.kql_query_id,
+            process_protobuf_otlp_export_logs_service_request_using_pipeline(
+                &self.pipeline,
                 RecordSetEngineDiagnosticLevel::Warn,
                 &bytes,
             )
@@ -209,17 +202,17 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     Self::parse_bridge_options(&new_config.bridge_options)
                                         .ok()
                                         .flatten();
-                                match register_pipeline_for_kql_query(
+                                match parse_kql_query_into_pipeline(
                                     &new_config.query,
                                     bridge_options,
                                 ) {
-                                    Ok(kql_query_id) => {
+                                    Ok(pipeline) => {
                                         otap_df_telemetry::otel_error!(
                                             "Processor.Reconfigured",
                                             processor = "kql",
                                         );
 
-                                        self.kql_query_id = kql_query_id;
+                                        self.pipeline = pipeline;
                                         self.config = new_config;
                                     }
                                     Err(errors) => {
