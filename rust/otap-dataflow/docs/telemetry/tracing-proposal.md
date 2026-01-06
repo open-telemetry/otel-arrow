@@ -1,5 +1,8 @@
 # Proposal: OpenTelemetry-based Tracing for our dataflow engine
 
+Status: Experimental - Please do not use this proposal at this stage. This
+document will most likely be deeply updated. 
+
 ## Problem Statement
 
 Modern observability pipelines are increasingly complex. In our system, these
