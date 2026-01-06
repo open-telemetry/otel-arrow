@@ -10,7 +10,7 @@ implementing the entire in-process pipeline using Apache Arrow's columnar
 format, targeting substantial improvements in data processing efficiency while
 maintaining the network efficiency gains from Phase 1.
 
-The dataflow engine (df-engine), implemented in Rust, provides predictable
+The OTel Arrow dataflow engine, implemented in Rust, provides predictable
 performance characteristics and efficient resource utilization across varying
 load conditions. This columnar approach is expected to offer substantial
 advantages over traditional row-oriented telemetry pipelines in terms of CPU
@@ -31,7 +31,8 @@ following specifications:
 
 This consistent, high-performance environment ensures reproducible results and
 allows for comprehensive testing across various CPU core configurations (1, 4,
-and 8 cores etc.) by constraining the df-engine to specific core allocations.
+and 8 cores etc.) by constraining the OTel Arrow dataflow engine to specific
+core allocations.
 
 ### Performance Metrics
 
@@ -81,7 +82,7 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 | 1000/batch | TBD | TBD |
 | 10000/batch | TBD | TBD |
 
-This represents the optimal scenario where the df-engine operates with its
+This represents the optimal scenario where the dataflow engine operates with its
 native protocol end-to-end, eliminating protocol conversion overhead. Results
 are shown for a single CPU core to demonstrate baseline efficiency and the
 impact of batch size on resource utilization. For hardware scaling
@@ -136,9 +137,9 @@ varying batch sizes is covered in the Standard Load Performance section.
 | 16 Cores  | TBD                          | TBD               | TBD          |
 
 Saturation testing validates the engine's stability under extreme load. The
-df-engine exhibits well-defined behavior when operating at capacity, maintaining
-predictable performance without degradation or instability. These results
-demonstrate the maximum throughput achievable with different CPU core
+dataflow engine exhibits well-defined behavior when operating at capacity,
+maintaining predictable performance without degradation or instability. These
+results demonstrate the maximum throughput achievable with different CPU core
 allocations. The **Throughput / Core** metric provides a key efficiency
 indicator for capacity planning.
 
@@ -154,7 +155,7 @@ capabilities enable efficient handling of telemetry data at scale.
 
 #### Thread-Per-Core Design
 
-The df-engine supports a configurable runtime execution model, using a
+The dataflow engine supports a configurable runtime execution model, using a
 **thread-per-core architecture** that eliminates traditional concurrency
 overhead. This design allows:
 
