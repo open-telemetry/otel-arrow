@@ -41,3 +41,7 @@ project, but a shared reference for how to introduce and evolve telemetry:
 For implementation details of the telemetry SDK, including macros, schema
 handling, and the dataflow for metric collection, see the
 [telemetry implementation description](/crates/telemetry/README.md).
+
+## Instrumentation Validation, Coverage, and CI Integration
+
+TBD

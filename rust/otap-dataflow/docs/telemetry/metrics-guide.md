@@ -47,9 +47,10 @@ ObserveUpDownCounter and Gauge both report values that can rise or fall, but
 they aggregate differently. A Gauge uses last-value aggregation, while an
 ObserveUpDownCounter is a sampled cumulative value that aggregates by summing
 deltas over time. In this project, ObserveUpDownCounter is used for observed
-totals like `pipeline.metrics.memory_usage` and `tokio.runtime.task_active_count`,
-while Gauge is used for instantaneous values like `pipeline.metrics.cpu_utilization`
-and `channel.receiver.capacity`.
+totals like `otelcol.pipeline.metrics.memory_usage` and
+`otelcol.tokio.runtime.task_active_count`, while Gauge is used for instantaneous
+values like `otelcol.pipeline.metrics.cpu_utilization` and
+`channel.receiver.capacity`.
 
 A *metric set* is a collection of metrics related to a single entity being
 observed. That entity often belongs to a larger system of entities, so metric
@@ -64,11 +65,19 @@ units are mandatory. Units must follow UCUM-like conventions and use braces
 notation for semantic units (e.g. `{batch}`, `{signal}`). See the [Units](#units)
 section below for details.
 
-Metric set naming should follow the pattern `<entity>` or
-`<entity>.<subentity>` when applicable. Examples of metric sets in this project:
-- `pipeline`, `node`
-- `node.retry`, `node.batch`, `node.otlp_receiver`, `node.otlp_exporter`, ...
-- `channel.sender`, `channel.receiver`
+Metric set naming should follow the pattern `otelcol.<entity>` or
+`otelcol.<entity>.<subentity>` when applicable. Examples of metric sets in this
+project:
+- For generic entities:
+  - `otelcol.pipeline`, `otelcol.node`
+  - `otelcol.channel.sender`, `otelcol.channel.receiver`
+  - ...
+- For specific node types:
+  - `node.retry`, 
+  - `node.batch`, 
+  - `node.otlp_receiver`, 
+  - `node.otlp_exporter`, 
+  - ...
 
 ## Attributes and Entity Context
 
@@ -112,17 +121,19 @@ When context is useful but high-cardinality, normalize it:
 ## Units
 
 Units must be specified for every metric as part of its metadata. They must
-follow UCUM-like conventions and use braces notation for semantic units.
+follow UCUM-like conventions and use braces notation for annotation units.
 
 The most common units in this project are:
-- `By`: bytes
-- `s`: seconds (preferred over `ms` for time durations)
-- `{batch}`: batches of telemetry signals
-- `{signal}`: individual telemetry signals (metrics, logs, traces)
-- `{metric}`: individual metric data points
-- `{log}`: individual log records
-- `{event}`: individual event records (log with an event name)
-- `{span}`: individual trace spans
+- Named units:
+  - `By`: bytes
+  - `s`: seconds (preferred over `ms` for time durations)
+- Annotation units:
+  - `{batch}`: batches of telemetry signals
+  - `{signal}`: individual telemetry signals (metrics, logs, traces)
+  - `{metric}`: individual metric data points
+  - `{log}`: individual log records
+  - `{event}`: individual event records (log with an event name)
+  - `{span}`: individual trace spans
 
 ## Performance Considerations
 
@@ -140,8 +151,8 @@ Metric sets are optimized for low overhead:
 More details about the telemetry SDK implementation are in
 [crates/telemetry](../../crates/telemetry/README.md).
 
-## ToDo
+## ToDo/Open Questions
 
-- Add dynamic bounded attribute support based on closed sets (enums). For 
-  example, `pipeline.state` with values `starting|running|stopped` or
-  `signal.type` with values `metric|log|trace`.
+Should we support dynamic bounded attribute based on closed sets (enums)? For 
+example, `pipeline.state` with values `starting|running|stopped` or`signal.type`
+with values `metric|log|trace`.

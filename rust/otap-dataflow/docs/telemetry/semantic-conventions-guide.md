@@ -192,7 +192,7 @@ Examples:
 ```
 http.request.start
 pipeline.config.reload
-connection.closed
+connection.close
 ```
 
 ---
