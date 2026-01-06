@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::borrow::Cow;
-use std::collections::HashMap;
 use bytes::{BufMut, Bytes, BytesMut};
 use otap_df_pdata::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType},
@@ -11,6 +9,8 @@ use otap_df_pdata::views::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
+use std::collections::HashMap;
 
 use super::config::{Config, SchemaConfig};
 
@@ -123,7 +123,7 @@ pub struct Transformer {
 #[allow(clippy::print_stdout)]
 impl Transformer {
     /// Create a new Transformer with the given configuration
-    /// 
+    ///
     /// # Panics
     /// Panics if the schema configuration contains invalid field names
     #[must_use]
@@ -153,7 +153,7 @@ impl Transformer {
             for scope_logs in resource_logs.scopes() {
                 for log_record in scope_logs.log_records() {
                     record_map.clear();
-                    
+
                     // normally config should be validated to avoid duplicate keys, but if that
                     // ever happens for any reason such as a bug, then the logic below ensures that
                     // the lowest level fields override the higher level ones.
@@ -249,39 +249,31 @@ impl Transformer {
     #[inline]
     fn extract_field_value<R: LogRecordView>(field: LogRecordField, log_record: &R) -> Value {
         match field {
-            LogRecordField::TimeUnixNano => {
-                Value::String(Self::format_timestamp(log_record.time_unix_nano().unwrap_or(0)))
-            }
-            LogRecordField::ObservedTimeUnixNano => {
-                Value::String(Self::format_timestamp(log_record.observed_time_unix_nano().unwrap_or(0)))
-            }
-            LogRecordField::TraceId => {
-                log_record
-                    .trace_id()
-                    .map(|id| Value::String(Self::bytes_to_hex(id)))
-                    .unwrap_or(Value::Null)
-            }
-            LogRecordField::SpanId => {
-                log_record
-                    .span_id()
-                    .map(|id| Value::String(Self::bytes_to_hex(id)))
-                    .unwrap_or(Value::Null)
-            }
-            LogRecordField::Flags => {
-                Value::Number(log_record.flags().unwrap_or(0).into())
-            }
+            LogRecordField::TimeUnixNano => Value::String(Self::format_timestamp(
+                log_record.time_unix_nano().unwrap_or(0),
+            )),
+            LogRecordField::ObservedTimeUnixNano => Value::String(Self::format_timestamp(
+                log_record.observed_time_unix_nano().unwrap_or(0),
+            )),
+            LogRecordField::TraceId => log_record
+                .trace_id()
+                .map(|id| Value::String(Self::bytes_to_hex(id)))
+                .unwrap_or(Value::Null),
+            LogRecordField::SpanId => log_record
+                .span_id()
+                .map(|id| Value::String(Self::bytes_to_hex(id)))
+                .unwrap_or(Value::Null),
+            LogRecordField::Flags => Value::Number(log_record.flags().unwrap_or(0).into()),
             LogRecordField::SeverityNumber => {
                 Value::Number((log_record.severity_number().unwrap_or(0) as i64).into())
             }
-            LogRecordField::SeverityText => {
-                Value::String(Self::str_to_string(log_record.severity_text().unwrap_or(b"")))
-            }
-            LogRecordField::Body => {
-                log_record
-                    .body()
-                    .map(|b| Value::String(Self::extract_string_value(&b)))
-                    .unwrap_or(Value::Null)
-            }
+            LogRecordField::SeverityText => Value::String(Self::str_to_string(
+                log_record.severity_text().unwrap_or(b""),
+            )),
+            LogRecordField::Body => log_record
+                .body()
+                .map(|b| Value::String(Self::extract_string_value(&b)))
+                .unwrap_or(Value::Null),
         }
     }
 
@@ -318,7 +310,9 @@ impl Transformer {
     /// Convert AnyValueView to serde_json::Value
     fn convert_any_value<'a, V: AnyValueView<'a>>(value: &V) -> Value {
         match value.value_type() {
-            ValueType::String => Value::String(Self::str_to_string(value.as_string().unwrap_or(b""))),
+            ValueType::String => {
+                Value::String(Self::str_to_string(value.as_string().unwrap_or(b"")))
+            }
             ValueType::Int64 => Value::Number(value.as_int64().unwrap_or(0).into()),
             ValueType::Double => serde_json::Number::from_f64(value.as_double().unwrap_or(0.0))
                 .map(Value::Number)
@@ -381,8 +375,8 @@ mod tests {
     };
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use prost::Message;
-    use std::collections::HashMap;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn create_test_config() -> Config {
         use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
@@ -853,7 +847,7 @@ mod tests {
         let result = transformer.convert_to_log_analytics(&logs_view);
 
         assert_eq!(result.len(), 2);
-        
+
         let json1: Value = serde_json::from_slice(&result[0]).unwrap();
         assert_eq!(json1["Body"], "first");
         assert_eq!(json1["Severity"], "INFO");
@@ -866,9 +860,7 @@ mod tests {
     #[test]
     fn test_empty_body_string() {
         let mut config = create_test_config();
-        config.api.schema.log_record_mapping = HashMap::from([
-            ("body".into(), json!("Body")),
-        ]);
+        config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
 
         let transformer = Transformer::new(&config);
 
@@ -902,7 +894,10 @@ mod tests {
         assert_eq!(Transformer::bytes_to_hex(&[]), "");
         assert_eq!(Transformer::bytes_to_hex(&[0x00]), "00");
         assert_eq!(Transformer::bytes_to_hex(&[0xff]), "ff");
-        assert_eq!(Transformer::bytes_to_hex(&[0x12, 0x34, 0xab, 0xcd]), "1234abcd");
+        assert_eq!(
+            Transformer::bytes_to_hex(&[0x12, 0x34, 0xab, 0xcd]),
+            "1234abcd"
+        );
     }
 
     #[test]
