@@ -23,19 +23,6 @@ Primary references:
 Contributors are expected to **consult the upstream OTel documentation**
 whenever ambiguity exists or when introducing new semantics.
 
----
-
-## Table of Contents
-
-1. General Naming Conventions
-2. Metric Naming and Semantics
-3. Units Guidelines
-4. Events and Attributes
-5. Examples and Best Practices
-6. Contributor Checklist
-
----
-
 ## 1. General Naming Conventions
 
 These rules apply to **metric names**, **attribute names**, **event names**, and

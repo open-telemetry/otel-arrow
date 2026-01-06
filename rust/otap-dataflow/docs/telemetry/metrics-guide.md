@@ -41,8 +41,8 @@ telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
 - Gauge: instantaneous measurements (last-value), used for capacity,
   utilization, queue depth.
 
-Note: Histograms (distributions such as latency or batch size) are not yet
-supported, but will be added soon.
+Histogram support status is tracked in
+[Implementation Gaps](implementation-gaps.md).
 
 ObserveUpDownCounter and Gauge both report values that can rise or fall, but
 they aggregate differently. A Gauge uses last-value aggregation, while an
@@ -98,34 +98,14 @@ project:
 
 ## Attributes and Entity Context
 
-Stable attributes identify an entity and do not change during its lifetime.
-An attribute set is the fixed collection of those stable attributes attached to
-all metrics in a metric set. Attribute sets are derived from the entity model
-and may compose multiple entity identities when the observed entity is part of
-a larger system (for example, resource + engine + pipeline + node + channel).
+Metric attributes MUST follow the project-wide attribute policy in
+[Attributes Guide](attributes-guide.md).
 
-Before adding an attribute, ask:
-- If I aggregate across this attribute, does the result still make sense?
-- Is the value space bounded and known at entity creation time?
+Metric-specific rule: attributes attached to core system metrics MUST remain
+meaningful under aggregation.
 
-If aggregation destroys meaning or the value space is unbounded, the attribute
-is mis-modeled for core/system metrics.
-
-While technically possible, our internal SDK intentionally makes the
-specification of non-entity and unbounded attributes difficult in order to
-discourage their use.
-
-`user_id`, `request_id`, and `url_path` are examples of prohibited metric set
-attributes. These types of attributes are named dynamic attributes in this
-project.
-
-### Normalization Patterns
-
-When context is useful but high-cardinality, normalize it:
-- URL path -> route template
-- SQL query -> normalized fingerprint
-- IP address -> prefix or bucket
-- Error message -> error class or code
+Normalization patterns are documented in
+[Attributes Guide](attributes-guide.md).
 
 ## Units
 

@@ -4,6 +4,15 @@ This guide defines how to add **system events** for the OTAP engine. It
 complements the [semantic conventions guide](semantic-conventions-guide.md) and
 the [entity model](entity-model.md).
 
+## Related guides
+
+- Attribute policy (including attributes vs event body guidance):
+  [Attributes Guide](attributes-guide.md)
+- Stability model and compatibility rules for event schemas:
+  [Stability and Compatibility Guide](stability-compatibility-guide.md)
+- Sensitive data and stacktrace gating:
+  [Security and Privacy Guide](security-privacy-guide.md)
+
 ## What Events Are For
 
 Events are discrete occurrences that benefit from context and correlation but do
@@ -26,6 +35,9 @@ In this project, events are preferred to unstructured logs. Event names are
 codified (see below), and their attributes consist of the attributes of the
 relevant entity or entities (stable context), combined with event-specific
 attributes (dynamic context).
+
+Treat event names as schema identifiers. Evolution rules are defined in
+[Stability and Compatibility Guide](stability-compatibility-guide.md).
 
 ## Event Naming
 
@@ -67,9 +79,10 @@ Optionally, add occurrence-specific attributes (dynamic context):
 
 - Prefer enums or stable categorical values whenever possible.
 - Use standard exception attributes for errors (`exception.type`,
-  `exception.message`). Report `exception.stacktrace` only when the log level is
-  `debug` or lower.
-- Avoid including sensitive data (passwords, emails, non-sanitized URLs).
+  `exception.message`). Stacktrace gating rules are in
+  [Security and Privacy Guide](security-privacy-guide.md).
+- Follow [Security and Privacy Guide](security-privacy-guide.md) to avoid
+  sensitive data.
 
 ## Severity and Placement
 

@@ -47,6 +47,9 @@ API, backward compatibility, semantic clarity, and versioning discipline are
 essential. Changes to telemetry should be intentional, reviewed, and aligned
 with the overall observability model.
 
+See the [Stability and Compatibility Guide](stability-compatibility-guide.md)
+for the stability model, compatibility rules, and deprecation process.
+
 ## Goals
 
 Internal telemetry MUST enable:
@@ -168,10 +171,8 @@ This project integrates with **Weaver** to:
 An administrative endpoint exposes the live, resolved schema at runtime to
 support inspection, debugging, and tooling integration.
 
-**Security note**: the schema endpoint SHOULD be disabled by default in
-production or protected with authentication and authorization, or only exposed
-as a private API, because it can reveal component topology and identifiers
-useful for reconnaissance.
+Security and deployment guidance for this endpoint is in the
+[Security and Privacy Guide](security-privacy-guide.md).
 
 ### 7. Automated client SDK generation (longer term)
 
@@ -189,22 +190,11 @@ This is considered a strategic investment and will be introduced incrementally.
 
 ### 8. Telemetry as a stable interface
 
-Telemetry is treated as a **stable interface of the system**, subject to the
-same discipline as public APIs.
+Telemetry is treated as a **stable interface of the system**.
+Refer to [Stability and Compatibility Guide](stability-compatibility-guide.md).
 
-Changes must be:
-
-* intentional,
-* reviewed,
-* backward-compatible when possible,
-* and clearly versioned when breaking changes are unavoidable.
-
-The goal is to make telemetry reliable for operators, tooling, and downstream
-consumers over the lifetime of the project.
-
-**Important note**: This project is still in early development. A lot of goals
-and principles are not yet fully implemented. Expect changes and refinements
-over time.
+For items that are documented but not yet implemented or enforced, see
+[Implementation Gaps](implementation-gaps.md).
 
 ## Runtime Safety and Failure Behavior
 
@@ -238,8 +228,9 @@ The naming conventions, units and general guidelines are in the
 before introducing new telemetry.**
 
 The guides below provide a framework for defining **good, consistent, secure,
-and actionable signals**. They are not an exhaustive list of every signal in the
-project, but a shared reference for how to introduce and evolve telemetry:
+and actionable signals**. They are not an exhaustive list of every signal and
+attribute in the project, but a shared reference for how to introduce and evolve
+telemetry:
 
 - [Attributes Guide](attributes-guide.md)
 - [System Metrics Guide](metrics-guide.md)

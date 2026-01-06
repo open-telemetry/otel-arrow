@@ -45,10 +45,6 @@ Attributes (resource level):
 - `service.name`: The name of the service (e.g. "otap_engine").
 - `service.instance.id`: A unique identifier for the service instance.
 
-Note: `process.instance.id` is currently used in the project but will be
-replaced by `service.instance.id` in the future. `service.name` SHOULD be set
-for all emitted telemetry.
-
 ### Host
 
 The physical or virtual machine where the OTAP Engine is running.
@@ -57,10 +53,6 @@ Attributes (resource level):
 
 - `host.id`: A unique identifier for the host machine.
 - `host.name`: The hostname of the machine.
-
-Note: `host.id` SHOULD be set when available as a unique host identifier, and
-`host.name` SHOULD also be set for human readability. Do not drop `host.id`
-when adding `host.name`.
 
 ### Container
 
@@ -85,13 +77,9 @@ The OTAP pipeline execution engine running in the process.
 
 Attributes:
 
-- `numa_node.logical_number` (was named numa.node.id): NUMA node identifier.
+- `otelcol.numa_node.logical_number`: NUMA node identifier.
 - `cpu.logical_number` (was named core.id): Core CPU identifier.
 - `thread.id`: Thread identifier.
-
-Note: `numa.node.id` and `core.id` are currently used in the project but will be
-replaced by `numa_node.logical_number` and `cpu.logical_number` in the future.
-`thread.id` is not yet set but will be added later.
 
 ### Pipeline
 
@@ -144,10 +132,6 @@ The `otelcol.channel.id` format depends on the channel kind:
 - Control Channel: `control:{node.id}`
 - PData Channel: `pdata:{source_node.id}:{out_port}`
 
-Notes: `otelcol.channel.sender.out.port` is not yet set but will be added later.
-The `otelcol.channel.id` format is not yet enforced but will be standardized in
-the future.
-
 ## Stability and Identity Guarantees
 
 Unless noted otherwise, identifiers are stable for the lifetime of their entity
@@ -159,8 +143,8 @@ and may change on restart or reconfiguration.
   change if the host is renamed.
 - `container.id`: Stable for the container lifetime.
 - `process.pid`, `process.creation.time`: Stable for the process lifetime.
-- `numa_node.logical_number`, `cpu.logical_number`: Stable for a host boot; may
-  change with CPU or NUMA reconfiguration.
+- `otelcol.numa_node.logical_number`, `cpu.logical_number`: Stable for a host
+  boot; may change with CPU or NUMA reconfiguration.
 - `thread.id`: Stable for the thread lifetime; may be reused after thread exit.
 - `otelcol.pipeline_group.id`, `otelcol.pipeline.id`, `otelcol.node.id`: Stable
   across configuration reloads; intended to remain consistent for the same
