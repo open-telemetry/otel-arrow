@@ -41,6 +41,7 @@ collisions with existing and future semantic conventions.
 The logical service representing the OTAP Engine.
 
 Attributes (resource level):
+
 - `service.name`: The name of the service (e.g. "otap_engine").
 - `service.instance.id`: A unique identifier for the service instance.
 
@@ -53,6 +54,7 @@ for all emitted telemetry.
 The physical or virtual machine where the OTAP Engine is running.
 
 Attributes (resource level):
+
 - `host.id`: A unique identifier for the host machine.
 - `host.name`: The hostname of the machine.
 
@@ -65,6 +67,7 @@ when adding `host.name`.
 The container instance where the OTAP Engine is running (if applicable).
 
 Attributes (resource level):
+
 - `container.id`
 
 ### Process
@@ -72,6 +75,7 @@ Attributes (resource level):
 The process instance of the OTAP Engine running on the host or in the container.
 
 Attributes (resource level):
+
 - `process.pid`
 - `process.creation.time`
 
@@ -80,6 +84,7 @@ Attributes (resource level):
 The OTAP pipeline execution engine running in the process.
 
 Attributes:
+
 - `numa_node.logical_number` (was named numa.node.id): NUMA node identifier.
 - `cpu.logical_number` (was named core.id): Core CPU identifier.
 - `thread.id`: Thread identifier.
@@ -93,6 +98,7 @@ replaced by `numa_node.logical_number` and `cpu.logical_number` in the future.
 A data processing pipeline running within the OTAP Execution Engine.
 
 Attributes:
+
 - `otelcol.pipeline_group.id`: Pipeline group unique identifier.
 - `otelcol.pipeline.id`: Pipeline unique identifier.
 
@@ -104,6 +110,7 @@ A processing unit within a pipeline. There are three types of nodes:
 - Exporter: Delivers processed data to external systems
 
 Attributes:
+
 - `otelcol.node.id`: Node unique identifier (in scope of the pipeline). 
 - `otelcol.node.urn`: Node plugin URN.
 - `otelcol.node.type`: Node type (e.g. "receiver", "processor", "exporter").
@@ -174,6 +181,7 @@ Containment chain:
 Service -> Process -> Execution Engine -> Pipeline Group -> Pipeline -> Node
 
 Channels connect nodes:
+
 - `otelcol.channel.id` identifies the source node + output port only; fan-out
   receivers share the same `otelcol.channel.id`.
 - Node identity is carried by the `otelcol.node.*` attributes on each signal.
