@@ -24,7 +24,7 @@ and test configurations.
 All performance tests are executed on bare-metal compute instance with the
 following specifications:
 
-- **CPU**: 64 cores (x86-64 architecture)
+- **CPU**: 64 physical cores / 128 logical cores (x86-64 architecture)
 - **Memory**: 512 GB RAM
 - **Platform**: Oracle Bare Metal Instance
 - **OS**: Oracle Linux 8
@@ -37,7 +37,11 @@ and 8 cores etc.) by constraining the df-engine to specific core allocations.
 
 #### Idle State Performance
 
-Baseline resource consumption with no active telemetry traffic.
+Baseline resource consumption with no active telemetry traffic, measured after
+startup stabilization over a 60-second period. These metrics represent
+post-initialization idle state and validate minimal resource footprint. Note
+that longer-duration soak testing for memory leak detection is outside the scope
+of this benchmark summary.
 
 | Metric | Value |
 |--------|-------|
@@ -51,7 +55,7 @@ telemetry loads.
 #### Standard Load Performance
 
 Resource utilization at 100,000 log records per second (100K logs/sec). Tests
-are conducted with three different batch sizes to demonstrate the impact of
+are conducted with four different batch sizes to demonstrate the impact of
 batching on performance.
 
 **Test Parameters:**
@@ -59,6 +63,7 @@ batching on performance.
 - Total input load: 100,000 log records/second
 - Average log record size: 1 KB
 - Batch sizes tested: 10, 100, 1000, and 10000 records per request
+- Test duration: 60 seconds
 
 This wide range of batch sizes evaluates performance across diverse deployment
 scenarios. Small batches (10-100) represent edge collectors or real-time
@@ -69,52 +74,48 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
 
-| CPU Cores | Batch Size | CPU Usage | Memory Usage |
-|-----------|------------|-----------|---------------|
-| 1 Core    | 10/batch | TBD | TBD |
-| 1 Core    | 100/batch | TBD | TBD |
-| 1 Core    | 1000/batch | TBD | TBD |
-| 1 Core    | 10000/batch | TBD | TBD |
-| 4 Cores   | 10/batch | TBD | TBD |
-| 4 Cores   | 100/batch | TBD | TBD |
-| 4 Cores   | 1000/batch | TBD | TBD |
-| 4 Cores   | 10000/batch | TBD | TBD |
-| 8 Cores   | 10/batch | TBD | TBD |
-| 8 Cores   | 100/batch | TBD | TBD |
-| 8 Cores   | 1000/batch | TBD | TBD |
-| 8 Cores   | 10000/batch | TBD | TBD |
+| Batch Size | CPU Usage | Memory Usage |
+|------------|-----------|---------------|
+| 10/batch | TBD | TBD |
+| 100/batch | TBD | TBD |
+| 1000/batch | TBD | TBD |
+| 10000/batch | TBD | TBD |
 
 This represents the optimal scenario where the df-engine operates with its
-native protocol end-to-end, eliminating protocol conversion overhead. The
-thread-per-core architecture demonstrates linear scaling across CPU cores
-without contention, allowing the engine to be configured for specific deployment
-requirements.
+native protocol end-to-end, eliminating protocol conversion overhead. Results
+are shown for a single CPU core to demonstrate baseline efficiency and the
+impact of batch size on resource utilization. For hardware scaling
+characteristics, refer to the Saturation Performance section.
 
-##### Standard Load - OTLP -> OTAP (Protocol Conversion)
+##### Standard Load - OTLP -> OTLP (Standard Protocol)
 
-| CPU Cores | Batch Size | CPU Usage | Memory Usage |
-|-----------|------------|-----------|---------------|
-| 1 Core    | 10/batch | TBD | TBD |
-| 1 Core    | 100/batch | TBD | TBD |
-| 1 Core    | 1000/batch | TBD | TBD |
-| 1 Core    | 10000/batch | TBD | TBD |
-| 4 Cores   | 10/batch | TBD | TBD |
-| 4 Cores   | 100/batch | TBD | TBD |
-| 4 Cores   | 1000/batch | TBD | TBD |
-| 4 Cores   | 10000/batch | TBD | TBD |
-| 8 Cores   | 10/batch | TBD | TBD |
-| 8 Cores   | 100/batch | TBD | TBD |
-| 8 Cores   | 1000/batch | TBD | TBD |
-| 8 Cores   | 10000/batch | TBD | TBD |
+| Batch Size | CPU Usage | Memory Usage |
+|------------|-----------|---------------|
+| 10/batch | TBD | TBD |
+| 100/batch | TBD | TBD |
+| 1000/batch | TBD | TBD |
+| 10000/batch | TBD | TBD |
 
-This scenario represents the common case where OpenTelemetry SDK clients emit
-OTLP (not yet capable of OTAP), and the df-engine converts to OTAP for egress.
-This demonstrates backward compatibility and protocol conversion efficiency
-while maintaining linear scaling characteristics across CPU cores.
+This scenario processes OTLP end-to-end using the standard OpenTelemetry
+protocol, providing a baseline for comparison with traditional OTLP-based
+pipelines and demonstrating the performance of the columnar architecture even
+without OTAP protocol benefits. Results are shown for a single CPU core. For
+hardware scaling characteristics, refer to the Saturation Performance section.
 
 #### Saturation Performance
 
 Behavior at maximum capacity when physical resource limits are reached.
+
+**Test Parameters:**
+
+- Batch size: 500 records per request (fixed for all saturation tests)
+- Load: Continuously increased until the system reaches maximum sustained
+  throughput
+- Test duration: 60 seconds at maximum load
+
+All saturation tests use a consistent batch size of 500 records to focus on
+hardware scaling characteristics and maximum throughput capacity. The impact of
+varying batch sizes is covered in the Standard Load Performance section.
 
 ##### Saturation Load - OTAP -> OTAP (Native Protocol)
 
@@ -123,14 +124,16 @@ Behavior at maximum capacity when physical resource limits are reached.
 | 1 Core    | TBD                          | TBD               | TBD          |
 | 4 Cores   | TBD                          | TBD               | TBD          |
 | 8 Cores   | TBD                          | TBD               | TBD          |
+| 16 Cores  | TBD                          | TBD               | TBD          |
 
-##### Saturation Load - OTLP -> OTAP (Protocol Conversion)
+##### Saturation Load - OTLP -> OTLP (Standard Protocol)
 
 | CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
 |-----------|------------------------------|-------------------|--------------|
 | 1 Core    | TBD                          | TBD               | TBD          |
 | 4 Cores   | TBD                          | TBD               | TBD          |
 | 8 Cores   | TBD                          | TBD               | TBD          |
+| 16 Cores  | TBD                          | TBD               | TBD          |
 
 Saturation testing validates the engine's stability under extreme load. The
 df-engine exhibits well-defined behavior when operating at capacity, maintaining
@@ -215,8 +218,6 @@ egress performance for each.
 | CPU Usage | TBD | TBD | TBD |
 | Memory Usage | TBD | TBD | TBD |
 | Network Egress | TBD | TBD | TBD |
-| Latency (p50) | TBD | TBD | TBD |
-| Latency (p99) | TBD | TBD | TBD |
 | Throughput (messages/sec) | TBD | TBD | TBD |
 
 #### Saturation
@@ -238,7 +239,7 @@ The comparative analysis will demonstrate:
 - Relative efficiency of Arrow-based columnar processing vs traditional
   row-oriented data structures
 - Memory allocation patterns and garbage collection impact (Rust vs Go)
-- Throughput and latency characteristics under varying load conditions
+- Throughput characteristics under varying load conditions
 
 ---
 
