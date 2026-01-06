@@ -341,7 +341,7 @@ impl FormatConfig {
             // indefinite delay.
             if self.min_size.is_some() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!("min_size set requires flush_timeout is set"),
+                    error: "min_size set requires flush_timeout is set".into(),
                 });
             }
             // If max_size is unset, we're doing nothing with a batch processor,
@@ -1555,7 +1555,7 @@ mod tests {
             format: BatchingFormat::Preserve,
             ..Default::default()
         };
-        assert!(!cfg.validate().is_ok());
+        assert!(cfg.validate().is_err());
 
         // Both None: ERROR
         let cfg = Config {
