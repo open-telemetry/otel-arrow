@@ -339,15 +339,25 @@ fn build_log_record_schema(
 ) -> Result<(ParserMapSchema, Option<ParserMapSchema>), ParserError> {
     let mut log_record_schema = ParserMapSchema::new()
         .set_default_map_key("Attributes")
+        .with_alias("attributes", "Attributes")
         .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
+        .with_alias("timestamp", "Timestamp")
         .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
+        .with_alias("observed_timestamp", "ObservedTimestamp")
         .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
+        .with_alias("severity_number", "SeverityNumber")
         .with_key_definition("SeverityText", ParserMapKeySchema::String)
+        .with_alias("severity_text", "SeverityText")
         .with_key_definition("Body", ParserMapKeySchema::Any)
+        .with_alias("body", "Body")
         .with_key_definition("TraceId", ParserMapKeySchema::Array)
+        .with_alias("trace_id", "TraceId")
         .with_key_definition("SpanId", ParserMapKeySchema::Array)
+        .with_alias("span_id", "SpanId")
         .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-        .with_key_definition("EventName", ParserMapKeySchema::String);
+        .with_alias("trace_flags", "TraceFlags")
+        .with_key_definition("EventName", ParserMapKeySchema::String)
+        .with_alias("event_name", "EventName");
 
     if let Some(mut attributes_schema) = attributes_schema {
         let schema = attributes_schema.get_schema_mut();
@@ -363,13 +373,17 @@ fn build_log_record_schema(
             // present in Attributes users might query with ambiguous naming.
             // For example: source | extend Body = 'something' will write to the
             // top-level field and not Attributes.
-            if let Some(removed) = schema.remove(top_level_key)
-                && &removed != top_level_key_schema
-            {
-                return Err(ParserError::SchemaError(format!(
-                    "'{top_level_key}' key cannot be declared as '{}' type",
-                    &removed
-                )));
+            
+            // Check both the canonical key and all its aliases
+            for key_name in log_record_schema.get_all_key_names_for_canonical_key(top_level_key) {
+                if let Some(removed) = schema.remove(key_name.as_ref())
+                    && &removed != top_level_key_schema
+                {
+                    return Err(ParserError::SchemaError(format!(
+                        "'{key_name}' key cannot be declared as '{}' type",
+                        &removed
+                    )));
+                }
             }
         }
 
@@ -785,5 +799,64 @@ mod tests {
 
         assert_eq!(1, e.len());
         assert!(matches!(e[0], ParserError::SchemaError(_)));
+    }
+
+    #[test]
+    fn test_parse_kql_query_with_field_aliases() {
+        let run_test = |query: &str| {
+            parse_kql_query_into_pipeline(query, None).unwrap();
+        };
+
+        // Test PascalCase canonical names
+        run_test("source | where SeverityText == 'Info'");
+        run_test("source | extend x = SeverityNumber");
+        run_test("source | project Timestamp, Body");
+
+        // Test snake_case aliases
+        run_test("source | where severity_text == 'Info'");
+        run_test("source | extend x = severity_number");
+        run_test("source | project timestamp, body");
+
+        // Test mixing aliases and canonical names
+        run_test("source | where severity_text == 'Info' and SeverityNumber > 0");
+        run_test("source | extend ts = timestamp, sev = SeverityText");
+        
+        // Test default map key alias
+        run_test("source | where attributes.custom_field == 'value'");
+        run_test("source | where Attributes.custom_field == 'value'");
+    }
+
+    #[test]
+    fn test_attributes_schema_removes_top_level_aliases() {
+        // Test that when user provides an attributes schema with aliases
+        // of top-level fields, they get removed properly
+        let result = parse_kql_query_into_pipeline(
+            "source | extend severity_text = 'Debug'",
+            Some(
+                BridgeOptions::new().with_attributes_schema(
+                    ParserMapSchema::new()
+                        // This should be removed because severity_text is an alias for SeverityText
+                        .with_key_definition("severity_text", ParserMapKeySchema::String)
+                        .with_key_definition("custom_field", ParserMapKeySchema::Integer),
+                ),
+            ),
+        );
+
+        // Should succeed - severity_text should write to top-level field
+        assert!(result.is_ok());
+
+        // Test with canonical name too
+        let result = parse_kql_query_into_pipeline(
+            "source | extend SeverityText = 'Debug'",
+            Some(
+                BridgeOptions::new().with_attributes_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+                        .with_key_definition("custom_field", ParserMapKeySchema::Integer),
+                ),
+            ),
+        );
+
+        assert!(result.is_ok());
     }
 }
