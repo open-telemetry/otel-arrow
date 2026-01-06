@@ -28,6 +28,8 @@ use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 pub mod attributes;
 pub mod collector;
@@ -59,10 +61,49 @@ pub use tracing::info_span as otel_info_span;
 pub use tracing::trace_span as otel_trace_span;
 pub use tracing::warn_span as otel_warn_span;
 
+// Re-export raw logging initialization for early setup
+pub use self_tracing::compact_formatter::CompactFormatterLayer;
+
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.
 pub mod testing;
+
+/// Initialize raw logging as early as possible.
+///
+/// This installs a minimal tracing subscriber with our `CompactFormatterLayer` that
+/// formats log events to stderr. This should be called at the very start of `main()`
+/// before any configuration parsing or other initialization that might emit logs.
+///
+/// Raw logging is the most basic form of console output, used as a safe configuration
+/// early in the lifetime of a process. See `ARCHITECTURE.md` for details.
+///
+/// # Panics
+///
+/// This function will panic if a global subscriber has already been set.
+/// Use `try_init_raw_logging()` if you need to handle this case gracefully.
+pub fn init_raw_logging() {
+    try_init_raw_logging().expect("Failed to initialize raw logging subscriber");
+}
+
+/// Try to initialize raw logging, returning an error if a subscriber is already set.
+///
+/// This is useful in tests or other contexts where a subscriber may already exist.
+pub fn try_init_raw_logging() -> Result<(), Error> {
+    // If RUST_LOG is set, use it for fine-grained control.
+    // Otherwise, default to INFO level with some noisy dependencies silenced.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("info,h2=off,hyper=off")
+    });
+
+    let layer = CompactFormatterLayer::stderr();
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(layer)
+        .try_init()
+        .map_err(|e| Error::TracingInitError(e.to_string()))
+}
 
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {

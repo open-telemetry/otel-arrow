@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Compact log formatter - a minimal `fmt::layer()` alternative.
+//! Compact log formatter - a `fmt::layer()` alternative using CompactLogRRecord
 //!
 //! This module provides a lightweight formatting layer for tokio-tracing events
 //! that outputs human-readable log lines to stdout/stderr. It uses the same
@@ -35,9 +35,9 @@ use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::otlp::bytes::common::{RawAnyValue, RawKeyValue};
 use otap_df_pdata::views::otlp::bytes::decode::read_varint;
 
-use tracing::{Event, Level, Subscriber};
 use tracing::callsite::Identifier;
 use tracing::span::{Attributes, Record};
+use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
@@ -56,16 +56,16 @@ use super::direct_encoder::{DirectFieldVisitor, ProtoBuffer};
 pub struct CompactLogRecord {
     /// Callsite identifier - used to look up cached callsite info
     pub callsite_id: Identifier,
-    
+
     /// Timestamp in nanoseconds since Unix epoch
     pub timestamp_ns: u64,
-    
+
     /// Severity number: 1=TRACE, 5=DEBUG, 9=INFO, 13=WARN, 17=ERROR
     pub severity_number: u8,
-    
+
     /// Severity text - &'static str from Level::as_str()
     pub severity_text: &'static str,
-    
+
     /// Pre-encoded body and attributes (OTLP format for body field 5 + attrs field 6)
     pub body_attrs_bytes: Bytes,
 }
@@ -75,13 +75,13 @@ pub struct CompactLogRecord {
 pub struct CachedCallsite {
     /// Target module path - &'static from Metadata
     pub target: &'static str,
-    
+
     /// Event name - &'static from Metadata
     pub name: &'static str,
-    
+
     /// Source file - &'static from Metadata
     pub file: Option<&'static str>,
-    
+
     /// Source line
     pub line: Option<u32>,
 }
@@ -97,7 +97,7 @@ impl CallsiteCache {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Register a callsite from its metadata.
     pub fn register(&mut self, metadata: &'static tracing::Metadata<'static>) {
         let id = metadata.callsite();
@@ -108,7 +108,7 @@ impl CallsiteCache {
             line: metadata.line(),
         });
     }
-    
+
     /// Get cached callsite info by identifier.
     pub fn get(&self, id: &Identifier) -> Option<&CachedCallsite> {
         self.callsites.get(id)
@@ -121,44 +121,75 @@ impl CallsiteCache {
 
 /// Format a CompactLogRecord as a human-readable string.
 ///
-/// Output format: `2026-01-06T10:30:45.123Z  INFO target::name: body [attr=value, ...]`
-pub fn format_log_record(record: &CompactLogRecord, cache: &CallsiteCache) -> String {
+/// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
+pub fn format_log_record(
+    record: &CompactLogRecord,
+    cache: &CallsiteCache,
+    use_ansi: bool,
+) -> String {
     let callsite = cache.get(&record.callsite_id);
-    
-    let (target, name) = match callsite {
-        Some(cs) => (cs.target, cs.name),
-        None => ("<unknown>", "<unknown>"),
+
+    let event_name = match callsite {
+        Some(cs) => format_event_name(cs.target, cs.name, cs.file, cs.line),
+        None => "<unknown>".to_string(),
     };
-    
+
     let body_attrs = format_body_attrs(&record.body_attrs_bytes);
-    
-    format!(
-        "{}  {:5} {}::{}: {}",
-        format_timestamp(record.timestamp_ns),
-        record.severity_text,
-        target,
-        name,
-        body_attrs,
-    )
+
+    if use_ansi {
+        let level_color = level_color(record.severity_text);
+        format!(
+            "{}{}{}  {}{:5}{}  {}{}{}: {}",
+            ANSI_DIM,
+            format_timestamp(record.timestamp_ns),
+            ANSI_RESET,
+            level_color,
+            record.severity_text,
+            ANSI_RESET,
+            ANSI_BOLD,
+            event_name,
+            ANSI_RESET,
+            body_attrs,
+        )
+    } else {
+        format!(
+            "{}  {:5}  {}: {}",
+            format_timestamp(record.timestamp_ns),
+            record.severity_text,
+            event_name,
+            body_attrs,
+        )
+    }
+}
+
+/// Format callsite details as event_name string.
+///
+/// Format: "target::name (file.rs:42)" or "target::name" if file/line unavailable.
+#[inline]
+fn format_event_name(target: &str, name: &str, file: Option<&str>, line: Option<u32>) -> String {
+    match (file, line) {
+        (Some(file), Some(line)) => format!("{}::{} ({}:{})", target, name, file, line),
+        _ => format!("{}::{}", target, name),
+    }
 }
 
 /// Format nanosecond timestamp as ISO 8601 (UTC).
 fn format_timestamp(nanos: u64) -> String {
     let secs = nanos / 1_000_000_000;
     let subsec_millis = (nanos % 1_000_000_000) / 1_000_000;
-    
+
     // Convert to datetime components
     // Days since Unix epoch
     let days = secs / 86400;
     let time_of_day = secs % 86400;
-    
+
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
-    
+
     // Calculate year/month/day from days since epoch (1970-01-01)
     let (year, month, day) = days_to_ymd(days as i64);
-    
+
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         year, month, day, hours, minutes, seconds, subsec_millis
@@ -178,7 +209,7 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    
+
     (y as i32, m, d)
 }
 
@@ -191,16 +222,16 @@ fn format_body_attrs(bytes: &Bytes) -> String {
     if bytes.is_empty() {
         return String::new();
     }
-    
+
     // The bytes contain LogRecord fields:
     // - field 5 (LOG_RECORD_BODY): AnyValue message
     // - field 6 (LOG_RECORD_ATTRIBUTES): repeated KeyValue messages
-    
+
     let mut body_str = String::new();
     let mut attrs = Vec::new();
     let data = bytes.as_ref();
     let mut pos = 0;
-    
+
     while pos < data.len() {
         // Read field tag
         let (tag, next_pos) = match read_varint(data, pos) {
@@ -208,15 +239,15 @@ fn format_body_attrs(bytes: &Bytes) -> String {
             None => break,
         };
         pos = next_pos;
-        
+
         let field_num = tag >> 3;
         let wire_type = tag & 0x7;
-        
+
         if wire_type != wire_types::LEN {
             // Skip non-length-delimited fields (shouldn't happen for body/attrs)
             break;
         }
-        
+
         // Read length-delimited content
         let (len, next_pos) = match read_varint(data, pos) {
             Some(v) => v,
@@ -224,13 +255,13 @@ fn format_body_attrs(bytes: &Bytes) -> String {
         };
         pos = next_pos;
         let end = pos + len as usize;
-        
+
         if end > data.len() {
             break;
         }
-        
+
         let field_bytes = &data[pos..end];
-        
+
         if field_num == LOG_RECORD_BODY {
             // Body: parse as AnyValue using pdata View
             let any_value = RawAnyValue::new(field_bytes);
@@ -245,16 +276,16 @@ fn format_body_attrs(bytes: &Bytes) -> String {
             };
             attrs.push(format!("{}={}", key, value));
         }
-        
+
         pos = end;
     }
-    
+
     if !attrs.is_empty() {
         body_str.push_str(" [");
         body_str.push_str(&attrs.join(", "));
         body_str.push(']');
     }
-    
+
     body_str
 }
 
@@ -345,6 +376,7 @@ pub enum OutputTarget {
 #[derive(Debug)]
 pub struct SimpleWriter {
     target: OutputTarget,
+    use_ansi: bool,
 }
 
 impl Default for SimpleWriter {
@@ -353,17 +385,54 @@ impl Default for SimpleWriter {
     }
 }
 
+// ANSI color codes
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_BLUE: &str = "\x1b[34m";
+const ANSI_MAGENTA: &str = "\x1b[35m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_BOLD: &str = "\x1b[1m";
+
 impl SimpleWriter {
-    /// Create a writer that outputs to stdout.
+    /// Create a writer that outputs to stdout with ANSI colors enabled.
     pub fn stdout() -> Self {
-        Self { target: OutputTarget::Stdout }
+        Self {
+            target: OutputTarget::Stdout,
+            use_ansi: true,
+        }
     }
-    
-    /// Create a writer that outputs to stderr.
+
+    /// Create a writer that outputs to stderr with ANSI colors enabled.
     pub fn stderr() -> Self {
-        Self { target: OutputTarget::Stderr }
+        Self {
+            target: OutputTarget::Stderr,
+            use_ansi: true,
+        }
     }
-    
+
+    /// Create a writer that outputs to stdout without ANSI colors.
+    pub fn stdout_no_color() -> Self {
+        Self {
+            target: OutputTarget::Stdout,
+            use_ansi: false,
+        }
+    }
+
+    /// Create a writer that outputs to stderr without ANSI colors.
+    pub fn stderr_no_color() -> Self {
+        Self {
+            target: OutputTarget::Stderr,
+            use_ansi: false,
+        }
+    }
+
+    /// Returns whether ANSI colors are enabled.
+    pub fn use_ansi(&self) -> bool {
+        self.use_ansi
+    }
+
     /// Write a log line (with newline).
     pub fn write_line(&self, line: &str) {
         match self.target {
@@ -374,6 +443,19 @@ impl SimpleWriter {
                 let _ = writeln!(io::stderr(), "{}", line);
             }
         }
+    }
+}
+
+/// Get ANSI color code for a severity level.
+#[inline]
+fn level_color(level: &str) -> &'static str {
+    match level {
+        "ERROR" => ANSI_RED,
+        "WARN" => ANSI_YELLOW,
+        "INFO" => ANSI_GREEN,
+        "DEBUG" => ANSI_BLUE,
+        "TRACE" => ANSI_MAGENTA,
+        _ => "",
     }
 }
 
@@ -397,7 +479,7 @@ impl CompactFormatterLayer {
             writer: SimpleWriter::stderr(),
         }
     }
-    
+
     /// Create a new layer that writes to stdout.
     pub fn stdout() -> Self {
         Self {
@@ -405,7 +487,7 @@ impl CompactFormatterLayer {
             writer: SimpleWriter::stdout(),
         }
     }
-    
+
     /// Create a new layer that writes to stderr.
     pub fn stderr() -> Self {
         Self::new()
@@ -429,19 +511,19 @@ where
         self.callsite_cache.write().unwrap().register(metadata);
         tracing::subscriber::Interest::always()
     }
-    
+
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
-        
+
         // Encode body and attributes to bytes
         let body_attrs_bytes = encode_body_and_attrs(event);
-        
+
         // Get current timestamp
         let timestamp_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        
+
         // Build compact record
         let record = CompactLogRecord {
             callsite_id: metadata.callsite(),
@@ -450,42 +532,42 @@ where
             severity_text: metadata.level().as_str(),
             body_attrs_bytes,
         };
-        
+
         // Format and write immediately
         let cache = self.callsite_cache.read().unwrap();
-        let line = format_log_record(&record, &cache);
+        let line = format_log_record(&record, &cache, self.writer.use_ansi());
         self.writer.write_line(&line);
     }
-    
+
     fn on_new_span(&self, _attrs: &Attributes<'_>, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
         // Not handling spans in MVP
     }
-    
+
     fn on_record(&self, _span: &tracing::span::Id, _values: &Record<'_>, _ctx: Context<'_, S>) {
         // Not handling spans in MVP
     }
-    
+
     fn on_enter(&self, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
         // Not handling spans in MVP
     }
-    
+
     fn on_exit(&self, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
         // Not handling spans in MVP
     }
-    
+
     fn on_close(&self, _id: tracing::span::Id, _ctx: Context<'_, S>) {
         // Not handling spans in MVP
     }
 }
 
 /// Encode only body and attributes from an event to OTLP bytes.
-fn encode_body_and_attrs(event: &Event<'_>) -> Bytes {
+pub fn encode_body_and_attrs(event: &Event<'_>) -> Bytes {
     let mut buf = ProtoBuffer::with_capacity(256);
-    
+
     // Visit fields to encode body (field 5) and attributes (field 6)
     let mut visitor = DirectFieldVisitor::new(&mut buf);
     event.record(&mut visitor);
-    
+
     buf.into_bytes()
 }
 
@@ -508,7 +590,7 @@ fn level_to_severity(level: &Level) -> u8 {
 mod tests {
     use super::*;
     use tracing_subscriber::prelude::*;
-    
+
     #[test]
     fn test_format_timestamp() {
         // 2026-01-06T10:30:45.123Z in nanoseconds
@@ -516,22 +598,22 @@ mod tests {
         let nanos: u64 = 1704067200 * 1_000_000_000; // 2024-01-01 00:00:00 UTC
         let formatted = format_timestamp(nanos);
         assert_eq!(formatted, "2024-01-01T00:00:00.000Z");
-        
+
         // Test with milliseconds
         let nanos_with_ms: u64 = 1704067200 * 1_000_000_000 + 123_000_000;
         let formatted = format_timestamp(nanos_with_ms);
         assert_eq!(formatted, "2024-01-01T00:00:00.123Z");
     }
-    
+
     #[test]
     fn test_days_to_ymd() {
         // 1970-01-01 is day 0
         assert_eq!(days_to_ymd(0), (1970, 1, 1));
-        
+
         // 2024-01-01 is 19723 days after 1970-01-01
         assert_eq!(days_to_ymd(19723), (2024, 1, 1));
     }
-    
+
     #[test]
     fn test_level_to_severity() {
         assert_eq!(level_to_severity(&Level::TRACE), 1);
@@ -540,20 +622,20 @@ mod tests {
         assert_eq!(level_to_severity(&Level::WARN), 13);
         assert_eq!(level_to_severity(&Level::ERROR), 17);
     }
-    
+
     #[test]
     fn test_callsite_cache() {
         let cache = CallsiteCache::new();
         assert!(cache.callsites.is_empty());
     }
-    
+
     #[test]
     fn test_simple_writer_creation() {
         let _stdout = SimpleWriter::stdout();
         let _stderr = SimpleWriter::stderr();
         let _default = SimpleWriter::default();
     }
-    
+
     #[test]
     fn test_compact_formatter_layer_creation() {
         let _layer = CompactFormatterLayer::new();
@@ -561,22 +643,22 @@ mod tests {
         let _stderr = CompactFormatterLayer::stderr();
         let _default = CompactFormatterLayer::default();
     }
-    
+
     #[test]
     fn test_layer_integration() {
         // Create the layer and subscriber
         let layer = CompactFormatterLayer::stderr();
         let subscriber = tracing_subscriber::registry().with(layer);
-        
+
         // Set as default for this thread temporarily
         let dispatch = tracing::Dispatch::new(subscriber);
         let _guard = tracing::dispatcher::set_default(&dispatch);
-        
+
         // Emit some events - these should be formatted and written to stderr
         tracing::info!("Test info message");
         tracing::warn!(count = 42, "Warning with attribute");
         tracing::error!(error = "something failed", "Error occurred");
-        
+
         // The test verifies no panics occur; actual output goes to stderr
     }
 }

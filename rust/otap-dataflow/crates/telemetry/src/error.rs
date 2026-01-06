@@ -27,4 +27,8 @@ pub enum Error {
     /// Error during configuration of a component.
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+
+    /// Error during tracing subscriber initialization.
+    #[error("Tracing initialization error: {0}")]
+    TracingInitError(String),
 }

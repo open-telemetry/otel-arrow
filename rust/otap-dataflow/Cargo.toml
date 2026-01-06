@@ -33,6 +33,7 @@ path = "src/main.rs"
 otap-df-config.workspace = true
 otap-df-controller.workspace = true
 otap-df-otap.workspace = true
+otap-df-telemetry.workspace = true
 thiserror.workspace = true
 quiver = { workspace = true, optional = true }
 serde_json.workspace = true
@@ -51,6 +52,7 @@ otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
 otap-df-pdata = { path = "crates/pdata" }
+otap-df-telemetry = { path = "crates/telemetry" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }

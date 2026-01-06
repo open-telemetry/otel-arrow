@@ -3,31 +3,33 @@
 
 #![allow(missing_docs)]
 
-//! Benchmarks for self-tracing OTLP bytes encoding and formatting.
+//! Benchmarks for the compact log formatter.
 //!
 //! # Benchmark Design
 //!
 //! These benchmarks emit a single tracing event but perform N encoding/formatting
 //! operations inside the callback. This amortizes tracing dispatch overhead to noise,
-//! allowing us to measure the true cost of encoding.
+//! allowing us to measure the true cost of encoding and formatting.
 //!
 //! # Interpreting Results
 //!
-//! Benchmark names follow the pattern: `group/description/N_encodings`
+//! Benchmark names follow the pattern: `group/description/N_events`
 //!
 //! To get per-event cost: `measured_time / N`
 //!
-//! Example: `encode_otlp/3_attrs/1000_events` = 265 µs → 265 ns per event
+//! Example: `compact_encode/3_attrs/1000_events` = 300 µs → 300 ns per event
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use tracing::{Event, Subscriber};
+use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
 
 use otap_df_telemetry::self_tracing::{
-    OtlpBytesFormattingLayer, StatefulDirectEncoder, encode_resource_bytes_from_attrs,
+    CallsiteCache, CompactLogRecord, encode_body_and_attrs, format_log_record,
 };
+
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -37,46 +39,36 @@ use tikv_jemallocator::Jemalloc;
 static GLOBAL: Jemalloc = Jemalloc;
 
 // =============================================================================
-// ISOLATED ENCODING BENCHMARK
-// Emit 1 event, encode it N times inside the callback
+// ENCODE ONLY BENCHMARK
+// Emit 1 event, encode body+attrs N times (partial OTLP)
 // =============================================================================
 
-/// Layer that encodes the same event N times to measure pure encoding cost.
-struct IsolatedEncoderLayer {
-    /// Number of times to encode each event
+/// Layer that encodes body+attrs N times to measure pure encoding cost.
+struct EncodeOnlyLayer {
     iterations: usize,
-    /// Pre-encoded resource bytes
-    resource_bytes: Vec<u8>,
 }
 
-impl IsolatedEncoderLayer {
+impl EncodeOnlyLayer {
     fn new(iterations: usize) -> Self {
-        Self {
-            iterations,
-            resource_bytes: encode_resource_bytes_from_attrs(&[
-                ("service.name", "benchmark"),
-            ]),
-        }
+        Self { iterations }
     }
 }
 
-impl<S> Layer<S> for IsolatedEncoderLayer
+impl<S> Layer<S> for EncodeOnlyLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // Encode the same event N times using StatefulDirectEncoder
         for _ in 0..self.iterations {
-            let mut encoder = StatefulDirectEncoder::new(4096, self.resource_bytes.clone());
-            encoder.encode_event(event);
-            let _ = encoder.flush();
+            let bytes = encode_body_and_attrs(event);
+            let _ = std::hint::black_box(bytes);
         }
     }
 }
 
-/// Benchmark: Pure encoding cost (N encodings per single event dispatch)
-fn bench_isolated_encode(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encode_otlp");
+/// Benchmark: Pure encoding cost (body+attrs to partial OTLP bytes)
+fn bench_encode_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compact_encode");
 
     for iterations in [100, 1000].iter() {
         let _ = group.bench_with_input(
@@ -84,12 +76,11 @@ fn bench_isolated_encode(c: &mut Criterion) {
             iterations,
             |b, &iters| {
                 b.iter(|| {
-                    let layer = IsolatedEncoderLayer::new(iters);
+                    let layer = EncodeOnlyLayer::new(iters);
                     let subscriber = tracing_subscriber::registry().with(layer);
                     let dispatch = tracing::Dispatch::new(subscriber);
 
                     tracing::dispatcher::with_default(&dispatch, || {
-                        // Single event, encoded `iters` times inside the callback
                         tracing::info!(
                             key1 = "value1",
                             key2 = 42,
@@ -98,7 +89,7 @@ fn bench_isolated_encode(c: &mut Criterion) {
                         );
                     });
 
-                    std::hint::black_box(())
+                    let _ = std::hint::black_box(());
                 })
             },
         );
@@ -108,50 +99,64 @@ fn bench_isolated_encode(c: &mut Criterion) {
 }
 
 // =============================================================================
-// ISOLATED ENCODE + FORMAT BENCHMARK
-// Emit 1 event, encode and format it N times
+// FORMAT ONLY BENCHMARK
+// Encode once, format N times
 // =============================================================================
 
-/// Layer that encodes and formats the same event N times.
-struct IsolatedEncodeFormatLayer {
+/// Layer that encodes once then formats N times.
+struct FormatOnlyLayer {
     iterations: usize,
-    resource_bytes: Vec<u8>,
 }
 
-impl IsolatedEncodeFormatLayer {
+impl FormatOnlyLayer {
     fn new(iterations: usize) -> Self {
-        Self {
-            iterations,
-            resource_bytes: encode_resource_bytes_from_attrs(&[
-                ("service.name", "benchmark"),
-            ]),
-        }
+        Self { iterations }
     }
 }
 
-impl<S> Layer<S> for IsolatedEncodeFormatLayer
+impl<S> Layer<S> for FormatOnlyLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        let formatter = OtlpBytesFormattingLayer::new(std::io::sink);
+        let metadata = event.metadata();
 
-        // Encode and format N times
+        // Build cache with this callsite
+        let mut cache = CallsiteCache::new();
+        cache.register(metadata);
+
+        // Encode once
+        let body_attrs_bytes = encode_body_and_attrs(event);
+        let timestamp_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        let record = CompactLogRecord {
+            callsite_id: metadata.callsite(),
+            timestamp_ns,
+            severity_number: match *metadata.level() {
+                Level::TRACE => 1,
+                Level::DEBUG => 5,
+                Level::INFO => 9,
+                Level::WARN => 13,
+                Level::ERROR => 17,
+            },
+            severity_text: metadata.level().as_str(),
+            body_attrs_bytes,
+        };
+
+        // Format N times (without ANSI colors for consistent measurement)
         for _ in 0..self.iterations {
-            // Use StatefulDirectEncoder to produce full OTLP envelope
-            let mut encoder = StatefulDirectEncoder::new(4096, self.resource_bytes.clone());
-            encoder.encode_event(event);
-            let bytes = encoder.flush();
-            
-            // Format the complete OTLP bytes
-            let _ = formatter.format_otlp_bytes(&bytes);
+            let line = format_log_record(&record, &cache, false);
+            let _ = std::hint::black_box(line);
         }
     }
 }
 
-/// Benchmark: Encoding + formatting cost
-fn bench_isolated_encode_format(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encode_and_format_otlp");
+/// Benchmark: Pure formatting cost (format already-encoded record to string)
+fn bench_format_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compact_format");
 
     for iterations in [100, 1000].iter() {
         let _ = group.bench_with_input(
@@ -159,7 +164,7 @@ fn bench_isolated_encode_format(c: &mut Criterion) {
             iterations,
             |b, &iters| {
                 b.iter(|| {
-                    let layer = IsolatedEncodeFormatLayer::new(iters);
+                    let layer = FormatOnlyLayer::new(iters);
                     let subscriber = tracing_subscriber::registry().with(layer);
                     let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -172,7 +177,7 @@ fn bench_isolated_encode_format(c: &mut Criterion) {
                         );
                     });
 
-                    std::hint::black_box(())
+                    let _ = std::hint::black_box(());
                 })
             },
         );
@@ -182,56 +187,70 @@ fn bench_isolated_encode_format(c: &mut Criterion) {
 }
 
 // =============================================================================
-// ISOLATED FORMAT-ONLY BENCHMARK
-// Pre-encode bytes, format them N times
+// ENCODE + FORMAT BENCHMARK (full pipeline)
 // =============================================================================
 
-/// Layer that encodes once, then formats N times.
-struct IsolatedFormatLayer {
-    format_iterations: usize,
-    resource_bytes: Vec<u8>,
+/// Layer that encodes and formats N times (the full pipeline).
+struct EncodeFormatLayer {
+    iterations: usize,
 }
 
-impl IsolatedFormatLayer {
-    fn new(format_iterations: usize) -> Self {
-        Self {
-            format_iterations,
-            resource_bytes: encode_resource_bytes_from_attrs(&[
-                ("service.name", "benchmark"),
-            ]),
-        }
+impl EncodeFormatLayer {
+    fn new(iterations: usize) -> Self {
+        Self { iterations }
     }
 }
 
-impl<S> Layer<S> for IsolatedFormatLayer
+impl<S> Layer<S> for EncodeFormatLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        // Encode once using StatefulDirectEncoder to get full OTLP envelope
-        let mut encoder = StatefulDirectEncoder::new(4096, self.resource_bytes.clone());
-        encoder.encode_event(event);
-        let bytes = encoder.flush();
+        let metadata = event.metadata();
 
-        // Format N times
-        let formatter = OtlpBytesFormattingLayer::new(std::io::sink);
-        for _ in 0..self.format_iterations {
-            let _ = formatter.format_otlp_bytes(&bytes);
+        // Build cache with this callsite
+        let mut cache = CallsiteCache::new();
+        cache.register(metadata);
+
+        // Encode + format N times
+        for _ in 0..self.iterations {
+            let body_attrs_bytes = encode_body_and_attrs(event);
+            let timestamp_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+
+            let record = CompactLogRecord {
+                callsite_id: metadata.callsite(),
+                timestamp_ns,
+                severity_number: match *metadata.level() {
+                    Level::TRACE => 1,
+                    Level::DEBUG => 5,
+                    Level::INFO => 9,
+                    Level::WARN => 13,
+                    Level::ERROR => 17,
+                },
+                severity_text: metadata.level().as_str(),
+                body_attrs_bytes,
+            };
+
+            let line = format_log_record(&record, &cache, false);
+            let _ = std::hint::black_box(line);
         }
     }
 }
 
-/// Benchmark: Pure formatting cost (encode once, format N times)
-fn bench_isolated_format(c: &mut Criterion) {
-    let mut group = c.benchmark_group("format_otlp_only");
+/// Benchmark: Full encode + format pipeline
+fn bench_encode_format(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compact_encode_format");
 
     for iterations in [100, 1000].iter() {
         let _ = group.bench_with_input(
-            BenchmarkId::new("3_attrs", format!("{}_formats", iterations)),
+            BenchmarkId::new("3_attrs", format!("{}_events", iterations)),
             iterations,
             |b, &iters| {
                 b.iter(|| {
-                    let layer = IsolatedFormatLayer::new(iters);
+                    let layer = EncodeFormatLayer::new(iters);
                     let subscriber = tracing_subscriber::registry().with(layer);
                     let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -244,7 +263,7 @@ fn bench_isolated_format(c: &mut Criterion) {
                         );
                     });
 
-                    std::hint::black_box(())
+                    let _ = std::hint::black_box(());
                 })
             },
         );
@@ -257,45 +276,15 @@ fn bench_isolated_format(c: &mut Criterion) {
 // ATTRIBUTE COMPLEXITY BENCHMARK
 // =============================================================================
 
-/// Layer that encodes events with varying attribute counts.
-struct AttributeComplexityLayer {
-    iterations: usize,
-    resource_bytes: Vec<u8>,
-}
-
-impl AttributeComplexityLayer {
-    fn new(iterations: usize) -> Self {
-        Self {
-            iterations,
-            resource_bytes: encode_resource_bytes_from_attrs(&[
-                ("service.name", "benchmark"),
-            ]),
-        }
-    }
-}
-
-impl<S> Layer<S> for AttributeComplexityLayer
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-        for _ in 0..self.iterations {
-            let mut encoder = StatefulDirectEncoder::new(4096, self.resource_bytes.clone());
-            encoder.encode_event(event);
-            let _ = encoder.flush();
-        }
-    }
-}
-
 /// Benchmark: Encoding cost with different attribute counts
-fn bench_attribute_complexity(c: &mut Criterion) {
-    let mut group = c.benchmark_group("encode_otlp_by_attrs");
+fn bench_by_attr_count(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compact_format_by_attrs");
     let iterations = 1000;
 
     // No attributes
     let _ = group.bench_function("0_attrs/1000_events", |b| {
         b.iter(|| {
-            let layer = AttributeComplexityLayer::new(iterations);
+            let layer = EncodeFormatLayer::new(iterations);
             let subscriber = tracing_subscriber::registry().with(layer);
             let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -303,14 +292,14 @@ fn bench_attribute_complexity(c: &mut Criterion) {
                 tracing::info!("message only");
             });
 
-            std::hint::black_box(())
+            let _ = std::hint::black_box(());
         })
     });
 
     // 3 attributes
     let _ = group.bench_function("3_attrs/1000_events", |b| {
         b.iter(|| {
-            let layer = AttributeComplexityLayer::new(iterations);
+            let layer = EncodeFormatLayer::new(iterations);
             let subscriber = tracing_subscriber::registry().with(layer);
             let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -318,14 +307,14 @@ fn bench_attribute_complexity(c: &mut Criterion) {
                 tracing::info!(a1 = "value", a2 = 42, a3 = true, "with 3 attributes");
             });
 
-            std::hint::black_box(())
+            let _ = std::hint::black_box(());
         })
     });
 
     // 10 attributes
     let _ = group.bench_function("10_attrs/1000_events", |b| {
         b.iter(|| {
-            let layer = AttributeComplexityLayer::new(iterations);
+            let layer = EncodeFormatLayer::new(iterations);
             let subscriber = tracing_subscriber::registry().with(layer);
             let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -345,7 +334,7 @@ fn bench_attribute_complexity(c: &mut Criterion) {
                 );
             });
 
-            std::hint::black_box(())
+            let _ = std::hint::black_box(());
         })
     });
 
@@ -359,8 +348,7 @@ mod bench_entry {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_isolated_encode, bench_isolated_encode_format, 
-                  bench_isolated_format, bench_attribute_complexity
+        targets = bench_encode_only, bench_format_only, bench_encode_format, bench_by_attr_count
     );
 }
 
