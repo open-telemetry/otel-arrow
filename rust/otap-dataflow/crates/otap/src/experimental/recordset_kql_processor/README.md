@@ -1,8 +1,8 @@
 # EXPERIMENTAL KQL "RecordSet" Processor
 
-An OTAP-Dataflow processor that filters and transforms OpenTelemetry
-data using Kusto Query Language (KQL) expressions over OpenTelemetry data
-in an opinionated way.
+An OTAP-Dataflow processor that filters and transforms OpenTelemetry data using
+Kusto Query Language (KQL) expressions over OpenTelemetry data in an opinionated
+way.
 
 ## Caveats and notes
 
@@ -13,15 +13,16 @@ will be lower.
 ## Overview
 
 This processor integrates the experimental KQL "recordset" engine from
-`rust/experimental/query_engine` to enable powerful data
-transformations within OTAP pipelines.  This was developed as a prototype
-as we prepare for a direct column-oriented implementation, it is functional
-and production quality however not an optimized implementation.
+`rust/experimental/query_engine` to enable powerful data transformations within
+OTAP pipelines.  This was developed as a prototype as we prepare for a direct
+column-oriented implementation, it is functional and production quality however
+not an optimized implementation.
 
 ## Features
 
 - **Filters**: Use KQL `where` clauses to filter logs
-- **Transformations**: Apply KQL `extend` and `project` operations to modify data
+- **Transformations**: Apply KQL `extend` and `project` operations to modify
+  data
 - **Aggregations**: Perform KQL `summarize` operations for data aggregation
 
 ## Configuration
@@ -68,7 +69,8 @@ cargo build --features recordset-kql-processor
 
 ## Running the Demo
 
-A complete demo configuration is available at `configs/fake-kql-debug-noop.yaml`. Run it with:
+A complete demo configuration is available at
+`configs/fake-kql-debug-noop.yaml`. Run it with:
 
 ```bash
 cargo run --features recordset-kql-processor --bin df_engine -- --pipeline ./configs/fake-kql-debug-noop.yaml --num-cores 1
