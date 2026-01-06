@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use bytes::{BufMut, Bytes, BytesMut};
 use otap_df_pdata::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType},
@@ -8,101 +10,176 @@ use otap_df_pdata::views::{
     resource::ResourceView,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::config::{Config, SchemaConfig};
 
-const ATTRIBUTES_FIELD: &str = "attributes";
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
-/// Flat view of final log line: resource + scope + record
-#[derive(Serialize)]
-struct LogEntry<'a> {
-    #[serde(flatten)]
-    resource: &'a serde_json::Map<String, Value>,
-
-    #[serde(flatten)]
-    scope: &'a serde_json::Map<String, Value>,
-
-    #[serde(flatten)]
-    record: serde_json::Map<String, Value>,
+/// Pre-parsed field mapping for a log record field
+#[derive(Debug, Clone)]
+struct FieldMapping {
+    /// The source field name (e.g., "time_unix_nano", "body")
+    source: LogRecordField,
+    /// The destination field name in the output JSON
+    dest: String,
 }
 
-// TODO: Performance review and improvements
-// TODO: Make sure mapping of all fields are covered
+/// Enum representing known log record fields for fast matching
+#[derive(Debug, Clone, Copy)]
+enum LogRecordField {
+    TimeUnixNano,
+    ObservedTimeUnixNano,
+    TraceId,
+    SpanId,
+    Flags,
+    SeverityNumber,
+    SeverityText,
+    Body,
+}
+
+impl LogRecordField {
+    /// Parse a field name string into a LogRecordField enum
+    fn from_str(s: &str) -> Option<Self> {
+        if s.eq_ignore_ascii_case("time_unix_nano") {
+            Some(Self::TimeUnixNano)
+        } else if s.eq_ignore_ascii_case("observed_time_unix_nano") {
+            Some(Self::ObservedTimeUnixNano)
+        } else if s.eq_ignore_ascii_case("trace_id") {
+            Some(Self::TraceId)
+        } else if s.eq_ignore_ascii_case("span_id") {
+            Some(Self::SpanId)
+        } else if s.eq_ignore_ascii_case("flags") {
+            Some(Self::Flags)
+        } else if s.eq_ignore_ascii_case("severity_number") {
+            Some(Self::SeverityNumber)
+        } else if s.eq_ignore_ascii_case("severity_text") {
+            Some(Self::SeverityText)
+        } else if s.eq_ignore_ascii_case("body") {
+            Some(Self::Body)
+        } else {
+            None
+        }
+    }
+}
+
+/// Pre-parsed schema configuration for faster runtime processing
+#[derive(Debug, Clone)]
+struct ParsedSchema {
+    /// Resource attribute mappings (source -> dest)
+    resource_mapping: HashMap<String, String>,
+    /// Scope attribute mappings (source -> dest)
+    scope_mapping: HashMap<String, String>,
+    /// Pre-parsed log record field mappings
+    field_mappings: Vec<FieldMapping>,
+    /// Pre-parsed attribute mappings (source attr -> dest field)
+    attribute_mapping: HashMap<String, String>,
+}
+
+impl ParsedSchema {
+    fn from_config(schema: &SchemaConfig) -> Result<Self, String> {
+        let mut field_mappings = Vec::new();
+        let mut attribute_mapping = HashMap::new();
+
+        for (key, value) in &schema.log_record_mapping {
+            if key.eq_ignore_ascii_case("attributes") {
+                // Parse attribute mappings
+                if let Some(attr_map) = value.as_object() {
+                    for (attr_key, attr_dest) in attr_map {
+                        let dest = attr_dest
+                            .as_str()
+                            .map(String::from)
+                            .unwrap_or_else(|| attr_dest.to_string());
+                        _ = attribute_mapping.insert(attr_key.clone(), dest);
+                    }
+                }
+            } else {
+                // Parse field mapping
+                let source = LogRecordField::from_str(key)
+                    .ok_or_else(|| format!("Unknown log record field: {key}"))?;
+                let dest = value
+                    .as_str()
+                    .ok_or_else(|| format!("Field mapping for '{key}' must be a string"))?
+                    .to_string();
+                field_mappings.push(FieldMapping { source, dest });
+            }
+        }
+
+        Ok(Self {
+            resource_mapping: schema.resource_mapping.clone(),
+            scope_mapping: schema.scope_mapping.clone(),
+            field_mappings,
+            attribute_mapping,
+        })
+    }
+}
+
 /// Converts OTLP logs to Azure Log Analytics format
 pub struct Transformer {
-    schema: SchemaConfig,
+    schema: ParsedSchema,
 }
 
 #[allow(clippy::print_stdout)]
 impl Transformer {
     /// Create a new Transformer with the given configuration
+    /// 
+    /// # Panics
+    /// Panics if the schema configuration contains invalid field names
     #[must_use]
     pub fn new(config: &Config) -> Self {
         Self {
-            schema: config.api.schema.clone(),
+            schema: ParsedSchema::from_config(&config.api.schema)
+                .expect("Invalid schema configuration"),
         }
+    }
+
+    /// Create a new Transformer, returning an error if configuration is invalid
+    pub fn try_new(config: &Config) -> Result<Self, String> {
+        Ok(Self {
+            schema: ParsedSchema::from_config(&config.api.schema)?,
+        })
     }
 
     /// High-perf, single-threaded: one reusable BytesMut, grows to max size, no extra copies.
     /// Now accepts any type implementing `LogsDataView` (both `OtapLogsView` and `RawLogsData`).
     #[must_use]
     pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
-        let mut results = Vec::new();
-        let mut buf = BytesMut::with_capacity(512);
+        let mut results = Vec::with_capacity(1024);
+        let mut buf = BytesMut::with_capacity(2048);
+        let mut record_map = serde_json::Map::new();
 
         for resource_logs in logs_view.resources() {
-            let resource_attrs = if self.schema.disable_schema_mapping {
-                serde_json::Map::new()
-            } else {
-                resource_logs
-                    .resource()
-                    .map(|r| self.apply_resource_mapping(&r))
-                    .unwrap_or_default()
-            };
-
             for scope_logs in resource_logs.scopes() {
-                let scope_attrs = if self.schema.disable_schema_mapping {
-                    serde_json::Map::new()
-                } else {
-                    scope_logs
-                        .scope()
-                        .map(|s| self.apply_scope_mapping(&s))
-                        .unwrap_or_default()
-                };
-
                 for log_record in scope_logs.log_records() {
-                    let record_map = if self.schema.disable_schema_mapping {
-                        Self::legacy_transform_to_map(&log_record)
-                    } else {
-                        match self.transform_log_record_to_map(&log_record) {
-                            Ok(m) => m,
-                            Err(e) => {
-                                println!(
-                                    "[AzureMonitorExporter] Skipping log record due to transformation error: {e}"
-                                );
-                                continue;
-                            }
-                        }
-                    };
+                    record_map.clear();
+                    
+                    // normally config should be validated to avoid duplicate keys, but if that
+                    // ever happens for any reason such as a bug, then the logic below ensures that
+                    // the lowest level fields override the higher level ones.
 
-                    let entry = LogEntry {
-                        resource: &resource_attrs,
-                        scope: &scope_attrs,
-                        record: record_map,
-                    };
+                    // apply resource mapping first to allow scope to override if needed
+                    if let Some(r) = resource_logs.resource() {
+                        self.apply_resource_mapping(&r, &mut record_map);
+                    }
+
+                    // apply scope mapping next to allow log record to override if needed
+                    if let Some(s) = scope_logs.scope() {
+                        self.apply_scope_mapping(&s, &mut record_map);
+                    }
+
+                    self.transform_log_record_to_map(&log_record, &mut record_map);
 
                     buf.clear();
                     {
                         let writer = (&mut buf).writer();
                         let mut ser = serde_json::Serializer::new(writer);
-                        if let Err(e) = entry.serialize(&mut ser) {
+                        if let Err(e) = record_map.serialize(&mut ser) {
                             println!("Failed to serialize log entry: {e}");
                             continue;
                         }
                     }
-                    results.push(buf.clone().freeze());
+
+                    results.push(buf.split().freeze());
                 }
             }
         }
@@ -110,142 +187,100 @@ impl Transformer {
         results
     }
 
-    /// Legacy transform when schema mapping is disabled
-    fn legacy_transform_to_map<R: LogRecordView>(log_record: &R) -> serde_json::Map<String, Value> {
-        let mut map = serde_json::Map::new();
-
-        let timestamp = log_record
-            .time_unix_nano()
-            .filter(|&ts| ts != 0)
-            .or_else(|| log_record.observed_time_unix_nano())
-            .unwrap_or(0);
-
-        _ = map.insert(
-            "TimeGenerated".into(),
-            json!(Self::format_timestamp(timestamp)),
-        );
-
-        if let Some(body) = log_record.body() {
-            _ = map.insert("RawData".into(), json!(Self::extract_string_value(&body)));
-        }
-
-        map
-    }
-
     /// Apply resource mapping based on configuration
     fn apply_resource_mapping<R: ResourceView>(
         &self,
         resource: &R,
-    ) -> serde_json::Map<String, Value> {
-        let mut attrs = serde_json::Map::new();
-
+        map: &mut serde_json::Map<String, Value>,
+    ) {
         for attr in resource.attributes() {
-            let key = Self::str_to_string(attr.key());
-            if let Some(mapped_name) = self.schema.resource_mapping.get(&key) {
+            let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
+            if let Some(mapped_name) = self.schema.resource_mapping.get(key.as_ref()) {
                 if let Some(value) = attr.value() {
-                    _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(&value));
+                    _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
                 }
             }
         }
-
-        attrs
     }
 
     /// Apply scope mapping based on configuration
     fn apply_scope_mapping<S: InstrumentationScopeView>(
         &self,
         scope: &S,
-    ) -> serde_json::Map<String, Value> {
-        let mut attrs = serde_json::Map::new();
-
+        map: &mut serde_json::Map<String, Value>,
+    ) {
         for attr in scope.attributes() {
-            let key = Self::str_to_string(attr.key());
-            if let Some(mapped_name) = self.schema.scope_mapping.get(&key) {
+            let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
+            if let Some(mapped_name) = self.schema.scope_mapping.get(key.as_ref()) {
                 if let Some(value) = attr.value() {
-                    _ = attrs.insert(mapped_name.clone(), Self::convert_any_value(&value));
+                    _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
                 }
             }
         }
-
-        attrs
     }
 
-    /// Transform log record fields into a Map
+    /// Transform log record fields into a Map (no longer returns Result - validation done at construction)
     fn transform_log_record_to_map<R: LogRecordView>(
         &self,
         log_record: &R,
-    ) -> Result<serde_json::Map<String, Value>, String> {
-        let mut map = serde_json::Map::new();
-
-        for (key, value) in &self.schema.log_record_mapping {
-            if key == ATTRIBUTES_FIELD {
-                self.map_attributes(&mut map, log_record, value)?;
-            } else {
-                let field_name = value
-                    .as_str()
-                    .ok_or("Field mapping value must be a string")?;
-                let extracted = Self::extract_field_value(key, log_record)?;
-                _ = map.insert(field_name.into(), extracted);
-            }
+        map: &mut serde_json::Map<String, Value>,
+    ) {
+        // Process pre-parsed field mappings
+        for field_mapping in &self.schema.field_mappings {
+            let value = Self::extract_field_value(field_mapping.source, log_record);
+            _ = map.insert(field_mapping.dest.clone(), value);
         }
 
-        Ok(map)
-    }
-
-    /// Map log record attributes based on attr_mapping config
-    fn map_attributes<R: LogRecordView>(
-        &self,
-        dest: &mut serde_json::Map<String, Value>,
-        log_record: &R,
-        attr_mapping_value: &Value,
-    ) -> Result<(), String> {
-        let Some(attr_mapping) = attr_mapping_value.as_object() else {
-            return Ok(());
-        };
-
-        for attr in log_record.attributes() {
-            let attr_key = Self::str_to_string(attr.key());
-            if let Some(mapped_field) = attr_mapping.get(&attr_key) {
-                if let Some(val) = attr.value() {
-                    let field_name = mapped_field
-                        .as_str()
-                        .map(String::from)
-                        .unwrap_or_else(|| mapped_field.to_string());
-                    _ = dest.insert(field_name, Self::convert_any_value(&val));
+        // Process attribute mappings
+        if !self.schema.attribute_mapping.is_empty() {
+            for attr in log_record.attributes() {
+                let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
+                if let Some(dest_field) = self.schema.attribute_mapping.get(attr_key.as_ref()) {
+                    if let Some(val) = attr.value() {
+                        _ = map.insert(dest_field.clone(), Self::convert_any_value(&val));
+                    }
                 }
             }
         }
-
-        Ok(())
     }
 
-    /// Extract value from log record by field name
-    fn extract_field_value<R: LogRecordView>(key: &str, log_record: &R) -> Result<Value, String> {
-        match key.to_lowercase().as_str() {
-            "time_unix_nano" => Ok(json!(Self::format_timestamp(
-                log_record.time_unix_nano().unwrap_or(0)
-            ))),
-            "observed_time_unix_nano" => Ok(json!(Self::format_timestamp(
-                log_record.observed_time_unix_nano().unwrap_or(0)
-            ))),
-            "trace_id" => Ok(log_record
-                .trace_id()
-                .map(|id| json!(Self::bytes_to_hex(id)))
-                .unwrap_or(Value::Null)),
-            "span_id" => Ok(log_record
-                .span_id()
-                .map(|id| json!(Self::bytes_to_hex(id)))
-                .unwrap_or(Value::Null)),
-            "flags" => Ok(json!(log_record.flags().unwrap_or(0))),
-            "severity_number" => Ok(json!(log_record.severity_number().unwrap_or(0) as i64)),
-            "severity_text" => Ok(json!(Self::str_to_string(
-                log_record.severity_text().unwrap_or(b"")
-            ))),
-            "body" => Ok(log_record
-                .body()
-                .map(|b| json!(Self::extract_string_value(&b)))
-                .unwrap_or(Value::Null)),
-            _ => Err(format!("Unknown field name: {key}")),
+    /// Extract value from log record by pre-parsed field enum (no string comparison needed)
+    #[inline]
+    fn extract_field_value<R: LogRecordView>(field: LogRecordField, log_record: &R) -> Value {
+        match field {
+            LogRecordField::TimeUnixNano => {
+                Value::String(Self::format_timestamp(log_record.time_unix_nano().unwrap_or(0)))
+            }
+            LogRecordField::ObservedTimeUnixNano => {
+                Value::String(Self::format_timestamp(log_record.observed_time_unix_nano().unwrap_or(0)))
+            }
+            LogRecordField::TraceId => {
+                log_record
+                    .trace_id()
+                    .map(|id| Value::String(Self::bytes_to_hex(id)))
+                    .unwrap_or(Value::Null)
+            }
+            LogRecordField::SpanId => {
+                log_record
+                    .span_id()
+                    .map(|id| Value::String(Self::bytes_to_hex(id)))
+                    .unwrap_or(Value::Null)
+            }
+            LogRecordField::Flags => {
+                Value::Number(log_record.flags().unwrap_or(0).into())
+            }
+            LogRecordField::SeverityNumber => {
+                Value::Number((log_record.severity_number().unwrap_or(0) as i64).into())
+            }
+            LogRecordField::SeverityText => {
+                Value::String(Self::str_to_string(log_record.severity_text().unwrap_or(b"")))
+            }
+            LogRecordField::Body => {
+                log_record
+                    .body()
+                    .map(|b| Value::String(Self::extract_string_value(&b)))
+                    .unwrap_or(Value::Null)
+            }
         }
     }
 
@@ -282,20 +317,17 @@ impl Transformer {
     /// Convert AnyValueView to serde_json::Value
     fn convert_any_value<'a, V: AnyValueView<'a>>(value: &V) -> Value {
         match value.value_type() {
-            ValueType::String => json!(Self::str_to_string(value.as_string().unwrap_or(b""))),
-            ValueType::Int64 => json!(value.as_int64().unwrap_or(0)),
-            ValueType::Double => json!(value.as_double().unwrap_or(0.0)),
-            ValueType::Bool => json!(value.as_bool().unwrap_or(false)),
-            ValueType::Bytes => json!(Self::bytes_to_hex(value.as_bytes().unwrap_or(&[]))),
+            ValueType::String => Value::String(Self::str_to_string(value.as_string().unwrap_or(b""))),
+            ValueType::Int64 => Value::Number(value.as_int64().unwrap_or(0).into()),
+            ValueType::Double => serde_json::Number::from_f64(value.as_double().unwrap_or(0.0))
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
+            ValueType::Bool => Value::Bool(value.as_bool().unwrap_or(false)),
+            ValueType::Bytes => Value::String(Self::bytes_to_hex(value.as_bytes().unwrap_or(&[]))),
             ValueType::Array => value
                 .as_array()
-                .map(|iter| {
-                    json!(
-                        iter.map(|v| Self::convert_any_value(&v))
-                            .collect::<Vec<_>>()
-                    )
-                })
-                .unwrap_or(json!([])),
+                .map(|iter| Value::Array(iter.map(|v| Self::convert_any_value(&v)).collect()))
+                .unwrap_or_else(|| Value::Array(Vec::new())),
             ValueType::KeyValueList => value
                 .as_kvlist()
                 .map(|iter| {
@@ -308,7 +340,7 @@ impl Transformer {
                         .collect();
                     Value::Object(map)
                 })
-                .unwrap_or(json!({})),
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
             ValueType::Empty => Value::Null,
         }
     }
@@ -349,8 +381,9 @@ mod tests {
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
     use prost::Message;
     use std::collections::HashMap;
+    use serde_json::json;
 
-    fn create_test_config(disable_mapping: bool) -> Config {
+    fn create_test_config() -> Config {
         use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
 
         Config {
@@ -359,7 +392,6 @@ mod tests {
                 stream_name: "test-stream".into(),
                 dcr: "test-dcr".into(),
                 schema: SchemaConfig {
-                    disable_schema_mapping: disable_mapping,
                     resource_mapping: HashMap::from([(
                         "service.name".into(),
                         "ServiceName".into(),
@@ -377,42 +409,8 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_transform() {
-        let config = create_test_config(true);
-        let transformer = Transformer::new(&config);
-
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: None,
-                scope_logs: vec![ScopeLogs {
-                    scope: None,
-                    log_records: vec![LogRecord {
-                        time_unix_nano: 1_000_000_000,
-                        observed_time_unix_nano: 2_000_000_000,
-                        body: Some(AnyValue {
-                            value: Some(OtelAnyValueEnum::StringValue("test body".into())),
-                        }),
-                        ..Default::default()
-                    }],
-                    schema_url: String::new(),
-                }],
-                schema_url: String::new(),
-            }],
-        };
-
-        let bytes = request.encode_to_vec();
-        let logs_view = RawLogsData::new(&bytes);
-        let result = transformer.convert_to_log_analytics(&logs_view);
-
-        assert_eq!(result.len(), 1);
-        let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        assert!(json["TimeGenerated"].as_str().is_some());
-        assert_eq!(json["RawData"], "test body");
-    }
-
-    #[test]
     fn test_schema_mapping() {
-        let config = create_test_config(false);
+        let config = create_test_config();
         let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
@@ -473,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_all_log_record_fields() {
-        let mut config = create_test_config(false);
+        let mut config = create_test_config();
         config.api.schema.log_record_mapping = HashMap::from([
             ("time_unix_nano".to_string(), json!("Time")),
             ("observed_time_unix_nano".to_string(), json!("ObservedTime")),
@@ -526,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_any_value_types() {
-        let config = create_test_config(false);
+        let config = create_test_config();
         let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
@@ -564,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_kvlist_value() {
-        let config = create_test_config(false);
+        let config = create_test_config();
         let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
@@ -600,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_empty_values() {
-        let mut config = create_test_config(false);
+        let mut config = create_test_config();
         _ = config
             .api
             .schema
@@ -647,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_invalid_mapping_error() {
-        let mut config = create_test_config(false);
+        let mut config = create_test_config();
         _ = config
             .api
             .schema
@@ -678,33 +676,5 @@ mod tests {
     fn test_zero_timestamp() {
         let timestamp = Transformer::format_timestamp(0);
         assert!(timestamp.contains('T'));
-    }
-
-    #[test]
-    fn test_observed_time_fallback() {
-        let config = create_test_config(true);
-        let transformer = Transformer::new(&config);
-
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: None,
-                scope_logs: vec![ScopeLogs {
-                    scope: None,
-                    log_records: vec![LogRecord {
-                        time_unix_nano: 0,
-                        observed_time_unix_nano: 3_000_000_000,
-                        ..Default::default()
-                    }],
-                    schema_url: String::new(),
-                }],
-                schema_url: String::new(),
-            }],
-        };
-
-        let bytes = request.encode_to_vec();
-        let logs_view = RawLogsData::new(&bytes);
-        let result = transformer.convert_to_log_analytics(&logs_view);
-        let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        assert!(json["TimeGenerated"].as_str().unwrap().contains("1970"));
     }
 }

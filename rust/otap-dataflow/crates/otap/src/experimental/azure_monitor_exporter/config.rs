@@ -93,10 +93,6 @@ pub struct SchemaConfig {
     /// Log record field mappings
     #[serde(default)]
     pub log_record_mapping: HashMap<String, Value>,
-
-    /// Disable automatic schema mapping
-    #[serde(default)]
-    pub disable_schema_mapping: bool,
 }
 
 impl Config {
