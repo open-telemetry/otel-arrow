@@ -657,19 +657,11 @@ mod tests {
                     &StringValue("world!".to_string())
                 );
                 assert!(
-                    log_record
-                        .attributes
-                        .iter()
-                        .find(|kv| kv.key == "Bar")
-                        .is_none(),
+                    !log_record.attributes.iter().any(|kv| kv.key == "Bar"),
                     "Bar should not exist"
                 );
                 assert!(
-                    log_record
-                        .attributes
-                        .iter()
-                        .find(|kv| kv.key == "Baz")
-                        .is_none(),
+                    !log_record.attributes.iter().any(|kv| kv.key == "Baz"),
                     "Baz should not exist"
                 );
             },
@@ -696,19 +688,11 @@ mod tests {
                     &StringValue("hello".to_string())
                 );
                 assert!(
-                    log_record
-                        .attributes
-                        .iter()
-                        .find(|kv| kv.key == "Bar")
-                        .is_none(),
+                    !log_record.attributes.iter().any(|kv| kv.key == "Bar"),
                     "Bar should be removed"
                 );
                 assert!(
-                    log_record
-                        .attributes
-                        .iter()
-                        .find(|kv| kv.key == "Baz")
-                        .is_none(),
+                    !log_record.attributes.iter().any(|kv| kv.key == "Baz"),
                     "Baz should be removed"
                 );
             },
@@ -743,19 +727,11 @@ mod tests {
                     &StringValue("world".to_string())
                 );
                 assert!(
-                    log_record
-                        .attributes
-                        .iter()
-                        .find(|kv| kv.key == "Foo")
-                        .is_none(),
+                    !log_record.attributes.iter().any(|kv| kv.key == "Foo"),
                     "Foo should be renamed"
                 );
                 assert!(
-                    log_record
-                        .attributes
-                        .iter()
-                        .find(|kv| kv.key == "Bar")
-                        .is_none(),
+                    !log_record.attributes.iter().any(|kv| kv.key == "Bar"),
                     "Bar should be renamed"
                 );
             },
