@@ -10,8 +10,9 @@ pub mod subscriber;
 
 // New direct encoder exports (preferred for zero-allocation encoding)
 pub use direct_encoder::{
-    DirectLogRecordEncoder, LengthPlaceholder, ProtoBuffer, StatefulDirectEncoder,
-    encode_resource_bytes_from_attrs,
+    DirectFieldVisitor, DirectLogRecordEncoder, LengthPlaceholder, ProtoBuffer,
+    StatefulDirectEncoder, encode_len_placeholder, encode_resource_bytes_from_attrs,
+    patch_len_placeholder,
 };
 
 // Legacy View-based exports (for compatibility)

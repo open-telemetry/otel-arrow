@@ -30,7 +30,7 @@ use std::fmt;
 use std::fmt::Write;
 use std::sync::LazyLock;
 
-pub(in crate::otlp) struct ResourceArrays<'a> {
+pub(crate) struct ResourceArrays<'a> {
     pub id: Option<&'a UInt16Array>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
     pub schema_url: Option<StringArrayAccessor<'a>>,
@@ -123,7 +123,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     }
 }
 
-pub(in crate::otlp) struct ScopeArrays<'a> {
+pub(crate) struct ScopeArrays<'a> {
     pub name: Option<StringArrayAccessor<'a>>,
     pub version: Option<StringArrayAccessor<'a>>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,

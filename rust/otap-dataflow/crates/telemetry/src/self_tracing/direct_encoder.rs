@@ -25,6 +25,7 @@
 //! `StatefulDirectEncoder` which maintains open ResourceLogs/ScopeLogs containers.
 
 use bytes::Bytes;
+use std::fmt::Write as FmtWrite;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{Event, Level};
 
@@ -55,6 +56,22 @@ impl LengthPlaceholder {
     pub fn patch(self, buf: &mut ProtoBuffer) {
         let content_len = buf.len() - self.position - 4;
         patch_len_placeholder(buf, 4, content_len, self.position);
+    }
+}
+
+/// Wrapper for ProtoBuffer that implements `std::fmt::Write`.
+///
+/// This allows direct formatting of `Debug` values into the protobuf buffer
+/// without allocating an intermediate `String`.
+struct ProtoBufferWriter<'a> {
+    buf: &'a mut ProtoBuffer,
+}
+
+impl FmtWrite for ProtoBufferWriter<'_> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.buf.extend_from_slice(s.as_bytes());
+        Ok(())
     }
 }
 
@@ -155,18 +172,19 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
 /// This is the core of the zero-allocation design: instead of collecting
 /// field values into an intermediate data structure, we encode them directly
 /// to the protobuf buffer as we visit them.
-struct DirectFieldVisitor<'buf> {
+pub struct DirectFieldVisitor<'buf> {
     buf: &'buf mut ProtoBuffer,
 }
 
 impl<'buf> DirectFieldVisitor<'buf> {
-    fn new(buf: &'buf mut ProtoBuffer) -> Self {
+    /// Create a new DirectFieldVisitor that writes to the provided buffer.
+    pub fn new(buf: &'buf mut ProtoBuffer) -> Self {
         Self { buf }
     }
 
     /// Encode an attribute (KeyValue message) with a string value.
     #[inline]
-    fn encode_string_attribute(&mut self, key: &str, value: &str) {
+    pub fn encode_string_attribute(&mut self, key: &str, value: &str) {
         // KeyValue message as LOG_RECORD_ATTRIBUTES field (tag 6)
         self.buf.encode_field_tag(LOG_RECORD_ATTRIBUTES, wire_types::LEN);
         let kv_placeholder = LengthPlaceholder::new(self.buf.len());
@@ -189,7 +207,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
 
     /// Encode an attribute with an i64 value.
     #[inline]
-    fn encode_int_attribute(&mut self, key: &str, value: i64) {
+    pub fn encode_int_attribute(&mut self, key: &str, value: i64) {
         self.buf.encode_field_tag(LOG_RECORD_ATTRIBUTES, wire_types::LEN);
         let kv_placeholder = LengthPlaceholder::new(self.buf.len());
         encode_len_placeholder(self.buf);
@@ -210,7 +228,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
 
     /// Encode an attribute with a bool value.
     #[inline]
-    fn encode_bool_attribute(&mut self, key: &str, value: bool) {
+    pub fn encode_bool_attribute(&mut self, key: &str, value: bool) {
         self.buf.encode_field_tag(LOG_RECORD_ATTRIBUTES, wire_types::LEN);
         let kv_placeholder = LengthPlaceholder::new(self.buf.len());
         encode_len_placeholder(self.buf);
@@ -231,7 +249,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
 
     /// Encode an attribute with a double value.
     #[inline]
-    fn encode_double_attribute(&mut self, key: &str, value: f64) {
+    pub fn encode_double_attribute(&mut self, key: &str, value: f64) {
         self.buf.encode_field_tag(LOG_RECORD_ATTRIBUTES, wire_types::LEN);
         let kv_placeholder = LengthPlaceholder::new(self.buf.len());
         encode_len_placeholder(self.buf);
@@ -252,7 +270,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
 
     /// Encode the body (AnyValue message) as a string.
     #[inline]
-    fn encode_body_string(&mut self, value: &str) {
+    pub fn encode_body_string(&mut self, value: &str) {
         // LogRecord.body (field 5, AnyValue message)
         self.buf.encode_field_tag(LOG_RECORD_BODY, wire_types::LEN);
         let placeholder = LengthPlaceholder::new(self.buf.len());
@@ -262,6 +280,57 @@ impl<'buf> DirectFieldVisitor<'buf> {
         self.buf.encode_string(ANY_VALUE_STRING_VALUE, value);
         
         placeholder.patch(self.buf);
+    }
+
+    /// Encode the body (AnyValue message) from a Debug value without allocation.
+    #[inline]
+    pub fn encode_body_debug(&mut self, value: &dyn std::fmt::Debug) {
+        // LogRecord.body (field 5, AnyValue message)
+        self.buf.encode_field_tag(LOG_RECORD_BODY, wire_types::LEN);
+        let body_placeholder = LengthPlaceholder::new(self.buf.len());
+        encode_len_placeholder(self.buf);
+        
+        // AnyValue.string_value (field 1, string)
+        self.buf.encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN);
+        let string_placeholder = LengthPlaceholder::new(self.buf.len());
+        encode_len_placeholder(self.buf);
+        
+        // Write Debug output directly to buffer
+        let mut writer = ProtoBufferWriter { buf: self.buf };
+        let _ = write!(writer, "{:?}", value);
+        
+        string_placeholder.patch(self.buf);
+        body_placeholder.patch(self.buf);
+    }
+
+    /// Encode an attribute with a Debug value without allocation.
+    #[inline]
+    pub fn encode_debug_attribute(&mut self, key: &str, value: &dyn std::fmt::Debug) {
+        // KeyValue message as LOG_RECORD_ATTRIBUTES field (tag 6)
+        self.buf.encode_field_tag(LOG_RECORD_ATTRIBUTES, wire_types::LEN);
+        let kv_placeholder = LengthPlaceholder::new(self.buf.len());
+        encode_len_placeholder(self.buf);
+        
+        // KeyValue.key (field 1, string)
+        self.buf.encode_string(KEY_VALUE_KEY, key);
+        
+        // KeyValue.value (field 2, AnyValue message)
+        self.buf.encode_field_tag(KEY_VALUE_VALUE, wire_types::LEN);
+        let av_placeholder = LengthPlaceholder::new(self.buf.len());
+        encode_len_placeholder(self.buf);
+        
+        // AnyValue.string_value (field 1, string)
+        self.buf.encode_field_tag(ANY_VALUE_STRING_VALUE, wire_types::LEN);
+        let string_placeholder = LengthPlaceholder::new(self.buf.len());
+        encode_len_placeholder(self.buf);
+        
+        // Write Debug output directly to buffer
+        let mut writer = ProtoBufferWriter { buf: self.buf };
+        let _ = write!(writer, "{:?}", value);
+        
+        string_placeholder.patch(self.buf);
+        av_placeholder.patch(self.buf);
+        kv_placeholder.patch(self.buf);
     }
 }
 
@@ -304,14 +373,25 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        // For Debug fields, we must allocate a String to format
-        // This is unavoidable without a custom fmt::Write implementation for ProtoBuffer
-        let formatted = format!("{:?}", value);
+        // Zero-allocation path: write Debug output directly to protobuf buffer.
+        //
+        // Note: This method is only called for types that don't implement the specific
+        // Visit methods (record_i64, record_f64, record_bool, record_str). Primitives
+        // are encoded as native OTLP AnyValue types (int_value, double_value, etc.),
+        // preserving type fidelity. Only complex types fall through to this Debug path.
+        //
+        // TODO: The Debug trait only provides string formatting, not structural access.
+        // std::fmt::Formatter is opaque with no public constructor, so we cannot intercept
+        // the debug_struct/debug_list/field calls to encode as nested OTLP AnyValue messages.
+        // To support structured encoding, types would need to implement an alternative trait:
+        // - `serde::Serialize` → encode to AnyValue::kvlist_value / array_value
+        // - `valuable::Valuable` → designed for structured inspection (limited adoption)
+        // - `tracing::Value` → unstable, may provide this in the future
         if field.name() == "message" {
-            self.encode_body_string(&formatted);
-            return;
+            self.encode_body_debug(value);
+        } else {
+            self.encode_debug_attribute(field.name(), value);
         }
-        self.encode_string_attribute(field.name(), &formatted);
     }
 }
 

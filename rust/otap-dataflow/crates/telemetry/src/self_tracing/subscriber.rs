@@ -115,60 +115,12 @@ where
         (self.on_event)(log_record);
     }
 
-    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, _ctx: Context<'_, S>) {
-        // TODO
-
-        // let timestamp_nanos = SystemTime::now()
-        //     .duration_since(UNIX_EPOCH)
-        //     .unwrap_or_default()
-        //     .as_nanos() as u64;
-
-        // // Extract fields from span attributes
-        // let mut visitor = FieldVisitor::new();
-        // attrs.record(&mut visitor);
-
-        // let metadata = attrs.metadata();
-        // let span_id = id.into_u64();
-
-        // let mut attributes: Vec<TracingAttribute<'_>> = data
-        //     .attr_keys
-        //     .iter()
-        //     .zip(data.attr_values.iter())
-        //     .map(|(key, value)| TracingAttribute {
-        //         key,
-        //         value: value.as_borrowed(),
-        //     })
-        //     .collect();
-
-        // // Add span.id and span.name as attributes
-        // let span_id_value = TracingAnyValue::Int(span_id as i64);
-        // let span_name_value = TracingAnyValue::Str(data.name);
-
-        // attributes.push(TracingAttribute {
-        //     key: "span.id",
-        //     value: span_id_value,
-        // });
-        // attributes.push(TracingAttribute {
-        //     key: "span.name",
-        //     value: span_name_value,
-        // });
-
-        // // Create "span.start" log record
-        // let message_ref = visitor.message.as_deref().unwrap_or("");
-        // let log_record = TracingLogRecord::new_with_event_name(
-        //     metadata,
-        //     attributes,
-        //     timestamp_nanos,
-        //     "span.start",
-        // )
-        // .with_body(message_ref);
-
-        // // Invoke callback with span start event
-        // (self.on_event)(log_record);
+    fn on_new_span(&self, _attrs: &Attributes<'_>, _id: &Id, _ctx: Context<'_, S>) {
+        // TODO: emit an event
     }
 
-    fn on_close(&self, id: Id, _ctx: Context<'_, S>) {
-        // TODO
+    fn on_close(&self, _id: Id, _ctx: Context<'_, S>) {
+        // TODO: emit an event
     }
 }
 
