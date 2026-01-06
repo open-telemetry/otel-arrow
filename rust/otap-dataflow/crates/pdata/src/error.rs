@@ -176,4 +176,7 @@ pub enum Error {
         #[from]
         error: crate::encode::Error,
     },
+
+    #[error("Format error: {}", error)]
+    Format { error: String },
 }
