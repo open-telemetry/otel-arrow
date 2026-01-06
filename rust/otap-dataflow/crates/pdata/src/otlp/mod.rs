@@ -9,20 +9,20 @@ use crate::{error::Result, otap::OtapArrowRecords};
 use bytes::Bytes;
 use otap_df_config::SignalType;
 
-pub use common::ProtoBuffer;
+pub use common::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
 pub use otap_df_pdata_otlp_macros::Message; // Required for derived code
 pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
 
 /// Common methods for OTLP/OTAP attributes.
 pub mod attributes;
+/// Common utilities for protobuf encoding.
+pub mod common;
 /// Common methods for OTLP/OTAP logs.
 pub mod logs;
 /// Common methods for OTLP/OTAP metrics.
 pub mod metrics;
 /// Common methods for OTLP/OTAP traces.
 pub mod traces;
-
-mod common;
 #[cfg(test)]
 mod tests;
 

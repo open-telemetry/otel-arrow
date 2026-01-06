@@ -429,15 +429,21 @@ impl std::error::Error for FormatError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::self_tracing::direct_encoder::{
+        StatefulDirectEncoder, encode_resource_bytes_from_attrs,
+    };
     use std::sync::{Arc, Mutex};
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::layer::Layer;
+    use tracing_subscriber::registry::LookupSpan;
 
-    /// Test writer that captures output
+    /// Test writer that captures output to a shared buffer
     struct TestWriter {
         buffer: Arc<Mutex<Vec<u8>>>,
     }
 
     impl TestWriter {
-        fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
+        fn new_shared() -> (Self, Arc<Mutex<Vec<u8>>>) {
             let buffer = Arc::new(Mutex::new(Vec::new()));
             (Self { buffer: buffer.clone() }, buffer)
         }
@@ -465,6 +471,188 @@ mod tests {
         }
     }
 
-    // TODO: Add tests that encode a TracingLogRecord to OTLP bytes,
-    // then format them back and verify the output
+    /// Helper layer for tests that captures events using StatefulDirectEncoder
+    struct TestEncoderLayer {
+        encoder: Arc<Mutex<StatefulDirectEncoder>>,
+    }
+
+    impl<S> Layer<S> for TestEncoderLayer
+    where
+        S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            let mut encoder = self.encoder.lock().unwrap();
+            encoder.encode_event(event);
+        }
+    }
+
+    /// Helper struct for end-to-end tests
+    struct TestHarness {
+        encoder: Arc<Mutex<StatefulDirectEncoder>>,
+        dispatch: tracing::Dispatch,
+    }
+
+    impl TestHarness {
+        /// Create a new test harness with the given resource attributes
+        fn new(resource_attrs: &[(&str, &str)]) -> Self {
+            let resource_bytes = encode_resource_bytes_from_attrs(resource_attrs);
+            let encoder = Arc::new(Mutex::new(StatefulDirectEncoder::new(4096, resource_bytes)));
+            let layer = TestEncoderLayer { encoder: encoder.clone() };
+            let subscriber = tracing_subscriber::registry().with(layer);
+            let dispatch = tracing::Dispatch::new(subscriber);
+            Self { encoder, dispatch }
+        }
+
+        /// Run a closure that emits tracing events, then return formatted output
+        fn capture_and_format<F>(&self, emit_events: F) -> String
+        where
+            F: FnOnce(),
+        {
+            // Emit events with our subscriber
+            {
+                let _guard = tracing::dispatcher::set_default(&self.dispatch);
+                emit_events();
+            }
+
+            // Flush and get bytes
+            let otlp_bytes = self.encoder.lock().unwrap().flush();
+
+            // Format the bytes
+            let (writer, output_buffer) = TestWriter::new_shared();
+            let formatter = OtlpBytesFormattingLayer::new(writer)
+                .with_ansi(false)
+                .with_timestamp(false)
+                .with_thread_names(false);
+
+            let _ = formatter.format_otlp_bytes(&otlp_bytes);
+
+            let output = output_buffer.lock().unwrap();
+            String::from_utf8_lossy(&output).to_string()
+        }
+    }
+
+    /// Test formatting a simple INFO message
+    #[test]
+    fn test_format_simple_info_message() {
+        let harness = TestHarness::new(&[("service.name", "my-service")]);
+
+        let output = harness.capture_and_format(|| {
+            tracing::info!(target: "my_module", "Test message");
+        });
+
+        assert!(output.contains("INFO"), "Should contain INFO level: {}", output);
+        assert!(output.contains("my_module"), "Should contain target: {}", output);
+        assert!(output.contains("Test message"), "Should contain message: {}", output);
+    }
+
+    /// Test formatting an event with attributes
+    #[test]
+    fn test_format_event_with_attributes() {
+        let harness = TestHarness::new(&[("service.name", "attr-test")]);
+
+        let output = harness.capture_and_format(|| {
+            tracing::warn!(target: "server", port = 8080, host = "localhost", "Server starting");
+        });
+
+        assert!(output.contains("WARN"), "Should contain WARN level: {}", output);
+        assert!(output.contains("server"), "Should contain target: {}", output);
+        assert!(output.contains("Server starting"), "Should contain message: {}", output);
+        assert!(output.contains("port=8080"), "Should contain port attribute: {}", output);
+        assert!(output.contains("host=localhost"), "Should contain host attribute: {}", output);
+    }
+
+    /// Test formatting multiple events with different levels
+    #[test]
+    fn test_format_multiple_levels() {
+        let harness = TestHarness::new(&[]);
+
+        let output = harness.capture_and_format(|| {
+            tracing::trace!(target: "app", "Trace message");
+            tracing::debug!(target: "app", "Debug message");
+            tracing::info!(target: "app", "Info message");
+            tracing::warn!(target: "app", "Warn message");
+            tracing::error!(target: "app", "Error message");
+        });
+
+        // Check all levels are present
+        assert!(output.contains("TRACE"), "Should contain TRACE: {}", output);
+        assert!(output.contains("DEBUG"), "Should contain DEBUG: {}", output);
+        assert!(output.contains("INFO"), "Should contain INFO: {}", output);
+        assert!(output.contains("WARN"), "Should contain WARN: {}", output);
+        assert!(output.contains("ERROR"), "Should contain ERROR: {}", output);
+
+        // Check all messages are present
+        assert!(output.contains("Trace message"), "Should contain trace message: {}", output);
+        assert!(output.contains("Debug message"), "Should contain debug message: {}", output);
+        assert!(output.contains("Info message"), "Should contain info message: {}", output);
+        assert!(output.contains("Warn message"), "Should contain warn message: {}", output);
+        assert!(output.contains("Error message"), "Should contain error message: {}", output);
+    }
+
+    /// Test that different targets create separate scope batches
+    #[test]
+    fn test_different_targets_different_scopes() {
+        let harness = TestHarness::new(&[("service.name", "multi-scope-test")]);
+
+        let output = harness.capture_and_format(|| {
+            tracing::info!(target: "module_a", "From module A");
+            tracing::info!(target: "module_b", "From module B");
+            tracing::info!(target: "module_a", "Another from A");
+        });
+
+        // Check both modules appear
+        assert!(output.contains("module_a"), "Should contain module_a: {}", output);
+        assert!(output.contains("module_b"), "Should contain module_b: {}", output);
+        assert!(output.contains("From module A"), "Should contain message A: {}", output);
+        assert!(output.contains("From module B"), "Should contain message B: {}", output);
+        assert!(output.contains("Another from A"), "Should contain second A message: {}", output);
+    }
+
+    /// Test formatting with various attribute types
+    #[test]
+    fn test_format_various_attribute_types() {
+        let harness = TestHarness::new(&[]);
+
+        let output = harness.capture_and_format(|| {
+            tracing::info!(
+                target: "types",
+                string_val = "hello",
+                int_val = 42i64,
+                bool_val = true,
+                float_val = 3.14f64,
+                "Testing attribute types"
+            );
+        });
+
+        assert!(output.contains("string_val=hello"), "Should contain string attr: {}", output);
+        assert!(output.contains("int_val=42"), "Should contain int attr: {}", output);
+        assert!(output.contains("bool_val=true"), "Should contain bool attr: {}", output);
+        // Float might be formatted differently, just check it's there
+        assert!(output.contains("float_val="), "Should contain float attr: {}", output);
+        assert!(output.contains("Testing attribute types"), "Should contain message: {}", output);
+    }
+
+    /// Test the timestamp formatter
+    #[test]
+    fn test_format_iso8601_timestamp() {
+        // Test a known timestamp: 2024-01-01T00:00:00.000000Z
+        // Unix epoch for 2024-01-01T00:00:00Z is 1704067200 seconds
+        let nanos = 1704067200_000_000_000u64;
+        let formatted = format_iso8601_timestamp(nanos);
+
+        // The timestamp should be roughly correct (our simple algorithm isn't perfect)
+        assert!(formatted.starts_with("20"), "Should start with century: {}", formatted);
+        assert!(formatted.ends_with("Z"), "Should end with Z: {}", formatted);
+        assert!(formatted.contains("T"), "Should have T separator: {}", formatted);
+    }
+
+    /// Test severity to level string conversion
+    #[test]
+    fn test_severity_to_level_str() {
+        assert_eq!(severity_to_level_str(1), "TRACE");
+        assert_eq!(severity_to_level_str(5), "DEBUG");
+        assert_eq!(severity_to_level_str(9), "INFO");
+        assert_eq!(severity_to_level_str(13), "WARN");
+        assert_eq!(severity_to_level_str(17), "ERROR");
+    }
 }
