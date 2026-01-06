@@ -182,17 +182,13 @@ impl ParserMapSchema {
 
     pub fn get_all_key_names_for_canonical_key(&self, canonical_key: &str) -> Vec<Box<str>> {
         let mut names = vec![canonical_key.into()];
-        names.extend(
-            self.aliases
-                .iter()
-                .filter_map(|(alias, key)| {
-                    if key.as_ref() == canonical_key {
-                        Some(alias.clone())
-                    } else {
-                        None
-                    }
-                }),
-        );
+        names.extend(self.aliases.iter().filter_map(|(alias, key)| {
+            if key.as_ref() == canonical_key {
+                Some(alias.clone())
+            } else {
+                None
+            }
+        }));
         names
     }
 
@@ -440,7 +436,10 @@ mod tests {
         assert_eq!(all_names, vec!["SeverityText", "sev_text", "severity_text"]);
 
         // Test for key with no aliases
-        assert_eq!(schema.get_aliases_for_key("NonExistent"), Vec::<&str>::new());
+        assert_eq!(
+            schema.get_aliases_for_key("NonExistent"),
+            Vec::<&str>::new()
+        );
         let non_existent: Vec<String> = schema
             .get_all_key_names_for_canonical_key("NonExistent")
             .into_iter()

@@ -373,7 +373,7 @@ fn build_log_record_schema(
             // present in Attributes users might query with ambiguous naming.
             // For example: source | extend Body = 'something' will write to the
             // top-level field and not Attributes.
-            
+
             // Check both the canonical key and all its aliases
             for key_name in log_record_schema.get_all_key_names_for_canonical_key(top_level_key) {
                 if let Some(removed) = schema.remove(key_name.as_ref())
@@ -820,7 +820,7 @@ mod tests {
         // Test mixing aliases and canonical names
         run_test("source | where severity_text == 'Info' and SeverityNumber > 0");
         run_test("source | extend ts = timestamp, sev = SeverityText");
-        
+
         // Test default map key alias
         run_test("source | where attributes.custom_field == 'value'");
         run_test("source | where Attributes.custom_field == 'value'");
