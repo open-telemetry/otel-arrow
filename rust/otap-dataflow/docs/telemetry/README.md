@@ -15,7 +15,7 @@ This documentation applies to all telemetry produced by the OTAP dataflow engine
 ## Normative Language
 
 The key words MUST, SHOULD, and MAY are to be interpreted as normative
-requirements.
+requirements in all the documentation within this directory.
 
 ## Overview
 
@@ -237,43 +237,16 @@ The naming conventions, units and general guidelines are in the
 [semantic conventions guide](semantic-conventions-guide.md). **Please read it
 before introducing new telemetry.**
 
-The guides below provide a framework for defining **good, consistent, and
-actionable signals**. They are not an exhaustive list of every signal in the
+The guides below provide a framework for defining **good, consistent, secure,
+and actionable signals**. They are not an exhaustive list of every signal in the
 project, but a shared reference for how to introduce and evolve telemetry:
 
+- [Attributes Guide](attributes-guide.md)
 - [System Metrics Guide](metrics-guide.md)
 - [System Events Guide](events-guide.md)
 - [System Traces Proposal](tracing-proposal.md) (not yet implemented)
-
-## Stability model
-
-Each signal definition (metric, event, trace) MUST declare a stability level:
-
-- experimental: may change without backward compatibility guarantees
-- stable: backward compatible changes only (additive changes are preferred)
-- deprecated: still emitted, but scheduled for removal and documented with a
-  replacement
-
-This project is still in early development, so many signals will start as
-experimental.
-
-The goal is to promote frequently used signals to stable once they prove useful
-and consistent.
-
-### Compatibility expectations
-
-For signals marked **stable**:
-
-Backward compatible changes include:
-- adding a new metric to an existing metric set
-- adding a new optional attribute with bounded cardinality
-- clarifying descriptions (no semantic changes)
-
-Breaking changes (require versioning + migration notes):
-- renaming a metric/event/attribute/metric set/span name
-- changing units
-- changing instrument semantic meaning (counter vs gauge, ...)
-- removing a metric/event/attribute or shrinking an enum value set
+- [Stability and Compatibility Guide](stability-compatibility-guide.md)
+- [Security and Privacy Guide](security-privacy-guide.md)
 
 ## Implementation Details
 
@@ -283,6 +256,11 @@ handling, and the dataflow for metric collection, see the
 
 Note: This SDK is internal to the project and optimized for our use cases. It is
 not intended for public use (at least not yet). It may change without notice.
+
+The documentation in this directory focuses on the intented design and policy
+aspects of internal telemetry. The current implementation does not yet fully
+realize all goals and principles described here, but it is evolving rapidly.
+The [implementation gaps](implementation-gaps.md) document tracks the progress.
 
 ## Contributor workflow (minimum)
 
