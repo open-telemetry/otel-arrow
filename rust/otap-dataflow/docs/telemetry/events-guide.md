@@ -1,8 +1,8 @@
 # System Events Guide
 
-This guide defines how to add system events for the OTAP engine. It complements
-the [semantic conventions guide](semantic-conventions-guide.md) and the
-[entity model](entity-model.md).
+This guide defines how to add **system events** for the OTAP engine. It
+complements the [semantic conventions guide](semantic-conventions-guide.md) and
+the [entity model](entity-model.md).
 
 ## What Events Are For
 
@@ -11,7 +11,7 @@ not need to be aggregated as metrics. In OTLP, events are represented as logs
 with a required name.
 
 Use events to record:
-- Controller/Pipelibe actions (config reload, shutdown, ack, timer ticks).
+- Controller/Pipeline actions (config reload, shutdown, ack, timer ticks).
 - State transitions (batch flush, backpressure, queue full).
 - Exceptional outcomes (errors, retries, drops).
 
@@ -113,11 +113,11 @@ The following verbs are recommended for event names:
 - `backpressure`: A backpressure occurrence.
 - `retry`: A retry attempt.
 - `ack`: An acknowledgment occurrence.
-- `nack`: An negative acknowledgment occurrence.
+- `nack`: A negative acknowledgment occurrence.
 - `tick`: A timer tick occurrence.
 - `sleep`: A sleep occurrence.
 - `cancel`: An operation was intentionally stopped by an external decision before it finished. Triggered by a caller, operator, controller, or policy. Usually expected and often benign. Not an error in itself.
-- `abort`: An operation was forced to stop due to an internal safety condition or unrecoverable state. Triggered inside the system. Indicates something went wrong or became unsafe. Usually unexpected
+- `abort`: An operation was forced to stop due to an internal safety condition or unrecoverable state. Triggered inside the system. Indicates something went wrong or became unsafe. Usually unexpected.
 - `timeout`: A timeout occurrence.
 
 This list is not exhaustive. Choose verbs that best describe the action while
@@ -128,4 +128,10 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Checklist for New Events
 
-<create a checklist for new events similar to the one for metrics>
+- The event name follows the semantic conventions guide and the `otelcol.<entity>[.<thing>].<verb>` pattern.
+- The event name is stable, low-cardinality, and contains no IDs or dynamic values.
+- The event represents a discrete occurrence; use metrics instead for high-volume signals.
+- Relevant entity attributes are included (pipeline/node/channel/etc).
+- Dynamic attributes are bounded and avoid sensitive or high-cardinality data.
+- Error events use standard exception attributes; stacktraces only at debug or lower.
+- Severity is appropriate and consistent with the event meaning.

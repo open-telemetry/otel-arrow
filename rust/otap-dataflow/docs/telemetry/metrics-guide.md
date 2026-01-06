@@ -61,8 +61,8 @@ this project, non-entity attributes are prohibited in core metrics.
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and
-units are mandatory. Units must follow UCUM-like conventions and use braces
-notation for semantic units (e.g. `{batch}`, `{signal}`). See the [Units](#units)
+units are mandatory. Units must follow UCUM conventions and use braces notation
+only for annotation units (e.g. `{batch}`, `{signal}`). See the [Units](#units)
 section below for details.
 
 Metric set naming should follow the pattern `otelcol.<entity>` or
@@ -73,10 +73,10 @@ project:
   - `otelcol.channel.sender`, `otelcol.channel.receiver`
   - ...
 - For specific node types:
-  - `node.retry`, 
-  - `node.batch`, 
-  - `node.otlp_receiver`, 
-  - `node.otlp_exporter`, 
+  - `otelcol.node.retry`
+  - `otelcol.node.batch`
+  - `otelcol.node.otlp_receiver`
+  - `otelcol.node.otlp_exporter`
   - ...
 
 ## Attributes and Entity Context
@@ -121,7 +121,7 @@ When context is useful but high-cardinality, normalize it:
 ## Units
 
 Units must be specified for every metric as part of its metadata. They must
-follow UCUM-like conventions and use braces notation for annotation units.
+follow UCUM conventions and use braces notation only for annotation units.
 
 The most common units in this project are:
 - Named units:

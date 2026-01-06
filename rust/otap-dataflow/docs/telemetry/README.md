@@ -6,7 +6,7 @@
 - Performance-focused, NUMA-aware collection paths.
 - Multivariate metric sets to share attribute tuples efficiently.
 
-On the medium term, we aim for observability by design: entities and signals
+In the medium term, we aim for observability by design: entities and signals
 should be described via OpenTelemetry semantic conventions, and Weaver should
 be integrated into CI to enforce schema compliance, generate telemetry
 documentation, and produce type-safe, optimized client SDKs.
