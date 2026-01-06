@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_parser_abstractions::*;
-use data_engine_parser_macros::BaseRuleCompatible;
+use data_engine_parser_macros::{BaseRuleCompatible, ScalarExprPrattParser};
 use pest_derive::Parser;
 
 use crate::{base_parser, kql_parser, query_expression::parse_query};
 
-#[derive(Parser, BaseRuleCompatible)]
+#[derive(Parser, BaseRuleCompatible, ScalarExprPrattParser)]
 #[grammar = "base.pest"]
 #[grammar = "kql.pest"]
 pub(crate) struct KqlPestParser;

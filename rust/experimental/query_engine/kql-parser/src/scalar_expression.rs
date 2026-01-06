@@ -25,70 +25,70 @@ use crate::{
     scalar_temporal_function_expressions::*,
 };
 
-static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
-    use Assoc::*;
-    use Rule::*;
+// static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
+//     use Assoc::*;
+//     use Rule::*;
 
-    // Lowest precedence first
-    PrattParser::new()
-        // or
-        .op(Op::infix(or_token, Left))
-        // and
-        .op(Op::infix(and_token, Left))
-        // == !=
-        .op(Op::infix(equals_token, Left)
-            | Op::infix(equals_insensitive_token, Left)
-            | Op::infix(not_equals_token, Left)
-            | Op::infix(not_equals_insensitive_token, Left)
-            | Op::infix(invalid_equals_token, Left))
-        // <= >= < >
-        .op(Op::infix(less_than_or_equal_to_token, Left)
-            | Op::infix(greater_than_or_equal_to_token, Left)
-            | Op::infix(less_than_token, Left)
-            | Op::infix(greater_than_token, Left))
-        // contains & has
-        .op(Op::infix(not_contains_cs_token, Left)
-            | Op::infix(not_contains_token, Left)
-            | Op::infix(not_has_cs_token, Left)
-            | Op::infix(not_has_token, Left)
-            | Op::infix(contains_cs_token, Left)
-            | Op::infix(contains_token, Left)
-            | Op::infix(has_cs_token, Left)
-            | Op::infix(has_token, Left))
-        // in
-        .op(Op::infix(not_in_insensitive_token, Left)
-            | Op::infix(not_in_token, Left)
-            | Op::infix(in_insensitive_token, Left)
-            | Op::infix(in_token, Left))
-        // matches
-        .op(Op::infix(matches_regex_token, Left))
-        // + -
-        .op(Op::infix(plus_token, Left) | Op::infix(minus_token, Left))
-        // * / %
-        .op(Op::infix(multiply_token, Left)
-            | Op::infix(divide_token, Left)
-            | Op::infix(modulo_token, Left))
+//     // Lowest precedence first
+//     PrattParser::new()
+//         // or
+//         .op(Op::infix(or_token, Left))
+//         // and
+//         .op(Op::infix(and_token, Left))
+//         // == !=
+//         .op(Op::infix(equals_token, Left)
+//             | Op::infix(equals_insensitive_token, Left)
+//             | Op::infix(not_equals_token, Left)
+//             | Op::infix(not_equals_insensitive_token, Left)
+//             | Op::infix(invalid_equals_token, Left))
+//         // <= >= < >
+//         .op(Op::infix(less_than_or_equal_to_token, Left)
+//             | Op::infix(greater_than_or_equal_to_token, Left)
+//             | Op::infix(less_than_token, Left)
+//             | Op::infix(greater_than_token, Left))
+//         // contains & has
+//         .op(Op::infix(not_contains_cs_token, Left)
+//             | Op::infix(not_contains_token, Left)
+//             | Op::infix(not_has_cs_token, Left)
+//             | Op::infix(not_has_token, Left)
+//             | Op::infix(contains_cs_token, Left)
+//             | Op::infix(contains_token, Left)
+//             | Op::infix(has_cs_token, Left)
+//             | Op::infix(has_token, Left))
+//         // in
+//         .op(Op::infix(not_in_insensitive_token, Left)
+//             | Op::infix(not_in_token, Left)
+//             | Op::infix(in_insensitive_token, Left)
+//             | Op::infix(in_token, Left))
+//         // matches
+//         .op(Op::infix(matches_regex_token, Left))
+//         // + -
+//         .op(Op::infix(plus_token, Left) | Op::infix(minus_token, Left))
+//         // * / %
+//         .op(Op::infix(multiply_token, Left)
+//             | Op::infix(divide_token, Left)
+//             | Op::infix(modulo_token, Left))
 
-    // ^ ** (right-associative)
-    //.op(Op::infix(power, Right))
-});
+//     // ^ ** (right-associative)
+//     //.op(Op::infix(power, Right))
+// });
 
 // TODO comment on what this is doing ..
 pub trait ScalarExprPrattParser: RuleType {
     fn pratt_parser() -> &'static PrattParser<Self>;
 }
 
-impl ScalarExprPrattParser for base_parser::Rule {
-    fn pratt_parser() -> &'static PrattParser<Self> {
-        todo!()
-    }
-}
+// impl ScalarExprPrattParser for base_parser::Rule {
+//     fn pratt_parser() -> &'static PrattParser<Self> {
+//         &PRATT_PARSER
+//     }
+// }
 
-impl ScalarExprPrattParser for kql_parser::Rule {
-    fn pratt_parser() -> &'static PrattParser<Self> {
-        todo!()
-    }
-}
+// impl ScalarExprPrattParser for kql_parser::Rule {
+//     fn pratt_parser() -> &'static PrattParser<Self> {
+//         todo!()
+//     }
+// }
 
 pub(crate) fn parse_scalar_expression<R, E>(
     scalar_expression_rule: Pair<R>,
