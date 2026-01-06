@@ -93,19 +93,21 @@ Attributes:
 ### Node
 
 A processing unit within a pipeline. There are three types of nodes:
+
 - Receiver: Ingests and translates data from external sources
 - Processor: Transforms, filters, batches, or enriches data
 - Exporter: Delivers processed data to external systems
 
 Attributes:
 
-- `otelcol.node.id`: Node unique identifier (in scope of the pipeline). 
+- `otelcol.node.id`: Node unique identifier (in scope of the pipeline).
 - `otelcol.node.urn`: Node plugin URN.
 - `otelcol.node.type`: Node type (e.g. "receiver", "processor", "exporter").
 
 ### Channels
 
 Channels connect nodes within a pipeline. There are two types of channels:
+
 - Control Channel: Used for orchestration commands (e.g. config_update, ack,
   timer_tick, shutdown)
 - PData Channel: Used for ingesting batches of telemetry signals (metrics, logs,
@@ -113,8 +115,10 @@ Channels connect nodes within a pipeline. There are two types of channels:
 
 Channels are observed via two endpoint perspectives: sender and receiver.
 
-- Sender-side signals attach the sender node identity plus `otelcol.channel.*` attributes.
-- Receiver-side signals attach the receiver node identity plus `otelcol.channel.*` attributes.
+- Sender-side signals attach the sender node identity plus `otelcol.channel.*`
+  attributes.
+- Receiver-side signals attach the receiver node identity plus
+  `otelcol.channel.*` attributes.
 - `otelcol.channel.id` connects sender and receiver signals that belong to the
   same channel.
 

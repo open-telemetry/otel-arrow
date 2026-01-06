@@ -20,6 +20,7 @@ not need to be aggregated as metrics. In OTLP, events are represented as logs
 with a required name.
 
 Use events to record:
+
 - Controller/Pipeline actions (config reload, shutdown, ack, timer ticks).
 - State transitions (batch flush, backpressure, queue full).
 - Exceptional outcomes (errors, retries, drops).
@@ -28,6 +29,7 @@ If the signal is high-volume or needs aggregation, prefer metrics. If the
 event is part of a dataflow trace, record it as a span event.
 
 Exception rule (traces):
+
 - If you are recording an actual exception on a span, the span event name MUST
   be `exception` and the standard exception attributes MUST be used.
 
@@ -43,18 +45,20 @@ Treat event names as schema identifiers. Evolution rules are defined in
 
 Event names MUST be low-cardinality and stable. Follow the semantic conventions
 guide for naming:
+
 - Lowercase and dot-separated. It identifies a class of event, not an instance.
 - Keep the name stable and "type-like". Treat it as a schema identifier.
 - Use verbs for actions (e.g. `pipeline.config.reload`).
 - Avoid embedding IDs or dynamic values in the name. Encode variability as
   attributes.
 - Avoid synonyms that fragment cardinality across names (`finish` vs `complete`,
-  `error` vs `fail`). Pick one verb set and stick to it. 
+  `error` vs `fail`). Pick one verb set and stick to it.
 
 More precisely, in this project, event names SHOULD follow this pattern:
 `otelcol.<entity>[.<thing>].<verb>`
 
 Where:
+
 - `otelcol.` is the prefix/namespace used for OpenTelemetry Collector-related
   events.
 - `<entity>` is the primary entity involved (e.g. `pipeline`, `node`,
@@ -116,6 +120,7 @@ maintaining clarity and consistency.
 ## Verbs
 
 The following verbs are recommended for event names:
+
 - `create`: The creation of an entity or resource.
 - `init`: The initialization of an entity or resource.
 - `start`: The beginning of an operation or process.
