@@ -1,12 +1,18 @@
 # System Metrics Guide
 
-This guide defines how to add and evolve system metrics for the OTAP engine. It
-complements the [semantic conventions guide](semantic-conventions-guide.md) and
-the [entity model](entity-model.md).
+This guide defines how to add and evolve system metrics for the OTAP dataflow
+engine. It complements the [semantic conventions guide](semantic-conventions-guide.md)
+and the [entity model](entity-model.md).
 
 System metrics are intended to describe the behavior of stable entities over
 time. This document summarizes the patterns we follow when instrumenting system
 metrics in the engine.
+
+## Related guides
+
+- Attribute policy: [attributes-guide.md](attributes-guide.md)
+- Stability rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
+- Implementation status: [implementation-gaps.md](implementation-gaps.md)
 
 ## Entity-Centric Modeling
 
@@ -45,10 +51,14 @@ Histogram support status is tracked in
 [Implementation Gaps](implementation-gaps.md).
 
 ObserveUpDownCounter and Gauge both report values that can rise or fall, but
-they aggregate differently. A Gauge uses last-value aggregation, while an
-ObserveUpDownCounter is a sampled cumulative value that aggregates by summing
-deltas over time. In this project, ObserveUpDownCounter is used for observed
-totals like `otelcol.pipeline.metrics.memory_usage` and
+they aggregate differently. 
+
+- A Gauge uses last-value aggregation,
+- An ObserveUpDownCounter is a sampled cumulative value that aggregates by
+  summing deltas over time.
+ 
+In this project, ObserveUpDownCounter is used for observed totals like
+`otelcol.pipeline.metrics.memory_usage` and
 `otelcol.tokio.runtime.task_active_count`, while Gauge is used for instantaneous
 values like `otelcol.pipeline.metrics.cpu_utilization` and
 `channel.receiver.capacity`.
@@ -73,8 +83,8 @@ signal-specific attributes MUST be:
 - preferably namespaced under the metric namespace as recommended by OTel naming
   guidance
 
-**Important note**: non-entity/bounded signal-specific attributes are not yet
-supported by our internal telemetry SDK.
+Support status for bounded signal-specific attributes is tracked in
+[implementation-gaps.md](implementation-gaps.md).
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and
@@ -143,10 +153,7 @@ More details about the telemetry SDK implementation are in
 ## Metric Stability and Compatibility
 
 Metrics and metric sets MUST follow the stability model in
-[README.md](README.md):
-
-- experimental metrics may change freely
-- stable metrics require backward compatible evolution and documented migrations for breaking changes
+[stability-compatibility-guide.md](stability-compatibility-guide.md).
 
 ### Checklist for New Metrics
 

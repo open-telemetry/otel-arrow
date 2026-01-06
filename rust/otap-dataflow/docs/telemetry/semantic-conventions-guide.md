@@ -23,6 +23,18 @@ Primary references:
 Contributors are expected to **consult the upstream OTel documentation**
 whenever ambiguity exists or when introducing new semantics.
 
+## Related project guides
+
+Project-specific policy (prefixing, attribute lifecycle, stability, security) is
+consolidated in:
+
+- [Entity Model](entity-model.md)
+- [Attributes Guide](attributes-guide.md)
+- [Metrics Guide](metrics-guide.md)
+- [Events Guide](events-guide.md)
+- [Stability and Compatibility Guide](stability-compatibility-guide.md)
+- [Security and Privacy Guide](security-privacy-guide.md)
+
 ## 1. General Naming Conventions
 
 These rules apply to **metric names**, **attribute names**, **event names**, and
@@ -30,7 +42,7 @@ other semantic identifiers.
 
 ### Core Rules
 
-* Names **must be lowercase**.
+* Names MUST be lowercase.
 * Use **dot (`.`) separators** to express hierarchy and namespaces.
 * Use **underscores (`_`) only inside a single namespace segment** to separate
   words.
@@ -48,7 +60,7 @@ other semantic identifiers.
 Source:
 [https://opentelemetry.io/docs/specs/semconv/general/naming/](https://opentelemetry.io/docs/specs/semconv/general/naming/)
 
-### Custom Namespacing Policy
+### Reserved namespaces
 
 * The `otel.*` namespace is reserved.
 * Custom metric, event, and attribute names SHOULD use a project-specific prefix
@@ -92,7 +104,7 @@ Source:
 Example:
 
 ```
-http.server.request.duration{http.method="GET", http.outcome=success}
+http.server.request.duration{http.request.method="GET"}
 ```
 
 ---
@@ -179,6 +191,11 @@ Examples:
 * Names must follow general naming conventions.
 * Events represent **discrete occurrences**, not continuous measurements.
 
+Note:
+In OTLP, events are represented as LogRecords with the `event_name` field set.
+The `event.name` attribute is deprecated and should not be used for new
+telemetry.
+
 Examples:
 
 ```
@@ -245,6 +262,7 @@ Before introducing a new metric or event, verify:
 Error conventions (cross-signal)
 
 * Use `error.type` as a low-cardinality classifier for failures when applicable.
+* Successful operations SHOULD NOT set `error.type`.
 * For exceptions:
   - logs use `exception.type` and/or `exception.message`, and may include
     `exception.stacktrace` in context where security allows.

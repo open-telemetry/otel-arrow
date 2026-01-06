@@ -16,8 +16,9 @@ the [entity model](entity-model.md).
 ## What Events Are For
 
 Events are discrete occurrences that benefit from context and correlation but do
-not need to be aggregated as metrics. In OTLP, events are represented as logs
-with a required name.
+not need to be aggregated as metrics. In OTLP, the event name MUST be carried in
+the LogRecord `event_name` field. Do not introduce new telemetry that sets
+`event.name` as an attribute.
 
 Use events to record:
 
@@ -59,8 +60,8 @@ More precisely, in this project, event names SHOULD follow this pattern:
 
 Where:
 
-- `otelcol.` is the prefix/namespace used for OpenTelemetry Collector-related
-  events.
+- `otelcol.` is the project prefix/namespace used for events and other custom
+  telemetry.
 - `<entity>` is the primary entity involved (e.g. `pipeline`, `node`,
   `channel`). See the [entity model](entity-model.md) for the list of entities.
 - `<thing>` is an optional sub-entity, subject, or stage (e.g. `build`, `run`,
@@ -144,8 +145,8 @@ The following verbs are recommended for event names:
 
 This list is not exhaustive. Choose verbs that best describe the action while
 maintaining clarity and consistency. Avoid synonyms that fragment cardinality
-across names. Don't introduce alternatives such as `finish` or `error`, we'd
-like one success verb `complete`, one failure verb `fail`, one external
+across names. Don't introduce alternatives such as `finish` or `error`. Use
+one success verb `complete`, one failure verb `fail`, one external
 termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Checklist for New Events

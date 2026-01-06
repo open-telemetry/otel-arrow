@@ -16,7 +16,7 @@ convention registry and emitted by the system, including:
 
 - metric names, units, instrument semantics, and attribute sets
 - metric sets: the shared attribute set + grouped metrics for an entity
-- event names, event attributes, and event body shape
+- event names (LogRecord `event_name`), event attributes, and event body shape
 - trace span names and attributes (when tracing is implemented)
 - project-defined entity attributes and their semantics
 

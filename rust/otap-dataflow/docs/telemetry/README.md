@@ -75,7 +75,7 @@ serve as a shared contract between contributors, tooling, and runtime behavior.
 ### 1. Schema-first
 
 All telemetry is defined **schema-first**. Entities, signals, attributes, and
-their relationships must be described explicitly in a schema before or alongside
+their relationships MUST be described explicitly in a schema before or alongside
 their implementation.
 
 Schemas are treated as versioned artifacts and as the primary source of truth
@@ -121,8 +121,8 @@ Correctness, efficiency, and safety take precedence over convenience.
 
 ### 4. Alignment with OpenTelemetry semantic conventions
 
-We adopt **OpenTelemetry semantic conventions** as its baseline vocabulary and
-modeling framework.
+This project adopts **OpenTelemetry semantic conventions** as the baseline
+vocabulary and modeling framework.
 
 Where existing conventions are sufficient, they are reused directly. Where
 project-specific concepts are required, they are defined in a **custom semantic
@@ -224,8 +224,8 @@ matters for correlation across signals and restarts; refer to the stability
 guarantees in the entity model when adding new attributes.
 
 The naming conventions, units and general guidelines are in the
-[semantic conventions guide](semantic-conventions-guide.md). **Please read it
-before introducing new telemetry.**
+[semantic conventions guide](semantic-conventions-guide.md). Contributors SHOULD
+read it before introducing new telemetry.
 
 The guides below provide a framework for defining **good, consistent, secure,
 and actionable signals**. They are not an exhaustive list of every signal and
@@ -263,6 +263,7 @@ When adding or changing telemetry:
 4) If the change is breaking, bump the registry version and add a migration
    note.
 
-**Important Note**: This workflow is not yet fully supported by tooling. It is
-described here to set expectations for the future. For now, please coordinate
-with the maintainers when making telemetry changes.
+Implementation status of this workflow (what is enforced, generated, and
+validated) is tracked in [implementation-gaps.md](implementation-gaps.md).
+Coordinate with maintainers when making changes that are not yet
+tooling-supported.

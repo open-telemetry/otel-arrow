@@ -136,7 +136,7 @@ When recording an actual exception:
 
 - Use `exception.type` and `exception.message`.
 - `exception.stacktrace` must follow
-  [security-privacy-guide.md](semantic-conventions-guide.md) gating rules.
+  [security-privacy-guide.md](security-privacy-guide.md) gating rules.
 
 ## Attributes vs Event Body
 

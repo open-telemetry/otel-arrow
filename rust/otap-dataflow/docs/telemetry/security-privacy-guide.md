@@ -92,12 +92,24 @@ systems. Treat them as internal identifiers.
 If the system exposes a runtime endpoint that returns the current signals, or
 resolved schema:
 
-- It SHOULD be disabled by default in production, or protected by authentication
-  and authorization, or only accessible inside the internal boundaries of your
-  observability system.
+- They SHOULD be protected by authentication and authorization, or limited to
+  trusted network boundaries.
 - It MUST NOT expose secrets or raw configuration values.
 - Treat the endpoint as sensitive because it can reveal topology and
   identifiers.
+
+## Metrics and diagnostic endpoints (/metrics, /status)
+
+If the system exposes metrics scrape endpoints (for example Prometheus-style) or
+diagnostic endpoints:
+
+- They SHOULD be protected by authentication and authorization, or limited to
+  trusted network boundaries.
+- They MUST NOT expose secrets or raw configuration values.
+- They SHOULD be designed to avoid unbounded responses (for example unbounded
+  label sets or dumping full topology on every request).
+- If an endpoint includes topology identifiers (pipelines, nodes, channels),
+  treat it as sensitive.
 
 ## Access controls and retention
 

@@ -21,11 +21,12 @@ Goal:
 
 ### Signals and data model
 
-| Area                 | Gap                                                      | Impact                                                  | 
-|----------------------|----------------------------------------------------------|---------------------------------------------------------|
-| Metrics              | Histograms not supported yet                             | Limits latency and size distributions                   |
-| Tracing              | Traces not implemented (proposal only)                   | Limits end-to-end causality and latency debugging       |
-| Multivariate metrics | OTLP and OTAP lacks first-class multivariate metric sets | Limits protocol efficiency; some semantics may be lossy |
+| Area                 | Gap                                                     | Impact                                                  | 
+|----------------------|---------------------------------------------------------|---------------------------------------------------------|
+| Metrics              | Histograms not supported yet                            | Limits latency and size distributions                   |
+| Metrics              | Bounded signal-specific metric attributes not supported | Limits modeling of small enum dimensions on core metrics |
+| Multivariate metrics | OTLP and OTAP lack first-class multivariate metric sets | Limits protocol efficiency; some semantics may be lossy |
+| Tracing              | Traces not implemented (draft only)                     | Limits end-to-end causality and latency debugging       |
 
 ### Resource identity and entity attributes
 
@@ -34,8 +35,8 @@ Goal:
 | Service identity | `service.name` not set everywhere                                 |
 | Service identity | `process.instance.id` used instead of `service.instance.id`       |
 | Execution engine | `thread.id` not set                                               |
-| Execution engine | `core.id` used instead of `core.logical_number`                   |
-| Execution engine | `numa.node.id` used instead of `otelcol.numa.node.logical_number` |
+| Execution engine | `core.id` used instead of `cpu.logical_number`                    |
+| Execution engine | `numa.node.id` used instead of `otelcol.numa_node.logical_number` |
 | Channels         | `channel.sender.out.port` not set                                 |
 | Channels         | Channel id format not enforced                                    |
 
@@ -50,8 +51,8 @@ Goal:
 
 ### Open questions
 
-| Topic                      | Question                  |
-|----------------------------|---------------------------|
-| Bounded dynamic attributes | How do we implement them? |
-| Metrics endpoint           | How do we secure them?    |
-| Schema endpoint            | How do we secure them?    |
+| Topic                      | Question                                                              |
+|----------------------------|-----------------------------------------------------------------------|
+| Bounded dynamic attributes | How do we implement them?                                             |
+| Metrics endpoint           | What is the default deployment posture (off by default vs protected)? |
+| Schema endpoint            | What is the default deployment posture (off by default vs protected)? |

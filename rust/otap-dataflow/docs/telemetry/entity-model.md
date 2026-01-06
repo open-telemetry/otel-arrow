@@ -22,6 +22,12 @@ Note: This document will be replaced by formal OpenTelemetry Semantic
 Conventions in the future. For now, it serves as an internal reference for the
 project.
 
+## Related guides
+
+- Attribute policy: [attributes-guide.md](attributes-guide.md)
+- Stability rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
+- Implementation status: [implementation-gaps.md](implementation-gaps.md)
+
 ## Attribute Ownership
 
 - Resource attributes describe the producing service/process/host/container and
