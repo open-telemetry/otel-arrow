@@ -14,10 +14,12 @@ use futures_channel::mpsc as futures_mpsc;
 use std::rc::Rc;
 use tokio::task::LocalSet;
 
-use mimalloc_rust::GlobalMiMalloc;
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 const MSG_COUNT: usize = 100_000;
 const CHANNEL_SIZE: usize = 256;

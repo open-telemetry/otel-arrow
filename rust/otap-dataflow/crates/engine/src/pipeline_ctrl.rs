@@ -11,11 +11,15 @@
 //! Note 2: Other pipeline control messages can be added in the future, but currently only timers
 //! are supported.
 
+use crate::context::PipelineContext;
 use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
+use crate::pipeline_metrics::PipelineMetricsMonitor;
+use otap_df_config::pipeline::TelemetrySettings;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -162,6 +166,8 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 pub struct PipelineCtrlMsgManager<PData> {
     /// The key identifying the deployed pipeline this manager is responsible for.
     pipeline_key: DeployedPipelineKey,
+    /// Context information about the pipeline.
+    pipeline_context: PipelineContext,
     /// Receives control messages from nodes (e.g., start/cancel timer).
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
     /// Allows sending control messages back to nodes.
@@ -176,20 +182,29 @@ pub struct PipelineCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
+    /// Channel metrics handles for periodic reporting.
+    channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
+
+    /// Flags controlling capture of internal engine metrics.
+    telemetry: TelemetrySettings,
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
     /// Creates a new PipelineCtrlMsgManager.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         pipeline_key: DeployedPipelineKey,
+        pipeline_context: PipelineContext,
         pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        internal_telemetry: TelemetrySettings,
+        channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
         Self {
             pipeline_key,
+            pipeline_context,
             pipeline_ctrl_msg_receiver,
             control_senders,
             tick_timers: TimerSet::new(),
@@ -197,6 +212,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
+            channel_metrics,
+            telemetry: internal_telemetry,
         }
     }
 
@@ -208,12 +225,18 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
     pub async fn run(mut self) -> Result<(), Error> {
+        let internal_telemetry_enabled =
+            self.telemetry.pipeline_metrics || self.telemetry.tokio_metrics;
+        let mut pipeline_metrics_monitor = internal_telemetry_enabled
+            .then(|| PipelineMetricsMonitor::new(self.pipeline_context.clone()));
+
         loop {
             // Get the next expirations, if any.
             let next_expiry = self.tick_timers.next_expiry();
             let next_tel_expiry = self.telemetry_timers.next_expiry();
             let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
             let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
+
             tokio::select! {
                 biased;
                 // Handle incoming control messages from nodes.
@@ -293,6 +316,39 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         to_send.push((delayed.node_id, NodeControlMsg::DelayedData { when: delayed.when, data: delayed.data }));
                     }
 
+                    // Update and report internal pipeline metrics
+                    if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
+                        if self.telemetry.pipeline_metrics {
+                            pipeline_metrics_monitor.update_pipeline_metrics();
+                            if let Err(err) = self
+                                .metrics_reporter
+                                .report(pipeline_metrics_monitor.metrics_mut())
+                            {
+                                // Metric reporting failures are non-fatal; continue loop.
+                                otel_warn!("pipeline.metrics.reporting.fail", error = err.to_string());
+                            }
+                        }
+
+                        if self.telemetry.tokio_metrics {
+                            pipeline_metrics_monitor.update_tokio_metrics();
+                            if let Err(err) = self
+                                .metrics_reporter
+                                .report(pipeline_metrics_monitor.tokio_metrics_mut())
+                            {
+                                // Metric reporting failures are non-fatal; continue loop.
+                                otel_warn!("tokio.metrics.reporting.fail", error = err.to_string());
+                            }
+                        }
+                    }
+
+                    if self.telemetry.channel_metrics {
+                        for metrics in &self.channel_metrics {
+                            if let Err(err) = metrics.report(&mut self.metrics_reporter) {
+                                otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
+                            }
+                        }
+                    }
+
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
                         self.send(node_id, msg).await;
@@ -358,12 +414,14 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ControllerContext;
     use crate::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use crate::message::{Receiver, Sender};
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
     use otap_df_config::pipeline::PipelineSettings;
+    use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
@@ -376,8 +434,8 @@ mod tests {
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel(10);
         (
-            Sender::Shared(SharedSender::MpscSender(tx)),
-            Receiver::Shared(SharedReceiver::MpscReceiver(rx)),
+            Sender::Shared(SharedSender::mpsc(tx)),
+            Receiver::Shared(SharedReceiver::mpsc(rx)),
         )
     }
 
@@ -404,18 +462,32 @@ mod tests {
         let metrics_reporter = metrics_system.reporter();
         let pipeline_settings = PipelineSettings::default();
         let observed_state_store = ObservedStateStore::new(&pipeline_settings);
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: Default::default(),
-            pipeline_id: Default::default(),
-            core_id: 0,
-        };
+        let pipeline_group_id: PipelineGroupId = Default::default();
+        let pipeline_id: PipelineId = Default::default();
+        let core_id = 0;
+        let thread_id = 0;
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_context = PipelineContext::new(
+            controller_context,
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            core_id,
+            thread_id,
+        );
 
         let manager = PipelineCtrlMsgManager::new(
-            pipeline_key,
+            DeployedPipelineKey {
+                pipeline_group_id,
+                pipeline_id,
+                core_id,
+            },
+            pipeline_context,
             pipeline_rx,
             control_senders,
             observed_state_store.reporter(),
             metrics_reporter,
+            pipeline_settings.telemetry.clone(),
+            Vec::new(),
         );
         (manager, pipeline_tx, control_receivers, nodes)
     }
@@ -798,8 +870,8 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let (metrics_tx, _metrics_rx) = flume::unbounded();
-                let metrics_reporter = MetricsReporter::new(metrics_tx);
+                let metrics_system = otap_df_telemetry::MetricsSystem::default();
+                let metrics_reporter = metrics_system.reporter();
                 let pipeline_settings = PipelineSettings::default();
                 let observed_state_store = ObservedStateStore::new(&pipeline_settings);
                 let pipeline_key = DeployedPipelineKey {
@@ -807,14 +879,29 @@ mod tests {
                     pipeline_id: Default::default(),
                     core_id: 0,
                 };
+                let pipeline_group_id: PipelineGroupId = Default::default();
+                let pipeline_id: PipelineId = Default::default();
+                let core_id = 0;
+                let thread_id = 0;
+                let controller_context = ControllerContext::new(metrics_system.registry());
+                let pipeline_context = PipelineContext::new(
+                    controller_context,
+                    pipeline_group_id.clone(),
+                    pipeline_id.clone(),
+                    core_id,
+                    thread_id,
+                );
 
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
                     pipeline_key,
+                    pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
                     observed_state_store.reporter(),
                     metrics_reporter,
+                    TelemetrySettings::default(),
+                    Vec::new(),
                 );
                 let duration = Duration::from_millis(50);
 

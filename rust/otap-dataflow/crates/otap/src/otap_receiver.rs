@@ -234,6 +234,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        otap_df_telemetry::otel_info!("Receiver.Start", message = "Starting OTAP Arrow Receiver");
+
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
@@ -292,6 +294,9 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     source_detail: format_error_sources(&e),
                 })?;
 
+        #[cfg(feature = "experimental-tls")]
+        let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+
         let server = server_builder
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
@@ -345,7 +350,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 #[cfg(feature = "experimental-tls")]
                 match maybe_tls_acceptor {
                     Some(tls_acceptor) => {
-                        let tls_stream = create_tls_stream(listener_stream, tls_acceptor);
+                        let tls_stream = create_tls_stream(listener_stream, tls_acceptor, handshake_timeout);
                         server.serve_with_incoming(tls_stream).await
                     }
                     None => server.serve_with_incoming(listener_stream).await,

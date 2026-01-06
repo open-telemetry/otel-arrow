@@ -15,6 +15,13 @@ use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::schema::consts;
 
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(windows))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 fn create_bench_batch(num_attrs: usize) -> RecordBatch {
     let mut types = UInt8Array::builder(num_attrs);
     let mut keys = StringBuilder::new();

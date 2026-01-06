@@ -7,17 +7,12 @@ on:
       - cron: '0 10 * * *'  # runs every day at 10 AM UTC
     workflow_dispatch:
 
-# Cancel in-progress runs on new commits to same PR
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
     pipeline-perf-test:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
         steps:
         - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+          uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
           with:
             egress-policy: audit
 
@@ -40,19 +35,27 @@ jobs:
             # Run disk cleanup script
             bash ./.github/workflows/scripts/disk-cleanup.sh
 
-            # Enable repos (no-op if already enabled)
-            sudo dnf -y install oracle-epel-release-el8 || true
-            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
-            sudo dnf -y makecache
+            # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
+            if rpm -q python3.11 python3.11-devel &>/dev/null; then
+              echo "Python 3.11 packages already installed, skipping repository setup and package installation"
+            else
+              # Enable repos and refresh metadata (only runs if Python not installed)
+              sudo dnf -y install oracle-epel-release-el8 || true
+              sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+              sudo dnf -y makecache --timer
 
-            # Install core packages (ignore subpackages that don't exist on OL8)
-            sudo dnf -y install python3.11 python3.11-devel || true
+              # Install core packages (ignore subpackages that don't exist on OL8)
+              sudo dnf -y install python3.11 python3.11-devel || true
+            fi
+
             # pip may be packaged as part of python3.11 or available via ensurepip;
             # fall back to ensurepip if needed.
             if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
               /usr/bin/python3.11 -m ensurepip --upgrade || true
             fi
-            /usr/bin/python3.11 -m pip install --upgrade pip setuptools wheel || true
+
+            # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
+            /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
 
             # Add a 'python' shim so subsequent steps can call `python ...`
             mkdir -p "$HOME/.local/bin"
@@ -71,6 +74,10 @@ jobs:
             docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
             cd ../..
 
+        - name: Build otelarrowcol
+          run: |
+            docker build . -t otelarrowcol
+
         - name: Install dependencies
           run: |
             python -m pip install --user --upgrade pip
@@ -80,17 +87,22 @@ jobs:
         - name: Run syslog performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/syslog-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/syslog-docker.yaml
 
         - name: Run backpressure performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/backpressure-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/backpressure-docker.yaml
 
         - name: Run filter performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/nightly/filter-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/filter-docker.yaml
+
+        - name: Run filter performance test otelcol log suite
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
 
         - name: Upload syslog results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -109,6 +121,12 @@ jobs:
           with:
             name: filter-nightly-results
             path: tools/pipeline_perf_test/results/nightly_filter/gh-actions-benchmark/*.json
+
+        - name: Upload otelcol filter results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: filter-otelcol-results
+            path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
@@ -148,51 +166,28 @@ jobs:
               merge-multiple: true
               path: filter_results
 
+          - name: Download otelcol filter artifacts
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: filter-otelcol-results*
+              merge-multiple: true
+              path: filter_otelcol_results
 
           - name: Consolidate syslog benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find syslog_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find syslog_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > syslog_output.json
-
-              echo "Consolidated benchmark data:"
-              cat syslog_output.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
 
           - name: Consolidate backpressure benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find backpressure_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
-
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find backpressure_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > backpressure_output.json
-
-              echo "Consolidated benchmark data:"
-              cat backpressure_output.json
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh backpressure_results backpressure_output.json
 
           - name: Consolidate filter benchmark data
             run: |
-              echo "Consolidating benchmark JSON files..."
-              find filter_results -name "*.json" -type f | while read file; do
-                echo "Processing: $file"
-                cat "$file"
-                echo
-              done
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_results filter_output.json
 
-              # Combine all benchmark JSON files into a single output (find them recursively)
-              find filter_results -name "*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > filter_output.json
-
-              echo "Consolidated benchmark data:"
-              cat filter_output.json
+          - name: Consolidate otelcol filter benchmark data
+            run: |
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
 
           - name: Update benchmark data
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
@@ -223,6 +218,18 @@ jobs:
             with:
               tool: "customSmallerIsBetter"
               output-file-path: filter_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
+              auto-push: true
+              save-data-file: true
+
+          - name: Update filter otelcol benchmark data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: filter_otelcol_output.json
               gh-pages-branch: benchmarks
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}

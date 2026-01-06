@@ -11,8 +11,7 @@ use std::{
 use data_engine_expressions::*;
 
 use crate::{
-    execution_context::*, resolved_value_mut::*, scalars::*,
-    value_expressions::execute_mutable_value_expression, *,
+    execution_context::*, scalars::*, value_expressions::execute_mutable_value_expression, *,
 };
 
 pub fn execute_map_reduce_transform_expression<'a, TRecord: Record>(
@@ -302,12 +301,7 @@ where
             MapSelector::KeyOrKeyPattern(s) => {
                 let mut value = execute_scalar_expression(execution_context, s)?;
 
-                if value.copy_if_borrowed_from_target(target) {
-                    execution_context.add_diagnostic_if_enabled(
-                        RecordSetEngineDiagnosticLevel::Verbose,
-                        target,
-                        || format!("Copied the resolved key or pattern value '{value}' into temporary storage because the value came from the mutable target"));
-                }
+                value.copy_if_borrowed_from_target(execution_context, target);
 
                 let value_type = value.get_value_type();
 
@@ -357,12 +351,7 @@ where
     if let Some(selector) = selectors.next() {
         let mut value = execute_scalar_expression(execution_context, selector)?;
 
-        if value.copy_if_borrowed_from_target(target) {
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                target,
-                || format!("Copied the resolved accessor value '{value}' into temporary storage because the value came from the mutable target"));
-        }
+        value.copy_if_borrowed_from_target(execution_context, target);
 
         let value_type = value.get_value_type();
 

@@ -70,10 +70,12 @@ use std::sync::Arc;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 
-use mimalloc_rust::GlobalMiMalloc;
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 const TRACES_BATCH_ID: i64 = 0;
 const LOGS_BATCH_ID: i64 = 1;

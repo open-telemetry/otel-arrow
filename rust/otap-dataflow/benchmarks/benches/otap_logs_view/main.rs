@@ -33,6 +33,13 @@ use arrow::error::ArrowError;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::encode::record::logs::LogsRecordBatchBuilder;
 
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(windows))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 // Helper to create a simple OTAP logs RecordBatch for testing
 fn create_test_logs_batch(count: usize) -> Result<OtapArrowRecords, ArrowError> {
     let mut builder = LogsRecordBatchBuilder::new();

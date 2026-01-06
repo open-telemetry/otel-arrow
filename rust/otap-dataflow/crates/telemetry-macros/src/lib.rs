@@ -69,12 +69,17 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Collect metric fields (skip non-Counter fields for now by requiring Counter<u64> type name)
+    // Collect metric fields (fields are included when they have #[metric(..)]).
     let mut metric_field_idents = Vec::new();
     let mut metric_field_units = Vec::new();
     let mut metric_field_names = Vec::new();
     let mut metric_field_briefs = Vec::new();
     let mut metric_field_instruments: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut metric_field_temporalities: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut metric_field_value_types: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut metric_field_clear_stmts: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut metric_field_needs_flush_checks: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut always_flush = false;
 
     for field in fields {
         let ident = field
@@ -119,58 +124,141 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
             let final_name = name_attr.unwrap_or(derived_name);
 
             // Validate type path and instrument kind
-            let instrument_variant = match &field.ty {
-                syn::Type::Path(tp) => {
-                    let seg_opt = tp.path.segments.last();
-                    if let Some(seg) = seg_opt {
-                        let ident_ty = seg.ident.to_string();
-                        // Expect generic arguments <u64>
-                        let is_u64 = match &seg.arguments {
-                            syn::PathArguments::AngleBracketed(ab) => {
-                                if ab.args.len() != 1 {
-                                    false
-                                } else {
-                                    matches!(ab.args.first(), Some(syn::GenericArgument::Type(syn::Type::Path(p)) ) if p.path.is_ident("u64"))
+            let (instrument_variant, temporality_variant, value_type_variant, instrument_ty_name) =
+                match &field.ty {
+                    syn::Type::Path(tp) => {
+                        let seg_opt = tp.path.segments.last();
+                        if let Some(seg) = seg_opt {
+                            let ident_ty = seg.ident.to_string();
+                            // Expect generic arguments <u64> or <f64>
+                            let value_type_variant = match &seg.arguments {
+                                syn::PathArguments::AngleBracketed(ab) => {
+                                    if ab.args.len() != 1 {
+                                        return syn::Error::new(
+                                        seg.ident.span(),
+                                        "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, UpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
+                                    )
+                                    .to_compile_error()
+                                    .into();
+                                    }
+                                    match ab.args.first() {
+                                        Some(syn::GenericArgument::Type(syn::Type::Path(p)))
+                                            if p.path.is_ident("u64") =>
+                                        {
+                                            quote!(
+                                                otap_df_telemetry::descriptor::MetricValueType::U64
+                                            )
+                                        }
+                                        Some(syn::GenericArgument::Type(syn::Type::Path(p)))
+                                            if p.path.is_ident("f64") =>
+                                        {
+                                            quote!(
+                                                otap_df_telemetry::descriptor::MetricValueType::F64
+                                            )
+                                        }
+                                        _ => {
+                                            return syn::Error::new(
+                                            seg.ident.span(),
+                                            "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, UpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
+                                        )
+                                        .to_compile_error()
+                                        .into();
+                                        }
+                                    }
                                 }
-                            }
-                            _ => false,
-                        };
-                        if !is_u64 {
-                            return syn::Error::new(seg.ident.span(), "Metric field type must be one of Counter<u64>, UpDownCounter<u64>, Gauge<u64>")
-                                .to_compile_error().into();
-                        }
-                        match ident_ty.as_str() {
-                            "Counter" => quote!(otap_df_telemetry::descriptor::Instrument::Counter),
-                            "UpDownCounter" => {
-                                quote!(otap_df_telemetry::descriptor::Instrument::UpDownCounter)
-                            }
-                            "Gauge" => quote!(otap_df_telemetry::descriptor::Instrument::Gauge),
-                            other => {
-                                return syn::Error::new(
+                                _ => {
+                                    return syn::Error::new(
                                     seg.ident.span(),
-                                    format!("Unsupported metric instrument type: {other}"),
+                                    "Metric field type must be one of Counter<u64|f64>, ObserveCounter<u64|f64>, UpDownCounter<u64|f64>, ObserveUpDownCounter<u64|f64>, Gauge<u64|f64>",
                                 )
                                 .to_compile_error()
                                 .into();
-                            }
+                                }
+                            };
+                            let (instrument_variant, temporality_variant) = match ident_ty.as_str()
+                            {
+                                "Counter" => (
+                                    quote!(otap_df_telemetry::descriptor::Instrument::Counter),
+                                    quote!(Some(otap_df_telemetry::descriptor::Temporality::Delta)),
+                                ),
+                                "ObserveCounter" => (
+                                    quote!(otap_df_telemetry::descriptor::Instrument::Counter),
+                                    quote!(Some(
+                                        otap_df_telemetry::descriptor::Temporality::Cumulative
+                                    )),
+                                ),
+                                "UpDownCounter" => (
+                                    quote!(
+                                        otap_df_telemetry::descriptor::Instrument::UpDownCounter
+                                    ),
+                                    quote!(Some(otap_df_telemetry::descriptor::Temporality::Delta)),
+                                ),
+                                "ObserveUpDownCounter" => (
+                                    quote!(
+                                        otap_df_telemetry::descriptor::Instrument::UpDownCounter
+                                    ),
+                                    quote!(Some(
+                                        otap_df_telemetry::descriptor::Temporality::Cumulative
+                                    )),
+                                ),
+                                "Gauge" => (
+                                    quote!(otap_df_telemetry::descriptor::Instrument::Gauge),
+                                    quote!(None),
+                                ),
+                                other => {
+                                    return syn::Error::new(
+                                        seg.ident.span(),
+                                        format!("Unsupported metric instrument type: {other}"),
+                                    )
+                                    .to_compile_error()
+                                    .into();
+                                }
+                            };
+                            (
+                                instrument_variant,
+                                temporality_variant,
+                                value_type_variant,
+                                ident_ty,
+                            )
+                        } else {
+                            return syn::Error::new(
+                                field.ty.span(),
+                                "Unsupported metric field type",
+                            )
+                            .to_compile_error()
+                            .into();
                         }
-                    } else {
+                    }
+                    _ => {
                         return syn::Error::new(field.ty.span(), "Unsupported metric field type")
                             .to_compile_error()
                             .into();
                     }
-                }
-                _ => {
-                    return syn::Error::new(field.ty.span(), "Unsupported metric field type")
-                        .to_compile_error()
-                        .into();
-                }
-            };
-            metric_field_idents.push(ident);
+                };
+
+            let field_ident = ident;
+            metric_field_idents.push(field_ident.clone());
             metric_field_units.push(unit);
             metric_field_names.push(final_name);
             metric_field_briefs.push(brief_combined);
             metric_field_instruments.push(instrument_variant);
+            metric_field_temporalities.push(temporality_variant);
+            metric_field_value_types.push(value_type_variant);
+
+            match instrument_ty_name.as_str() {
+                "Counter" | "UpDownCounter" => {
+                    metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
+                    metric_field_needs_flush_checks.push(quote!(
+                        if !otap_df_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
+                            return true;
+                        }
+                    ));
+                }
+                "ObserveCounter" | "ObserveUpDownCounter" | "Gauge" => {
+                    always_flush = true;
+                }
+                _ => {}
+            }
         }
     }
 
@@ -182,26 +270,31 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 static #desc_ident: otap_df_telemetry::descriptor::MetricsDescriptor = otap_df_telemetry::descriptor::MetricsDescriptor {
                     name: #metrics_name,
                     metrics: &[
-                        #( otap_df_telemetry::descriptor::MetricsField {
-                            name: #metric_field_names,
-                            unit: #metric_field_units,
-                            brief: #metric_field_briefs,
-                            instrument: #metric_field_instruments
-                        } ),*
-                    ],
-                };
+                            #( otap_df_telemetry::descriptor::MetricsField {
+                                name: #metric_field_names,
+                                unit: #metric_field_units,
+                                brief: #metric_field_briefs,
+                                instrument: #metric_field_instruments,
+                                temporality: #metric_field_temporalities,
+                                value_type: #metric_field_value_types
+                            } ),*
+                        ],
+                    };
                 &#desc_ident
             }
-            fn snapshot_values(&self) -> ::std::vec::Vec<u64> {
+            fn snapshot_values(&self) -> ::std::vec::Vec<otap_df_telemetry::metrics::MetricValue> {
                 let mut out = ::std::vec::Vec::with_capacity(self.descriptor().metrics.len());
-                #( out.push(self.#metric_field_idents.get()); )*
+                #( out.push(otap_df_telemetry::metrics::MetricValue::from(self.#metric_field_idents.get())); )*
                 out
             }
             fn clear_values(&mut self) {
-                #( self.#metric_field_idents.reset(); )*
+                #( #metric_field_clear_stmts )*
             }
             fn needs_flush(&self) -> bool {
-                #( if self.#metric_field_idents.get() != 0 { return true; } )*
+                if #always_flush {
+                    return true;
+                }
+                #( #metric_field_needs_flush_checks )*
                 false
             }
         }

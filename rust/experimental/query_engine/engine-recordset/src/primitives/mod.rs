@@ -9,5 +9,6 @@ pub(crate) mod value_storage;
 
 pub use owned_value::*;
 pub use resolved_value::*;
+pub use resolved_value_mut::*;
 pub use value_mut::*;
 pub use value_storage::*;

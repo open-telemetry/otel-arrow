@@ -28,7 +28,7 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-512gb-x86-64
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: audit
 
@@ -58,17 +58,34 @@ jobs:
           # Run disk cleanup script
           bash ./.github/workflows/scripts/disk-cleanup.sh
 
-          sudo dnf -y install oracle-epel-release-el8 || true
-          sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
-          sudo dnf -y makecache
-          sudo dnf -y install python3.11 python3.11-devel || true
+          # Check if Python 3.11 is already installed to avoid unnecessary dnf operations
+          if rpm -q python3.11 python3.11-devel &>/dev/null; then
+            echo "Python 3.11 packages already installed, skipping repository setup and package installation"
+          else
+            # Enable repos and refresh metadata (only runs if Python not installed)
+            sudo dnf -y install oracle-epel-release-el8 || true
+            sudo dnf -y config-manager --set-enabled ol8_codeready_builder || true
+            sudo dnf -y makecache --timer
+
+            # Install core packages (ignore subpackages that don't exist on OL8)
+            sudo dnf -y install python3.11 python3.11-devel || true
+          fi
+
+          # pip may be packaged as part of python3.11 or available via ensurepip;
+          # fall back to ensurepip if needed.
           if ! /usr/bin/python3.11 -m pip --version >/dev/null 2>&1; then
             /usr/bin/python3.11 -m ensurepip --upgrade || true
           fi
-          /usr/bin/python3.11 -m pip install --upgrade pip setuptools wheel || true
+
+          # Only upgrade pip/setuptools/wheel if outdated (skip if already at latest)
+          /usr/bin/python3.11 -m pip install --upgrade --upgrade-strategy only-if-needed pip setuptools wheel || true
+
+          # Add a 'python' shim so subsequent steps can call `python ...`
           mkdir -p "$HOME/.local/bin"
           ln -sf /usr/bin/python3.11 "$HOME/.local/bin/python"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          # Smoke test
           python --version
           python -m pip --version
 
@@ -89,7 +106,7 @@ jobs:
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --debug --config "${{ inputs.suite_config }}"
+          python orchestrator/run_orchestrator.py --config "${{ inputs.suite_config }}"
 
       - name: Set PR status based on result
         if: always()

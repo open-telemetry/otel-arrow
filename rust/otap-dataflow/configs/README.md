@@ -8,53 +8,108 @@ model. Support for the Go Collector YAML format is planned for the future.
 
 ## Available Configurations
 
+### `fake-batch-debug-noop.yaml`
+
+Demonstrates the batch processor:
+
+- Generates fake data -> batch processor -> debug processor -> noop exporter
+
+### `fake-debug-noop-telemetry.yaml`
+
+A basic pipeline with telemetry export enabled:
+
+- Generates fake data -> debug processor -> noop exporter
+- Includes `service.telemetry` configuration with console metrics export
+
+### `fake-debug-out-port.yaml`
+
+Demonstrates multiple output ports:
+
+- Generates fake data -> debug processor with multiple out ports -> noop exporter
+
+### `fake-filter-debug-noop.yaml`
+
+Demonstrates the filter processor:
+
+- Generates fake data -> filter processor -> debug processor -> noop exporter
+
+### `fake-transform-debug-noop.yaml`
+
+Demonstrate using the transform processor to transform data
+
+- Generates fake data -> debug -> transform -> debug -> noop exporter
+
+The input data can be viewed at /tmp/debug1.log and the transformed output at
+/tmp/debug2.log
+
+### `fake-otap.yaml`
+
+Generates fake data and exports via OTAP:
+
+- Generates fake data -> OTAP exporter to `http://127.0.0.1:4318`
+
+### `fake-otlp.yaml`
+
+Generates fake data and exports via OTLP:
+
+- Generates fake data -> OTLP exporter to `http://127.0.0.1:4317`
+
+### `fake-parquet.yaml`
+
+Generates fake data and exports to Parquet files:
+
+- Generates fake data -> Parquet exporter to `/tmp`
+
+### `fake-perf.yaml`
+
+Generates fake data with performance metrics:
+
+- Generates fake data -> performance exporter
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
 ### `otap-otap.yaml`
 
-A basic OTAP pipeline configuration that:
+A basic OTAP pipeline configuration:
 
-- Receives OTAP traffic on `127.0.1:4317`
-- Exports OTAP traffic to `http://127.0.1:1235`
-- Default channel sizes of 100
+- Receives OTAP traffic on `127.0.0.1:4317`
+- Exports OTAP traffic to `http://127.0.0.1:1235`
 
 ### `otap-otlp.yaml`
 
-A basic OTAP to OTLP pipeline configuration that:
+OTAP to OTLP protocol conversion:
 
 - Receives OTAP traffic on `127.0.0.1:4317`
 - Exports OTLP traffic to `http://127.0.0.1:1235`
-- Default channel sizes of 100
-
-### `otlp-otap.yaml`
-
-A basic OTLP to OTAP pipeline configuration that:
-
-- Receives OTLP traffic on `127.0.0.1:4317`
-- Exports OTAP traffic to `http://127.0.0.1:1235`
-- Default channel sizes of 100
-
-### `otlp-otlp.yaml`
-
-A basic OTLP pipeline configuration that:
-
-- Receives OTLP traffic on `127.0.0.1:4317`
-- Exports OTLP traffic to `http://127.0.0.1:1235`
-- Default channel sizes of 100
 
 ### `otap-perf.yaml`
 
-A pipeline configuration to measure performance metrics, which:
+OTAP receiver with performance metrics:
 
 - Receives OTAP traffic on `127.0.0.1:4317`
 - Measures and exports performance metrics
-- Default channel sizes of 100
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+### `otlp-otap.yaml`
+
+OTLP to OTAP protocol conversion:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Exports OTAP traffic to `http://127.0.0.1:1235`
+
+### `otlp-otlp.yaml`
+
+A basic OTLP pipeline configuration:
+
+- Receives OTLP traffic on `127.0.0.1:4317`
+- Exports OTLP traffic to `http://127.0.0.1:1235`
 
 ### `otlp-perf.yaml`
 
-A pipeline configuration to measure performance metrics, which:
+OTLP receiver with performance metrics:
 
 - Receives OTLP traffic on `127.0.0.1:4317`
 - Measures and exports performance metrics
-- Default channel sizes of 100
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
 
 ## Usage
 

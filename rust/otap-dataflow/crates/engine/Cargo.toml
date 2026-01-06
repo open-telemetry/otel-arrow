@@ -14,6 +14,7 @@ workspace = true
 
 [features]
 testing = []
+jemalloc-testing = []
 
 [dependencies]
 otap-df-channel = { path = "../channel" }
@@ -40,3 +41,15 @@ uuid = { workspace = true }
 once_cell = { workspace = true }
 data-encoding = { workspace = true }
 prost = { workspace = true }
+libmimalloc-sys = { workspace = true }
+byte-unit = { workspace = true }
+cpu-time = { workspace = true }
+nix = { workspace = true, features = ["resource"] }
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemalloc-ctl = { workspace = true }
+
+[dev-dependencies]
+
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }

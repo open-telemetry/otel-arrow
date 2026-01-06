@@ -53,7 +53,6 @@ mod config;
 mod error;
 mod idgen;
 mod metrics;
-mod object_store;
 mod partition;
 mod schema;
 mod writer;
@@ -154,15 +153,16 @@ impl Exporter<OtapPdata> for ParquetExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let exporter_id = effect_handler.exporter_id();
-        let object_store = object_store::from_uri(&self.config.base_uri).map_err(|e| {
-            let source_detail = format_error_sources(&e);
-            Error::ExporterError {
-                exporter: exporter_id.clone(),
-                kind: ExporterErrorKind::Configuration,
-                error: format!("error initializing object store {e}"),
-                source_detail,
-            }
-        })?;
+        let object_store =
+            crate::object_store::from_storage_type(&self.config.storage).map_err(|e| {
+                let source_detail = format_error_sources(&e);
+                Error::ExporterError {
+                    exporter: exporter_id.clone(),
+                    kind: ExporterErrorKind::Configuration,
+                    error: format!("error initializing object store {e}"),
+                    source_detail,
+                }
+            })?;
 
         let writer_options = self.config.writer_options.unwrap_or_default();
 
@@ -484,7 +484,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -588,7 +590,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -732,7 +736,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: Some(vec![config::PartitioningStrategy::SchemaMetadata(
                 vec![idgen::PARTITION_METADATA_KEY.to_string()],
             )]),
@@ -821,7 +827,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -857,13 +865,20 @@ mod test {
             });
     }
 
+    // Skipping on Windows and macOS due to flakiness: https://github.com/open-telemetry/otel-arrow/issues/1614
     #[test]
+    #[cfg_attr(
+        any(target_os = "windows", target_os = "macos"),
+        ignore = "Skipping on Windows and macOS due to flakiness"
+    )]
     fn test_shutdown_timeout() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+            storage: crate::object_store::StorageType::File {
+                base_uri: format!("testdelayed://{base_dir}?delay=500ms"),
+            },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: Some(50),
@@ -882,8 +897,8 @@ mod test {
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
         // Keep the receiver alive so EffectHandler can send telemetry/timer requests without error.
@@ -1010,7 +1025,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: Some(WriterOptions {
                 target_rows_per_file: None,
@@ -1032,8 +1049,8 @@ mod test {
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) =
             create_not_send_channel::<OtapPdata>(test_runtime.config().control_channel.capacity);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
         exporter
@@ -1162,7 +1179,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1177,8 +1196,8 @@ mod test {
         let (rt, _) = setup_test_runtime();
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let _pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let _pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
 
         let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
@@ -1232,7 +1251,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1301,7 +1322,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });
@@ -1393,11 +1416,15 @@ mod test {
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
             .with_node_context(
                 "parquet_exporter".into(),
+                PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
             );
 
-        let exporter_impl =
-            ParquetExporter::from_config(pipeline_ctx, &json!({ "base_uri": base_dir })).unwrap();
+        let exporter_impl = ParquetExporter::from_config(
+            pipeline_ctx,
+            &json!({ "storage": { "file": { "base_uri": base_dir } } }),
+        )
+        .unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(PARQUET_EXPORTER_URN));
         let mut exporter = ExporterWrapper::<OtapPdata>::local::<ParquetExporter>(
@@ -1412,8 +1439,8 @@ mod test {
 
         // pdata channel
         let (pdata_tx_ch, pdata_rx_ch) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx_ch));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx_ch));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx_ch));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx_ch));
         exporter
             .set_pdata_receiver(test_node("exp"), pdata_rx)
             .expect("Failed to set PData Receiver");
@@ -1495,7 +1522,7 @@ mod test {
             if desc.name == "exporter.pdata" {
                 saw_exporter_pdata = true;
                 for (_field, value) in iter {
-                    if value > 0 {
+                    if value.to_f64() > 0.0 {
                         any_positive = true;
                     }
                 }
@@ -1517,7 +1544,9 @@ mod test {
         let temp_dir = tempfile::tempdir().unwrap();
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
         let exporter = ParquetExporter::new(config::Config {
-            base_uri: base_dir.clone(),
+            storage: crate::object_store::StorageType::File {
+                base_uri: base_dir.clone(),
+            },
             partitioning_strategies: None,
             writer_options: None,
         });

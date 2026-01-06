@@ -11,7 +11,6 @@ use data_engine_expressions::*;
 
 use crate::{
     execution_context::*,
-    resolved_value_mut::*,
     scalars::*,
     transform::{
         reduce_map_transform_expression::execute_map_reduce_transform_expression,
@@ -188,12 +187,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
 
             let mutable_value_expression = s.get_destination();
 
-            if source.copy_if_borrowed_from_target(mutable_value_expression) {
-                execution_context.add_diagnostic_if_enabled(
-                    RecordSetEngineDiagnosticLevel::Verbose,
-                    s,
-                    || "Copied the resolved source value into temporary storage because the value came from the mutable target".into());
-            }
+            source.copy_if_borrowed_from_target(execution_context, mutable_value_expression);
 
             let destination =
                 execute_mutable_value_expression(execution_context, mutable_value_expression)?;
@@ -498,12 +492,7 @@ where
     for key_scalar in key_list.get_keys() {
         let mut value = execute_scalar_expression(execution_context, key_scalar)?;
 
-        if value.copy_if_borrowed_from_target(target) {
-            execution_context.add_diagnostic_if_enabled(
-                RecordSetEngineDiagnosticLevel::Verbose,
-                target,
-                || format!("Copied the resolved key value '{value}' into temporary storage because the value came from the mutable target"));
-        }
+        value.copy_if_borrowed_from_target(execution_context, target);
 
         keys.push(value);
     }

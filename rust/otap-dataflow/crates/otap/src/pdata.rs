@@ -14,7 +14,7 @@
 //! This functionality is exposed through various traits implemented by effect handlers.
 
 use async_trait::async_trait;
-use otap_df_config::SignalType;
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::error::Error;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
@@ -111,6 +111,12 @@ impl Context {
     pub fn current_calldata(&self) -> Option<CallData> {
         self.stack.last().map(|f| f.calldata.clone())
     }
+
+    /// Are there any subscribers?
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        !self.stack.is_empty()
+    }
 }
 
 /// Per-node interests, context, and identity.
@@ -167,6 +173,12 @@ impl OtapPdata {
         self.payload.signal_type()
     }
 
+    /// Returns the format of signal represented by this `OtapPdata` instance.
+    #[must_use]
+    pub fn signal_format(&self) -> SignalFormat {
+        self.payload.signal_format()
+    }
+
     /// True if the payload is empty. By definition, we can skip sending an
     /// empty request.
     #[must_use]
@@ -214,6 +226,13 @@ impl OtapPdata {
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
         self
+    }
+
+    /// Returns Context::has_subscribers()
+    #[cfg(test)]
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        self.context.has_subscribers()
     }
 
     /// Return the current calldata.

@@ -29,11 +29,13 @@ nodes:
           - debug
         dispatch_strategy: round_robin
     config:
-      # At the rate configured above, this will print a batch
-      # every 10 seconds.
-      send_batch_size: 1000
-      # This interrupts it, so we expect around 300.
-      timeout: 3s
+      otap:
+        # At the rate set above (100/s), min_size=1000 would emit a batch
+        # every 10 seconds.
+        min_size: 1000
+        sizer: items
+      # The timeout causes 100/s, so we produce around 300 signals/batch.
+      flush_timeout: 3s
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"

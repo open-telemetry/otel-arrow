@@ -14,7 +14,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::descriptor::{Instrument, MetricsDescriptor, MetricsField};
+use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
+use otap_df_telemetry::metrics::MetricValue;
 use otap_df_telemetry::registry::{MetricsIterator, MetricsRegistryHandle};
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
@@ -60,7 +61,7 @@ struct MetricDataPointWithMetadata {
     #[serde(flatten)]
     metadata: MetricsField,
     /// Current value.
-    value: u64,
+    value: MetricValue,
 }
 
 /// Container of all aggregated metrics (no metadata).
@@ -74,7 +75,7 @@ struct AllMetrics {
 struct MetricSet {
     name: String,
     attributes: HashMap<String, AttributeValue>,
-    metrics: HashMap<String, u64>,
+    metrics: HashMap<String, MetricValue>,
 }
 
 /// Output format for telemetry endpoints.
@@ -97,6 +98,9 @@ pub struct MetricsQuery {
     /// Output format: json (default), json_compact, line_protocol, prometheus
     #[serde(default)]
     format: Option<OutputFormat>,
+    /// When true, metric set which have all zero values are kept in the output. Default: false.
+    #[serde(default = "default_false")]
+    keep_all_zeroes: bool,
 }
 
 /// Query parameters for /telemetry/metrics/aggregate
@@ -122,12 +126,17 @@ struct AggregateGroup {
     /// Selected attributes for this group
     attributes: HashMap<String, AttributeValue>,
     /// Aggregated metrics by field name
-    metrics: HashMap<String, u64>,
+    metrics: HashMap<String, MetricValue>,
 }
 
 #[inline]
 const fn default_true() -> bool {
     true
+}
+
+#[inline]
+const fn default_false() -> bool {
+    false
 }
 
 /// Handler for the /live-schema endpoint.
@@ -159,9 +168,9 @@ pub async fn get_metrics(
         OutputFormat::Json => {
             // Snapshot with optional reset
             let metric_sets = if q.reset {
-                collect_metrics_snapshot_and_reset(&state.metrics_registry)
+                collect_metrics_snapshot_and_reset(&state.metrics_registry, q.keep_all_zeroes)
             } else {
-                collect_metrics_snapshot(&state.metrics_registry)
+                collect_metrics_snapshot(&state.metrics_registry, q.keep_all_zeroes)
             };
 
             let response = MetricsWithMetadata {
@@ -291,7 +300,7 @@ fn aggregate_metric_groups(
         GroupKey,
         (
             HashMap<String, AttributeValue>,
-            HashMap<String, u64>,
+            HashMap<String, MetricValue>,
             &'static MetricsDescriptor,
         ),
     > = HashMap::new();
@@ -349,8 +358,10 @@ fn aggregate_metric_groups(
 
         // Accumulate metrics
         for (field, value) in metrics_iter {
-            let entry = metrics_map.entry(field.name.to_string()).or_insert(0);
-            *entry = entry.saturating_add(value);
+            let _ = metrics_map
+                .entry(field.name.to_string())
+                .and_modify(|existing| existing.add_in_place(value))
+                .or_insert(value);
         }
     };
 
@@ -421,6 +432,37 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
     out
 }
 
+fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+    let vtype = value_type.unwrap_or(match value {
+        MetricValue::U64(_) => MetricValueType::U64,
+        MetricValue::F64(_) => MetricValueType::F64,
+    });
+    match vtype {
+        MetricValueType::U64 => {
+            let int_val = match value {
+                MetricValue::U64(v) => v,
+                MetricValue::F64(v) => v as u64,
+            };
+            format!("{int_val}i")
+        }
+        MetricValueType::F64 => value.to_f64().to_string(),
+    }
+}
+
+fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+    let vtype = value_type.unwrap_or(match value {
+        MetricValue::U64(_) => MetricValueType::U64,
+        MetricValue::F64(_) => MetricValueType::F64,
+    });
+    match vtype {
+        MetricValueType::U64 => match value {
+            MetricValue::U64(v) => v.to_string(),
+            MetricValue::F64(v) => (v as u64).to_string(),
+        },
+        MetricValueType::F64 => value.to_f64().to_string(),
+    }
+}
+
 fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>) -> String {
     let mut out = String::new();
     let ts_suffix = timestamp_millis
@@ -447,7 +489,18 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
             } else {
                 fields.push(',');
             }
-            let _ = write!(&mut fields, "{}={}i", escape_lp_field_key(fname), val);
+            let field_type = g
+                .brief
+                .metrics
+                .iter()
+                .find(|f| f.name == fname.as_str())
+                .map(|f| f.value_type);
+            let _ = write!(
+                &mut fields,
+                "{}={}",
+                escape_lp_field_key(fname),
+                format_lp_value(*val, field_type)
+            );
         }
         if !fields.is_empty() {
             let _ = writeln!(&mut out, "{measurement}{tags} {fields}{ts_suffix}");
@@ -510,12 +563,13 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                     };
                     let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
                 }
+                let value_str = format_prom_value(*value, Some(field.value_type));
                 if base_labels.is_empty() {
-                    let _ = writeln!(&mut out, "{metric_name} {value}{ts_suffix}");
+                    let _ = writeln!(&mut out, "{metric_name} {value_str}{ts_suffix}");
                 } else {
                     let _ = writeln!(
                         &mut out,
-                        "{metric_name}{{{base_labels}}} {value}{ts_suffix}"
+                        "{metric_name}{{{base_labels}}} {value_str}{ts_suffix}"
                     );
                 }
             }
@@ -526,34 +580,40 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
 }
 
 /// Collects a snapshot of current metrics without resetting them.
-fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWithMetadata> {
+fn collect_metrics_snapshot(
+    registry: &MetricsRegistryHandle,
+    keep_all_zeroes: bool,
+) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
-        let mut metrics = Vec::new();
+    registry.visit_current_metrics_with_zeroes(
+        |descriptor, attributes, metrics_iter| {
+            let mut metrics = Vec::new();
 
-        for (field, value) in metrics_iter {
-            metrics.push(MetricDataPointWithMetadata {
-                metadata: *field,
-                value,
-            });
-        }
-
-        if !metrics.is_empty() {
-            // Convert attributes to HashMap using the iterator
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+            for (field, value) in metrics_iter {
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: *field,
+                    value,
+                });
             }
 
-            metric_sets.push(MetricSetWithMetadata {
-                name: descriptor.name.to_owned(),
-                brief: String::new(), // MetricsDescriptor doesn't have description field
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                // Convert attributes to HashMap using the iterator
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSetWithMetadata {
+                    name: descriptor.name.to_owned(),
+                    brief: String::new(), // MetricsDescriptor doesn't have description field
+                    attributes: attrs_map,
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }
@@ -561,33 +621,37 @@ fn collect_metrics_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSetWi
 /// Collects a snapshot of current metrics and resets them afterwards.
 fn collect_metrics_snapshot_and_reset(
     registry: &MetricsRegistryHandle,
+    keep_all_zeroes: bool,
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-        let mut metrics = Vec::new();
+    registry.visit_metrics_and_reset_with_zeroes(
+        |descriptor, attributes, metrics_iter| {
+            let mut metrics = Vec::new();
 
-        for (field, value) in metrics_iter {
-            metrics.push(MetricDataPointWithMetadata {
-                metadata: *field,
-                value,
-            });
-        }
-
-        if !metrics.is_empty() {
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+            for (field, value) in metrics_iter {
+                metrics.push(MetricDataPointWithMetadata {
+                    metadata: *field,
+                    value,
+                });
             }
 
-            metric_sets.push(MetricSetWithMetadata {
-                name: descriptor.name.to_owned(),
-                brief: "".to_owned(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSetWithMetadata {
+                    name: descriptor.name.to_owned(),
+                    brief: "".to_owned(),
+                    attributes: attrs_map,
+                    metrics,
+                });
+            }
+        },
+        keep_all_zeroes,
+    );
 
     metric_sets
 }
@@ -690,9 +754,9 @@ fn format_line_protocol(
             }
             let _ = write!(
                 &mut fields,
-                "{}={}i",
+                "{}={}",
                 escape_lp_field_key(field.name),
-                value
+                format_lp_value(value, Some(field.value_type))
             );
         }
 
@@ -768,11 +832,16 @@ fn format_prometheus_text(
             }
 
             if base_labels.is_empty() {
-                let _ = writeln!(&mut out, "{metric_name} {value}{ts_suffix}");
+                let _ = writeln!(
+                    &mut out,
+                    "{metric_name} {}{ts_suffix}",
+                    format_prom_value(value, Some(field.value_type))
+                );
             } else {
                 let _ = writeln!(
                     &mut out,
-                    "{metric_name}{{{base_labels}}} {value}{ts_suffix}"
+                    "{metric_name}{{{base_labels}}} {}{ts_suffix}",
+                    format_prom_value(value, Some(field.value_type))
                 );
             }
         }
@@ -913,7 +982,7 @@ fn escape_prom_help(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_telemetry::descriptor::{Instrument, MetricsField};
+    use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
 
     static TEST_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test_metrics",
@@ -922,13 +991,17 @@ mod tests {
                 name: "requests_total",
                 unit: "1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 brief: "Total number of requests",
+                value_type: MetricValueType::U64,
             },
             MetricsField {
                 name: "errors_total",
                 unit: "1",
                 instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
                 brief: "Total number of errors",
+                value_type: MetricValueType::U64,
             },
         ],
     };
@@ -939,7 +1012,9 @@ mod tests {
             name: "connections_active",
             unit: "1",
             instrument: Instrument::Gauge,
+            temporality: None,
             brief: "Active database connections",
+            value_type: MetricValueType::U64,
         }],
     };
 
@@ -953,7 +1028,7 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), 10);
+                    let _ = m.insert("metric1".to_string(), MetricValue::U64(10));
                     m
                 },
             },
@@ -963,8 +1038,8 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), 5);
-                    let _ = m.insert("metric2".to_string(), 15);
+                    let _ = m.insert("metric1".to_string(), MetricValue::U64(5));
+                    let _ = m.insert("metric2".to_string(), MetricValue::U64(15));
                     m
                 },
             },
@@ -974,7 +1049,7 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), 8);
+                    let _ = m.insert("metric1".to_string(), MetricValue::U64(8));
                     m
                 },
             },
@@ -1063,8 +1138,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<u64> {
-                vec![10, 1]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::U64(10), MetricValue::U64(1)]
             } // requests_total=10, errors_total=1
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1075,8 +1150,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<u64> {
-                vec![5, 0]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::U64(5), MetricValue::U64(0)]
             } // requests_total=5, errors_total=0
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1087,8 +1162,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<u64> {
-                vec![5, 4]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::U64(5), MetricValue::U64(4)]
             } // requests_total=5, errors_total=4
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1099,8 +1174,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<u64> {
-                vec![2, 2]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::U64(2), MetricValue::U64(2)]
             } // requests_total=2, errors_total=2
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1141,16 +1216,25 @@ mod tests {
             match env {
                 Some("prod") => {
                     prod_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&(10 + 5)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&(1 + 4)));
+                    assert_eq!(
+                        g.metrics.get("requests_total"),
+                        Some(&MetricValue::U64(10 + 5))
+                    );
+                    assert_eq!(
+                        g.metrics.get("errors_total"),
+                        Some(&MetricValue::U64(1 + 4))
+                    );
                     // Only grouped attribute should be present (env), not region
                     assert!(g.attributes.contains_key("env"));
                     assert!(!g.attributes.contains_key("region"));
                 }
                 Some("dev") => {
                     dev_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&(5 + 2)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&(2)));
+                    assert_eq!(
+                        g.metrics.get("requests_total"),
+                        Some(&MetricValue::U64(5 + 2))
+                    );
+                    assert_eq!(g.metrics.get("errors_total"), Some(&MetricValue::U64(2)));
                     assert!(g.attributes.contains_key("env"));
                     assert!(!g.attributes.contains_key("region"));
                 }
@@ -1186,22 +1270,28 @@ mod tests {
             match (env, region) {
                 (Some("prod"), Some("us")) => {
                     prod_us_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&(10 + 5)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&(1 + 4)));
+                    assert_eq!(
+                        g.metrics.get("requests_total"),
+                        Some(&MetricValue::U64(10 + 5))
+                    );
+                    assert_eq!(
+                        g.metrics.get("errors_total"),
+                        Some(&MetricValue::U64(1 + 4))
+                    );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
                 }
                 (Some("dev"), Some("eu")) => {
                     dev_eu_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&(5)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&(0)));
+                    assert_eq!(g.metrics.get("requests_total"), Some(&MetricValue::U64(5)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&MetricValue::U64(0)));
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
                 }
                 (Some("dev"), Some("us")) => {
                     dev_us_found = true;
-                    assert_eq!(g.metrics.get("requests_total"), Some(&(2)));
-                    assert_eq!(g.metrics.get("errors_total"), Some(&(2)));
+                    assert_eq!(g.metrics.get("requests_total"), Some(&MetricValue::U64(2)));
+                    assert_eq!(g.metrics.get("errors_total"), Some(&MetricValue::U64(2)));
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
                 }

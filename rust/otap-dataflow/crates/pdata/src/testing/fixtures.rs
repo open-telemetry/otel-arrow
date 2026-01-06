@@ -12,8 +12,8 @@ use crate::proto::opentelemetry::logs::v1::{
     LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber,
 };
 use crate::proto::opentelemetry::metrics::v1::{
-    AggregationTemporality, Gauge, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
-    ScopeMetrics, Sum,
+    AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, MetricsData,
+    NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
 };
 use crate::proto::opentelemetry::resource::v1::Resource;
 use crate::proto::opentelemetry::trace::v1::{
@@ -820,6 +820,82 @@ pub fn metrics_multiple_sums_no_resource() -> MetricsData {
     )])
 }
 
+/// Configuration for generating metrics with specific shapes.
+#[derive(Debug, Clone, Default)]
+pub struct MetricsConfig {
+    /// Number of data points per gauge metric (one gauge per entry)
+    pub gauge_points: Vec<usize>,
+    /// Number of data points per sum metric (one sum per entry)
+    pub sum_points: Vec<usize>,
+    /// Number of data points per histogram metric (one histogram per entry)
+    pub histogram_points: Vec<usize>,
+    /// Number of data points per summary metric (one summary per entry)
+    pub summary_points: Vec<usize>,
+    /// Whether to add varying attributes to data points
+    pub vary_attributes: bool,
+}
+
+impl MetricsConfig {
+    /// Create a new empty metrics configuration
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add gauge metrics with specified point counts
+    #[must_use]
+    pub fn with_gauges(mut self, points: Vec<usize>) -> Self {
+        self.gauge_points = points;
+        self
+    }
+
+    /// Add sum metrics with specified point counts
+    #[must_use]
+    pub fn with_sums(mut self, points: Vec<usize>) -> Self {
+        self.sum_points = points;
+        self
+    }
+
+    /// Add histogram metrics with specified point counts
+    #[must_use]
+    pub fn with_histograms(mut self, points: Vec<usize>) -> Self {
+        self.histogram_points = points;
+        self
+    }
+
+    /// Add summary metrics with specified point counts
+    #[must_use]
+    pub fn with_summaries(mut self, points: Vec<usize>) -> Self {
+        self.summary_points = points;
+        self
+    }
+
+    /// Enable varying attributes on data points
+    #[must_use]
+    pub fn with_varying_attributes(mut self, vary: bool) -> Self {
+        self.vary_attributes = vary;
+        self
+    }
+
+    /// Calculate total data point count across all metrics
+    #[must_use]
+    pub fn total_points(&self) -> usize {
+        self.gauge_points.iter().sum::<usize>()
+            + self.sum_points.iter().sum::<usize>()
+            + self.histogram_points.iter().sum::<usize>()
+            + self.summary_points.iter().sum::<usize>()
+    }
+
+    /// Count total number of metrics
+    #[must_use]
+    pub fn metric_count(&self) -> usize {
+        self.gauge_points.len()
+            + self.sum_points.len()
+            + self.histogram_points.len()
+            + self.summary_points.len()
+    }
+}
+
 /// Generator for test data.
 ///
 /// TODO: This is a placeholder, only varies timestamp_offset; add
@@ -834,6 +910,7 @@ pub struct DataGenerator {
     limit: usize,
     count: usize,
     time_value: u64,
+    metrics_config: Option<MetricsConfig>,
 }
 
 impl DataGenerator {
@@ -846,6 +923,18 @@ impl DataGenerator {
 
             // One million nanoseconds past the UTC epoch.
             time_value: 1_000_000_000_000_000,
+            metrics_config: None,
+        }
+    }
+
+    /// Create a DataGenerator with a specific metrics configuration
+    #[must_use]
+    pub fn with_metrics_config(config: MetricsConfig) -> Self {
+        Self {
+            limit: 0,
+            count: 0,
+            time_value: 1_000_000_000_000_000,
+            metrics_config: Some(config),
         }
     }
 }
@@ -990,6 +1079,86 @@ impl DataGenerator {
         )])
     }
 
+    /// Generate test OTLP metrics data using the configured MetricsConfig
+    #[must_use]
+    pub fn generate_metrics_from_config(&mut self) -> MetricsData {
+        let config = self
+            .metrics_config
+            .as_ref()
+            .expect("metrics_config must be set")
+            .clone();
+
+        let mut metrics = Vec::new();
+        let vary_attrs = config.vary_attributes;
+
+        // Generate gauge metrics
+        for (idx, &point_count) in config.gauge_points.iter().enumerate() {
+            metrics.push(
+                Metric::build()
+                    .name(format!("gauge_{}", idx))
+                    .description(format!("Gauge metric {}", idx))
+                    .unit("1")
+                    .data_gauge(Gauge::new(
+                        self.build_number_data_points(point_count, vary_attrs),
+                    ))
+                    .finish(),
+            );
+        }
+
+        // Generate sum metrics
+        for (idx, &point_count) in config.sum_points.iter().enumerate() {
+            metrics.push(
+                Metric::build()
+                    .name(format!("sum_{}", idx))
+                    .description(format!("Sum metric {}", idx))
+                    .unit("1")
+                    .data_sum(Sum::new(
+                        AggregationTemporality::Cumulative,
+                        true,
+                        self.build_number_data_points(point_count, vary_attrs),
+                    ))
+                    .finish(),
+            );
+        }
+
+        // Generate histogram metrics
+        for (idx, &point_count) in config.histogram_points.iter().enumerate() {
+            metrics.push(
+                Metric::build()
+                    .name(format!("histogram_{}", idx))
+                    .description(format!("Histogram metric {}", idx))
+                    .unit("s")
+                    .data_histogram(Histogram::new(
+                        AggregationTemporality::Delta,
+                        self.build_histogram_data_points(point_count, vary_attrs),
+                    ))
+                    .finish(),
+            );
+        }
+
+        // Generate summary metrics
+        for (idx, &point_count) in config.summary_points.iter().enumerate() {
+            metrics.push(
+                Metric::build()
+                    .name(format!("summary_{}", idx))
+                    .description(format!("Summary metric {}", idx))
+                    .unit("ms")
+                    .data_summary(Summary::new(
+                        self.build_summary_data_points(point_count, vary_attrs),
+                    ))
+                    .finish(),
+            );
+        }
+
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::build().finish(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build().finish(),
+                metrics,
+            )],
+        )])
+    }
+
     fn build_gauge_data(&mut self, n: usize) -> Vec<NumberDataPoint> {
         (0..self.consume(n))
             .map(|i| {
@@ -1017,6 +1186,80 @@ impl DataGenerator {
                     //     AnyValue::new_string(format!("{i}")),
                     // )])
                     .finish()
+            })
+            .collect()
+    }
+
+    /// Build number data points (for gauge and sum metrics)
+    fn build_number_data_points(&mut self, n: usize, vary_attrs: bool) -> Vec<NumberDataPoint> {
+        (0..n)
+            .map(|i| {
+                let mut builder = NumberDataPoint::build()
+                    .value_double((i as f64 + 1.0) * 10.0)
+                    .time_unix_nano(self.timestamp());
+
+                if vary_attrs {
+                    builder = builder
+                        .attributes(vec![KeyValue::new("point_id", AnyValue::new_int(i as i64))]);
+                }
+
+                builder.finish()
+            })
+            .collect()
+    }
+
+    /// Build histogram data points
+    fn build_histogram_data_points(
+        &mut self,
+        n: usize,
+        vary_attrs: bool,
+    ) -> Vec<HistogramDataPoint> {
+        (0..n)
+            .map(|i| {
+                let mut builder = HistogramDataPoint::build()
+                    .time_unix_nano(self.timestamp())
+                    .count(10 + i as u64)
+                    .sum((100 + i * 10) as f64)
+                    .bucket_counts(vec![1, 2, 3, 4])
+                    .explicit_bounds(vec![0.0, 10.0, 50.0, 100.0]);
+
+                if vary_attrs {
+                    builder = builder
+                        .attributes(vec![KeyValue::new("point_id", AnyValue::new_int(i as i64))]);
+                }
+
+                builder.finish()
+            })
+            .collect()
+    }
+
+    /// Build summary data points
+    fn build_summary_data_points(&mut self, n: usize, vary_attrs: bool) -> Vec<SummaryDataPoint> {
+        use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
+
+        (0..n)
+            .map(|i| {
+                let mut builder = SummaryDataPoint::build()
+                    .time_unix_nano(self.timestamp())
+                    .count(20 + i as u64)
+                    .sum((200 + i * 20) as f64)
+                    .quantile_values(vec![
+                        ValueAtQuantile {
+                            quantile: 0.5,
+                            value: 50.0 + i as f64,
+                        },
+                        ValueAtQuantile {
+                            quantile: 0.95,
+                            value: 95.0 + i as f64,
+                        },
+                    ]);
+
+                if vary_attrs {
+                    builder = builder
+                        .attributes(vec![KeyValue::new("point_id", AnyValue::new_int(i as i64))]);
+                }
+
+                builder.finish()
             })
             .collect()
     }

@@ -244,36 +244,24 @@ queries:
           (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'failed') AS failed,
           (SELECT SUM(total_increase) AS total FROM aggregate_send_receive_rates WHERE metric_name = 'logs') AS logs;
 
+  - name: Calculate log throughput rates
+    sql: |
+      CREATE TABLE log_throughput_rates AS
+      SELECT
+        asr.metric_name,
+        asr.total_increase,
+        asr.total_increase / NULLIF(EXTRACT(EPOCH FROM (ow.stop_ts - ow.start_ts)), 0) AS logs_per_second
+      FROM aggregate_send_receive_rates asr
+      CROSS JOIN observation_window ow
+      WHERE asr.metric_name IN ('logs_produced', 'logs');
+
   - name: Create Final Github Actions Format table
     sql: |
       CREATE TABLE gh_actions_benchmark AS
-          SELECT 'dropped_logs_total' AS name, 'count' AS unit, CAST(logs_lost AS FLOAT) AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Log Count' AS extra
-          FROM log_loss
-          CROSS JOIN metadata_row
-
-          UNION ALL
-
           SELECT 'dropped_logs_percentage' AS name, '%' AS unit, CAST(logs_lost_pct AS FLOAT) * 100 AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Dropped Logs %' AS extra
           FROM log_loss
           CROSS JOIN metadata_row
-
-          UNION ALL
-
-          SELECT 'cpu_percentage_avg' AS name, '%' AS unit, avg_value * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Percentage' AS extra
-          FROM component_resource_metrics
-          CROSS JOIN metadata_row
-          WHERE component_name IN ('go-collector', 'df-engine') AND metric_name IN ('container.cpu.usage', 'process.cpu.usage')
-
-          UNION ALL
-
-          SELECT 'cpu_percentage_max' AS name, '%' AS unit, max_value * 100 AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Percentage' AS extra
-          FROM component_resource_metrics
-          CROSS JOIN metadata_row
-          WHERE component_name IN ('go-collector', 'df-engine') AND metric_name IN ('container.cpu.usage', 'process.cpu.usage')
 
           UNION ALL
 
@@ -313,31 +301,31 @@ queries:
 
           UNION ALL
 
-          SELECT 'logs_produced_total' AS name, 'count' AS unit, total_increase AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Counts' AS extra
-          FROM aggregate_send_receive_rates
+          SELECT 'logs_produced_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
+          FROM log_throughput_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'logs_produced'
 
           UNION ALL
 
-          SELECT 'logs_received_total' AS name, 'count' AS unit, total_increase AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Counts' AS extra
-          FROM aggregate_send_receive_rates
+          SELECT 'logs_received_rate' AS name, 'logs/sec' AS unit, logs_per_second AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
+          FROM log_throughput_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'logs'
 
           UNION ALL
 
-          SELECT 'received_log_rate_avg' AS name, 'logs/sec' AS unit, average_rate AS value,
-                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Log Throughput' AS extra
-          FROM aggregate_send_receive_rates
+          SELECT 'test_duration' AS name, 'seconds' AS unit,
+                EXTRACT(EPOCH FROM (stop_ts - start_ts)) AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Test Duration' AS extra
+          FROM observation_window
           CROSS JOIN metadata_row
-          WHERE metric_name = 'received_log_rate_avg'
 
           UNION ALL
 
-          SELECT 'network_tx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+          SELECT 'network_tx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -345,7 +333,7 @@ queries:
 
           UNION ALL
 
-          SELECT 'network_rx_bytes_rate_avg' AS name, 'bits/sec' AS unit, average_rate * 8 AS value,
+          SELECT 'network_rx_bytes_rate_avg' AS name, 'bytes/sec' AS unit, average_rate AS value,
                 metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Network Utilization' AS extra
           FROM container_network_rates
           CROSS JOIN metadata_row
@@ -362,6 +350,8 @@ result_tables:
     description: CPU and Memory metrics for the components in the Test Suite during the test.
   - name: log_loss
     description: Lost logs (failed or sent but not received) total and as a percentage
+  - name: log_throughput_rates
+    description: Log throughput rates (logs/sec) calculated from total counts and observation window duration
   - name: gh_actions_benchmark
     description: The final metrics used with gh_actions_benchmark.
     #display: False

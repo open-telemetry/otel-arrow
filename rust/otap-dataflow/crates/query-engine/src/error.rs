@@ -1,0 +1,46 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Errors for the columnar query engine.
+
+use arrow::error::ArrowError;
+use data_engine_expressions::QueryLocation;
+use datafusion::error::DataFusionError;
+
+/// Result type for methods returned from query engine
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Errors returned by query engine
+#[derive(thiserror::Error, Debug)]
+#[allow(missing_docs)]
+pub enum Error {
+    /// Error which the pipeline can return if there was a problem encountered during execution
+    #[error("Pipeline execution error: {cause}")]
+    ExecutionError { cause: String },
+
+    #[error("Invalid pipeline: {cause} {query_location:?}")]
+    InvalidPipelineError {
+        cause: String,
+        query_location: Option<QueryLocation>,
+    },
+
+    /// Error for syntax/query state that should be valid but is not yet supported by this engine
+    #[error("Operation not yet supported by columnar engine: {message}")]
+    NotYetSupportedError { message: String },
+}
+
+impl From<ArrowError> for Error {
+    fn from(error: ArrowError) -> Self {
+        Self::ExecutionError {
+            cause: format!("ArrowError: {error:?}"),
+        }
+    }
+}
+
+impl From<DataFusionError> for Error {
+    fn from(error: DataFusionError) -> Self {
+        Self::ExecutionError {
+            cause: format!("DataFusionError: {error:?}"),
+        }
+    }
+}

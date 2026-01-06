@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
-use otap_df_config::pipeline::TelemetryConfig;
+use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
 pub mod attributes;
@@ -34,11 +34,29 @@ pub mod collector;
 pub mod descriptor;
 pub mod error;
 pub mod instrument;
+/// Internal logs/events module for engine.
+pub mod internal_events;
 pub mod metrics;
 pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
 pub mod semconv;
+
+// Re-export _private module from internal_events for macro usage.
+// This allows the otel_info!, otel_warn!, etc. macros to work in other crates
+// without requiring them to add tracing as a direct dependency.
+#[doc(hidden)]
+pub use internal_events::_private;
+
+// Re-export tracing span macros and types for crates that need span instrumentation.
+// This allows dependent crates to use spans without adding tracing as a direct dependency.
+// Re-exported with otel_ prefix for naming consistency with otel_info!, otel_warn!, etc.
+pub use tracing::Span as OtelSpan;
+pub use tracing::debug_span as otel_debug_span;
+pub use tracing::error_span as otel_error_span;
+pub use tracing::info_span as otel_info_span;
+pub use tracing::trace_span as otel_trace_span;
+pub use tracing::warn_span as otel_warn_span;
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config

@@ -3,18 +3,20 @@
 
 //! Pipeline configuration specification.
 
+pub mod service;
+
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::observed_state::ObservedStateSettings;
-use crate::{Description, NodeId, PipelineGroupId, PipelineId, PortName, Urn};
+use crate::pipeline::service::ServiceConfig;
+use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -90,6 +92,52 @@ pub struct PipelineSettings {
     /// Health policy.
     #[serde(default)]
     pub health_policy: HealthPolicy,
+
+    /// Pipeline-level telemetry settings.
+    ///
+    /// These flags control capture of pipeline runtime metrics emitted by the pipeline
+    /// execution loop (e.g. per-pipeline CPU/memory metrics and Tokio runtime metrics).
+    ///
+    /// This is distinct from `service.telemetry`, which configures exporting of OpenTelemetry
+    /// signals to external backends.
+    #[serde(default)]
+    pub telemetry: TelemetrySettings,
+}
+
+/// Configuration for pipeline-internal telemetry capture.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TelemetrySettings {
+    /// Enable capture of per-pipeline internal metrics.
+    ///
+    /// When disabled, the engine does not update or report the `pipeline.metrics` metric set.
+    #[serde(default = "default_true")]
+    pub pipeline_metrics: bool,
+
+    /// Enable capture of Tokio runtime internal metrics.
+    ///
+    /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
+    #[serde(default = "default_true")]
+    pub tokio_metrics: bool,
+
+    /// Enable capture of channel-level metrics.
+    ///
+    /// When disabled, the engine does not report channel sender/receiver metrics.
+    #[serde(default = "default_true")]
+    pub channel_metrics: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self {
+            pipeline_metrics: true,
+            tokio_metrics: true,
+            channel_metrics: true,
+        }
+    }
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
@@ -110,6 +158,7 @@ impl Default for PipelineSettings {
             default_pdata_channel_size: default_pdata_channel_size(),
             observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
+            telemetry: TelemetrySettings::default(),
         }
     }
 }
@@ -380,7 +429,7 @@ impl PipelineConfigBuilder {
 
     /// Add a node with a given id and kind.
     /// Optionally provide config.
-    pub fn add_node<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_node<S: Into<NodeId>, U: Into<NodeUrn>>(
         mut self,
         id: S,
         kind: NodeKind,
@@ -408,7 +457,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add a receiver node.
-    pub fn add_receiver<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_receiver<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -418,7 +467,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add a processor node.
-    pub fn add_processor<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_processor<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -428,7 +477,7 @@ impl PipelineConfigBuilder {
     }
 
     /// Add an exporter node.
-    pub fn add_exporter<S: Into<NodeId>, U: Into<Urn>>(
+    pub fn add_exporter<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
         plugin_urn: U,
@@ -624,190 +673,17 @@ impl Default for PipelineConfigBuilder {
     }
 }
 
-/// Service-level telemetry configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct ServiceConfig {
-    /// The telemetry backend to which to report metrics.
-    #[serde(default)]
-    pub telemetry: TelemetryConfig,
-}
-
-/// Telemetry backend configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TelemetryConfig {
-    /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
-    #[serde(default = "default_reporting_channel_size")]
-    pub reporting_channel_size: usize,
-    /// The interval at which metrics are flushed and aggregated by the collector.
-    #[serde(with = "humantime_serde", default = "default_reporting_interval")]
-    #[schemars(with = "String")]
-    pub reporting_interval: Duration,
-    /// Metrics system configuration.
-    #[serde(default)]
-    pub metrics: MetricsConfig,
-    /// Resource attributes to associate with telemetry data.
-    /// TODO: Support different types of attribute values.
-    #[serde(default)]
-    pub resource: HashMap<String, String>,
-}
-
-impl Default for TelemetryConfig {
-    fn default() -> Self {
-        Self {
-            metrics: MetricsConfig::default(),
-            resource: HashMap::default(),
-            reporting_channel_size: default_reporting_channel_size(),
-            reporting_interval: default_reporting_interval(),
-        }
-    }
-}
-
-fn default_reporting_channel_size() -> usize {
-    100
-}
-
-fn default_reporting_interval() -> Duration {
-    Duration::from_secs(1)
-}
-
-/// Opentelemetry Metrics configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct MetricsConfig {
-    /// The list of metrics readers to configure.
-    #[serde(default)]
-    pub readers: Vec<MetricsReaderConfig>,
-}
-
-/// Opentelemetry Metrics Reader configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum MetricsReaderConfig {
-    /// Periodic reader that exports metrics at regular intervals.
-    Periodic(MetricsReaderPeriodicConfig),
-    /// Pull reader that allows on-demand metric collection.
-    Pull {
-        //TODO: Add specific configuration for supported pull readers.
-    },
-}
-
-/// Opentelemetry Metrics Periodic Reader configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct MetricsReaderPeriodicConfig {
-    /// The metrics exporter to use.
-    pub exporter: MetricsPeriodicExporterConfig,
-    /// The interval at which metrics are periodically exported.
-    #[serde(with = "humantime_serde", default = "default_periodic_interval")]
-    #[schemars(with = "String")]
-    pub interval: Duration,
-}
-
-fn default_periodic_interval() -> Duration {
-    Duration::from_secs(6)
-}
-
-impl<'de> Deserialize<'de> for MetricsReaderConfig {
-    /// Custom deserialization to handle different reader types.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct ReaderOptions {
-            #[serde(rename = "periodic")]
-            periodic: Option<MetricsReaderPeriodicConfig>,
-            #[serde(rename = "pull")]
-            pull: Option<()>,
-        }
-
-        let reader_options_result = ReaderOptions::deserialize(deserializer);
-        if let Ok(options) = reader_options_result {
-            if let Some(config) = options.periodic {
-                Ok(MetricsReaderConfig::Periodic(config))
-            } else if options.pull.is_some() {
-                Ok(MetricsReaderConfig::Pull {})
-            } else {
-                Err(serde::de::Error::custom(
-                    "Expected either 'periodic' or 'pull' reader",
-                ))
-            }
-        } else {
-            Err(serde::de::Error::custom(
-                "Invalid configuration of a metrics reader",
-            ))
-        }
-    }
-}
-
-/// Opentelemetry Metrics Perioidc Exporter configuration.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub enum MetricsPeriodicExporterConfig {
-    /// Console exporter that writes metrics to the console.
-    Console(ConsoleExporterConfig),
-    /// OTLP exporter that sends metrics using the OpenTelemetry Protocol.
-    Otlp,
-}
-
-/// Opentelemetry Console Exporter configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ConsoleExporterConfig {
-    /// The temporality preference for the console exporter.
-    #[serde(rename = "temporality")]
-    pub temporality: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
-    /// Custom deserialization to handle different exporter types.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de::{MapAccess, Visitor};
-        use std::fmt;
-        struct MetricsPeriodicExporterConfigVisitor;
-
-        impl<'de> Visitor<'de> for MetricsPeriodicExporterConfigVisitor {
-            type Value = MetricsPeriodicExporterConfig;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a map with either 'console' or 'otlp' key")
-            }
-
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                if let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "console" => {
-                            let console_config: ConsoleExporterConfig = map.next_value()?;
-                            Ok(MetricsPeriodicExporterConfig::Console(console_config))
-                        }
-                        "otlp" => {
-                            let _: () = map.next_value()?;
-                            Ok(MetricsPeriodicExporterConfig::Otlp)
-                        }
-                        _ => Err(serde::de::Error::unknown_field(&key, &["console", "otlp"])),
-                    }
-                } else {
-                    Err(serde::de::Error::custom(
-                        "Expected either 'console' or 'otlp' exporter",
-                    ))
-                }
-            }
-        }
-
-        deserializer.deserialize_map(MetricsPeriodicExporterConfigVisitor)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
     use crate::node::DispatchStrategy;
-    use crate::pipeline::{
-        MetricsPeriodicExporterConfig, MetricsReaderConfig, MetricsReaderPeriodicConfig,
-        PipelineConfigBuilder, PipelineType,
+    use crate::pipeline::service::telemetry::metrics::MetricsConfig;
+    use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::service::telemetry::metrics::readers::{
+        MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
+    use crate::pipeline::service::telemetry::{AttributeValue, TelemetryConfig};
+    use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
 
     #[test]
@@ -1135,20 +1011,25 @@ mod tests {
         assert_eq!(reporting_interval.as_secs(), 5);
 
         let resource_attrs = &telemetry_config.resource;
-        assert_eq!(
-            resource_attrs.get("service.name"),
-            Some(&"test_service".to_string())
-        );
-        assert_eq!(
-            resource_attrs.get("service.version"),
-            Some(&"1.0.0".to_string())
-        );
+
+        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
+            assert_eq!(val, "test_service");
+        } else {
+            panic!("Expected service.name to be a string");
+        }
+        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
+            assert_eq!(val, "1.0.0");
+        } else {
+            panic!("Expected service.version to be a string");
+        }
+        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
+            assert_eq!(i, 10);
+        } else {
+            panic!("Expected instance.id to be an integer");
+        }
 
         if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if let MetricsPeriodicExporterConfig::Console(exporter_config) = &reader_config.exporter
-            {
-                assert_eq!(exporter_config.temporality.as_deref(), None);
-            } else {
+            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
                 panic!("Expected MetricsPeriodicExporterConfig");
             }
         } else {
@@ -1182,20 +1063,25 @@ mod tests {
         let reporting_interval = telemetry_config.reporting_interval;
         assert_eq!(reporting_interval.as_secs(), 5);
         let resource_attrs = &telemetry_config.resource;
-        assert_eq!(
-            resource_attrs.get("service.name"),
-            Some(&"test_service".to_string())
-        );
-        assert_eq!(
-            resource_attrs.get("service.version"),
-            Some(&"1.0.0".to_string())
-        );
+
+        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
+            assert_eq!(val, "test_service");
+        } else {
+            panic!("Expected service.name to be a string");
+        }
+        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
+            assert_eq!(val, "1.0.0");
+        } else {
+            panic!("Expected service.version to be a string");
+        }
+        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
+            assert_eq!(i, 10);
+        } else {
+            panic!("Expected instance.id to be an integer");
+        }
 
         if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if let MetricsPeriodicExporterConfig::Console(exporter_config) = &reader_config.exporter
-            {
-                assert_eq!(exporter_config.temporality.as_deref(), None);
-            } else {
+            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
                 panic!("Expected MetricsPeriodicExporterConfig");
             }
         } else {
@@ -1352,18 +1238,28 @@ mod tests {
                     exporter:
                       console: {}
             "#;
-        let config: super::TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
+        let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
         assert_eq!(config.reporting_interval.as_secs(), 5);
-        assert_eq!(config.resource.get("service.name").unwrap(), "my_service");
-        assert_eq!(config.resource.get("service.version").unwrap(), "1.2.3");
+
+        let resource_attrs = &config.resource;
+
+        if let AttributeValue::String(ref val) = resource_attrs["service.name"] {
+            assert_eq!(val, "my_service");
+        } else {
+            panic!("Expected service.name to be a string");
+        }
+        if let AttributeValue::String(ref val) = resource_attrs["service.version"] {
+            assert_eq!(val, "1.2.3");
+        } else {
+            panic!("Expected service.version to be a string");
+        }
+
         let readers = &config.metrics.readers;
         assert_eq!(readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 15);
-            if let MetricsPeriodicExporterConfig::Console(_) = &periodic_config.exporter {
-                // OK
-            } else {
+            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1378,17 +1274,13 @@ mod tests {
               - periodic:
                   interval: "10s"
                   exporter:
-                    console: {}
+                    console:
             "#;
-        let config: super::MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
+        let config: MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.readers.len(), 1);
         if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
             assert_eq!(periodic_config.interval.as_secs(), 10);
-            if let MetricsPeriodicExporterConfig::Console(console_config) =
-                &periodic_config.exporter
-            {
-                assert!(console_config.temporality.is_none());
-            } else {
+            if MetricsPeriodicExporterConfig::Console != periodic_config.exporter {
                 panic!("Expected Console exporter config");
             }
         } else {
@@ -1401,15 +1293,12 @@ mod tests {
         let yaml_data = r#"
             interval: "20s"
             exporter:
-              console: {}
+              console:
             "#;
         let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
             serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
-        if let MetricsPeriodicExporterConfig::Console(_) = &metrics_reader_periodic_config.exporter
-        {
-            // OK
-        } else {
+        if MetricsPeriodicExporterConfig::Console != metrics_reader_periodic_config.exporter {
             panic!("Expected Console exporter config");
         }
     }

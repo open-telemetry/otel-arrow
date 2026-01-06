@@ -53,7 +53,42 @@ fn default_reload_interval() -> Option<Duration> {
 /// - **Scrapers/clients**: When pulling data from a target (e.g., Prometheus scrape, OTLP/HTTP client).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 pub struct TlsClientConfig {
-    // TODO: Implement client TLS configuration fields when needed.
+    /// Common TLS configuration (client certificate + key for mTLS).
+    #[serde(flatten)]
+    pub config: TlsConfig,
+
+    /// Path to a PEM bundle of CA certificates to trust when verifying the server.
+    pub ca_file: Option<PathBuf>,
+
+    /// In-memory PEM bundle of CA certificates to trust when verifying the server.
+    pub ca_pem: Option<String>,
+
+    /// Controls whether system CA certificates are loaded for server certificate verification.
+    ///
+    /// Defaults to true when omitted.
+    pub include_system_ca_certs_pool: Option<bool>,
+
+    /// Override the server name used for TLS SNI and certificate verification.
+    ///
+    /// This is typically needed when connecting by IP address or when the endpoint hostname
+    /// does not match the certificate.
+    #[serde(rename = "server_name_override")]
+    pub server_name: Option<String>,
+
+    /// Insecure disables TLS.
+    #[serde(default)]
+    pub insecure: Option<bool>,
+
+    /// InsecureSkipVerify would enable TLS but skip server certificate verification.
+    ///
+    /// NOTE: This is currently **not supported** in the Rust collector implementation.
+    /// If set to `true`, startup will fail with a clear error instead of silently
+    /// proceeding with normal certificate verification.
+    ///
+    /// TODO: Implement this behind a clearly-labeled "dangerous" option once the
+    /// tonic/rustls client stack supports plugging in a custom verifier.
+    #[serde(default)]
+    pub insecure_skip_verify: Option<bool>,
 }
 
 /// TLS configuration specific to server connections (terminating TLS/mTLS).
@@ -65,16 +100,31 @@ pub struct TlsServerConfig {
     /// Common TLS configuration.
     #[serde(flatten)]
     pub config: TlsConfig,
-    // TODO: Implement mTLS fields when needed.
-    // /// Path to the TLS cert to use by the server to verify a client certificate.
-    // pub client_ca_file: Option<PathBuf>,
 
-    // /// In memory PEM encoded cert to use by the server to verify a client certificate.
-    // pub client_ca_pem: Option<String>,
+    /// Path to the TLS cert to use by the server to verify a client certificate.
+    pub client_ca_file: Option<PathBuf>,
 
-    // /// Controls whether system CA certificates are loaded for client certificate verification.
-    // pub include_system_ca_certs_pool: Option<bool>,
+    /// In memory PEM encoded cert to use by the server to verify a client certificate.
+    pub client_ca_pem: Option<String>,
 
+    /// Controls whether system CA certificates are loaded for client certificate verification.
+    pub include_system_ca_certs_pool: Option<bool>,
     // /// Path to the Certificate Revocation List (CRL) to use by the server to verify a client certificate.
     // pub client_crl_file: Option<PathBuf>,
+    /// Enable file watching for client CA certificate hot-reload.
+    /// When enabled, changes to `client_ca_file` will be detected and the
+    /// client certificate verifier will be automatically updated without restart.
+    /// Requires `client_ca_file` to be set. Defaults to false.
+    #[serde(default)]
+    pub watch_client_ca: bool,
+
+    /// Timeout for TLS handshake. Defaults to 10 seconds.
+    /// Prevents slow/malicious clients from holding connection slots.
+    #[serde(default = "default_handshake_timeout", with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub handshake_timeout: Option<Duration>,
+}
+
+fn default_handshake_timeout() -> Option<Duration> {
+    Some(Duration::from_secs(10))
 }

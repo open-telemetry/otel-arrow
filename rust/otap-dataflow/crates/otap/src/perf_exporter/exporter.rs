@@ -8,7 +8,7 @@
 //!   the same functionality. The advantage would be to allow performance measurements anywhere in
 //!   the pipeline.
 //! - Measure the number of memory allocations for the current thread. This would allow measuring
-//!   the memory used by the pipeline. This is possible using `mimalloc-rust-sys`.
+//!   the memory used by the pipeline. This is possible using `mimalloc-sys`.
 //! - Measure per-thread CPU usage. This would allow measuring the pipeline’s CPU load. This is
 //!   possible using the "libc" crate function `getrusage(RUSAGE\_THREAD)`.
 //! - Measure network usage either via a cgroup or via eBPF.
@@ -39,6 +39,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ExporterFactory, distributed_slice};
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -129,7 +130,11 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;
 
-        effect_handler.info("Starting Perf Exporter\n").await;
+        otel_info!(
+            "Exporter.Start",
+            frequency_ms = self.config.frequency(),
+            message = "Starting Perf Exporter"
+        );
 
         // Start telemetry collection tick as a dedicated control message.
         let timer_cancel_handle = effect_handler
@@ -173,13 +178,13 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // Increment counters per type of OTLP signals
                     match signal_type {
                         SignalType::Metrics => {
-                            self.metrics.metrics.add(batch.batch_length() as u64);
+                            self.metrics.metrics.add(batch.num_items() as u64);
                         }
                         SignalType::Logs => {
-                            self.metrics.logs.add(batch.batch_length() as u64);
+                            self.metrics.logs.add(batch.num_items() as u64);
                         }
                         SignalType::Traces => {
-                            self.metrics.spans.add(batch.batch_length() as u64);
+                            self.metrics.spans.add(batch.num_items() as u64);
                         }
                     }
 

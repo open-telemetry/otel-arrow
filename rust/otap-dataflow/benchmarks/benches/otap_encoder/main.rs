@@ -20,10 +20,12 @@ use otap_df_pdata::views::bench_helpers::visit_logs_data;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
 
-use mimalloc_rust::GlobalMiMalloc;
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
 
+#[cfg(not(windows))]
 #[global_allocator]
-static GLOBAL: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL: Jemalloc = Jemalloc;
 
 struct LogsDataGenParams {
     num_resources: usize,

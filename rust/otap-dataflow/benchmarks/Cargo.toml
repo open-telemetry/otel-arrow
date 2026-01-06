@@ -12,7 +12,6 @@ rust-version.workspace = true
 arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-mimalloc-rust.workspace = true
 otap-df-otap = { path = "../crates/otap" }
 
 [dev-dependencies]
@@ -38,6 +37,9 @@ roaring.workspace = true
 unsync.workspace = true
 portpicker.workspace = true
 tokio-stream.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+tikv-jemallocator.workspace = true
 
 [lints]
 workspace = true
@@ -85,4 +87,3 @@ harness = false
 [[bench]]
 name = "otap_logs_view"
 harness = false
-

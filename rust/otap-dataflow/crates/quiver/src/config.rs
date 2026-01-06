@@ -123,19 +123,26 @@ impl QuiverConfigBuilder {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WalConfig {
-    /// Maximum on-disk footprint (across active + rotated chunks).
+    /// Maximum on-disk footprint (across active + rotated files).
     pub max_size_bytes: NonZeroU64,
-    /// Maximum number of chunk files retained during rotation.
-    pub max_chunk_count: u16,
+    /// Maximum number of rotated WAL files retained during rotation.
+    pub max_rotated_files: u16,
+    /// Target data size to keep in the active WAL file before rotating.
+    pub rotation_target_bytes: NonZeroU64,
     /// Preferred fsync cadence for durability vs. latency.
     pub flush_interval: Duration,
 }
 
 impl WalConfig {
     fn validate(&self) -> Result<()> {
-        if self.max_chunk_count == 0 {
+        if self.max_rotated_files == 0 {
             return Err(QuiverError::invalid_config(
-                "max_chunk_count must be at least 1",
+                "max_rotated_files must be at least 1",
+            ));
+        }
+        if self.rotation_target_bytes > self.max_size_bytes {
+            return Err(QuiverError::invalid_config(
+                "rotation_target_bytes must not exceed max_size_bytes",
             ));
         }
         Ok(())
@@ -146,21 +153,63 @@ impl Default for WalConfig {
     fn default() -> Self {
         Self {
             max_size_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).expect("non-zero"),
-            max_chunk_count: 10,
+            max_rotated_files: 10,
+            rotation_target_bytes: NonZeroU64::new(64 * 1024 * 1024).expect("non-zero"),
             flush_interval: Duration::from_millis(25),
         }
     }
 }
 
 /// Segment tuning parameters.
+///
+/// Segments are finalized (sealed and written to disk) when *either* trigger fires:
+///
+/// 1. **Size trigger**: The open segment's estimated payload size reaches
+///    [`target_size_bytes`](Self::target_size_bytes).
+/// 2. **Time trigger**: The segment has been open longer than
+///    [`max_open_duration`](Self::max_open_duration).
+///
+/// This dual-trigger approach balances efficiency and latency:
+///
+/// - **High-throughput workloads** hit the size trigger frequently, producing
+///   consistently-sized segments with good compression and low metadata overhead.
+/// - **Low-throughput or bursty workloads** hit the time trigger, ensuring data
+///   becomes visible to downstream subscribers within a bounded latency even when
+///   volume is insufficient to fill a segment.
+///
+/// # Tuning Guidance
+///
+/// | Scenario | Recommendation |
+/// |----------|----------------|
+/// | High throughput (>10 MB/s) | Increase `target_size_bytes` to 64-128 MB for better compression |
+/// | Latency-sensitive | Decrease `max_open_duration` to 1-2 seconds |
+/// | Memory-constrained | Decrease `target_size_bytes` (each core buffers up to this amount) |
+/// | Low volume (<1 MB/s) | Default is fine; `max_open_duration` dominates |
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SegmentConfig {
-    /// Target payload size for a finalized segment.
+    /// Target payload size (in bytes) for a finalized segment.
+    ///
+    /// When the open segment's estimated size reaches this threshold, finalization
+    /// is triggered. Larger values improve compression and reduce per-segment
+    /// overhead, but increase memory usage and latency to visibility.
+    ///
+    /// Default: 32 MB. Recommended range: 8-128 MB.
     pub target_size_bytes: NonZeroU64,
-    /// Optional time-slicing to prevent long-lived open segments.
+
+    /// Maximum time a segment may remain open before forced finalization.
+    ///
+    /// This ensures bounded latency for downstream visibility even when ingest
+    /// volume is low. At high throughput, [`target_size_bytes`](Self::target_size_bytes)
+    /// typically triggers first.
+    ///
+    /// Default: 5 seconds.
     pub max_open_duration: Duration,
+
     /// Soft cap on the number of streams active within a segment.
+    ///
+    /// Each unique `(slot, schema_fingerprint)` pair creates a new stream.
+    /// Exceeding this limit may trigger early finalization to bound memory.
     pub max_stream_count: u32,
 }
 
@@ -279,7 +328,8 @@ mod tests {
     fn builder_overrides_sub_configs() {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1).unwrap(),
-            max_chunk_count: 1,
+            max_rotated_files: 1,
+            rotation_target_bytes: NonZeroU64::new(1).unwrap(),
             flush_interval: Duration::from_millis(1),
         };
         let segment = SegmentConfig {
@@ -316,10 +366,23 @@ mod tests {
     }
 
     #[test]
-    fn wal_validate_rejects_zero_chunk_count() {
+    fn wal_validate_rejects_zero_rotated_files() {
         let wal = WalConfig {
             max_size_bytes: NonZeroU64::new(1).unwrap(),
-            max_chunk_count: 0,
+            max_rotated_files: 0,
+            rotation_target_bytes: NonZeroU64::new(1).unwrap(),
+            flush_interval: Duration::from_millis(1),
+        };
+
+        assert!(wal.validate().is_err());
+    }
+
+    #[test]
+    fn wal_validate_rejects_rotation_target_exceeding_cap() {
+        let wal = WalConfig {
+            max_size_bytes: NonZeroU64::new(1024).unwrap(),
+            max_rotated_files: 1,
+            rotation_target_bytes: NonZeroU64::new(2048).unwrap(),
             flush_interval: Duration::from_millis(1),
         };
 

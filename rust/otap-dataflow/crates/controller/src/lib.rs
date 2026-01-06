@@ -36,9 +36,9 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::MetricsSystem;
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -75,7 +75,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &pipeline.service().telemetry;
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config);
+        let settings = pipeline.pipeline_settings();
+        otel_info!(
+            "Controller.Start",
+            num_nodes = pipeline.node_iter().count(),
+            pdata_channel_size = settings.default_pdata_channel_size,
+            node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
+            pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
+        );
+        let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -91,11 +99,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 metrics_system.run(cancellation_token)
             })?;
 
-        // Start the metrics dispatcher
-        let metrics_dispatcher_handle =
-            spawn_thread_local_task("metrics-dispatcher", move |cancellation_token| {
-                metrics_dispatcher.run_dispatch_loop(cancellation_token)
-            })?;
+        // Start the metrics dispatcher only if there are metric readers configured.
+        let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
+            Some(spawn_thread_local_task(
+                "metrics-dispatcher",
+                move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
+            )?)
+        } else {
+            None
+        };
 
         // Start the observed state store background task
         let obs_state_join_handle =
@@ -241,7 +253,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
-        metrics_dispatcher_handle.shutdown_and_join()?;
+        if let Some(handle) = metrics_dispatcher_handle {
+            handle.shutdown_and_join()?;
+        }
         obs_state_join_handle.shutdown_and_join()?;
         opentelemetry_client.shutdown()?;
 
@@ -255,27 +269,80 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
+        let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
+        let num_cores = available_core_ids.len();
+
         match quota.core_allocation {
             CoreAllocation::AllCores => Ok(available_core_ids),
             CoreAllocation::CoreCount { count } => {
-                let count = if count == 0 {
-                    available_core_ids.len()
+                if count == 0 {
+                    Ok(available_core_ids)
+                } else if count > num_cores {
+                    Err(Error::InvalidCoreAllocation {
+                        alloc: quota.core_allocation.clone(),
+                        message: format!(
+                            "Requested {} cores but only {} cores available on this system",
+                            count, num_cores
+                        ),
+                        available: available_core_ids.iter().map(|c| c.id).collect(),
+                    })
                 } else {
-                    count.min(available_core_ids.len())
-                };
-                Ok(available_core_ids.into_iter().take(count).collect())
+                    Ok(available_core_ids.into_iter().take(count).collect())
+                }
             }
             CoreAllocation::CoreSet { ref set } => {
-                set.iter().try_for_each(|r| {
+                // Validate all ranges first
+                for r in set.iter() {
                     if r.start > r.end {
                         return Err(Error::InvalidCoreAllocation {
                             alloc: quota.core_allocation.clone(),
-                            message: "Start of range is greater than end".to_owned(),
+                            message: format!(
+                                "Invalid core range: start ({}) is greater than end ({})",
+                                r.start, r.end
+                            ),
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         });
                     }
-                    Ok(())
-                })?;
+                    if r.start > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.start, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                    if r.end > max_core_id {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: quota.core_allocation.clone(),
+                            message: format!(
+                                "Core ID {} exceeds available cores (system has cores 0-{})",
+                                r.end, max_core_id
+                            ),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
+                        });
+                    }
+                }
+
+                // Check for overlapping ranges
+                for (i, r1) in set.iter().enumerate() {
+                    for r2 in set.iter().skip(i + 1) {
+                        // Two ranges overlap if they share any common cores
+                        if r1.start <= r2.end && r2.start <= r1.end {
+                            let overlap_start = r1.start.max(r2.start);
+                            let overlap_end = r1.end.min(r2.end);
+                            return Err(Error::InvalidCoreAllocation {
+                                alloc: quota.core_allocation.clone(),
+                                message: format!(
+                                    "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
+                                    r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
+                                ),
+                                available: available_core_ids.iter().map(|c| c.id).collect(),
+                            });
+                        }
+                    }
+                }
 
                 // Filter cores in range
                 let selected: Vec<_> = available_core_ids
@@ -309,17 +376,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         core_id: CoreId,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
-        pipeline_handle: PipelineContext,
+        pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
+        // Create a tracing span for this pipeline thread
+        // so that all logs within this scope include pipeline context.
+        let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
+        let _guard = span.enter();
+
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
-            // ToDo Add a warning here once logging is implemented.
+            otel_warn!(
+                "CoreAffinity.SetFailed",
+                message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
+            );
         }
 
         obs_evt_reporter.report(ObservedEvent::admitted(
@@ -329,7 +404,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Build the runtime pipeline from the configuration
         let runtime_pipeline = pipeline_factory
-            .build(pipeline_handle, pipeline_config.clone())
+            .build(pipeline_context.clone(), pipeline_config.clone())
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
             })?;
@@ -343,6 +418,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         runtime_pipeline
             .run_forever(
                 pipeline_key,
+                pipeline_context,
                 obs_evt_reporter,
                 metrics_reporter,
                 pipeline_ctrl_msg_tx,
@@ -503,5 +579,126 @@ mod tests {
         let expected_core_ids = available_core_ids.clone();
         let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
+    }
+
+    #[test]
+    fn select_with_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 5 },
+                CoreRange { start: 4, end: 7 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_fully_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 6 },
+                CoreRange { start: 3, end: 5 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_identical_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 3, end: 5 },
+                CoreRange { start: 3, end: 5 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn select_with_adjacent_ranges_succeeds() {
+        // Adjacent but non-overlapping ranges should work
+        let quota = Quota {
+            core_allocation: CoreAllocation::CoreSet {
+                set: vec![
+                    CoreRange { start: 2, end: 3 },
+                    CoreRange { start: 4, end: 5 },
+                ],
+            },
+        };
+        let available_core_ids = available_core_ids();
+        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn select_with_multiple_overlapping_ranges_errors() {
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 1, end: 3 },
+                CoreRange { start: 2, end: 4 },
+                CoreRange { start: 5, end: 6 },
+            ],
+        };
+        let quota = Quota {
+            core_allocation: core_allocation.clone(),
+        };
+        let available_core_ids = available_core_ids();
+        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        match err {
+            Error::InvalidCoreAllocation { alloc, message, .. } => {
+                assert_eq!(alloc, core_allocation);
+                assert!(
+                    message.contains("overlap"),
+                    "Expected overlap error message, got: {}",
+                    message
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

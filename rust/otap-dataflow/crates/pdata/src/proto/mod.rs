@@ -91,7 +91,6 @@ pub mod opentelemetry {
 /// objects are required. OtlpProtoBytes has an efficient translation
 /// into OtapArrowRecords, this type does not.
 ///
-///
 /// Note this could be considered for #[cfg(test)], however we are
 /// aware of uses in otap-df-otap's fake_signal_generator and
 /// debug_processor.
@@ -107,22 +106,22 @@ pub enum OtlpProtoMessage {
 
 impl OtlpProtoMessage {
     /// Compute the batch length.  This returns the same value as
-    /// OtapArrowRecords::batch_length().
+    /// OtapArrowRecords::num_items().
     ///
     /// TODO: The OpenTelemetry Collector has no standard function
     /// name for this, it has no multi-signal type so uses
     /// Logs.NumRecords, Traces.NumSpans, and Metrics.NumDataPoints.
     ///
-    /// This was named to match the OtapArrowRecords::batch_length()
+    /// This was named to match the OtapArrowRecords::num_items()
     /// function; we may conceive of renaming all of these methods to
     /// be more descriptive, for example num_items() or batch_items()
     /// which is a standard concept in Collector batch configuration.
     #[must_use]
-    pub fn batch_length(&self) -> usize {
+    pub fn num_items(&self) -> usize {
         match self {
-            Self::Metrics(data) => metrics_batch_length(data),
-            Self::Logs(data) => logs_batch_length(data),
-            Self::Traces(data) => traces_batch_length(data),
+            Self::Metrics(data) => metrics_num_items(data),
+            Self::Logs(data) => logs_num_items(data),
+            Self::Traces(data) => traces_num_items(data),
         }
     }
 
@@ -136,9 +135,19 @@ impl OtlpProtoMessage {
             Self::Traces(_) => SignalType::Traces,
         }
     }
+
+    /// Encode this message as bytes.
+    pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), prost::EncodeError> {
+        use prost::Message;
+        match self {
+            Self::Logs(l) => l.encode(out),
+            Self::Metrics(m) => m.encode(out),
+            Self::Traces(t) => t.encode(out),
+        }
+    }
 }
 
-fn logs_batch_length(logs: &opentelemetry::logs::v1::LogsData) -> usize {
+fn logs_num_items(logs: &opentelemetry::logs::v1::LogsData) -> usize {
     logs.resource_logs
         .iter()
         .flat_map(|rl| &rl.scope_logs)
@@ -146,7 +155,7 @@ fn logs_batch_length(logs: &opentelemetry::logs::v1::LogsData) -> usize {
         .sum()
 }
 
-fn traces_batch_length(traces: &opentelemetry::trace::v1::TracesData) -> usize {
+fn traces_num_items(traces: &opentelemetry::trace::v1::TracesData) -> usize {
     traces
         .resource_spans
         .iter()
@@ -155,7 +164,7 @@ fn traces_batch_length(traces: &opentelemetry::trace::v1::TracesData) -> usize {
         .sum()
 }
 
-fn metrics_batch_length(metrics: &opentelemetry::metrics::v1::MetricsData) -> usize {
+fn metrics_num_items(metrics: &opentelemetry::metrics::v1::MetricsData) -> usize {
     use opentelemetry::metrics::v1::metric::Data;
     metrics
         .resource_metrics
@@ -259,6 +268,32 @@ impl From<opentelemetry::trace::v1::TracesData> for OtlpProtoMessage {
     }
 }
 
+// This would be #[cfg(test)] because it's an expensive operation we
+// never expect in production, except we can't because ... (not sure)
+impl TryFrom<crate::otlp::OtlpProtoBytes> for OtlpProtoMessage {
+    type Error = prost::DecodeError;
+
+    fn try_from(bytes: crate::otlp::OtlpProtoBytes) -> Result<Self, Self::Error> {
+        use crate::otlp::OtlpProtoBytes;
+        use crate::proto::opentelemetry::logs::v1::LogsData;
+        use crate::proto::opentelemetry::metrics::v1::MetricsData;
+        use crate::proto::opentelemetry::trace::v1::TracesData;
+        use prost::Message;
+
+        Ok(match bytes {
+            OtlpProtoBytes::ExportLogsRequest(b) => {
+                OtlpProtoMessage::Logs(LogsData::decode(b.as_ref())?)
+            }
+            OtlpProtoBytes::ExportTracesRequest(b) => {
+                OtlpProtoMessage::Traces(TracesData::decode(b.as_ref())?)
+            }
+            OtlpProtoBytes::ExportMetricsRequest(b) => {
+                OtlpProtoMessage::Metrics(MetricsData::decode(b.as_ref())?)
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,7 +307,7 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData};
 
     #[test]
-    fn test_logs_batch_length() {
+    fn test_logs_num_items() {
         let logs = LogsData::new(vec![
             ResourceLogs::new(
                 Resource::default(),
@@ -293,11 +328,11 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(logs_batch_length(&logs), 5);
+        assert_eq!(logs_num_items(&logs), 5);
     }
 
     #[test]
-    fn test_traces_batch_length() {
+    fn test_traces_num_items() {
         let traces = TracesData::new(vec![
             ResourceSpans::new(
                 Resource::default(),
@@ -318,11 +353,11 @@ mod tests {
             ),
         ]);
 
-        assert_eq!(traces_batch_length(&traces), 5);
+        assert_eq!(traces_num_items(&traces), 5);
     }
 
     #[test]
-    fn test_metrics_batch_length() {
+    fn test_metrics_num_items() {
         let metrics = MetricsData::new(vec![ResourceMetrics::new(
             Resource::default(),
             vec![ScopeMetrics::new(
@@ -368,24 +403,24 @@ mod tests {
             )],
         )]);
 
-        assert_eq!(metrics_batch_length(&metrics), 5);
+        assert_eq!(metrics_num_items(&metrics), 5);
     }
 
     #[test]
     fn test_empty_logs() {
         let logs = LogsData::new(vec![]);
-        assert_eq!(logs_batch_length(&logs), 0);
+        assert_eq!(logs_num_items(&logs), 0);
     }
 
     #[test]
     fn test_empty_traces() {
         let traces = TracesData::new(vec![]);
-        assert_eq!(traces_batch_length(&traces), 0);
+        assert_eq!(traces_num_items(&traces), 0);
     }
 
     #[test]
     fn test_empty_metrics() {
         let metrics = MetricsData::new(vec![]);
-        assert_eq!(metrics_batch_length(&metrics), 0);
+        assert_eq!(metrics_num_items(&metrics), 0);
     }
 }

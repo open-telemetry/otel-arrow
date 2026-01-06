@@ -523,6 +523,7 @@ impl DeleteTransform {
     }
 }
 /// Specification for transformations to make to a collection of OTel Attributes
+#[derive(Default)]
 pub struct AttributesTransform {
     /// map of old -> new attribute keys
     pub rename: Option<RenameTransform>,
@@ -532,6 +533,20 @@ pub struct AttributesTransform {
 }
 
 impl AttributesTransform {
+    /// Set the rename transform
+    #[must_use]
+    pub fn with_rename(mut self, rename: RenameTransform) -> Self {
+        self.rename = Some(rename);
+        self
+    }
+
+    /// Set the delete transform
+    #[must_use]
+    pub fn with_delete(mut self, delete: DeleteTransform) -> Self {
+        self.delete = Some(delete);
+        self
+    }
+
     /// Validates the attribute transform operation. The current rule is that no key can be
     /// duplicated in any of the passed values. This is done to avoid any ambiguity about how
     /// to apply the transformation. For example, if the following passed
@@ -616,6 +631,8 @@ pub fn transform_attributes_with_stats(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
 ) -> Result<(RecordBatch, TransformStats)> {
+    transform.validate()?;
+
     let schema = attrs_record_batch.schema();
     let key_column_idx =
         schema
@@ -639,6 +656,10 @@ pub fn transform_attributes_with_stats(
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
+            // Possibly remove any delta-encoding on the parent ID column. If there were any
+            // deletes, it could cause issues if the parent_ids are using the transport optimized
+            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
+            // joined deleted segments, meaning the delta encoding will change.
             let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
             let should_materialize_parent_ids =
                 any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
@@ -649,6 +670,9 @@ pub fn transform_attributes_with_stats(
             } else {
                 (attrs_record_batch.clone(), schema)
             };
+
+            // TODO if there are any optional columns that now contain only null or default values,
+            //  we should remove them here.
 
             let columns = attrs_record_batch
                 .columns()
@@ -666,6 +690,7 @@ pub fn transform_attributes_with_stats(
                 })
                 .collect::<Result<Vec<ArrayRef>>>()?;
 
+            // safety: this should only return an error if our schema, or column lengths don't match
             let rb = RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns");
             Ok((rb, stats))
@@ -718,6 +743,15 @@ pub fn transform_attributes_with_stats(
                 }
             };
 
+            // if all rows have been removed (all attributes deleted) just return empty RecordBatch
+            if keep_ranges.as_ref().map(Vec::len) == Some(0) {
+                return Ok((RecordBatch::new_empty(schema), stats));
+            }
+
+            // Possibly remove any delta-encoding on the parent ID column. If there were any
+            // deletes, it could cause issues if the parent_ids are using the transport optimized
+            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
+            // joined deleted segments, meaning the delta encoding will change.
             let any_rows_deleted = keep_ranges.is_some();
             let should_materialize_parent_ids =
                 any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
@@ -728,6 +762,9 @@ pub fn transform_attributes_with_stats(
             } else {
                 (attrs_record_batch.clone(), schema)
             };
+
+            // TODO if there are any optional columns that now contain only null or default values,
+            //  we should remove them here.
 
             let columns = attrs_record_batch
                 .columns()
@@ -745,6 +782,7 @@ pub fn transform_attributes_with_stats(
                 })
                 .collect::<Result<Vec<ArrayRef>>>()?;
 
+            // safety: this should only return an error if our schema, or column lengths don't match
             let rb = RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns");
             Ok((rb, stats))
@@ -779,145 +817,8 @@ pub fn transform_attributes(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
 ) -> Result<RecordBatch> {
-    transform.validate()?;
-
-    let schema = attrs_record_batch.schema();
-    let key_column_idx =
-        schema
-            .index_of(consts::ATTRIBUTE_KEY)
-            .map_err(|_| Error::ColumnNotFound {
-                name: consts::ATTRIBUTE_KEY.into(),
-            })?;
-
-    match schema.field(key_column_idx).data_type() {
-        DataType::Utf8 => {
-            let keys_arr = attrs_record_batch
-                .column(key_column_idx)
-                .as_any()
-                .downcast_ref()
-                .expect("can downcast Utf8 Column to string array");
-
-            let keys_transform_result = transform_keys(keys_arr, transform)?;
-            let new_keys = Arc::new(keys_transform_result.new_keys);
-
-            // Possibly remove any delta-encoding on the parent ID column. If there were any
-            // deletes, it could cause issues if the parent_ids are using the transport optimized
-            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
-            // joined deleted segments, meaning the delta encoding will change.
-            let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
-            let should_materialize_parent_ids =
-                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
-            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
-                let schema = rb.schema();
-                (rb, schema)
-            } else {
-                (attrs_record_batch.clone(), schema)
-            };
-
-            // TODO if there are any optional columns that now contain only null or default values,
-            //  we should remove them here.
-
-            let columns = attrs_record_batch
-                .columns()
-                .iter()
-                .enumerate()
-                .map(|(i, col)| {
-                    if i == key_column_idx {
-                        Ok(new_keys.clone() as ArrayRef)
-                    } else {
-                        match keys_transform_result.keep_ranges.as_ref() {
-                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
-                            None => Ok(col.clone()),
-                        }
-                    }
-                })
-                .collect::<Result<Vec<ArrayRef>>>()?;
-
-            // safety: this should only return an error if our schema, or column lengths don't match
-            // but based on how we've constructed the batch, this shouldn't happen
-            Ok(RecordBatch::try_new(schema, columns)
-                .expect("can build record batch with same schema and columns"))
-        }
-        DataType::Dictionary(k, _) => {
-            let (new_dict, keep_ranges) = match *k.clone() {
-                DataType::UInt8 => {
-                    let dict_arr = attrs_record_batch
-                        .column(key_column_idx)
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt8Type>>()
-                        .expect("can downcast dictionary column to dictionary array");
-                    let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
-                    let new_dict = Arc::new(dict_imm_result.new_keys);
-                    (new_dict as ArrayRef, dict_imm_result.keep_ranges)
-                }
-                DataType::UInt16 => {
-                    let dict_arr = attrs_record_batch
-                        .column(key_column_idx)
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt16Type>>()
-                        .expect("can downcast dictionary column to dictionary array");
-                    let dict_imm_result = transform_dictionary_keys(dict_arr, transform)?;
-                    let new_dict = Arc::new(dict_imm_result.new_keys);
-                    (new_dict as ArrayRef, dict_imm_result.keep_ranges)
-                }
-                data_type => {
-                    return Err(Error::UnsupportedDictionaryKeyType {
-                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                        actual: data_type.clone(),
-                    });
-                }
-            };
-
-            // Possibly remove any delta-encoding on the parent ID column. If there were any
-            // deletes, it could cause issues if the parent_ids are using the transport optimized
-            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
-            // joined deleted segments, meaning the delta encoding will change.
-            let any_rows_deleted = keep_ranges.is_some();
-            let should_materialize_parent_ids =
-                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
-            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
-                let schema = rb.schema();
-                (rb, schema)
-            } else {
-                (attrs_record_batch.clone(), schema)
-            };
-
-            // TODO if there are any optional columns that now contain only null or default values,
-            //  we should remove them here.
-
-            let columns = attrs_record_batch
-                .columns()
-                .iter()
-                .enumerate()
-                .map(|(i, col)| {
-                    if i == key_column_idx {
-                        Ok(new_dict.clone())
-                    } else {
-                        match keep_ranges.as_ref() {
-                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
-                            None => Ok(col.clone()),
-                        }
-                    }
-                })
-                .collect::<Result<Vec<ArrayRef>>>()?;
-
-            // safety: this should only return an error if our schema, or column lengths don't match
-            // but based on how we've constructed the batch, this shouldn't happen
-            Ok(RecordBatch::try_new(schema, columns)
-                .expect("can build record batch with same schema and columns"))
-        }
-
-        data_type => Err(Error::InvalidListArray {
-            expect_oneof: vec![
-                DataType::Utf8,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ],
-            actual: data_type.clone(),
-        }),
-    }
+    let (result, _) = transform_attributes_with_stats(attrs_record_batch, transform)?;
+    Ok(result)
 }
 
 /// This will be returned from [`transform_keys`]. It contains the new keys array, as well as extra
@@ -3228,6 +3129,69 @@ mod test {
         .unwrap();
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_transform_attrs_delete_all_attributes() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(["a", "a", "a"])),
+                Arc::new(StringArray::from_iter_values(["1", "2", "3"])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &AttributesTransform {
+                rename: None,
+                delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, RecordBatch::new_empty(schema))
+    }
+
+    #[test]
+    fn test_transform_attrs_delete_all_attributes_dict_encoded() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["a", "a", "a"])),
+                )),
+                Arc::new(StringArray::from_iter_values(["1", "2", "3"])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &AttributesTransform {
+                rename: None,
+                delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, RecordBatch::new_empty(schema))
     }
 
     #[test]

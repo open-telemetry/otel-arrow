@@ -1165,7 +1165,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::MpscSender(out_tx),
+                otap_df_engine::local::message::LocalSender::mpsc(out_tx),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1181,7 +1181,7 @@ mod telemetry_tests {
 
             let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(16);
             let ctrl_rx = otap_df_engine::message::Receiver::Local(
-                otap_df_engine::local::message::LocalReceiver::MpscReceiver(ctrl_rx),
+                otap_df_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
             );
             let ctrl_chan = otap_df_engine::local::receiver::ControlChannel::new(ctrl_rx);
 
@@ -1222,9 +1222,9 @@ mod telemetry_tests {
             let snapshot = metrics_rx.recv_async().await.unwrap();
             let m = snapshot.get_metrics();
             // Order: forwarded, invalid, forward_failed, total, tcp_connections_active
-            assert_eq!(m[3], 2, "total == 2");
-            assert_eq!(m[0], 1, "forwarded == 1");
-            assert_eq!(m[1], 1, "invalid == 1");
+            assert_eq!(m[3].to_u64_lossy(), 2, "total == 2");
+            assert_eq!(m[0].to_u64_lossy(), 1, "forwarded == 1");
+            assert_eq!(m[1].to_u64_lossy(), 1, "invalid == 1");
         }));
     }
 
@@ -1257,7 +1257,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::MpscSender(tx),
+                otap_df_engine::local::message::LocalSender::mpsc(tx),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1273,7 +1273,7 @@ mod telemetry_tests {
 
             let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(8);
             let ctrl_rx = otap_df_engine::message::Receiver::Local(
-                otap_df_engine::local::message::LocalReceiver::MpscReceiver(ctrl_rx),
+                otap_df_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
             );
             let ctrl_chan = otap_df_engine::local::receiver::ControlChannel::new(ctrl_rx);
 
@@ -1304,7 +1304,7 @@ mod telemetry_tests {
 
             let snap = metrics_rx.recv_async().await.unwrap();
             let m = snap.get_metrics();
-            assert_eq!(m[2], 1, "forward_failed == 1");
+            assert_eq!(m[2].to_u64_lossy(), 1, "forward_failed == 1");
         }));
     }
 }

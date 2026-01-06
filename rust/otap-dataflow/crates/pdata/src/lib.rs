@@ -17,7 +17,7 @@ pub mod error;
 pub mod otap;
 pub mod schema;
 
-pub(crate) mod arrays;
+pub mod arrays;
 pub(crate) mod decode;
 pub mod encode;
 pub(crate) mod payload;
@@ -30,7 +30,9 @@ pub use payload::{OtapPayload, OtapPayloadHelpers};
 // #[cfg(test)] ?
 pub mod testing;
 
-#[cfg(test)]
+// The validation module is only used for integration tests with the OpenTelemetry Collector.
+// The collector is only built on Linux in CI, so we only compile these tests on Linux.
+#[cfg(all(test, target_os = "linux"))]
 mod validation;
 
 pub use decode::decoder::Consumer;

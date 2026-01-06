@@ -463,29 +463,29 @@ impl PipelineFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineFunctionParameter {
     query_location: QueryLocation,
-    name: Box<str>,
     parameter_type: PipelineFunctionParameterType,
 }
 
 impl PipelineFunctionParameter {
     pub fn new(
         query_location: QueryLocation,
-        name: &str,
         parameter_type: PipelineFunctionParameterType,
     ) -> PipelineFunctionParameter {
         Self {
             query_location,
-            name: name.into(),
             parameter_type,
         }
     }
 
-    pub fn get_name(&self) -> &str {
-        &self.name
-    }
-
     pub fn get_parameter_type(&self) -> PipelineFunctionParameterType {
         self.parameter_type.clone()
+    }
+
+    pub fn get_value_type(&self) -> Option<ValueType> {
+        match &self.parameter_type {
+            PipelineFunctionParameterType::Scalar(value_type) => value_type.clone(),
+            PipelineFunctionParameterType::MutableValue(value_type) => value_type.clone(),
+        }
     }
 
     pub(crate) fn fmt_with_indent(
@@ -493,7 +493,7 @@ impl PipelineFunctionParameter {
         f: &mut std::fmt::Formatter<'_>,
         indent: &str,
     ) -> std::fmt::Result {
-        write!(f, "{indent}{} = ", &self.name)?;
+        write!(f, "{indent}")?;
 
         let value_type = match &self.parameter_type {
             PipelineFunctionParameterType::Scalar(v) => {

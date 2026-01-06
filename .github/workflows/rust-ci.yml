@@ -28,7 +28,12 @@ jobs:
           - otap-dataflow
           - experimental/query_abstraction
           - experimental/query_engine
-    runs-on: ubuntu-latest
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -36,20 +41,90 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
+
+        # running llvm codecov and building the collector etc. tend to create a lot of artifacts
+        # that will cause the job to run out of disk space. Here we delete some pre-installed
+        # packages from the runner that are not needed to free up space
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "disk usage before"
+          df -h
+
+          # Remove Java (JDKs)
+          sudo rm -rf /usr/lib/jvm
+          # Remove .NET SDKs
+          sudo rm -rf /usr/share/dotnet
+          # Remove Swift toolchain
+          sudo rm -rf /usr/share/swift
+          # Remove Haskell (GHC)
+          sudo rm -rf /usr/local/.ghcup
+          # Remove Julia
+          sudo rm -rf /usr/local/julia*
+          # Remove Android SDKs
+          sudo rm -rf /usr/local/lib/android
+          # Remove Chromium (optional if not using for browser tests)
+          sudo rm -rf /usr/local/share/chromium
+          # Remove Microsoft/Edge and Google Chrome builds
+          sudo rm -rf /opt/microsoft /opt/google
+          # Remove Azure CLI
+          sudo rm -rf /opt/az
+          # Remove PowerShell
+          sudo rm -rf /usr/local/share/powershell
+
+          echo "disk usage after"
+          df -h
+      - name: Free disk space (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "disk usage before"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
+
+          # Remove unnecessary tools to free up space
+          if (Test-Path "C:\Android") { Remove-Item -Recurse -Force "C:\Android" }
+          if (Test-Path "C:\SeleniumWebDrivers") { Remove-Item -Recurse -Force "C:\SeleniumWebDrivers" }
+          if (Test-Path "C:\imagemagick") { Remove-Item -Recurse -Force "C:\imagemagick" }
+
+          Write-Host "disk usage after"
+          Get-PSDrive -PSProvider FileSystem | Select-Object Name, @{Name='Used(GB)';Expression={[math]::Round($_.Used/1GB,2)}}, @{Name='Free(GB)';Expression={[math]::Round($_.Free/1GB,2)}}
+
+      # macOS runners have sufficient disk space (~40GB available) for running tests without
+      # building the collector or running code coverage, so no cleanup is needed.
+
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@3575e532701a5fc614b0c842e4119af4cc5fd16d # v2.62.60
+        uses: taiki-e/install-action@0e76c5c569f13f7eb21e8e5b26fe710062b57b62 # v2.65.13
         with:
           tool: cargo-llvm-cov,cargo-nextest
+      # The collector is only built on Linux. Integration tests that require
+      # the collector are skipped on Windows via #[cfg(not(target_os = "windows"))].
       - name: Build the test collector
+        if: runner.os == 'Linux'
         run: make otelarrowcol
-      - name: Run tests with coverage
+      - name: Run tests with coverage (Linux x86_64)
+        if: matrix.os == 'ubuntu-latest'
         run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
+      - name: Run tests (Linux ARM64)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: cargo nextest run --all-features --workspace
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: cargo nextest run --all-features --workspace
+        working-directory: ./rust/${{ matrix.folder }}
+      - name: Run tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo nextest run --all-features --workspace
+        working-directory: ./rust/${{ matrix.folder }}
+      # Only upload coverage from Linux x86_64 since it runs the complete test suite
+      # (including integration tests that are skipped on Windows).
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@5a1091511ad55cbe89839c7260b706298ca349f7 # v5.5.1
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
@@ -71,7 +146,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: nightly
           components: rustfmt
@@ -95,7 +170,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
           components: clippy
@@ -120,7 +195,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
       - name: advisories
@@ -164,7 +239,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
       - name: cargo doc ${{ matrix.folder }}
@@ -185,7 +260,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@6d653acede28d24f02e3cd41383119e8b1b35921
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
       - name: cargo xtask ${{ matrix.folder }}

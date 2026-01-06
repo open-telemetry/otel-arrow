@@ -6,7 +6,7 @@ use std::{cell::Ref, fmt::Display};
 use data_engine_expressions::*;
 use regex::Regex;
 
-use crate::{execution_context::ExecutionContext, *};
+use crate::{execution_context::ExecutionContext, value_expressions::get_borrow_source, *};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BorrowSource {
@@ -37,41 +37,47 @@ pub enum ResolvedValue<'a> {
 }
 
 impl<'a> ResolvedValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub(crate) fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         let v = match self {
             ResolvedValue::Borrowed(b, v) => Some((b, v.to_value())),
             ResolvedValue::Slice(s) => {
-                return s.copy_if_borrowed_from_target(target);
+                return s.copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedValue::List(l) => {
-                return l.copy_if_borrowed_from_target(target);
+                return l.copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedValue::Sequence(s) => {
-                return s.copy_if_borrowed_from_target(target);
+                return s.copy_if_borrowed_from_target(execution_context, target);
             }
             _ => None,
         };
 
         if let Some((s, v)) = v {
-            let writing_while_holding_borrow = match target {
-                MutableValueExpression::Source(_) => {
+            let writing_while_holding_borrow = match get_borrow_source(execution_context, target) {
+                Some(BorrowSource::Source) => {
                     matches!(s, BorrowSource::Source)
                 }
-                MutableValueExpression::Variable(_) => {
+                Some(BorrowSource::Variable) => {
                     matches!(s, BorrowSource::Variable)
                 }
+                None => false,
             };
 
             if writing_while_holding_borrow {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    target,
+                    || format!("Copied the resolved value '{v}' into temporary storage because the value came from the mutable target"));
                 *self = ResolvedValue::Computed(v.into());
-                return true;
             }
         }
-
-        false
     }
 
-    pub fn try_resolve_string(self) -> Result<ResolvedStringValue<'a>, Self> {
+    pub(crate) fn try_resolve_string(self) -> Result<ResolvedStringValue<'a>, Self> {
         if self.get_value_type() != ValueType::String {
             return Err(self);
         }
@@ -112,7 +118,7 @@ impl<'a> ResolvedValue<'a> {
         }
     }
 
-    pub fn try_resolve_regex(self) -> Result<ResolvedRegexValue<'a>, Self> {
+    pub(crate) fn try_resolve_regex(self) -> Result<ResolvedRegexValue<'a>, Self> {
         if self.get_value_type() != ValueType::Regex {
             return Err(self);
         }
@@ -150,7 +156,7 @@ impl<'a> ResolvedValue<'a> {
         }
     }
 
-    pub fn try_resolve_array(self) -> Result<ResolvedArrayValue<'a>, Self> {
+    pub(crate) fn try_resolve_array(self) -> Result<ResolvedArrayValue<'a>, Self> {
         if self.get_value_type() != ValueType::Array {
             return Err(self);
         }
@@ -195,7 +201,7 @@ impl<'a> ResolvedValue<'a> {
         }
     }
 
-    pub fn try_resolve_map(self) -> Result<ResolvedMapValue<'a>, Self> {
+    pub(crate) fn try_resolve_map(self) -> Result<ResolvedMapValue<'a>, Self> {
         if self.get_value_type() != ValueType::Map {
             return Err(self);
         }
@@ -432,16 +438,14 @@ impl<'a> List<'a> {
         Self { values }
     }
 
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
-        let mut copied = false;
-
+    pub fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         for value in &mut self.values {
-            if value.copy_if_borrowed_from_target(target) {
-                copied = true;
-            }
+            value.copy_if_borrowed_from_target(execution_context, target);
         }
-
-        copied
     }
 }
 
@@ -484,10 +488,18 @@ pub enum Slice<'a> {
 }
 
 impl Slice<'_> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         match self {
-            Slice::Array(a) => a.inner_value.copy_if_borrowed_from_target(target),
-            Slice::String(s) => s.inner_value.copy_if_borrowed_from_target(target),
+            Slice::Array(a) => a
+                .inner_value
+                .copy_if_borrowed_from_target(execution_context, target),
+            Slice::String(s) => s
+                .inner_value
+                .copy_if_borrowed_from_target(execution_context, target),
         }
     }
 }
@@ -500,7 +512,7 @@ pub struct ArraySlice<'a> {
 }
 
 impl<'a> ArraySlice<'a> {
-    pub fn new(
+    pub(crate) fn new(
         inner_value: ResolvedArrayValue<'a>,
         range_start_inclusive: usize,
         range_end_exclusive: usize,
@@ -566,7 +578,7 @@ pub struct StringSlice<'a> {
 }
 
 impl<'a> StringSlice<'a> {
-    pub fn from_char_range(
+    pub(crate) fn from_char_range(
         inner_value: ResolvedStringValue<'a>,
         range_start_inclusive: usize,
         range_end_exclusive: usize,
@@ -610,7 +622,7 @@ impl<'a> StringSlice<'a> {
         }
     }
 
-    pub fn from_byte_range(
+    pub(crate) fn from_byte_range(
         inner_value: ResolvedStringValue<'a>,
         range_start_inclusive: usize,
         range_end_exclusive: usize,
@@ -637,20 +649,18 @@ pub struct Sequence<'a> {
 }
 
 impl<'a> Sequence<'a> {
-    pub fn new(values: Vec<ResolvedArrayValue<'a>>) -> Sequence<'a> {
+    pub(crate) fn new(values: Vec<ResolvedArrayValue<'a>>) -> Sequence<'a> {
         Self { values }
     }
 
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
-        let mut copied = false;
-
+    pub fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         for value in &mut self.values {
-            if value.copy_if_borrowed_from_target(target) {
-                copied = true;
-            }
+            value.copy_if_borrowed_from_target(execution_context, target);
         }
-
-        copied
     }
 }
 
@@ -737,7 +747,7 @@ impl ArrayValue for Sequence<'_> {
 }
 
 #[derive(Debug)]
-pub enum ResolvedStringValue<'a> {
+pub(crate) enum ResolvedStringValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(&'a dyn StringValue),
 
@@ -752,33 +762,41 @@ pub enum ResolvedStringValue<'a> {
 }
 
 impl ResolvedStringValue<'_> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         let v = match self {
             ResolvedStringValue::Borrowed(b, v) => Some((b, v)),
             ResolvedStringValue::Slice(s) => {
-                return s.inner_value.copy_if_borrowed_from_target(target);
+                return s
+                    .inner_value
+                    .copy_if_borrowed_from_target(execution_context, target);
             }
             _ => None,
         };
 
         if let Some((s, v)) = v {
-            let writing_while_holding_borrow = match target {
-                MutableValueExpression::Source(_) => {
+            let writing_while_holding_borrow = match get_borrow_source(execution_context, target) {
+                Some(BorrowSource::Source) => {
                     matches!(s, BorrowSource::Source)
                 }
-                MutableValueExpression::Variable(_) => {
+                Some(BorrowSource::Variable) => {
                     matches!(s, BorrowSource::Variable)
                 }
+                None => false,
             };
 
             if writing_while_holding_borrow {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    target,
+                    || format!("Copied the resolved string value '{}' into temporary storage because the value came from the mutable target", v.get_value()));
                 *self =
                     ResolvedStringValue::Computed(StringValueStorage::new(v.get_value().into()));
-                return true;
             }
         }
-
-        false
     }
 }
 
@@ -815,7 +833,7 @@ impl Display for ResolvedStringValue<'_> {
 }
 
 #[derive(Debug)]
-pub enum ResolvedRegexValue<'a> {
+pub(crate) enum ResolvedRegexValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(&'a dyn RegexValue),
 
@@ -857,7 +875,7 @@ impl Display for ResolvedRegexValue<'_> {
 }
 
 #[derive(Debug)]
-pub enum ResolvedArrayValue<'a> {
+pub(crate) enum ResolvedArrayValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(&'a dyn ArrayValue),
 
@@ -878,45 +896,53 @@ pub enum ResolvedArrayValue<'a> {
 }
 
 #[derive(Debug)]
-pub struct BorrowedArrayValue<'a> {
+pub(crate) struct BorrowedArrayValue<'a> {
     source: BorrowSource,
     orig: Ref<'a, dyn AsStaticValue + 'static>,
     value: Ref<'a, dyn ArrayValue + 'static>,
 }
 
 impl<'a> ResolvedArrayValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    pub fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         let v = match self {
             ResolvedArrayValue::Borrowed(b) => Some((&b.source, &b.value)),
             ResolvedArrayValue::Slice(s) => {
-                return s.inner_value.copy_if_borrowed_from_target(target);
+                return s
+                    .inner_value
+                    .copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedArrayValue::List(l) => {
-                return l.copy_if_borrowed_from_target(target);
+                return l.copy_if_borrowed_from_target(execution_context, target);
             }
             ResolvedArrayValue::Sequence(s) => {
-                return s.copy_if_borrowed_from_target(target);
+                return s.copy_if_borrowed_from_target(execution_context, target);
             }
             _ => None,
         };
 
         if let Some((s, v)) = v {
-            let writing_while_holding_borrow = match target {
-                MutableValueExpression::Source(_) => {
+            let writing_while_holding_borrow = match get_borrow_source(execution_context, target) {
+                Some(BorrowSource::Source) => {
                     matches!(s, BorrowSource::Source)
                 }
-                MutableValueExpression::Variable(_) => {
+                Some(BorrowSource::Variable) => {
                     matches!(s, BorrowSource::Variable)
                 }
+                None => false,
             };
 
             if writing_while_holding_borrow {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    target,
+                    || "Copied the resolved array value into temporary storage because the value came from the mutable target".into());
                 *self = ResolvedArrayValue::Computed((&**v).into());
-                return true;
             }
         }
-
-        false
     }
 
     pub fn take<FConvert, FTake, R>(
@@ -1007,7 +1033,7 @@ impl<'a> ResolvedArrayValue<'a> {
         }
     }
 
-    pub fn to_vec<F, R>(self, range: ArrayRange, convert: F) -> Result<Vec<R>, ExpressionError>
+    pub fn into_vec<F, R>(self, range: ArrayRange, convert: F) -> Result<Vec<R>, ExpressionError>
     where
         F: Fn(usize, ResolvedValue<'a>) -> Result<R, ExpressionError>,
     {
@@ -1071,7 +1097,7 @@ impl Display for ResolvedArrayValue<'_> {
 }
 
 #[derive(Debug)]
-pub enum ResolvedMapValue<'a> {
+pub(crate) enum ResolvedMapValue<'a> {
     /// A value resolved from the expression tree or an attached record
     Value(&'a dyn MapValue),
 
@@ -1083,7 +1109,7 @@ pub enum ResolvedMapValue<'a> {
 }
 
 #[derive(Debug)]
-pub struct BorrowedMapValue<'a> {
+pub(crate) struct BorrowedMapValue<'a> {
     source: BorrowSource,
     // Note: orig is not currently used but left in the code to support future
     // needing to return a resolved map as a static value. See usage on
@@ -1093,30 +1119,36 @@ pub struct BorrowedMapValue<'a> {
 }
 
 impl<'a> ResolvedMapValue<'a> {
-    pub fn copy_if_borrowed_from_target(&mut self, target: &MutableValueExpression) -> bool {
+    /*pub fn copy_if_borrowed_from_target<'b, T: Record>(
+        &mut self,
+        execution_context: &ExecutionContext<'b, '_, T>,
+        target: &'b MutableValueExpression,
+    ) {
         let v = match self {
             ResolvedMapValue::Borrowed(b) => Some((&b.source, &b.value)),
             _ => None,
         };
 
         if let Some((s, v)) = v {
-            let writing_while_holding_borrow = match target {
-                MutableValueExpression::Source(_) => {
+            let writing_while_holding_borrow = match get_borrow_source(execution_context, target) {
+                Some(BorrowSource::Source) => {
                     matches!(s, BorrowSource::Source)
                 }
-                MutableValueExpression::Variable(_) => {
+                Some(BorrowSource::Variable) => {
                     matches!(s, BorrowSource::Variable)
                 }
+                None => false,
             };
 
             if writing_while_holding_borrow {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Verbose,
+                    target,
+                    || "Copied the resolved map value into temporary storage because the value came from the mutable target".into());
                 *self = ResolvedMapValue::Computed((&**v).into());
-                return true;
             }
         }
-
-        false
-    }
+    }*/
 
     pub fn take<FConvert, FTake, R>(
         self,

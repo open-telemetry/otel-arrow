@@ -6,8 +6,9 @@ echo "=== Disk space check ==="
 df -h
 
 # Clean dnf cache to free up space
-echo "=== Cleaning dnf cache ==="
-sudo dnf clean all || true
+# Commented out as this might be counter-productive
+# echo "=== Cleaning dnf cache ==="
+# sudo dnf clean all || true
 
 # Clean up Docker to free space
 echo "=== Cleaning up Docker ==="

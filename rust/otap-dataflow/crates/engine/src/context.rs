@@ -3,9 +3,11 @@
 
 //! Context providing general information on the current controller and the current pipeline.
 
-use crate::attributes::{EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet};
+use crate::attributes::{
+    ChannelAttributeSet, EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet,
+};
 use otap_df_config::node::NodeKind;
-use otap_df_config::{NodeId, PipelineGroupId, PipelineId};
+use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::MetricsRegistryHandle;
 use std::fmt::Debug;
@@ -79,7 +81,7 @@ static CONTAINER_ID: LazyLock<Cow<'static, str>> =
     LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
 
 /// A lightweight/cloneable controller context.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ControllerContext {
     metrics_registry_handle: MetricsRegistryHandle,
     process_instance_id: Cow<'static, str>,
@@ -89,7 +91,7 @@ pub struct ControllerContext {
 }
 
 /// A lightweight/cloneable pipeline context.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PipelineContext {
     controller_context: ControllerContext,
     core_id: usize,
@@ -97,6 +99,7 @@ pub struct PipelineContext {
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
     node_id: NodeId,
+    node_urn: NodeUrn,
     node_kind: NodeKind,
 }
 
@@ -134,7 +137,7 @@ impl ControllerContext {
 
 impl PipelineContext {
     /// Creates a new `PipelineContext`.
-    fn new(
+    pub(crate) fn new(
         parent_ctx: ControllerContext,
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
@@ -148,8 +151,27 @@ impl PipelineContext {
             core_id,
             thread_id,
             node_id: Default::default(),
+            node_urn: Default::default(),
             node_kind: Default::default(),
         }
+    }
+
+    /// Returns the pipeline group ID associated with this pipeline context.
+    #[must_use]
+    pub fn pipeline_group_id(&self) -> PipelineGroupId {
+        self.pipeline_group_id.clone()
+    }
+
+    /// Returns the pipeline ID associated with this pipeline context.
+    #[must_use]
+    pub fn pipeline_id(&self) -> PipelineId {
+        self.pipeline_id.clone()
+    }
+
+    /// Returns the core ID associated with this pipeline context.
+    #[must_use]
+    pub fn core_id(&self) -> usize {
+        self.core_id
     }
 
     /// Registers a new multivariate metrics instance with the metrics registry.
@@ -157,29 +179,53 @@ impl PipelineContext {
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
-        use crate::attributes::ResourceAttributeSet;
-
         self.controller_context
             .metrics_registry_handle
-            .register::<T>(NodeAttributeSet {
-                pipeline_attrs: PipelineAttributeSet {
-                    engine_attrs: EngineAttributeSet {
-                        resource_attrs: ResourceAttributeSet {
-                            process_instance_id: self
-                                .controller_context
-                                .process_instance_id
-                                .clone(),
-                            host_id: self.controller_context.host_id.clone(),
-                            container_id: self.controller_context.container_id.clone(),
-                        },
-                        core_id: self.core_id,
-                        numa_node_id: self.controller_context.numa_node_id,
+            .register::<T>(self.node_attribute_set())
+    }
+
+    /// Returns the node attribute set for the current node context.
+    #[must_use]
+    pub fn node_attribute_set(&self) -> NodeAttributeSet {
+        use crate::attributes::ResourceAttributeSet;
+
+        NodeAttributeSet {
+            pipeline_attrs: PipelineAttributeSet {
+                engine_attrs: EngineAttributeSet {
+                    resource_attrs: ResourceAttributeSet {
+                        process_instance_id: self.controller_context.process_instance_id.clone(),
+                        host_id: self.controller_context.host_id.clone(),
+                        container_id: self.controller_context.container_id.clone(),
                     },
-                    pipeline_id: self.pipeline_id.clone(),
+                    core_id: self.core_id,
+                    numa_node_id: self.controller_context.numa_node_id,
                 },
-                node_id: self.node_id.clone(),
-                node_type: self.node_kind.into(),
-            })
+                pipeline_id: self.pipeline_id.clone(),
+            },
+            node_id: self.node_id.clone(),
+            node_urn: self.node_urn.clone(),
+            node_type: self.node_kind.into(),
+        }
+    }
+
+    /// Returns a channel attribute set tied to this node context.
+    #[must_use]
+    pub fn channel_attribute_set(
+        &self,
+        channel_id: Cow<'static, str>,
+        channel_kind: &'static str,
+        channel_mode: &'static str,
+        channel_type: &'static str,
+        channel_impl: &'static str,
+    ) -> ChannelAttributeSet {
+        ChannelAttributeSet {
+            node_attrs: self.node_attribute_set(),
+            channel_id,
+            channel_kind: Cow::Borrowed(channel_kind),
+            channel_mode: Cow::Borrowed(channel_mode),
+            channel_type: Cow::Borrowed(channel_type),
+            channel_impl: Cow::Borrowed(channel_impl),
+        }
     }
 
     /// Returns a metrics registry handle.
@@ -190,7 +236,12 @@ impl PipelineContext {
 
     /// Returns a new pipeline context with the given node identifiers.
     #[must_use]
-    pub fn with_node_context(&self, node_id: NodeId, node_kind: NodeKind) -> Self {
+    pub fn with_node_context(
+        &self,
+        node_id: NodeId,
+        node_urn: NodeUrn,
+        node_kind: NodeKind,
+    ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
             core_id: self.core_id,
@@ -198,6 +249,7 @@ impl PipelineContext {
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
             node_id,
+            node_urn,
             node_kind,
         }
     }

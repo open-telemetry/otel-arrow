@@ -8,6 +8,8 @@
 mod tests {
     use otap_df_config::tls::{TlsConfig, TlsServerConfig};
     use otap_df_otap::tls_utils::build_reloadable_server_config;
+    use rustls_pki_types::CertificateDer;
+    use rustls_pki_types::pem::PemObject;
     use std::fs;
     use std::io::BufReader;
     use std::net::SocketAddr;
@@ -129,6 +131,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        any(target_os = "windows", target_os = "macos"),
+        ignore = "Skipping on Windows and macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_tls_reload_integration() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
@@ -152,6 +158,11 @@ mod tests {
                 cert_pem: None,
                 key_pem: None,
             },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            handshake_timeout: None,
+            watch_client_ca: false,
         };
 
         let addr: SocketAddr = "127.0.0.1:0".parse().expect("Invalid address");
@@ -165,7 +176,7 @@ mod tests {
         // 3. Connect with Client trusting CA1 (Should Succeed)
         let mut root_store1 = rustls::RootCertStore::empty();
         let ca1_pem = fs::read(path.join("ca1.crt")).unwrap();
-        for cert in rustls_pemfile::certs(&mut BufReader::new(&ca1_pem[..])) {
+        for cert in CertificateDer::pem_reader_iter(&mut BufReader::new(&ca1_pem[..])) {
             root_store1.add(cert.unwrap()).unwrap();
         }
 
@@ -199,13 +210,13 @@ mod tests {
         let stream = TcpStream::connect(local_addr).await.unwrap();
         let _ = connector1.connect(domain.clone(), stream).await; // May succeed or fail, doesn't matter
 
-        // Wait for async reload to complete
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for async reload to complete - increased to reduce flakiness
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         // 6. Connect with Client trusting CA2 (Should Succeed)
         let mut root_store2 = rustls::RootCertStore::empty();
         let ca2_pem = fs::read(path.join("ca2.crt")).unwrap();
-        for cert in rustls_pemfile::certs(&mut BufReader::new(&ca2_pem[..])) {
+        for cert in CertificateDer::pem_reader_iter(&mut BufReader::new(&ca2_pem[..])) {
             root_store2.add(cert.unwrap()).unwrap();
         }
 

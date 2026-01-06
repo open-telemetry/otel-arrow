@@ -40,18 +40,21 @@ impl ParserState {
 
         for (name, parameters_with_defaults, return_value_type) in options.functions {
             let mut parameters = Vec::with_capacity(parameters_with_defaults.len());
+            let mut parameter_names = Vec::with_capacity(parameters_with_defaults.len());
             let mut default_values = HashMap::new();
 
-            for (parameter, default_value) in parameters_with_defaults {
+            for (parameter_name, parameter, default_value) in parameters_with_defaults {
                 if let Some(v) = default_value {
-                    default_values.insert(parameter.get_name().into(), v);
+                    default_values.insert(parameter_name.clone(), v);
                 }
+                parameter_names.push(parameter_name);
                 parameters.push(parameter);
             }
 
             state.push_function(
                 &name,
                 PipelineFunction::new_external(&name, parameters, return_value_type),
+                parameter_names,
                 default_values,
             );
         }
@@ -70,6 +73,7 @@ impl ParserState {
         &mut self,
         name: &str,
         definition: PipelineFunction,
+        parameter_names: Vec<Box<str>>,
         default_values: HashMap<Box<str>, ScalarExpression>,
     ) {
         let return_value_type = definition.get_return_value_type();
@@ -78,6 +82,7 @@ impl ParserState {
             name.into(),
             ParserFunction {
                 id,
+                parameter_names,
                 default_values,
                 return_value_type,
             },
@@ -373,6 +378,7 @@ pub trait ParserScope {
 pub struct ParserFunction {
     id: usize,
     return_value_type: Option<ValueType>,
+    parameter_names: Vec<Box<str>>,
     default_values: HashMap<Box<str>, ScalarExpression>,
 }
 
@@ -383,6 +389,10 @@ impl ParserFunction {
 
     pub fn get_return_value_type(&self) -> Option<ValueType> {
         self.return_value_type.clone()
+    }
+
+    pub fn get_parameter_names(&self) -> &[Box<str>] {
+        &self.parameter_names[..]
     }
 
     pub fn get_default_values(&self) -> &HashMap<Box<str>, ScalarExpression> {

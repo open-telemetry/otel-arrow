@@ -10,7 +10,7 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The base URI for where the parquet files should be written
-    pub base_uri: String,
+    pub storage: crate::object_store::StorageType,
 
     /// Configuration for how to compute partitions from the dataset
     pub partitioning_strategies: Option<Vec<PartitioningStrategy>>,
@@ -64,26 +64,37 @@ pub enum PartitioningStrategy {
 
 #[cfg(test)]
 mod test {
+    use serde_json::json;
+
+    use crate::object_store::StorageType;
+
     use super::*;
 
     #[test]
     fn test_deserialize() {
-        let json_cfg = "{
-            \"base_uri\": \"s3://albert-bucket/parquet-files\",
-            \"partitioning_strategies\": [
+        let json_cfg = json!({
+            "storage": {
+                "file": {
+                  "base_uri": "s3://albert-bucket/parquet-files"
+                }
+            },
+            "partitioning_strategies": [
                 {
-                    \"schema_metadata\": [ \"_part_id\" ]
+                    "schema_metadata": [ "_part_id" ]
                 }
             ],
-            \"writer_options\": {
-                \"target_rows_per_file\": 1000000000,
-                \"flush_when_older_than\": \"5m\"
+            "writer_options": {
+            "flush_when_older_than": "300s",
+            "target_rows_per_file": 1000000000
             }
-        }";
+        })
+        .to_string();
 
-        let config: Config = serde_json::from_str(json_cfg).unwrap();
+        let config: Config = serde_json::from_str(&json_cfg).unwrap();
         let expected = Config {
-            base_uri: "s3://albert-bucket/parquet-files".to_string(),
+            storage: StorageType::File {
+                base_uri: "s3://albert-bucket/parquet-files".to_string(),
+            },
             partitioning_strategies: Some(vec![PartitioningStrategy::SchemaMetadata(vec![
                 "_part_id".to_string(),
             ])]),

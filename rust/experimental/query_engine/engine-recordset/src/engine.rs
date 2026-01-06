@@ -22,6 +22,8 @@ use crate::{
 pub struct RecordSetEngineOptions {
     pub(crate) diagnostic_level: RecordSetEngineDiagnosticLevel,
     pub(crate) summary_cardinality_limit: usize,
+    pub(crate) external_function_implementations:
+        HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
 }
 
 impl Default for RecordSetEngineOptions {
@@ -35,6 +37,7 @@ impl RecordSetEngineOptions {
         Self {
             diagnostic_level: RecordSetEngineDiagnosticLevel::Warn,
             summary_cardinality_limit: 8192,
+            external_function_implementations: HashMap::new(),
         }
     }
 
@@ -53,11 +56,22 @@ impl RecordSetEngineOptions {
         self.summary_cardinality_limit = summary_cardinality_limit;
         self
     }
+
+    pub fn with_external_function_implementation<F: RecordSetEngineFunctionCallback + 'static>(
+        mut self,
+        name: &str,
+        callback: F,
+    ) -> RecordSetEngineOptions {
+        self.external_function_implementations
+            .insert(name.into(), Box::new(callback));
+        self
+    }
 }
 
 pub struct RecordSetEngine {
     diagnostic_level: RecordSetEngineDiagnosticLevel,
     summary_cardinality_limit: usize,
+    external_function_implementations: HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
 }
 
 impl Default for RecordSetEngine {
@@ -75,6 +89,7 @@ impl RecordSetEngine {
         Self {
             diagnostic_level: options.diagnostic_level,
             summary_cardinality_limit: options.summary_cardinality_limit,
+            external_function_implementations: options.external_function_implementations,
         }
     }
 
@@ -121,9 +136,11 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
 
         let execution_context = ExecutionContext::<TRecord>::new(
             self.engine.diagnostic_level.clone(),
+            &self.engine.external_function_implementations,
             self.pipeline,
             &self.global_variables,
             &self.summaries,
+            None,
             None,
             None,
         );
@@ -185,6 +202,7 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
             self.diagnostics,
             process_summaries(
                 self.engine.diagnostic_level.clone(),
+                &self.engine.external_function_implementations,
                 &self.global_variables,
                 self.pipeline,
                 &self.summaries,
@@ -205,11 +223,13 @@ impl<'a, 'b, TRecord: Record + 'static> RecordSetEngineBatch<'a, 'b, TRecord> {
 
         let execution_context = ExecutionContext::new(
             diagnostic_level,
+            &self.engine.external_function_implementations,
             self.pipeline,
             &self.global_variables,
             &self.summaries,
             attached_records,
             Some(record),
+            None,
         );
 
         process_record(execution_context, self.pipeline.get_expressions())
@@ -288,6 +308,14 @@ fn process_record<'a, TRecord: Record + 'static>(
                     }
                 }
             }
+            DataExpression::Conditional(c) => {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Error,
+                    c,
+                    || "Conditional Expression not yet supported in record set engine".into(),
+                );
+                break;
+            }
         }
     }
 
@@ -296,6 +324,7 @@ fn process_record<'a, TRecord: Record + 'static>(
 
 fn process_summaries<'a>(
     diagnostic_level: RecordSetEngineDiagnosticLevel,
+    external_function_implementations: &HashMap<Box<str>, Box<dyn RecordSetEngineFunctionCallback>>,
     global_variables: &RefCell<MapValueStorage<OwnedValue>>,
     pipeline: &'a PipelineExpression,
     summaries: &Summaries<'a>,
@@ -315,11 +344,13 @@ fn process_summaries<'a>(
 
             let execution_context = ExecutionContext::new(
                 diagnostic_level.clone(),
+                external_function_implementations,
                 pipeline,
                 global_variables,
                 &summaries,
                 None,
                 Some(map),
+                None,
             );
 
             match process_record(execution_context, post_expressions) {
@@ -347,6 +378,7 @@ fn process_summaries<'a>(
 
             let results = process_summaries(
                 diagnostic_level.clone(),
+                external_function_implementations,
                 global_variables,
                 pipeline,
                 &summaries,
@@ -440,6 +472,16 @@ fn format_diagnostics(
     diagnostics: &[RecordSetEngineDiagnostic<'_>],
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
+    let d = write_diagnostics(query, diagnostics, true);
+
+    write!(f, "{d}")
+}
+
+fn write_diagnostics(
+    query: &str,
+    diagnostics: &[RecordSetEngineDiagnostic<'_>],
+    all_lines: bool,
+) -> String {
     let mut lines: Vec<(&str, Vec<&RecordSetEngineDiagnostic<'_>>)> = Vec::new();
 
     for line in query.lines() {
@@ -460,9 +502,22 @@ fn format_diagnostics(
         }
     }
 
+    let mut output = String::new();
     let mut line_number = 1;
+    let mut is_first_line = true;
 
     for (query_line, messages) in lines.iter_mut() {
+        if !all_lines && messages.is_empty() {
+            line_number += 1;
+            continue;
+        }
+
+        if is_first_line {
+            is_first_line = false;
+        } else {
+            output.push('\n');
+        }
+
         messages.sort_by(|a, b| {
             let l = a
                 .get_expression()
@@ -499,6 +554,13 @@ fn format_diagnostics(
             diagnostics.push((column, diagnostic));
 
             columns.insert(column);
+
+            if let Some(nested_diagnostics) = message.get_nested_diagnostics() {
+                let nested = write_diagnostics(query, nested_diagnostics, false);
+                for line in nested.lines() {
+                    diagnostics.push((column, format!("{}|    {line}", &" ".repeat(column + 7))));
+                }
+            }
         }
 
         let mut line = String::new();
@@ -513,15 +575,11 @@ fn format_diagnostics(
             line.push_str(&diagnostic);
         }
 
-        if line_number > 1 {
-            f.write_char('\n')?;
-        }
-
-        write!(f, "ln {line_number:>3}: {line}")?;
+        write!(output, "ln {line_number:>3}: {line}").unwrap();
         line_number += 1;
     }
 
-    Ok(())
+    output
 }
 
 #[derive(Debug)]

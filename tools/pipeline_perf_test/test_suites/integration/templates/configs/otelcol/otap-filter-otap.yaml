@@ -1,0 +1,41 @@
+receivers:
+  otelarrow:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+
+exporters:
+  otelarrow:
+    endpoint: '{{backend_hostname}}:1235'
+    compression: none
+    arrow:
+      payload_compression: zstd
+    tls:
+      insecure: true
+
+processors:
+  filter:
+    error_mode: ignore
+    logs:
+      include:
+        match_type: strict
+        record_attributes:
+          - key: ios.app.state
+            value: active
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+
+  pipelines:
+    logs/arrow:
+      receivers: [otelarrow]
+      processors: [filter]
+      exporters: [otelarrow]

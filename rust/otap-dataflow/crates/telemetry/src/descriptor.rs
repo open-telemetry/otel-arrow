@@ -9,14 +9,34 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
-    /// A value that can only go up or be reset to 0, used for counts
+    /// A monotonic sum.
     Counter,
-    /// A value that can go up and down, used for sizes or amount of items in a queue.
+    /// A signed sum that can go up and down.
     UpDownCounter,
     /// A value that can arbitrarily go up and down, used for temperature or current memory usage
     Gauge,
     /// Distribution of recorded values, used for latencies or request sizes
     Histogram,
+}
+
+/// Aggregation temporality for sum-like instruments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Temporality {
+    /// Each snapshot represents a delta over the reporting interval.
+    Delta,
+    /// Each snapshot represents the cumulative value at the time of reporting.
+    Cumulative,
+}
+
+/// Numeric representation used by a metric field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricValueType {
+    /// Unsigned 64-bit integer.
+    U64,
+    /// 64-bit floating point.
+    F64,
 }
 
 /// Metadata describing a single field inside a metrics struct.
@@ -31,6 +51,11 @@ pub struct MetricsField {
     pub brief: &'static str,
     /// The type of instrument used to record the metric.
     pub instrument: Instrument,
+    /// Aggregation temporality (only meaningful for sum-like instruments).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temporality: Option<Temporality>,
+    /// The numeric representation for the metric values.
+    pub value_type: MetricValueType,
 }
 
 /// Descriptor for a multivariate metrics.

@@ -4,6 +4,7 @@
 //! Configuration for the OTAP Exporter
 
 use crate::compression::CompressionMethod;
+use crate::otap_grpc::client_settings::GrpcClientSettings;
 use serde::{Deserialize, Deserializer};
 use std::time::Duration;
 
@@ -11,8 +12,9 @@ use std::time::Duration;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The grpc endpoint to which OTAP service requests will be sent
-    pub grpc_endpoint: String,
+    /// Shared gRPC client settings reused across OTAP exports.
+    #[serde(flatten)]
+    pub grpc: GrpcClientSettings,
 
     /// The type of compression to use for the gRPC messages. default = zstd.
     /// The value "none" can be used to disable compression,

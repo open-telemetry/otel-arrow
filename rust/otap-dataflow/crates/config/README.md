@@ -6,17 +6,19 @@ ecosystem.
 
 ## Overview
 
-The configuration model is structured in 4 main components, each representing a
-distinct layer of the configuration hierarchy:
+The configuration model is structured in several main components, each
+representing a distinct layer of the configuration hierarchy:
 
 - **EngineConfig**: The root configuration, containing global engine settings
   and all pipeline groups.
 - **PipelineGroupConfig**: Represents an individual pipeline group, including
   its own settings and pipelines.
 - **PipelineConfig**: Describes a pipeline as a directed-acyclic-hypergraph of
-  interconnected nodes, with pipeline-level settings.
+  interconnected nodes, with pipeline-level settings and service configuration.
 - **NodeConfig**: Defines a node (receiver, processor, exporter, or connector)
   and its output ports, which represent hyper-edges to downstream nodes.
+- **ServiceConfig**: Pipeline-level service configuration, including telemetry
+  settings for observing the pipeline itself.
 
 Each of these components is **directly addressable**, making it straightforward
 to manipulate and retrieve configuration fragments.
@@ -49,6 +51,123 @@ possible, reducing cognitive load and the risk of hidden or implicit behaviors.
 
 This configuration model is intended to be easily integrable with systems like
 **Kubernetes** as well as other environments.
+
+## Service-Level Telemetry
+
+Each pipeline can be configured with its own **telemetry settings** to observe
+the pipeline's internal behavior and performance. This allows for fine-grained
+monitoring and debugging of individual pipelines.
+
+### Telemetry Configuration
+
+The telemetry configuration includes:
+
+- **Metrics**: OpenTelemetry metrics for pipeline observability
+  - **Readers**: Periodic or pull-based metric readers
+    - **Periodic Readers**: Export metrics at regular intervals
+    - **Pull Readers**: Expose metrics via HTTP endpoint for scraping (e.g., Prometheus)
+  - **Exporters**: Console, OTLP (gRPC/HTTP), or Prometheus
+  - **Views**: Metric aggregation and transformation rules
+  - **Temporality**: Delta or cumulative aggregation
+- **Logs**: Internal logging configuration
+  - **Level**: Off, Debug, Info, Warn, or Error
+  - **Processors**: Batch log processors with configurable exporters
+  - **Exporters**: Console, OTLP (gRPC/HTTP) for logs
+  - Integrates with Rust's `tracing` ecosystem
+  - Supports `RUST_LOG` environment variable for fine-grained control
+- **Resource Attributes**: Key-value pairs describing the service
+  - Supports string, boolean, integer (i64), float (f64), and array types
+  - Common attributes: `service.name`, `service.version`, `process.pid`, etc.
+
+### Example Configuration
+
+```yaml
+service:
+  telemetry:
+    resource:
+      service.name: "my-pipeline"
+      service.version: "1.0.0"
+      process.pid: 12345
+      deployment.environment: "production"
+    metrics:
+      readers:
+        # Periodic reader - pushes metrics to OTLP endpoint
+        - periodic:
+            exporter:
+              otlp:
+                endpoint: "http://localhost:4318"
+                protocol: "grpc/protobuf"
+            interval: "60s"
+        # Pull reader - exposes metrics for Prometheus scraping
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
+      views:
+        - selector:
+            instrument_name: "logs.produced"
+          stream:
+            name: "otlp.logs.produced.count"
+            description: "Count of logs produced"
+    logs:
+      level: "info"
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                endpoint: "http://localhost:4318"
+                protocol: "grpc/protobuf"
+```
+
+### Supported Exporters
+
+#### Metric Exporters
+
+##### Periodic Exporters
+
+- **Console**: Prints metrics to stdout (useful for debugging)
+- **OTLP**: OpenTelemetry Protocol exporters
+  - **grpc/protobuf**: Binary protocol over gRPC
+  - **http/protobuf**: Binary protobuf over HTTP
+  - **http/json**: JSON over HTTP
+
+##### Pull Exporters
+
+- **Prometheus**: Exposes metrics via HTTP endpoint for Prometheus scraping
+  - Configurable host, port, and path
+  - Exposes metrics in Prometheus text format
+  - Example: `http://0.0.0.0:9090/metrics`
+  - Compatible with Prometheus, Grafana, and other scraping systems
+
+#### Log Exporters
+
+- **Console**: Prints logs to stdout with structured formatting
+- **OTLP**: OpenTelemetry Protocol exporters for logs
+  - **grpc/protobuf**: Binary protocol over gRPC
+  - **http/protobuf**: Binary protobuf over HTTP
+  - **http/json**: JSON over HTTP
+
+### Log Configuration
+
+The logging system integrates with Rust's `tracing` ecosystem:
+
+- **Log Levels**: Control verbosity (`off`, `debug`, `info`, `warn`, `error`)
+- **Environment Override**: `RUST_LOG` environment variable takes precedence
+  - Example: `RUST_LOG=info,h2=warn,hyper=warn` - info level with silenced HTTP logs
+- **Processors**: Batch log processors buffer and export logs efficiently
+- **Thread-aware**: Includes thread names and IDs in log output for debugging
+- **OpenTelemetry Bridge**: Logs are automatically converted to OpenTelemetry format
+
+### Metric Views
+
+Views allow you to customize how metrics are aggregated and reported:
+
+- **Selector**: Match instruments by name
+- **Stream**: Configure the output metric stream
+  - Rename instruments
+  - Add or modify descriptions
 
 ## Compatibility & Translation
 

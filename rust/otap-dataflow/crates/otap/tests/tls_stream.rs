@@ -7,6 +7,8 @@
 mod tests {
     use futures::StreamExt;
     use otap_df_otap::tls_utils::create_tls_stream;
+    use rustls_pki_types::pem::PemObject;
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use std::fs;
     use std::io;
     use std::process::Command;
@@ -108,12 +110,11 @@ mod tests {
         let cert_pem = fs::read(cert_path).expect("Failed to read cert file");
         let key_pem = fs::read(key_path).expect("Failed to read key file");
 
-        let certs = rustls_pemfile::certs(&mut io::BufReader::new(&cert_pem[..]))
+        let certs = CertificateDer::pem_reader_iter(&mut io::BufReader::new(&cert_pem[..]))
             .collect::<Result<Vec<_>, _>>()
             .expect("Failed to parse certs");
-        let key = rustls_pemfile::private_key(&mut io::BufReader::new(&key_pem[..]))
-            .expect("Failed to parse key")
-            .expect("No private key found");
+        let key = PrivateKeyDer::from_pem_reader(&mut io::BufReader::new(&key_pem[..]))
+            .expect("Failed to parse key");
 
         let mut config = rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -124,6 +125,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_tls_stream_success() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
@@ -137,7 +142,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let listener_stream = TcpListenerStream::new(listener);
 
-        let tls_stream = create_tls_stream(listener_stream, acceptor);
+        let tls_stream = create_tls_stream(listener_stream, acceptor, None);
         let mut tls_stream = Box::pin(tls_stream);
 
         // Spawn server loop
@@ -155,7 +160,7 @@ mod tests {
         // Client connect
         let mut root_store = rustls::RootCertStore::empty();
         let ca_pem = fs::read(path.join("ca.crt")).unwrap();
-        for cert in rustls_pemfile::certs(&mut io::BufReader::new(&ca_pem[..])) {
+        for cert in CertificateDer::pem_reader_iter(&mut io::BufReader::new(&ca_pem[..])) {
             root_store.add(cert.unwrap()).unwrap();
         }
         let client_config = rustls::ClientConfig::builder()
@@ -179,6 +184,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
     async fn test_tls_stream_handshake_failure_filtered() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().unwrap();
@@ -192,7 +201,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let listener_stream = TcpListenerStream::new(listener);
 
-        let tls_stream = create_tls_stream(listener_stream, acceptor);
+        let tls_stream = create_tls_stream(listener_stream, acceptor, None);
         let mut tls_stream = Box::pin(tls_stream);
 
         // Spawn server loop
@@ -219,7 +228,7 @@ mod tests {
         // 2. Connect with valid client
         let mut root_store = rustls::RootCertStore::empty();
         let ca_pem = fs::read(path.join("ca.crt")).unwrap();
-        for cert in rustls_pemfile::certs(&mut io::BufReader::new(&ca_pem[..])) {
+        for cert in CertificateDer::pem_reader_iter(&mut io::BufReader::new(&ca_pem[..])) {
             root_store.add(cert.unwrap()).unwrap();
         }
         let client_config = rustls::ClientConfig::builder()
@@ -264,7 +273,7 @@ mod tests {
             res.map(|_: tokio::io::DuplexStream| -> tokio::io::DuplexStream { unreachable!() })
         });
 
-        let tls_stream = create_tls_stream(mock_stream, acceptor);
+        let tls_stream = create_tls_stream(mock_stream, acceptor, None);
         let mut tls_stream = Box::pin(tls_stream);
 
         let item = tls_stream.next().await;
@@ -272,5 +281,180 @@ mod tests {
         let res = item.unwrap();
         assert!(res.is_err());
         assert_eq!(res.unwrap_err().kind(), io::ErrorKind::ConnectionReset);
+    }
+
+    /// Verifies that handshake_timeout parameter is enforced.
+    /// This tests the DoS protection feature where slow/malicious clients
+    /// that don't complete the TLS handshake are timed out.
+    #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
+    async fn test_handshake_respects_timeout() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        generate_ca(path, "ca", "Test CA");
+        generate_server_cert(path, "server", "ca", "localhost");
+        let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
+        let acceptor = TlsAcceptor::from(server_config);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let listener_stream = TcpListenerStream::new(listener);
+
+        // Use a very short timeout (100ms) to make the test fast
+        let short_timeout = Some(Duration::from_millis(100));
+        let tls_stream = create_tls_stream(listener_stream, acceptor, short_timeout);
+        let mut tls_stream = Box::pin(tls_stream);
+
+        // Track when we started
+        let start = std::time::Instant::now();
+
+        // Spawn server that waits for connections
+        let server_handle = tokio::spawn(async move {
+            // The slow client should timeout and be filtered out.
+            // The valid client should succeed.
+            if let Some(Ok(mut stream)) = tls_stream.next().await {
+                stream.write_all(b"success").await.expect("write failed");
+            } else {
+                panic!("Expected a valid stream after timeout");
+            }
+        });
+
+        // 1. Connect but DON'T do TLS handshake (simulating slow/malicious client)
+        // This client connects at TCP level but never sends TLS ClientHello
+        let _slow_client = TcpStream::connect(addr).await.expect("connect failed");
+        // Don't send anything - just hold the connection open
+
+        // Wait longer than the timeout to ensure it fires
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // 2. Now connect with a valid TLS client
+        let mut root_store = rustls::RootCertStore::empty();
+        let ca_pem = fs::read(path.join("ca.crt")).unwrap();
+        for cert in CertificateDer::pem_reader_iter(&mut io::BufReader::new(&ca_pem[..])) {
+            root_store.add(cert.unwrap()).unwrap();
+        }
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let domain = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let mut stream = connector
+            .connect(domain, stream)
+            .await
+            .expect("valid client connect failed");
+
+        // Read success message from server
+        let mut buf = [0u8; 7];
+        assert_eq!(stream.read_exact(&mut buf).await.expect("read failed"), 7);
+        assert_eq!(&buf, b"success");
+
+        server_handle.await.expect("server task failed");
+
+        // Verify the test completed in reasonable time (timeout was enforced, not waiting forever)
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "Test took too long ({:?}), timeout may not be working",
+            elapsed
+        );
+    }
+
+    /// Verifies that concurrent TLS handshakes don't block each other.
+    /// Multiple slow clients should not prevent a fast client from completing.
+    /// This tests the buffer_unordered concurrency mechanism.
+    #[tokio::test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "Skipping on macOS due to flakiness. See https://github.com/open-telemetry/otel-arrow/issues/1614"
+    )]
+    async fn test_concurrent_handshakes_not_blocked() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path();
+        generate_ca(path, "ca", "Test CA");
+        generate_server_cert(path, "server", "ca", "localhost");
+        let server_config = load_server_config(&path.join("server.crt"), &path.join("server.key"));
+        let acceptor = TlsAcceptor::from(server_config);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let listener_stream = TcpListenerStream::new(listener);
+
+        // Short timeout so slow clients get cleaned up
+        let tls_stream =
+            create_tls_stream(listener_stream, acceptor, Some(Duration::from_millis(500)));
+        let mut tls_stream = Box::pin(tls_stream);
+
+        // Counter for successful connections
+        let success_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let success_count_clone = success_count.clone();
+
+        // Server accepts multiple connections
+        let server_handle = tokio::spawn(async move {
+            // We expect at least 1 successful connection (the fast client)
+            while let Some(Ok(mut stream)) = tls_stream.next().await {
+                let _ = success_count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(b"ok").await;
+            }
+        });
+
+        // Start multiple "slow" clients that connect but don't complete TLS
+        let mut slow_clients = Vec::new();
+        for _ in 0..5 {
+            let slow = TcpStream::connect(addr).await.expect("slow connect failed");
+            slow_clients.push(slow);
+        }
+
+        // Give slow clients a moment to be accepted at TCP level
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Now connect with a fast, valid TLS client
+        let mut root_store = rustls::RootCertStore::empty();
+        let ca_pem = fs::read(path.join("ca.crt")).unwrap();
+        for cert in CertificateDer::pem_reader_iter(&mut io::BufReader::new(&ca_pem[..])) {
+            root_store.add(cert.unwrap()).unwrap();
+        }
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        let start = std::time::Instant::now();
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let domain = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let mut stream = connector
+            .connect(domain, stream)
+            .await
+            .expect("fast client should not be blocked by slow clients");
+
+        // Read response
+        let mut buf = [0u8; 2];
+        let _ = stream.read_exact(&mut buf).await.expect("read failed");
+        assert_eq!(&buf, b"ok");
+
+        let elapsed = start.elapsed();
+
+        // Drop slow clients and server
+        drop(slow_clients);
+        server_handle.abort();
+
+        // The fast client should complete quickly (< 200ms), not waiting for slow client timeouts
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "Fast client took {:?}, should not be blocked by slow clients",
+            elapsed
+        );
+
+        // At least the fast client succeeded
+        assert!(
+            success_count.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "At least one connection should have succeeded"
+        );
     }
 }

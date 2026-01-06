@@ -15,6 +15,13 @@ use otap_df_pdata::otap::transform::{
 };
 use otap_df_pdata::schema::consts;
 
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(windows))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 fn generate_native_keys_attr_batch(
     num_rows: usize,
     key_gen: impl Fn(usize) -> String,

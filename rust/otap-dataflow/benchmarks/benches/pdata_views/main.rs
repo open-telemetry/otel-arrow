@@ -13,6 +13,13 @@ use otap_df_pdata::views::bench_helpers::{visit_logs_data, visit_logs_data_order
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use prost::Message;
 
+#[cfg(not(windows))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(windows))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 /// creates a log data with every field present in the proto message
 fn create_logs_data() -> LogsData {
     let attr_values = vec![

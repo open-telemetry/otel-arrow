@@ -35,7 +35,6 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
-use serde_with::{DurationSecondsWithFrac, formats::Flexible, serde_as};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -51,15 +50,13 @@ pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
 ///
 /// Retries will be attempted until max_elapsed_time has passed
 /// from the initial attempt.
-#[serde_as]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RetryConfig {
     /// Initial retry interval in seconds. This is how long the
     /// first delay will be following the first NACK response.
     /// This interval is multiplied by the multiplier on subsequent
     /// retries, until it exceeds max_interval.
-    #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
-    #[serde(default = "default_initial_interval")]
+    #[serde(with = "humantime_serde", default = "default_initial_interval")]
     pub initial_interval: Duration,
 
     /// Maximum retry interval in seconds. This is a limit on
@@ -67,16 +64,14 @@ pub struct RetryConfig {
     /// NACK failure. Prevents exponential growth when the initial
     /// interval times the exponentiated multiplier reaches this
     /// value.
-    #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
-    #[serde(default = "default_max_interval")]
+    #[serde(with = "humantime_serde", default = "default_max_interval")]
     pub max_interval: Duration,
 
     /// Maximum elapsed time in seconds.  This is the maximum elapsed
     /// wall time for the entire request, beginning when the retry
     /// processor first sees it. Retries will not be scheduled if they
     /// would begin after this many seconds from the start.
-    #[serde_as(as = "DurationSecondsWithFrac<f64, Flexible>")]
-    #[serde(default = "default_max_elapsed_time")]
+    #[serde(with = "humantime_serde", default = "default_max_elapsed_time")]
     pub max_elapsed_time: Duration,
 
     /// Multiplier for the retry interval.
@@ -361,12 +356,10 @@ pub fn create_retry_processor(
 
     let retry = RetryProcessor::with_pipeline_ctx(pipeline_ctx, config)?;
 
-    let user_config = Arc::new(NodeUserConfig::new_processor_config(RETRY_PROCESSOR_URN));
-
     Ok(ProcessorWrapper::local(
         retry,
         node,
-        user_config,
+        node_config,
         processor_config,
     ))
 }
@@ -382,7 +375,7 @@ fn now_f64() -> f64 {
 }
 
 /// State tracking for retry attempts, sized for Context8u8.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct RetryState {
     /// Number of retry attempts so far (0 = first attempt, 1+ = retries).
     retries: u64,
@@ -700,9 +693,9 @@ mod test {
     #[test]
     fn test_tiny_config() {
         let cfg: RetryConfig = serde_json::from_value(json!({
-            "initial_interval": 0.5,
-            "max_interval": 1.75,
-            "max_elapsed_time": 9.9,
+            "initial_interval": "0.5s",
+            "max_interval": "1.75s",
+            "max_elapsed_time": "9.9s",
             "multiplier": 1.999,
         }))
         .unwrap();
@@ -722,19 +715,19 @@ mod test {
         for (value, expect) in [
             (
                 json!({
-                    "initial_interval": 0,
+                    "initial_interval": "0s",
                 }),
                 "initial",
             ),
             (
                 json!({
-                    "max_interval": 0,
+                    "max_interval": "0h",
                 }),
                 "max",
             ),
             (
                 json!({
-                    "max_elapsed_time": 0,
+                    "max_elapsed_time": "0m",
                 }),
                 "elapsed",
             ),
@@ -746,9 +739,9 @@ mod test {
             ),
             (
                 json!({
-                    "initial_interval": 1.0,
-                    "max_interval": 1000000,
-                    "max_elapsed_time": 10000000,
+                    "initial_interval": "1s",
+                    "max_interval": "1m",
+                    "max_elapsed_time": "1h",
                     "multiplier": 1.0001,
                 }),
                 "retry growth",
@@ -779,9 +772,9 @@ mod test {
         // 3nd retry: +0.20=+0.35 retry_count=3
         // 4nd retry: +0.40=+0.75 max_elapsed reached
         json!({
-            "initial_interval": 0.05,     // 50ms initial delay
-            "max_interval": 0.40,         // 400ms max delay
-            "max_elapsed_time": 0.5,      // 500ms total timeout
+            "initial_interval": "0.05s",     // 50ms initial delay
+            "max_interval": "0.40s",         // 400ms max delay
+            "max_elapsed_time": "0.5s",      // 500ms total timeout
             "multiplier": 2.0,            // Double
         })
     }

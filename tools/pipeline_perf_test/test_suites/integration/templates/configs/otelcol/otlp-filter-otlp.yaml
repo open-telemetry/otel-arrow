@@ -1,0 +1,35 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+exporters:
+  otlp:
+    endpoint: '{{backend_hostname}}:1235'
+    tls:
+      insecure: true
+
+processors:
+  filter:
+    error_mode: ignore
+    logs:
+      include:
+        match_type: strict
+        record_attributes:
+          - key: ios.app.state
+            value: active
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: '0.0.0.0'
+                port: 8086
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [filter]
+      exporters: [otlp]
