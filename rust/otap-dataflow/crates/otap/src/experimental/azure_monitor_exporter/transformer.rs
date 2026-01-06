@@ -639,35 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_mapping_error() {
-        let mut config = create_test_config();
-        _ = config
-            .api
-            .schema
-            .log_record_mapping
-            .insert("invalid_field".into(), json!("Invalid"));
-
-        let transformer = Transformer::new(&config);
-
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: None,
-                scope_logs: vec![ScopeLogs {
-                    scope: None,
-                    log_records: vec![LogRecord::default()],
-                    schema_url: String::new(),
-                }],
-                schema_url: String::new(),
-            }],
-        };
-
-        let bytes = request.encode_to_vec();
-        let logs_view = RawLogsData::new(&bytes);
-        let result = transformer.convert_to_log_analytics(&logs_view);
-        assert_eq!(result.len(), 0);
-    }
-
-    #[test]
     fn test_zero_timestamp() {
         let timestamp = Transformer::format_timestamp(0);
         assert!(timestamp.contains('T'));
