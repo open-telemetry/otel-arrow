@@ -12,7 +12,10 @@ rust-version.workspace = true
 chrono = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
+pest_meta = { workspace = true }
+proc-macro2 = { workspace = true }
 regex = { workspace = true }
 
 data_engine_expressions = { path = "../expressions" }
+data_engine_parser_macros = { path = "src/macros" }
 data_engine_parser_abstractions = { path = "../parser-abstractions" }

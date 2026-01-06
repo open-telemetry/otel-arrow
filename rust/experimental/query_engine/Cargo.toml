@@ -3,6 +3,7 @@ members = [
     "expressions",
     "parser-abstractions",
     "kql-parser",
+    "kql-parser/src/macros",
     "ottl-parser",
     "engine-recordset",
     "engine-recordset-otlp-bridge",
@@ -26,7 +27,11 @@ hex = "0.4.3"
 opentelemetry-proto = "0.31.0"
 pest = "2.8"
 pest_derive = "2.8"
+pest_meta = "2.8"
+proc-macro-crate = "3.4.0"
+proc-macro2 = "1.0"
 prost = "0.14"
+quote = "1.0"
 regex = "1.11.1"
 serde_json = "1.0.140"
 sha2 = "0.10.8"

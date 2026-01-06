@@ -1,5 +1,23 @@
 // TODO put the comments back
 
+if_condition_expression = {
+    "if" ~ "(" ~ logical_expression ~ ")"
+}
+
+if_else_branch_expression = {
+    tabular_expressions ~ ("|" ~ tabular_expressions)*
+}
+
+else_expression = {
+    "else" ~ "{" ~ if_else_branch_expression ~ "}"
+}
+
+if_else_expression = {
+    if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}"
+    ~ ("else" ~ if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}")*
+    ~ (else_expression)?
+}
+
 tabular_expressions = _{
     extend_expression
     | project_expression
@@ -7,7 +25,6 @@ tabular_expressions = _{
     | project_away_expression
     | project_rename_expression
     | where_expression
-    | summarize_expression
     | if_else_expression
 }
 

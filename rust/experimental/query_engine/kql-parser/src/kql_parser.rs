@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_parser_abstractions::*;
+use data_engine_parser_macros::BaseRuleCompatible;
 use pest_derive::Parser;
 
 use crate::{base_parser, kql_parser, query_expression::parse_query};
 
-#[derive(Parser)]
+#[derive(Parser, BaseRuleCompatible)]
 #[grammar = "base.pest"]
 #[grammar = "kql.pest"]
 pub(crate) struct KqlPestParser;
@@ -33,14 +34,6 @@ pub(crate) fn map_kql_errors(error: ParserError) -> ParserError {
             ),
         },
         e => e,
-    }
-}
-
-impl TryFrom<kql_parser::Rule> for base_parser::Rule {
-    type Error = ParserError;
-
-    fn try_from(value: kql_parser::Rule) -> Result<Self, Self::Error> {
-        todo!()
     }
 }
 

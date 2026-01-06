@@ -29,6 +29,9 @@ pub enum ParserError {
         location: QueryLocation,
         key: String,
     },
+
+    #[error("{0}")]
+    RuleConversionError(String)
 }
 
 impl From<&ExpressionError> for ParserError {
@@ -38,7 +41,7 @@ impl From<&ExpressionError> for ParserError {
 }
 
 impl From<Infallible> for ParserError {
-    fn from(value: Infallible) -> Self {
-        unreachable!("infallible error never occurrs")
+    fn from(_value: Infallible) -> Self {
+        unreachable!("infallible error never occurs")
     }
 }
