@@ -64,7 +64,9 @@ The telemetry configuration includes:
 
 - **Metrics**: OpenTelemetry metrics for pipeline observability
   - **Readers**: Periodic or pull-based metric readers
-  - **Exporters**: Console, OTLP (gRPC/HTTP), or custom exporters
+    - **Periodic Readers**: Export metrics at regular intervals
+    - **Pull Readers**: Expose metrics via HTTP endpoint for scraping (e.g., Prometheus)
+  - **Exporters**: Console, OTLP (gRPC/HTTP), or Prometheus
   - **Views**: Metric aggregation and transformation rules
   - **Temporality**: Delta or cumulative aggregation
 - **Logs**: Internal logging configuration
@@ -89,11 +91,20 @@ service:
       deployment.environment: "production"
     metrics:
       readers:
+        # Periodic reader - pushes metrics to OTLP endpoint
         - periodic:
             exporter:
               otlp:
                 endpoint: "http://localhost:4318"
                 protocol: "grpc/protobuf"
+            interval: "60s"
+        # Pull reader - exposes metrics for Prometheus scraping
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
       views:
         - selector:
             instrument_name: "logs.produced"
@@ -114,11 +125,21 @@ service:
 
 #### Metric Exporters
 
+##### Periodic Exporters
+
 - **Console**: Prints metrics to stdout (useful for debugging)
 - **OTLP**: OpenTelemetry Protocol exporters
   - **grpc/protobuf**: Binary protocol over gRPC
   - **http/protobuf**: Binary protobuf over HTTP
   - **http/json**: JSON over HTTP
+
+##### Pull Exporters
+
+- **Prometheus**: Exposes metrics via HTTP endpoint for Prometheus scraping
+  - Configurable host, port, and path
+  - Exposes metrics in Prometheus text format
+  - Example: `http://0.0.0.0:9090/metrics`
+  - Compatible with Prometheus, Grafana, and other scraping systems
 
 #### Log Exporters
 

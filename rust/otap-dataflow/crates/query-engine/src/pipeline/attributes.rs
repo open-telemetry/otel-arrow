@@ -32,7 +32,7 @@ impl AttributeTransformPipelineStage {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl PipelineStage for AttributeTransformPipelineStage {
     async fn execute(
         &mut self,
@@ -66,8 +66,13 @@ impl PipelineStage for AttributeTransformPipelineStage {
                 }
             })?;
 
-        // replace attributes batch with transformed attributes
-        otap_batch.set(attrs_payload_type, attrs_transformed);
+        if attrs_transformed.num_rows() == 0 {
+            // all attributes deleted. remove as it's now empty
+            otap_batch.remove(attrs_payload_type);
+        } else {
+            // replace attributes batch with transformed attributes
+            otap_batch.set(attrs_payload_type, attrs_transformed);
+        }
 
         Ok(otap_batch)
     }
@@ -79,17 +84,19 @@ mod test {
     use otap_df_pdata::{
         OtapArrowRecords,
         otap::Logs,
-        proto::opentelemetry::{
-            common::v1::{AnyValue, InstrumentationScope, KeyValue},
-            logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
-            resource::v1::Resource,
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::{
+                arrow::v1::ArrowPayloadType,
+                common::v1::{AnyValue, InstrumentationScope, KeyValue},
+                logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                resource::v1::Resource,
+            },
         },
+        testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
-    use crate::pipeline::{
-        Pipeline,
-        test::{exec_logs_pipeline, to_logs_data},
-    };
+    use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
 
     fn generate_logs_test_data() -> LogsData {
         LogsData::new(vec![ResourceLogs::new(
@@ -366,5 +373,22 @@ mod test {
             result.resource_logs[0].scope_logs[0].log_records,
             input.resource_logs[0].scope_logs[0].log_records
         );
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_attributes() {
+        let input = generate_logs_test_data();
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(input));
+        let kql_expr = "logs |
+            project-away attributes[\"x\"], attributes[\"x2\"]
+        ";
+        let parser_result = KqlParser::parse(kql_expr).unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let result = pipeline.execute(otap_batch).await.unwrap();
+
+        assert!(
+            result.get(ArrowPayloadType::LogAttrs).is_none(),
+            "expected LogAttrs RecordBatch removed"
+        )
     }
 }

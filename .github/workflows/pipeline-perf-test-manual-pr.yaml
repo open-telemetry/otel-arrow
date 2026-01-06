@@ -28,7 +28,7 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-512gb-x86-64
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: audit
 
@@ -106,7 +106,7 @@ jobs:
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --debug --config "${{ inputs.suite_config }}"
+          python orchestrator/run_orchestrator.py --config "${{ inputs.suite_config }}"
 
       - name: Set PR status based on result
         if: always()

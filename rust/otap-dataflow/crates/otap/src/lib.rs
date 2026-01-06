@@ -52,8 +52,11 @@ pub mod noop_exporter;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
-/// Experimental exporters
-#[cfg(feature = "experimental-exporters")]
+/// Experimental exporters and processors
+#[cfg(any(
+    feature = "experimental-exporters",
+    feature = "experimental-processors"
+))]
 pub mod experimental;
 
 /// testing utilities
@@ -67,6 +70,10 @@ mod fixtures;
 
 #[cfg(test)]
 pub mod testing;
+
+/// validation process to verify that encoding/decoding works properly with otlp request
+#[cfg(test)]
+pub mod validation;
 
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;

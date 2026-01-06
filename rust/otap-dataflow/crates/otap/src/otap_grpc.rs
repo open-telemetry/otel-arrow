@@ -32,6 +32,7 @@ pub mod client_settings;
 pub mod common;
 pub mod middleware;
 pub mod otlp;
+pub mod proxy;
 pub mod server_settings;
 
 use crate::otap_grpc::otlp::server::SharedState;

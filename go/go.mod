@@ -6,8 +6,8 @@ toolchain go1.25.5
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.2.0
-	github.com/apache/arrow-go/v18 v18.2.0
-	github.com/axiomhq/hyperloglog v0.2.5
+	github.com/apache/arrow-go/v18 v18.5.0
+	github.com/axiomhq/hyperloglog v0.2.6
 	github.com/brianvoe/gofakeit/v6 v6.28.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/fxamacker/cbor/v2 v2.9.0
@@ -19,7 +19,7 @@ require (
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/metric v1.39.0
 	go.uber.org/mock v0.6.0
-	golang.org/x/exp v0.0.0-20251125195548-87e1e737ad39
+	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93
 	google.golang.org/grpc v1.77.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -27,16 +27,16 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
+	github.com/dgryski/go-metro v0.0.0-20250106013310-edb8663e5e33 // indirect
 	github.com/frankban/quicktest v1.14.6 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
-	github.com/google/flatbuffers v25.2.10+incompatible // indirect
+	github.com/google/flatbuffers v25.9.23+incompatible // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kamstrup/intmap v0.5.1 // indirect
-	github.com/klauspost/cpuid/v2 v2.2.11 // indirect
+	github.com/kamstrup/intmap v0.5.2 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
@@ -50,13 +50,13 @@ require (
 	go.opentelemetry.io/collector/featuregate v1.48.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/mod v0.30.0 // indirect
-	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/sync v0.18.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
-	golang.org/x/telemetry v0.0.0-20251111182119-bc8e575c7b54 // indirect
-	golang.org/x/text v0.31.0 // indirect
-	golang.org/x/tools v0.39.0 // indirect
+	golang.org/x/mod v0.31.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/telemetry v0.0.0-20251203150158-8fff8a5912fc // indirect
+	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/tools v0.40.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251022142026-3a174f9686a8 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

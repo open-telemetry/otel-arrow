@@ -11,9 +11,11 @@ use crate::otap::OtapArrowRecords;
 use crate::otlp::OtlpProtoBytes;
 use crate::payload::OtapPayload;
 use crate::proto::OtlpProtoMessage;
-use crate::proto::opentelemetry::logs::v1::LogsData;
-use crate::proto::opentelemetry::metrics::v1::MetricsData;
-use crate::proto::opentelemetry::trace::v1::TracesData;
+use crate::proto::opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs};
+use crate::proto::opentelemetry::metrics::v1::{
+    Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+};
+use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData};
 use crate::testing::equiv::assert_equivalent;
 use prost::Message as ProstMessage;
 
@@ -24,6 +26,38 @@ pub fn otlp_to_otap(msg: &OtlpProtoMessage) -> OtapArrowRecords {
         OtlpProtoMessage::Logs(logs) => encode_logs(logs),
         OtlpProtoMessage::Metrics(metrics) => encode_metrics(metrics),
         OtlpProtoMessage::Traces(traces) => encode_traces(traces),
+    }
+}
+
+/// Transcode a protocol message object to OTLP bytes.
+#[must_use]
+pub fn otlp_message_to_bytes(msg: &OtlpProtoMessage) -> OtlpProtoBytes {
+    let mut buf = Vec::new();
+    msg.encode(&mut buf).expect("encoding should not fail");
+
+    match msg {
+        OtlpProtoMessage::Logs(_) => OtlpProtoBytes::ExportLogsRequest(buf.into()),
+        OtlpProtoMessage::Metrics(_) => OtlpProtoBytes::ExportMetricsRequest(buf.into()),
+        OtlpProtoMessage::Traces(_) => OtlpProtoBytes::ExportTracesRequest(buf.into()),
+    }
+}
+
+/// Transcode OTLP bytes to a protocol message object.
+#[must_use]
+pub fn otlp_bytes_to_message(msg: OtlpProtoBytes) -> OtlpProtoMessage {
+    match msg {
+        OtlpProtoBytes::ExportLogsRequest(b) => {
+            let ld = LogsData::decode(b).expect("decode should not fail");
+            OtlpProtoMessage::Logs(ld)
+        }
+        OtlpProtoBytes::ExportMetricsRequest(b) => {
+            let md = MetricsData::decode(b).expect("decode should not fail");
+            OtlpProtoMessage::Metrics(md)
+        }
+        OtlpProtoBytes::ExportTracesRequest(b) => {
+            let td = TracesData::decode(b).expect("decode should not fail");
+            OtlpProtoMessage::Traces(td)
+        }
     }
 }
 
@@ -77,6 +111,26 @@ pub fn test_logs_round_trip(input: LogsData) {
     assert_equivalent(&[input.into()], &[decoded.into()]);
 }
 
+/// helper function for converting [`LogRecord`]s to [`LogsData`]
+#[must_use]
+pub fn to_logs_data(log_records: Vec<LogRecord>) -> LogsData {
+    LogsData {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
+/// helper function for converting OTLP logs to OTAP batch
+#[must_use]
+pub fn to_otap_logs(log_records: Vec<LogRecord>) -> OtapArrowRecords {
+    otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records)))
+}
+
 //
 // Traces
 //
@@ -111,6 +165,26 @@ pub fn test_traces_round_trip(input: TracesData) {
     assert_equivalent(&[input_msg], &[decoded_msg]);
 }
 
+/// helper function for converting [`Span`]s to [`TracesData`]
+#[must_use]
+pub fn to_traces_data(spans: Vec<Span>) -> TracesData {
+    TracesData {
+        resource_spans: vec![ResourceSpans {
+            scope_spans: vec![ScopeSpans {
+                spans,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
+/// helper function for converting OTLP spans to OTAP batch
+#[must_use]
+pub fn to_otap_traces(spans: Vec<Span>) -> OtapArrowRecords {
+    otlp_to_otap(&OtlpProtoMessage::Traces(to_traces_data(spans)))
+}
+
 //
 // Metrics
 //
@@ -143,4 +217,24 @@ pub fn test_metrics_round_trip(input: MetricsData) {
     let decoded_msg: OtlpProtoMessage = decoded.into();
 
     assert_equivalent(&[input_msg], &[decoded_msg]);
+}
+
+/// helper function for converting [`Metric`]s to [`MetricsData`]
+#[must_use]
+pub fn to_metrics_data(metrics: Vec<Metric>) -> MetricsData {
+    MetricsData {
+        resource_metrics: vec![ResourceMetrics {
+            scope_metrics: vec![ScopeMetrics {
+                metrics,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    }
+}
+
+/// helper function for converting OTLP metrics to OTAP batch
+#[must_use]
+pub fn to_otap_metrics(metrics: Vec<Metric>) -> OtapArrowRecords {
+    otlp_to_otap(&OtlpProtoMessage::Metrics(to_metrics_data(metrics)))
 }

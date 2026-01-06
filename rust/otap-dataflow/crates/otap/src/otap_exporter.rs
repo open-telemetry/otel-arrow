@@ -116,10 +116,10 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         let exporter_id = effect_handler.exporter_id();
-        let mut endpoint = self
+        let channel = self
             .config
             .grpc
-            .build_endpoint_with_tls()
+            .connect_channel_lazy(self.config.timeout)
             .await
             .map_err(|e| {
                 let source_detail = format_error_sources(&e);
@@ -130,13 +130,6 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     source_detail,
                 }
             })?;
-
-        // Optional per-exporter timeout overrides shared client settings.
-        if let Some(timeout) = self.config.timeout {
-            endpoint = endpoint.timeout(timeout);
-        }
-
-        let channel = endpoint.connect_lazy();
 
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -818,8 +811,8 @@ mod tests {
 
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
-        let pdata_tx = Sender::Local(LocalSender::MpscSender(pdata_tx));
-        let pdata_rx = Receiver::Local(LocalReceiver::MpscReceiver(pdata_rx));
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
         let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(2);
         exporter
             .set_pdata_receiver(node_id.clone(), pdata_rx)

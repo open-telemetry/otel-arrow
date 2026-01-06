@@ -25,7 +25,7 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: audit
 
@@ -34,7 +34,7 @@ jobs:
           submodules: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@aa33708b10e362ff993539393ff100fa93ed6a27 # v3.7.1
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build dataflow_engine for ${{ matrix.platform.name }}
         run: |
@@ -55,15 +55,16 @@ jobs:
         run: |
           SIZE=$(docker run --rm --entrypoint stat df_engine:${{ matrix.platform.name }} -c %s /home/dataflow/df_engine)
           SIZE_HR=$(numfmt --to=iec-i --suffix=B $SIZE)
-          echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE bytes)"
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+          echo "Binary size for ${{ matrix.platform.name }}: $SIZE_HR ($SIZE_MB MB)"
 
           mkdir -p size-reports
           cat > size-reports/${{ matrix.platform.name }}.json << EOF
           [
             {
               "name": "${{ matrix.platform.name }}-binary-size",
-              "unit": "bytes",
-              "value": $SIZE
+              "unit": "MB",
+              "value": $SIZE_MB
             }
           ]
           EOF

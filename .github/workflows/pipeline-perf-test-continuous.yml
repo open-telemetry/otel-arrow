@@ -12,7 +12,7 @@ jobs:
         runs-on: oracle-bare-metal-64cpu-512gb-x86-64
         steps:
         - name: Harden the runner (Audit all outbound calls)
-          uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+          uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
           with:
             egress-policy: audit
 
@@ -83,12 +83,15 @@ jobs:
         - name: Run pipeline performance test log suite
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
         - name: Run pipeline performance test log suite - Saturation
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/saturation-docker.yaml
+            for config in test_suites/integration/continuous/saturation-*.yaml; do
+              echo "Running saturation test: $config"
+              python orchestrator/run_orchestrator.py --config "$config"
+            done
 
         - name: Upload benchmark results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -100,7 +103,7 @@ jobs:
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
             name: benchmark-results-saturation
-            path: tools/pipeline_perf_test/results/continuous_saturation/gh-actions-benchmark/*.json
+            path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |

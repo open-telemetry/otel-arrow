@@ -36,11 +36,19 @@ doc:
 
 
 
-# Install OTC's builder at the version WHICH MUST MATCH collector/otelarrowcol-build.yaml
+# Install opentelemetry-collector builder at a specific version which should (almost always) match component references in collector/otelarrowcol-build.yaml
+# In addition to installing the builder, this command attempts to synchronize this version in both otelarrowcol-build.yaml and Dockerfile
+# In the event that Collector and Collector-Contrib references need to be different versions, manual edits may be required after running this command
+BUILDER_VERSION = v0.142.0
 BUILDER = builder
 .PHONY: $(BUILDER)
 builder:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.142.0
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@$(BUILDER_VERSION)
+	@echo "Updating otelarrowcol-build.yaml gomods to version $(BUILDER_VERSION)..."
+	sed -i 's|go.opentelemetry.io/collector/\([^[:space:]]*\) v[0-9][0-9.]*|go.opentelemetry.io/collector/\1 $(BUILDER_VERSION)|g' collector/otelarrowcol-build.yaml
+	sed -i 's|github.com/open-telemetry/opentelemetry-collector-contrib/\([^[:space:]]*\) v[0-9][0-9.]*|github.com/open-telemetry/opentelemetry-collector-contrib/\1 $(BUILDER_VERSION)|g' collector/otelarrowcol-build.yaml
+	@echo "Updating Dockerfile to use builder@$(BUILDER_VERSION)..."
+	sed -i 's|go.opentelemetry.io/collector/cmd/builder@v[0-9.]*|go.opentelemetry.io/collector/cmd/builder@$(BUILDER_VERSION)|g' Dockerfile
 
 .PHONY: genotelarrowcol
 genotelarrowcol: builder

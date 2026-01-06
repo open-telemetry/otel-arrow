@@ -44,7 +44,7 @@ jobs:
     runs-on: oracle-bare-metal-64cpu-512gb-x86-64
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: audit
 
@@ -115,7 +115,7 @@ jobs:
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
   # Run on ubuntu-latest for basic validation when no label is present
   pipeline-perf-test-basic:
@@ -124,14 +124,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
         with:
           egress-policy: audit
 
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
 
@@ -152,5 +152,5 @@ jobs:
       - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --debug --config test_suites/integration/continuous/100klrps-docker.yaml
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 

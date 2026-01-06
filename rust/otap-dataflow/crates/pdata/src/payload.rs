@@ -92,7 +92,7 @@ use crate::otlp::{OtlpProtoBytes, ProtoBuffer, ProtoBytesEncoder};
 use crate::views::otlp::bytes::logs::RawLogsData;
 use crate::views::otlp::bytes::metrics::RawMetricsData;
 use crate::views::otlp::bytes::traces::RawTraceData;
-use otap_df_config::SignalType;
+use otap_df_config::{SignalFormat, SignalType};
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
@@ -102,6 +102,7 @@ pub enum OtapPayload {
     OtlpBytes(OtlpProtoBytes),
 
     /// data is contained in `OtapBatch` which contains Arrow `RecordBatches` for OTAP payload type
+    /// TODO: Remove "Arrow" from this case name, it stutters; follow SignalFormat.
     OtapArrowRecords(OtapArrowRecords),
 }
 
@@ -112,6 +113,15 @@ impl OtapPayload {
         match self {
             Self::OtlpBytes(value) => value.signal_type(),
             Self::OtapArrowRecords(value) => value.signal_type(),
+        }
+    }
+
+    /// Returns the signal format.
+    #[must_use]
+    pub fn signal_format(&self) -> SignalFormat {
+        match self {
+            Self::OtapArrowRecords(_) => SignalFormat::OtapRecords,
+            Self::OtlpBytes(_) => SignalFormat::OtlpBytes,
         }
     }
 
@@ -144,6 +154,15 @@ impl OtapPayload {
         }
     }
 
+    /// Returns the number of encoded bytes, if known.
+    #[must_use]
+    pub fn num_bytes(&self) -> Option<usize> {
+        match self {
+            Self::OtlpBytes(value) => Some(value.num_bytes()),
+            Self::OtapArrowRecords(value) => value.num_bytes(),
+        }
+    }
+
     /// Return an empty payload of a certain type.
     #[must_use]
     pub fn empty(signal: SignalType) -> Self {
@@ -154,12 +173,15 @@ impl OtapPayload {
 /* -------- Trait implementations -------- */
 
 /// Helper methods that internal representations of OTAP PData should implement
-pub trait OtapPayloadHelpers {
+pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Returns the type of signal represented by this `OtapPdata` instance.
     fn signal_type(&self) -> SignalType;
 
     /// Number of items.
     fn num_items(&self) -> usize;
+
+    /// Number of bytes, if known.
+    fn num_bytes(&self) -> Option<usize>;
 
     /// Return true if there is no data.
     fn is_empty(&self) -> bool;
@@ -175,6 +197,10 @@ impl OtapPayloadHelpers for OtapArrowRecords {
             Self::Metrics(_) => SignalType::Metrics,
             Self::Traces(_) => SignalType::Traces,
         }
+    }
+
+    fn num_bytes(&self) -> Option<usize> {
+        None
     }
 
     fn take_payload(&mut self) -> Self {
@@ -215,6 +241,10 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
             Self::ExportMetricsRequest(_) => SignalType::Metrics,
             Self::ExportTracesRequest(_) => SignalType::Traces,
         }
+    }
+
+    fn num_bytes(&self) -> Option<usize> {
+        Some(self.num_bytes())
     }
 
     fn is_empty(&self) -> bool {

@@ -1,0 +1,81 @@
+# Template for core scaling saturation tests
+# This template is instantiated by the saturation-*cores.yaml wrapper files
+name: Continuous - Saturation - {{num_cores}} Core(s)
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "{{loadgen_core_range}}"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: {{loadgen_cores}}
+      prometheus:
+        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "{{engine_core_range}}"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: {{num_cores}}  # The cores we're testing
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "{{backend_core_range}}"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: {{backend_cores}}
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: OTLP-ATTR-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: "continuous_saturation_{{num_cores}}core"
+        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        observation_interval: 60
+        signals_per_second: null # Using null means loadgen don't self-cap the rate.
+        max_batch_size: {{max_batch_size}}
+
