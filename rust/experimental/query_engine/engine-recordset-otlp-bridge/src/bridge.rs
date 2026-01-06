@@ -341,9 +341,9 @@ fn build_log_record_schema(
         .set_default_map_key("Attributes")
         .with_alias("attributes", "Attributes")
         .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
-        .with_alias("timestamp", "Timestamp")
+        .with_alias("time_unix_nano", "Timestamp")
         .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
-        .with_alias("observed_timestamp", "ObservedTimestamp")
+        .with_alias("observed_time_unix_nano", "ObservedTimestamp")
         .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
         .with_alias("severity_number", "SeverityNumber")
         .with_key_definition("SeverityText", ParserMapKeySchema::String)
@@ -355,7 +355,7 @@ fn build_log_record_schema(
         .with_key_definition("SpanId", ParserMapKeySchema::Array)
         .with_alias("span_id", "SpanId")
         .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-        .with_alias("trace_flags", "TraceFlags")
+        .with_alias("flags", "TraceFlags")
         .with_key_definition("EventName", ParserMapKeySchema::String)
         .with_alias("event_name", "EventName");
 
@@ -815,11 +815,11 @@ mod tests {
         // Test snake_case aliases
         run_test("source | where severity_text == 'Info'");
         run_test("source | extend x = severity_number");
-        run_test("source | project timestamp, body");
+        run_test("source | project time_unix_nano, body");
 
         // Test mixing aliases and canonical names
         run_test("source | where severity_text == 'Info' and SeverityNumber > 0");
-        run_test("source | extend ts = timestamp, sev = SeverityText");
+        run_test("source | extend ts = time_unix_nano, sev = SeverityText");
 
         // Test default map key alias
         run_test("source | where attributes.custom_field == 'value'");
