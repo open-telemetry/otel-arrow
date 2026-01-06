@@ -7,6 +7,7 @@ use pest_derive::Parser;
 use crate::query_expression::parse_query;
 
 #[derive(Parser)]
+#[grammar = "base.pest"]
 #[grammar = "kql.pest"]
 pub(crate) struct KqlPestParser;
 
