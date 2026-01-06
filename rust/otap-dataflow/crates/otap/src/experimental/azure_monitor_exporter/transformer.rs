@@ -115,6 +115,7 @@ impl ParsedSchema {
 }
 
 /// Converts OTLP logs to Azure Log Analytics format
+#[derive(Debug)]
 pub struct Transformer {
     schema: ParsedSchema,
 }
@@ -676,5 +677,306 @@ mod tests {
     fn test_zero_timestamp() {
         let timestamp = Transformer::format_timestamp(0);
         assert!(timestamp.contains('T'));
+    }
+
+    #[test]
+    fn test_try_new_success() {
+        let config = create_test_config();
+        let result = Transformer::try_new(&config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_try_new_invalid_field() {
+        let mut config = create_test_config();
+        _ = config
+            .api
+            .schema
+            .log_record_mapping
+            .insert("invalid_field".into(), json!("Invalid"));
+
+        let result = Transformer::try_new(&config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown log record field"));
+    }
+
+    #[test]
+    fn test_try_new_invalid_mapping_type() {
+        let mut config = create_test_config();
+        // Field mapping value must be a string, not an object
+        _ = config
+            .api
+            .schema
+            .log_record_mapping
+            .insert("body".into(), json!({"nested": "object"}));
+
+        let result = Transformer::try_new(&config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be a string"));
+    }
+
+    #[test]
+    fn test_empty_schema_mappings() {
+        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://test.com".into(),
+                stream_name: "test-stream".into(),
+                dcr: "test-dcr".into(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::new(),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "unmapped.attr".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("value".into())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord::default()],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // Should be empty object since no mappings configured
+        assert_eq!(json, json!({}));
+    }
+
+    #[test]
+    fn test_attribute_with_no_value() {
+        let config = create_test_config();
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: None, // No value
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "test".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: None, // No value
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "test.attr".into(),
+                            value: None, // No value
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // Attributes with no value should be skipped
+        assert!(json.get("ServiceName").is_none());
+        assert!(json.get("ScopeName").is_none());
+        assert!(json.get("TestAttr").is_none());
+    }
+
+    #[test]
+    fn test_multiple_log_records() {
+        let config = create_test_config();
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![
+                        LogRecord {
+                            body: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("first".into())),
+                            }),
+                            severity_text: "INFO".into(),
+                            ..Default::default()
+                        },
+                        LogRecord {
+                            body: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("second".into())),
+                            }),
+                            severity_text: "ERROR".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 2);
+        
+        let json1: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json1["Body"], "first");
+        assert_eq!(json1["Severity"], "INFO");
+
+        let json2: Value = serde_json::from_slice(&result[1]).unwrap();
+        assert_eq!(json2["Body"], "second");
+        assert_eq!(json2["Severity"], "ERROR");
+    }
+
+    #[test]
+    fn test_empty_body_string() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([
+            ("body".into(), json!("Body")),
+        ]);
+
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue(String::new())),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "");
+    }
+
+    #[test]
+    fn test_bytes_to_hex() {
+        assert_eq!(Transformer::bytes_to_hex(&[]), "");
+        assert_eq!(Transformer::bytes_to_hex(&[0x00]), "00");
+        assert_eq!(Transformer::bytes_to_hex(&[0xff]), "ff");
+        assert_eq!(Transformer::bytes_to_hex(&[0x12, 0x34, 0xab, 0xcd]), "1234abcd");
+    }
+
+    #[test]
+    fn test_case_insensitive_field_names() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([
+            ("TIME_UNIX_NANO".into(), json!("Time")),
+            ("Body".into(), json!("Body")),
+            ("SEVERITY_TEXT".into(), json!("Severity")),
+        ]);
+
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000_000_000,
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("test".into())),
+                        }),
+                        severity_text: "WARN".into(),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["Time"].as_str().is_some());
+        assert_eq!(json["Body"], "test");
+        assert_eq!(json["Severity"], "WARN");
+    }
+
+    #[test]
+    fn test_double_nan_becomes_null() {
+        let config = create_test_config();
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::DoubleValue(f64::NAN)),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord::default()],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // NaN cannot be represented in JSON, so it becomes null
+        assert_eq!(json["ServiceName"], json!(null));
     }
 }
