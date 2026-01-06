@@ -4,11 +4,9 @@
 //! tokio-tracing support for directly encoding and formatting OTLP bytes.
 
 pub mod log_record;
-pub mod otlp_bytes_channel;
 pub mod otlp_bytes_formatter;
 pub mod subscriber;
 
 pub use log_record::{TracingAnyValue, TracingAttribute, TracingLogRecord};
-pub use otlp_bytes_channel::{OtlpBytesChannel, OtlpBytesChannelStats, OtlpBytesConsumerConfig};
 pub use otlp_bytes_formatter::{FormatError, OtlpBytesFormattingLayer};
 pub use subscriber::OtlpTracingLayer;

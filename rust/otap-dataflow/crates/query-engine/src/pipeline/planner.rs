@@ -111,7 +111,7 @@ impl PipelinePlanner {
                 }),
             },
 
-            DataExpression::Conditional(conditional_expr) => {
+o            DataExpression::Conditional(conditional_expr) => {
                 let mut pipeline_branches = vec![];
                 for branch in conditional_expr.get_branches() {
                     let predicate =
