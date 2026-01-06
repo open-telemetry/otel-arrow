@@ -235,7 +235,7 @@ telemetry:
 - [Attributes Guide](attributes-guide.md)
 - [System Metrics Guide](metrics-guide.md)
 - [System Events Guide](events-guide.md)
-- [System Traces Proposal](tracing-proposal.md) (not yet implemented)
+- [System Traces Draft - Not For Review](tracing-draft-not-for-review.md)
 - [Stability and Compatibility Guide](stability-compatibility-guide.md)
 - [Security and Privacy Guide](security-privacy-guide.md)
 
