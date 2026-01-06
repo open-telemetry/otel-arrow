@@ -6,16 +6,22 @@ use std::collections::HashMap;
 use chrono::TimeDelta;
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
+use pest::RuleType;
 use pest::iterators::Pair;
 
-use crate::{scalar_expression::parse_scalar_expression, *};
+use crate::base_parser::Rule;
+use crate::map_kql_errors;
+use crate::scalar_expression::{ScalarExprPrattParser, parse_scalar_expression};
 
-pub(crate) fn parse_type_unary_expressions(
-    type_unary_expressions_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
+pub(crate) fn parse_type_unary_expressions<R, E>(
+    type_unary_expressions_rule: Pair<R>,
+) -> Result<StaticScalarExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E>,
+    E: Into<ParserError>,
+{
     let rule = type_unary_expressions_rule.into_inner().next().unwrap();
-
-    Ok(match rule.as_rule() {
+    Ok(match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::null_literal => parse_standard_null_literal(rule),
         Rule::real_expression => parse_real_expression(rule)?,
         Rule::datetime_expression => parse_datetime_expression(rule)?,
@@ -34,7 +40,10 @@ pub(crate) fn parse_type_unary_expressions(
 /// when parsed from pest:
 /// * `'some \\' string'` -> `some ' string`
 /// * `\"some \\\" string\"` -> `some \" string`
-pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticScalarExpression {
+pub(crate) fn parse_string_literal<R>(string_literal_rule: Pair<R>) -> StaticScalarExpression
+where
+    R: RuleType,
+{
     let query_location = to_query_location(&string_literal_rule);
 
     let raw_string = string_literal_rule.as_str();
@@ -84,14 +93,18 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> StaticSca
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
-fn parse_datetime_expression(
-    datetime_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
+fn parse_datetime_expression<R, E>(
+    datetime_expression_rule: Pair<R>,
+) -> Result<StaticScalarExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E>,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&datetime_expression_rule);
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
 
-    let original_value: String = match datetime_rule.as_rule() {
+    let original_value: String = match datetime_rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::string_literal => match parse_string_literal(datetime_rule) {
             StaticScalarExpression::String(v) => v.get_value().into(),
             _ => panic!("Unexpected type returned from parse_string_literal"),
@@ -116,16 +129,20 @@ fn parse_datetime_expression(
     }
 }
 
-fn parse_timespan_expression(
-    time_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
+fn parse_timespan_expression<R, E>(
+    time_expression_rule: Pair<R>,
+) -> Result<StaticScalarExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E>,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&time_expression_rule);
 
     let mut inner_rules = time_expression_rule.into_inner();
 
     let first_rule = inner_rules.next().unwrap();
 
-    let string_value = match first_rule.as_rule() {
+    let string_value = match first_rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::string_literal => match parse_string_literal(first_rule) {
             StaticScalarExpression::String(v) => v,
             _ => panic!("Unexpected type returned from parse_string_literal"),
@@ -190,7 +207,10 @@ fn parse_timespan_expression(
         )),
     };
 
-    fn get_multiplier(rule: Option<Pair<Rule>>) -> i64 {
+    fn get_multiplier<R>(rule: Option<Pair<R>>) -> i64
+    where
+        R: RuleType,
+    {
         match rule.map(|r| r.as_str()) {
             Some("millisecond") | Some("milliseconds") | Some("ms") => {
                 TimeDelta::milliseconds(1).num_nanoseconds().unwrap()
@@ -229,9 +249,13 @@ fn parse_timespan_expression(
     }
 }
 
-fn parse_regex_expression(
-    regex_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
+fn parse_regex_expression<R, E>(
+    regex_expression_rule: Pair<R>,
+) -> Result<StaticScalarExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E>,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&regex_expression_rule);
 
     let mut inner_rules = regex_expression_rule.into_inner();
@@ -253,17 +277,29 @@ fn parse_regex_expression(
     )))
 }
 
-fn parse_dynamic_expression(
-    dynamic_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
+fn parse_dynamic_expression<R, E>(
+    dynamic_expression_rule: Pair<R>,
+) -> Result<StaticScalarExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E>,
+    E: Into<ParserError>,
+{
     return parse_dynamic_inner_expression(dynamic_expression_rule.into_inner().next().unwrap());
 
-    fn parse_dynamic_inner_expression(
-        dynamic_inner_expression_rule: Pair<Rule>,
-    ) -> Result<StaticScalarExpression, ParserError> {
+    fn parse_dynamic_inner_expression<R, E>(
+        dynamic_inner_expression_rule: Pair<R>,
+    ) -> Result<StaticScalarExpression, ParserError>
+    where
+        R: RuleType + TryInto<Rule, Error = E>,
+        E: Into<ParserError>,
+    {
         let query_location = to_query_location(&dynamic_inner_expression_rule);
 
-        match dynamic_inner_expression_rule.as_rule() {
+        match dynamic_inner_expression_rule
+            .as_rule()
+            .try_into()
+            .map_err(|e| e.into())?
+        {
             Rule::type_unary_expressions => {
                 Ok(parse_type_unary_expressions(dynamic_inner_expression_rule)?)
             }
@@ -313,14 +349,18 @@ fn parse_dynamic_expression(
     }
 }
 
-fn parse_real_expression(
-    real_expression_rule: Pair<Rule>,
-) -> Result<StaticScalarExpression, ParserError> {
+fn parse_real_expression<R, E>(
+    real_expression_rule: Pair<R>,
+) -> Result<StaticScalarExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E>,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&real_expression_rule);
 
     let real_rule = real_expression_rule.into_inner().next().unwrap();
 
-    match real_rule.as_rule() {
+    match real_rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::positive_infinity_token => Ok(StaticScalarExpression::Double(
             DoubleScalarExpression::new(query_location, f64::INFINITY),
         )),
@@ -357,11 +397,15 @@ fn parse_real_expression(
 ///   on [`ParserState`].
 ///
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
-pub(crate) fn parse_accessor_expression(
-    accessor_expression_rule: Pair<Rule>,
+pub(crate) fn parse_accessor_expression<R, E>(
+    accessor_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
     allow_root_scalar: bool,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&accessor_expression_rule);
 
     let mut accessor_rules = accessor_expression_rule.into_inner();
@@ -372,7 +416,11 @@ pub(crate) fn parse_accessor_expression(
     let mut root_full_identifier_literal_depth = 0;
     let mut root_full_identifier_literal = String::new();
 
-    let root_accessor_identity = match root_accessor_identity_rule.as_rule() {
+    let root_accessor_identity = match root_accessor_identity_rule
+        .as_rule()
+        .try_into()
+        .map_err(|e| e.into())?
+    {
         Rule::string_literal => match parse_string_literal(root_accessor_identity_rule) {
             StaticScalarExpression::String(v) => {
                 root_full_identifier_literal_complete = true;
@@ -403,7 +451,7 @@ pub(crate) fn parse_accessor_expression(
 
         let pair = accessor.unwrap();
         let pair_value = pair.as_str();
-        let add_to_root_literal = match pair.as_rule() {
+        let add_to_root_literal = match pair.as_rule().try_into().map_err(|e| e.into())? {
             Rule::integer_literal => {
                 match parse_standard_integer_literal(pair)? {
                     StaticScalarExpression::Integer(v) => {
@@ -740,13 +788,13 @@ mod tests {
     use chrono::{DateTime, Datelike, FixedOffset, Utc};
     use pest::Parser;
 
-    use crate::{KqlPestParser, date_utils::*};
+    use crate::{base_parser::BasePestParser, date_utils::*};
 
     use super::*;
 
     #[test]
     fn test_pest_parse_string_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::string_literal,
             &[
                 "\"hello\"",
@@ -763,7 +811,7 @@ mod tests {
     #[test]
     fn test_parse_string_literal() {
         let run_test = |input: &str, expected: &str| {
-            let mut result = KqlPestParser::parse(Rule::string_literal, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::string_literal, input).unwrap();
 
             let actual = parse_string_literal(result.next().unwrap());
 
@@ -783,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_bool_literal_rule() {
-        parse_test_helpers::test_parse_bool_literal::<KqlPestParser, Rule>(
+        parse_test_helpers::test_parse_bool_literal::<BasePestParser, Rule>(
             Rule::true_literal,
             Rule::false_literal,
             &[
@@ -799,7 +847,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_double_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::double_literal,
             &[
                 "1.0", "-1.0", "1.0e1", "-1.0e1", "1e1", "-1e1", "1e+1", "1e-1",
@@ -811,7 +859,7 @@ mod tests {
     #[test]
     fn test_parse_double_literal() {
         let run_test = |input: &str, expected: f64| {
-            let mut result = KqlPestParser::parse(Rule::double_literal, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::double_literal, input).unwrap();
 
             let f = parse_standard_double_literal(result.next().unwrap(), None);
 
@@ -837,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_integer_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::integer_literal,
             &["123", "-123"],
             &[".53", "abc"],
@@ -847,7 +895,7 @@ mod tests {
     #[test]
     fn test_parse_integer_literal() {
         let run_test = |input: &str, expected: i64| {
-            let mut result = KqlPestParser::parse(Rule::integer_literal, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::integer_literal, input).unwrap();
 
             let i = parse_standard_integer_literal(result.next().unwrap());
 
@@ -866,7 +914,7 @@ mod tests {
     #[test]
     fn test_parse_invalid_integer_literal() {
         let input = format!("{}", i64::MAX as i128 + 1);
-        let result = KqlPestParser::parse(Rule::integer_literal, input.as_str());
+        let result = BasePestParser::parse(Rule::integer_literal, input.as_str());
 
         assert!(result.is_ok());
 
@@ -883,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_datetime_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::datetime_literal,
             &[
                 "12/31/2025",
@@ -898,7 +946,7 @@ mod tests {
         );
 
         // ISO 8601
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::datetime_literal,
             &[
                 "2014-05-25T08:20:03.123456Z",
@@ -908,19 +956,19 @@ mod tests {
             &[],
         );
         // RFC 822
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::datetime_literal,
             &["Sat, 8 Nov 14 15:05:02 GMT", "8 Nov 14 15:05 GMT"],
             &[],
         );
         // RFC 850
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::datetime_literal,
             &["Saturday, 08-Nov-14 15:05:02 GMT", "08-Nov-14 15:05:02 GMT"],
             &[],
         );
         // Sortable
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::datetime_literal,
             &["2014-11-08 15:05:25 GMT", "2014-11-08T15:05:25 GMT"],
             &[],
@@ -930,7 +978,7 @@ mod tests {
     #[test]
     fn test_parse_datetime_expression() {
         let run_test_success = |input: &str, expected: DateTime<FixedOffset>| {
-            let mut result = KqlPestParser::parse(Rule::datetime_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::datetime_expression, input).unwrap();
 
             let d = parse_datetime_expression(result.next().unwrap());
 
@@ -943,7 +991,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str| {
-            let mut result = KqlPestParser::parse(Rule::datetime_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::datetime_expression, input).unwrap();
 
             let d = parse_datetime_expression(result.next().unwrap());
 
@@ -1118,7 +1166,7 @@ mod tests {
     #[test]
     fn test_parse_timespan_expression() {
         let run_test_success = |input: &str, expected: TimeDelta| {
-            let mut result = KqlPestParser::parse(Rule::time_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::time_expression, input).unwrap();
 
             let d = parse_timespan_expression(result.next().unwrap());
 
@@ -1131,7 +1179,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str| {
-            let mut result = KqlPestParser::parse(Rule::time_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::time_expression, input).unwrap();
 
             let d = parse_timespan_expression(result.next().unwrap());
 
@@ -1219,7 +1267,7 @@ mod tests {
     #[test]
     fn test_parse_regex_expression() {
         let run_test_success = |input: &str, test: &str| {
-            let mut result = KqlPestParser::parse(Rule::regex_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::regex_expression, input).unwrap();
 
             let d = parse_regex_expression(result.next().unwrap()).unwrap();
 
@@ -1230,7 +1278,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str| {
-            let mut result = KqlPestParser::parse(Rule::regex_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::regex_expression, input).unwrap();
 
             let d = parse_regex_expression(result.next().unwrap());
 
@@ -1247,7 +1295,7 @@ mod tests {
     #[test]
     fn test_parse_dynamic_expression() {
         let run_test = |input: &str, expected: StaticScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::dynamic_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::dynamic_expression, input).unwrap();
 
             let actual = parse_dynamic_expression(result.next().unwrap()).unwrap();
 
@@ -1352,7 +1400,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_real_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::real_expression,
             &["real(1.0)", "real(1)", "real(+inf)", "real(-inf)"],
             &["real(.1)", "real()", "real(abc)"],
@@ -1362,7 +1410,7 @@ mod tests {
     #[test]
     fn test_parse_real_expression() {
         let run_test = |input: &str, expected: f64| {
-            let mut result = KqlPestParser::parse(Rule::real_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::real_expression, input).unwrap();
 
             let r = parse_real_expression(result.next().unwrap());
 
@@ -1383,7 +1431,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_identifier_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::identifier_literal,
             &["Abc", "abc_123", "_abc"],
             &[],
@@ -1392,7 +1440,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_identifier_or_pattern_literal_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::identifier_or_pattern_literal,
             &["*", "abc*", "a*b*c", "['something.*']"],
             &[],
@@ -1402,7 +1450,7 @@ mod tests {
     #[test]
     fn test_pest_parse_accessor_expression_rule() {
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "Abc").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "Abc").unwrap(),
             &[
                 (Rule::accessor_expression, "Abc"),
                 (Rule::identifier_literal, "Abc"),
@@ -1410,7 +1458,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "['hello world']").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "['hello world']").unwrap(),
             &[
                 (Rule::accessor_expression, "['hello world']"),
                 (Rule::string_literal, "'hello world'"),
@@ -1418,7 +1466,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "abc_123").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "abc_123").unwrap(),
             &[
                 (Rule::accessor_expression, "abc_123"),
                 (Rule::identifier_literal, "abc_123"),
@@ -1426,7 +1474,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "_abc").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "_abc").unwrap(),
             &[
                 (Rule::accessor_expression, "_abc"),
                 (Rule::identifier_literal, "_abc"),
@@ -1434,7 +1482,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "array[0]").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "array[0]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[0]"),
                 (Rule::identifier_literal, "array"),
@@ -1443,7 +1491,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "array[-1]").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "array[-1]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[-1]"),
                 (Rule::identifier_literal, "array"),
@@ -1452,7 +1500,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "abc.name").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "abc.name").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name"),
                 (Rule::identifier_literal, "abc"),
@@ -1461,7 +1509,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "abc['name']").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "abc['name']").unwrap(),
             &[
                 (Rule::accessor_expression, "abc['name']"),
                 (Rule::identifier_literal, "abc"),
@@ -1470,7 +1518,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "abc[-'name']").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "abc[-'name']").unwrap(),
             &[
                 (Rule::accessor_expression, "abc[-'name']"),
                 (Rule::identifier_literal, "abc"),
@@ -1483,7 +1531,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(Rule::accessor_expression, "abc.name1.name2").unwrap(),
+            BasePestParser::parse(Rule::accessor_expression, "abc.name1.name2").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name1.name2"),
                 (Rule::identifier_literal, "abc"),
@@ -1493,7 +1541,7 @@ mod tests {
         );
 
         pest_test_helpers::test_compound_pest_rule(
-            KqlPestParser::parse(
+            BasePestParser::parse(
                 Rule::accessor_expression,
                 "abc['~name-!'].name1[0][-sub].name2",
             )
@@ -1516,7 +1564,7 @@ mod tests {
             ],
         );
 
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::accessor_expression,
             &[],
             &["123", "+name", "-name", "~name", ".name"],
@@ -1526,7 +1574,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_from_source() {
         let mut result =
-            KqlPestParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
+            BasePestParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
@@ -1558,7 +1606,7 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source() {
-        let mut result = KqlPestParser::parse(
+        let mut result = BasePestParser::parse(
             Rule::accessor_expression,
             "['sub.key thing'][var][-neg_attr]",
         )
@@ -1607,7 +1655,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_implicit_source_and_default_map() {
         let run_test = |query: &str, expected: &[ScalarExpression]| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, query).unwrap();
 
             let expression = parse_accessor_expression(
                 result.next().unwrap(),
@@ -1671,7 +1719,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_implicit_source_and_souce_keys() {
         let run_test_success = |query: &str, expected: SourceScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, query).unwrap();
 
             let expression = parse_accessor_expression(
                 result.next().unwrap(),
@@ -1695,7 +1743,7 @@ mod tests {
         };
 
         let run_test_failure = |query: &str, expected_id: &str, expected_msg: &str| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, query).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, query).unwrap();
 
             let error = parse_accessor_expression(
                 result.next().unwrap(),
@@ -1762,7 +1810,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_from_attached() {
         let mut result =
-            KqlPestParser::parse(Rule::accessor_expression, "resource['~at\\'tr~']").unwrap();
+            BasePestParser::parse(Rule::accessor_expression, "resource['~at\\'tr~']").unwrap();
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
@@ -1790,7 +1838,7 @@ mod tests {
 
     #[test]
     fn test_parse_accessor_expression_from_variable() {
-        let mut result = KqlPestParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
+        let mut result = BasePestParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
 
         let state = ParserState::new("a[-1]");
 
@@ -1815,7 +1863,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_with_scalars_and_allow_root_scalars() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new(input);
 
@@ -1855,7 +1903,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new(input);
 
@@ -2011,7 +2059,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_with_scalars_and_disallow_root_scalars() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new(input);
 
@@ -2064,7 +2112,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_with_default_map_schema() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(
                 input,
@@ -2103,7 +2151,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(
                 input,
@@ -2334,7 +2382,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_with_default_map_schema_and_allow_undefined_keys() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(
                 input,
@@ -2394,7 +2442,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_with_schema() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(
                 input,
@@ -2411,7 +2459,7 @@ mod tests {
         };
 
         let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(
                 input,
@@ -2467,7 +2515,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_with_schema_allow_undefined_keys() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(
                 input,
@@ -2516,7 +2564,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_without_source() {
         let run_test_failure = |input: &str, expected_id: Option<&str>, expected_msg: &str| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(input, Default::default());
 
@@ -2567,7 +2615,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_argument() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(input, Default::default());
 
@@ -2608,7 +2656,7 @@ mod tests {
     #[test]
     fn test_parse_accessor_expression_local_variable() {
         let run_test_success = |input: &str, expected: ScalarExpression| {
-            let mut result = KqlPestParser::parse(Rule::accessor_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::accessor_expression, input).unwrap();
 
             let state = ParserState::new_with_options(input, Default::default());
 

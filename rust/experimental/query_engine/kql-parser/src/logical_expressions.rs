@@ -3,14 +3,21 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{
+    base_parser::Rule,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+};
 
-pub(crate) fn parse_logical_expression(
-    logical_expression_rule: Pair<Rule>,
+pub(crate) fn parse_logical_expression<R, E>(
+    logical_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<LogicalExpression, ParserError> {
+) -> Result<LogicalExpression, ParserError>
+where
+    R: RuleType + TryInto<Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let scalar = parse_scalar_expression(logical_expression_rule, scope)?;
 
     to_logical_expression(scalar, scope)
@@ -42,13 +49,13 @@ mod tests {
     use pest::Parser;
     use regex::Regex;
 
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
 
     use super::*;
 
     #[test]
     fn test_pest_parse_comparison_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::logical_expression,
             &[
                 "1 == 1",
@@ -97,7 +104,7 @@ mod tests {
                 )),
             );
 
-            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::logical_expression, input).unwrap();
 
             let mut expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
 
@@ -111,7 +118,7 @@ mod tests {
         let run_test_failure = |input: &str, expected: &str| {
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::logical_expression, input).unwrap();
 
             let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -331,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_logical_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::logical_expression,
             &[
                 "true",
@@ -359,7 +366,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::logical_expression, input).unwrap();
 
             let expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
 
@@ -369,7 +376,7 @@ mod tests {
         let run_test_failure = |input: &str, expected_id: &str, expected_msg: &str| {
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::logical_expression, input).unwrap();
 
             let error = parse_logical_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -555,7 +562,7 @@ mod tests {
             state.push_variable_name("variable");
             state.push_variable_name("var1");
 
-            let mut result = KqlPestParser::parse(Rule::logical_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::logical_expression, input).unwrap();
 
             let expression = parse_logical_expression(result.next().unwrap(), &state).unwrap();
 

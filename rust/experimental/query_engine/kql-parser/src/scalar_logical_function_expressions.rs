@@ -3,26 +3,37 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
-use crate::{Rule, logical_expressions::parse_logical_expression};
+use crate::{
+    base_parser::Rule, logical_expressions::parse_logical_expression,
+    scalar_expression::ScalarExprPrattParser,
+};
 
-pub(crate) fn parse_logical_unary_expressions(
-    logical_unary_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_logical_unary_expressions<R, E>(
+    logical_unary_expressions_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let rule = logical_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule() {
+    match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::not_expression => parse_not_expression(rule, scope),
         _ => panic!("Unexpected rule in logical_unary_expressions: {rule}"),
     }
 }
 
-fn parse_not_expression(
-    not_expression_rule: Pair<Rule>,
+fn parse_not_expression<R, E>(
+    not_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&not_expression_rule);
 
     let mut not_rules = not_expression_rule.into_inner();
@@ -38,12 +49,12 @@ fn parse_not_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
     use pest::Parser;
 
     #[test]
     fn test_pest_parse_not_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::not_expression,
             &[
                 "not(true)",
@@ -70,7 +81,7 @@ mod tests {
                 ParserOptions::new().with_attached_data_names(&["resource"]),
             );
 
-            let mut result = KqlPestParser::parse(Rule::not_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::not_expression, input).unwrap();
 
             let result = parse_not_expression(result.next().unwrap(), &state).unwrap();
 

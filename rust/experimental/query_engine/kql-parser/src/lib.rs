@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod aggregate_expressions;
+mod base_parser;
 pub(crate) mod date_utils;
-pub(crate) mod if_else_expression;
 pub(crate) mod kql_parser;
 pub(crate) mod logical_expressions;
 pub(crate) mod query_expression;

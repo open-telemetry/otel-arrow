@@ -3,17 +3,24 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{
+    base_parser::Rule,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+};
 
-pub(crate) fn parse_string_unary_expressions(
-    string_unary_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_string_unary_expressions<R, E>(
+    string_unary_expressions_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let rule = string_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule() {
+    match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::strlen_expression => parse_strlen_expression(rule, scope),
         Rule::replace_string_expression => parse_replace_string_expression(rule, scope),
         Rule::substring_expression => parse_substring_expression(rule, scope),
@@ -24,10 +31,14 @@ pub(crate) fn parse_string_unary_expressions(
     }
 }
 
-fn parse_strlen_expression(
-    strlen_expression_rule: Pair<Rule>,
+fn parse_strlen_expression<R, E>(
+    strlen_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&strlen_expression_rule);
 
     let mut strlen_rules = strlen_expression_rule.into_inner();
@@ -52,10 +63,14 @@ fn parse_strlen_expression(
     )))
 }
 
-fn parse_replace_string_expression(
-    replace_string_expression_rule: Pair<Rule>,
+fn parse_replace_string_expression<R, E>(
+    replace_string_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&replace_string_expression_rule);
 
     let mut replace_string_rules = replace_string_expression_rule.into_inner();
@@ -70,10 +85,14 @@ fn parse_replace_string_expression(
         ),
     )));
 
-    fn parse_and_validate_string_rule(
-        rule: Pair<Rule>,
+    fn parse_and_validate_string_rule<R, E>(
+        rule: Pair<R>,
         scope: &dyn ParserScope,
-    ) -> Result<ScalarExpression, ParserError> {
+    ) -> Result<ScalarExpression, ParserError>
+    where
+        R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+        E: Into<ParserError>,
+    {
         let location = to_query_location(&rule);
 
         let mut scalar = parse_scalar_expression(rule, scope)?;
@@ -92,10 +111,14 @@ fn parse_replace_string_expression(
     }
 }
 
-fn parse_substring_expression(
-    substring_expression_rule: Pair<Rule>,
+fn parse_substring_expression<R, E>(
+    substring_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&substring_expression_rule);
 
     let mut substring_rules = substring_expression_rule.into_inner();
@@ -142,10 +165,14 @@ fn parse_substring_expression(
     )))
 }
 
-fn parse_strcat_expression(
-    strcat_expression_rule: Pair<Rule>,
+fn parse_strcat_expression<R, E>(
+    strcat_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&strcat_expression_rule);
 
     let strcat_rules = strcat_expression_rule
@@ -172,10 +199,14 @@ fn parse_strcat_expression(
     )))
 }
 
-fn parse_strcat_delim_expression(
-    strcat_delim_expression_rule: Pair<Rule>,
+fn parse_strcat_delim_expression<R, E>(
+    strcat_delim_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&strcat_delim_expression_rule);
 
     let mut strcat_delim_rules = strcat_delim_expression_rule.into_inner();
@@ -201,10 +232,14 @@ fn parse_strcat_delim_expression(
     )))
 }
 
-fn parse_extract_expression(
-    extract_expression_rule: Pair<Rule>,
+fn parse_extract_expression<R, E>(
+    extract_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&extract_expression_rule);
 
     let mut extract_rules = extract_expression_rule.into_inner();
@@ -262,13 +297,13 @@ mod tests {
     use pest::Parser;
     use regex::Regex;
 
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
 
     use super::*;
 
     #[test]
     fn test_pest_parse_string_scalar_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::scalar_expression,
             &[
                 "strlen(\"hello\")",
@@ -288,7 +323,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -300,7 +335,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let error = parse_scalar_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -341,7 +376,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -353,7 +388,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let error = parse_scalar_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -416,7 +451,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -428,7 +463,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let error = parse_scalar_expression(result.next().unwrap(), &state).unwrap_err();
 
@@ -495,7 +530,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -545,7 +580,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -601,7 +636,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -617,7 +652,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let error = match parse_scalar_expression(result.next().unwrap(), &state) {
                 Err(e) => e,

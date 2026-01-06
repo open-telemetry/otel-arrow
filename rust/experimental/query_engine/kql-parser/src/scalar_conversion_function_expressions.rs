@@ -3,20 +3,27 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{
+    base_parser::Rule,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+};
 
-pub(crate) fn parse_conversion_unary_expressions(
-    conversion_unary_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_conversion_unary_expressions<R, E>(
+    conversion_unary_expressions_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let rule = conversion_unary_expressions_rule
         .into_inner()
         .next()
         .unwrap();
 
-    match rule.as_rule() {
+    match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::tostring_expression => parse_tostring_expression(rule, scope),
         Rule::toint_expression => parse_toint_expression(rule, scope),
         Rule::tobool_expression => parse_tobool_expression(rule, scope),
@@ -30,10 +37,14 @@ pub(crate) fn parse_conversion_unary_expressions(
     }
 }
 
-fn parse_tostring_expression(
-    tostring_rule: Pair<Rule>,
+fn parse_tostring_expression<R, E>(
+    tostring_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&tostring_rule);
     let mut inner = tostring_rule.into_inner();
 
@@ -47,10 +58,14 @@ fn parse_tostring_expression(
     )))
 }
 
-fn parse_toint_expression(
-    toint_rule: Pair<Rule>,
+fn parse_toint_expression<R, E>(
+    toint_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&toint_rule);
     let mut inner = toint_rule.into_inner();
 
@@ -64,10 +79,14 @@ fn parse_toint_expression(
     )))
 }
 
-fn parse_tobool_expression(
-    tobool_rule: Pair<Rule>,
+fn parse_tobool_expression<R, E>(
+    tobool_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&tobool_rule);
     let mut inner = tobool_rule.into_inner();
 
@@ -79,10 +98,14 @@ fn parse_tobool_expression(
     )))
 }
 
-fn parse_tofloat_expression(
-    tofloat_rule: Pair<Rule>,
+fn parse_tofloat_expression<R, E>(
+    tofloat_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&tofloat_rule);
     let mut inner = tofloat_rule.into_inner();
 
@@ -94,10 +117,14 @@ fn parse_tofloat_expression(
     )))
 }
 
-fn parse_tolong_expression(
-    tolong_rule: Pair<Rule>,
+fn parse_tolong_expression<R, E>(
+    tolong_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&tolong_rule);
     let mut inner = tolong_rule.into_inner();
 
@@ -109,10 +136,14 @@ fn parse_tolong_expression(
     )))
 }
 
-fn parse_toreal_expression(
-    toreal_rule: Pair<Rule>,
+fn parse_toreal_expression<R, E>(
+    toreal_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&toreal_rule);
     let mut inner = toreal_rule.into_inner();
 
@@ -124,10 +155,14 @@ fn parse_toreal_expression(
     )))
 }
 
-fn parse_todouble_expression(
-    todouble_rule: Pair<Rule>,
+fn parse_todouble_expression<R, E>(
+    todouble_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&todouble_rule);
     let mut inner = todouble_rule.into_inner();
 
@@ -139,10 +174,14 @@ fn parse_todouble_expression(
     )))
 }
 
-fn parse_todatetime_expression(
-    todatetime_rule: Pair<Rule>,
+fn parse_todatetime_expression<R, E>(
+    todatetime_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&todatetime_rule);
     let mut inner = todatetime_rule.into_inner();
 
@@ -157,10 +196,14 @@ fn parse_todatetime_expression(
     ))
 }
 
-fn parse_totimespan_expression(
-    totimespan_rule: Pair<Rule>,
+fn parse_totimespan_expression<R, E>(
+    totimespan_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&totimespan_rule);
     let mut inner = totimespan_rule.into_inner();
 
@@ -178,12 +221,12 @@ fn parse_totimespan_expression(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
     use pest::Parser;
 
     #[test]
     fn test_pest_parse_tostring_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::tostring_expression,
             &[
                 "tostring(123)",
@@ -234,7 +277,7 @@ mod tests {
     fn test_tostring_query_location() {
         let input = "tostring(42)";
         let state = ParserState::new(input);
-        let mut parsed = KqlPestParser::parse(Rule::tostring_expression, input).unwrap();
+        let mut parsed = BasePestParser::parse(Rule::tostring_expression, input).unwrap();
 
         let result = parse_tostring_expression(parsed.next().unwrap(), &state).unwrap();
 
@@ -264,7 +307,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::tostring_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::tostring_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_tostring_expression(parsed.next().unwrap(), &state)
@@ -291,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_toint_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::toint_expression,
             &[
                 "toint(123)",
@@ -338,7 +381,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::toint_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::toint_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_toint_expression(parsed.next().unwrap(), &state)
@@ -355,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_tobool_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::tobool_expression,
             &[
                 "tobool(123)",
@@ -401,7 +444,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::tobool_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::tobool_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_tobool_expression(parsed.next().unwrap(), &state)
@@ -418,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_tofloat_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::tofloat_expression,
             &[
                 "tofloat(123)",
@@ -465,7 +508,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::tofloat_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::tofloat_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_tofloat_expression(parsed.next().unwrap(), &state)
@@ -482,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_tolong_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::tolong_expression,
             &[
                 "tolong(123)",
@@ -529,7 +572,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::tolong_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::tolong_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_tolong_expression(parsed.next().unwrap(), &state)
@@ -546,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_toreal_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::toreal_expression,
             &[
                 "toreal(123)",
@@ -593,7 +636,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::toreal_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::toreal_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_toreal_expression(parsed.next().unwrap(), &state)
@@ -610,7 +653,7 @@ mod tests {
 
     #[test]
     fn test_pest_parse_todouble_expression_rule() {
-        pest_test_helpers::test_pest_rule::<KqlPestParser, Rule>(
+        pest_test_helpers::test_pest_rule::<BasePestParser, Rule>(
             Rule::todouble_expression,
             &[
                 "todouble(123)",
@@ -657,7 +700,7 @@ mod tests {
 
         for (input, description) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::todouble_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::todouble_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_todouble_expression(parsed.next().unwrap(), &state)
@@ -691,7 +734,7 @@ mod tests {
 
         for (input, value) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::scalar_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_scalar_expression(parsed.next().unwrap(), &state)
@@ -725,7 +768,7 @@ mod tests {
 
         for (input, value) in test_cases {
             let state = ParserState::new(input);
-            let mut parsed = KqlPestParser::parse(Rule::scalar_expression, input)
+            let mut parsed = BasePestParser::parse(Rule::scalar_expression, input)
                 .unwrap_or_else(|_| panic!("Failed to parse: {input}"));
 
             let result = parse_scalar_expression(parsed.next().unwrap(), &state)

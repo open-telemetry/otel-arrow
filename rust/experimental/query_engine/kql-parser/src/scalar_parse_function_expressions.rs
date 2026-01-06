@@ -3,27 +3,38 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{
+    base_parser::Rule,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+};
 
-pub(crate) fn parse_parse_unary_expressions(
-    parse_unary_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_parse_unary_expressions<R, E>(
+    parse_unary_expressions_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let rule = parse_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule() {
+    match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::parse_json_expression => parse_parse_json_expression(rule, scope),
         Rule::parse_regex_expression => parse_parse_regex_expression(rule, scope),
         _ => panic!("Unexpected rule in parse_unary_expressions: {rule}"),
     }
 }
 
-fn parse_parse_json_expression(
-    parse_json_expression_rule: Pair<Rule>,
+fn parse_parse_json_expression<R, E>(
+    parse_json_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&parse_json_expression_rule);
 
     let mut parse_json_rules = parse_json_expression_rule.into_inner();
@@ -47,10 +58,14 @@ fn parse_parse_json_expression(
     )))
 }
 
-fn parse_parse_regex_expression(
-    parse_regex_expression_rule: Pair<Rule>,
+fn parse_parse_regex_expression<R, E>(
+    parse_regex_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&parse_regex_expression_rule);
 
     let mut inner_rules = parse_regex_expression_rule.into_inner();
@@ -98,7 +113,7 @@ mod tests {
     use pest::Parser;
     use regex::Regex;
 
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
 
     use super::*;
 
@@ -109,7 +124,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -125,7 +140,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let mut expression = match parse_scalar_expression(result.next().unwrap(), &state) {
                 Ok(e) => e,
@@ -210,7 +225,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let mut expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 
@@ -226,7 +241,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let error = match parse_scalar_expression(result.next().unwrap(), &state) {
                 Err(e) => e,

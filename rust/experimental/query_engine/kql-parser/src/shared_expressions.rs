@@ -3,14 +3,19 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    Rule, scalar_expression::parse_scalar_expression,
+    base_parser::Rule,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
     scalar_primitive_expressions::parse_accessor_expression,
 };
 
-pub(crate) fn parse_typeof_expression(typeof_expression_rule: Pair<Rule>) -> Option<ValueType> {
+pub(crate) fn parse_typeof_expression<R, E>(typeof_expression_rule: Pair<R>) -> Option<ValueType>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let typeof_rules = typeof_expression_rule.into_inner();
 
     parse_type_literal(typeof_rules.as_str())
@@ -34,10 +39,14 @@ pub(crate) fn parse_type_literal(type_literal: &str) -> Option<ValueType> {
     }
 }
 
-pub(crate) fn parse_source_assignment_expression(
-    assignment_expression_rule: Pair<Rule>,
+pub(crate) fn parse_source_assignment_expression<R, E>(
+    assignment_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<(QueryLocation, ScalarExpression, SourceScalarExpression), ParserError> {
+) -> Result<(QueryLocation, ScalarExpression, SourceScalarExpression), ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&assignment_expression_rule);
 
     let mut assignment_rules = assignment_expression_rule.into_inner();
@@ -46,7 +55,11 @@ pub(crate) fn parse_source_assignment_expression(
     let destination_rule_location = to_query_location(&destination_rule);
     let destination_rule_str = destination_rule.as_str();
 
-    let accessor = match destination_rule.as_rule() {
+    let accessor = match destination_rule
+        .as_rule()
+        .try_into()
+        .map_err(|e| e.into())?
+    {
         // Note: Root-level static accessors are not valid in an assignment
         // expression so allow_root_scalar=false is passed here. Example:
         // accessor(some_constant1) = [expression] cannot be folded as
@@ -84,7 +97,7 @@ pub(crate) fn parse_source_assignment_expression(
 
     let source_rule = assignment_rules.next().unwrap();
 
-    let scalar = match source_rule.as_rule() {
+    let scalar = match source_rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::scalar_expression => parse_scalar_expression(source_rule, scope)?,
         _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
@@ -92,10 +105,14 @@ pub(crate) fn parse_source_assignment_expression(
     Ok((query_location, scalar, destination))
 }
 
-pub(crate) fn parse_variable_definition_expression(
-    variable_definition_expression_rule: Pair<Rule>,
+pub(crate) fn parse_variable_definition_expression<R, E>(
+    variable_definition_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<TransformExpression, ParserError> {
+) -> Result<TransformExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&variable_definition_expression_rule);
 
     let mut variable_definition_rules = variable_definition_expression_rule.into_inner();
@@ -132,7 +149,7 @@ pub(crate) fn parse_variable_definition_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
 
     use super::*;
 
@@ -146,7 +163,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlPestParser::parse(Rule::assignment_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::assignment_expression, input).unwrap();
 
             let (query_location, source, destination) =
                 parse_source_assignment_expression(result.next().unwrap(), &state).unwrap();
@@ -169,7 +186,7 @@ mod tests {
 
             state.push_variable_name("variable");
 
-            let mut result = KqlPestParser::parse(Rule::assignment_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::assignment_expression, input).unwrap();
 
             let error =
                 parse_source_assignment_expression(result.next().unwrap(), &state).unwrap_err();
@@ -236,7 +253,7 @@ mod tests {
             state.push_variable_name("variable");
 
             let mut result =
-                KqlPestParser::parse(Rule::variable_definition_expression, input).unwrap();
+                BasePestParser::parse(Rule::variable_definition_expression, input).unwrap();
 
             let expression =
                 parse_variable_definition_expression(result.next().unwrap(), &state).unwrap();
@@ -253,7 +270,7 @@ mod tests {
             state.push_variable_name("variable");
 
             let mut result =
-                KqlPestParser::parse(Rule::variable_definition_expression, input).unwrap();
+                BasePestParser::parse(Rule::variable_definition_expression, input).unwrap();
 
             let error =
                 parse_variable_definition_expression(result.next().unwrap(), &state).unwrap_err();

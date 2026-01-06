@@ -320,28 +320,6 @@ group_by_expression = {
     | scalar_expression
 }
 
-if_condition_expression = {
-    "if" ~ "(" ~ logical_expression ~ ")"
-}
+variable_definition_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
 
-if_else_branch_expression = {
-    tabular_expressions ~ ("|" ~ tabular_expressions)*
-}
-
-else_expression = {
-    "else" ~ "{" ~ if_else_branch_expression ~ "}"
-}
-
-if_else_expression = {
-    if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}"
-    ~ ("else" ~ if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}")*
-    ~ (else_expression)?
-}
-
-summarize_expression = {
-    "summarize"
-        ~ (aggregate_expression ~ ("," ~ aggregate_expression)*)?
-        ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
-        ~ ("|" ~ tabular_expressions)*
-}
 

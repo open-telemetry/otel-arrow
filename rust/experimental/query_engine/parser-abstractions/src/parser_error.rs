@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::convert::Infallible;
+
 use data_engine_expressions::{ExpressionError, QueryLocation};
 use thiserror::Error;
 
@@ -32,5 +34,11 @@ pub enum ParserError {
 impl From<&ExpressionError> for ParserError {
     fn from(value: &ExpressionError) -> Self {
         ParserError::SyntaxError(value.get_query_location().clone(), value.to_string())
+    }
+}
+
+impl From<Infallible> for ParserError {
+    fn from(value: Infallible) -> Self {
+        unreachable!("infallible error never occurrs")
     }
 }

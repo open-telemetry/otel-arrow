@@ -3,22 +3,28 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    Rule, logical_expressions::parse_logical_expression, scalar_expression::parse_scalar_expression,
+    base_parser::Rule,
+    logical_expressions::parse_logical_expression,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
 };
 
-pub(crate) fn parse_conditional_unary_expressions(
-    conditional_unary_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_conditional_unary_expressions<R, E>(
+    conditional_unary_expressions_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let rule = conditional_unary_expressions_rule
         .into_inner()
         .next()
         .unwrap();
 
-    match rule.as_rule() {
+    match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::conditional_expression => parse_conditional_expression(rule, scope),
         Rule::case_expression => parse_case_expression(rule, scope),
         Rule::coalesce_expression => parse_coalesce_expression(rule, scope),
@@ -26,10 +32,14 @@ pub(crate) fn parse_conditional_unary_expressions(
     }
 }
 
-fn parse_conditional_expression(
-    conditional_expression_rule: Pair<Rule>,
+fn parse_conditional_expression<R, E>(
+    conditional_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&conditional_expression_rule);
 
     let mut conditional_rules = conditional_expression_rule.into_inner();
@@ -50,10 +60,14 @@ fn parse_conditional_expression(
     ))
 }
 
-fn parse_case_expression(
-    case_expression_rule: Pair<Rule>,
+fn parse_case_expression<R, E>(
+    case_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&case_expression_rule);
 
     let case_rules = case_expression_rule.into_inner();
@@ -105,10 +119,14 @@ fn parse_case_expression(
     )))
 }
 
-fn parse_coalesce_expression(
-    coalesce_expression_rule: Pair<Rule>,
+fn parse_coalesce_expression<R, E>(
+    coalesce_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&coalesce_expression_rule);
 
     let mut coalesce_rules = coalesce_expression_rule.into_inner();
@@ -139,7 +157,7 @@ fn parse_coalesce_expression(
 mod tests {
     use pest::Parser;
 
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
 
     use super::*;
 
@@ -148,7 +166,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::conditional_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::conditional_expression, input).unwrap();
 
             let expression = parse_conditional_expression(result.next().unwrap(), &state).unwrap();
 
@@ -208,7 +226,7 @@ mod tests {
             );
             state.push_variable_name("key");
 
-            let mut result = KqlPestParser::parse(Rule::case_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::case_expression, input).unwrap();
 
             let expression = parse_case_expression(result.next().unwrap(), &state).unwrap();
 
@@ -357,7 +375,7 @@ mod tests {
         let run_test_success = |input: &str, expected: ScalarExpression| {
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 

@@ -4,7 +4,7 @@
 use data_engine_parser_abstractions::*;
 use pest_derive::Parser;
 
-use crate::query_expression::parse_query;
+use crate::{base_parser, kql_parser, query_expression::parse_query};
 
 #[derive(Parser)]
 #[grammar = "base.pest"]
@@ -33,6 +33,14 @@ pub(crate) fn map_kql_errors(error: ParserError) -> ParserError {
             ),
         },
         e => e,
+    }
+}
+
+impl TryFrom<kql_parser::Rule> for base_parser::Rule {
+    type Error = ParserError;
+
+    fn try_from(value: kql_parser::Rule) -> Result<Self, Self::Error> {
+        todo!()
     }
 }
 

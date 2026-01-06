@@ -3,26 +3,37 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 
-use crate::{Rule, scalar_expression::parse_scalar_expression};
+use crate::{
+    base_parser::Rule,
+    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+};
 
-pub(crate) fn parse_temporal_unary_expressions(
-    temporal_unary_expressions_rule: Pair<Rule>,
+pub(crate) fn parse_temporal_unary_expressions<R, E>(
+    temporal_unary_expressions_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let rule = temporal_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule() {
+    match rule.as_rule().try_into().map_err(|e| e.into())? {
         Rule::now_expression => parse_now_expression(rule, scope),
         _ => panic!("Unexpected rule in temporal_unary_expressions: {rule}"),
     }
 }
 
-fn parse_now_expression(
-    now_expression_rule: Pair<Rule>,
+fn parse_now_expression<R, E>(
+    now_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<ScalarExpression, ParserError>
+where
+    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&now_expression_rule);
 
     let mut now_rules = now_expression_rule.into_inner();
@@ -31,7 +42,7 @@ fn parse_now_expression(
         None => Ok(ScalarExpression::Temporal(TemporalScalarExpression::Now(
             NowScalarExpression::new(query_location),
         ))),
-        Some(r) => match r.as_rule() {
+        Some(r) => match r.as_rule().try_into().map_err(|e| e.into())? {
             Rule::scalar_expression => {
                 let offset = parse_scalar_expression(r, scope)?;
 
@@ -55,7 +66,7 @@ mod tests {
     use chrono::TimeDelta;
     use pest::Parser;
 
-    use crate::KqlPestParser;
+    use crate::base_parser::BasePestParser;
 
     use super::*;
 
@@ -66,7 +77,7 @@ mod tests {
 
             let state = ParserState::new(input);
 
-            let mut result = KqlPestParser::parse(Rule::scalar_expression, input).unwrap();
+            let mut result = BasePestParser::parse(Rule::scalar_expression, input).unwrap();
 
             let expression = parse_scalar_expression(result.next().unwrap(), &state).unwrap();
 

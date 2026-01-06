@@ -1,5 +1,14 @@
 // TODO put the comments back
 
+
+summarize_expression = {
+    "summarize"
+        ~ (aggregate_expression ~ ("," ~ aggregate_expression)*)?
+        ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
+        ~ ("|" ~ tabular_expressions)*
+}
+
+
 tabular_expressions = _{
     extend_expression
     | project_expression
@@ -8,14 +17,11 @@ tabular_expressions = _{
     | project_rename_expression
     | where_expression
     | summarize_expression
-    | if_else_expression
 }
 
 tabular_expression = {
     identifier_literal ~ ("|" ~ tabular_expressions)*
 }
-
-variable_definition_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
 
 user_defined_function_parameter_definition_expression = {
 	identifier_literal
