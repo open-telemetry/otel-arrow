@@ -1,6 +1,14 @@
 # Internal Telemetry Documentation
 
-Status: Draft – under active development.
+Status: **Draft** – under active development.
+
+## Scope and normative language
+
+This documentation specifies the internal telemetry of the OTAP dataflow engine
+runtime and its core libraries.
+
+The key words MUST, SHOULD, and MAY are to be interpreted as normative
+requirements.
 
 ## Overview
 
@@ -27,7 +35,7 @@ This approach is structured around the following lifecycle:
 4) **Iterate**: Refine telemetry based on real-world usage, feedback, and
    evolving system requirements.
 
-Telemetry is treated as a stable interface of the system. As with any public
+Telemetry is treated as a **stable interface** of the system. As with any public
 API, backward compatibility, semantic clarity, and versioning discipline are
 essential. Changes to telemetry should be intentional, reviewed, and aligned
 with the overall observability model.
@@ -75,8 +83,7 @@ composable, and operationally useful at scale.
 
 ### 3. Type-safe and performance-focused instrumentation
 
-The telemetry SDK is designed to be **type-safe by construction** and
-**performance-aware by default**.
+The telemetry SDK is **type-safe by construction** and **performance-aware**.
 
 Instrumentation APIs should:
 
@@ -89,8 +96,8 @@ Correctness, efficiency, and safety take precedence over convenience.
 
 ### 4. Alignment with OpenTelemetry semantic conventions
 
-This project adopts **OpenTelemetry semantic conventions** as its baseline
-vocabulary and modeling framework.
+We adopt **OpenTelemetry semantic conventions** as its baseline vocabulary and
+modeling framework.
 
 Where existing conventions are sufficient, they are reused directly. Where
 project-specific concepts are required, they are defined in a **custom semantic
@@ -139,6 +146,11 @@ This project integrates with **Weaver** to:
 An administrative endpoint exposes the live, resolved schema at runtime to
 support inspection, debugging, and tooling integration.
 
+**Security note**: the schema endpoint SHOULD be disabled by default in
+production or protected with authentication and authorization, or only exposed
+as a private API, because it can reveal component topology and identifiers
+useful for reconnaissance.
+
 ### 7. Automated client SDK generation (longer term)
 
 In the longer term, the custom semantic convention registry will be used to
@@ -172,19 +184,18 @@ consumers over the lifetime of the project.
 and principles are not yet fully implemented. Expect changes and refinements
 over time.
 
-
 ## Instrumentation Guides
 
 **Instrumentation** is the act of adding telemetry signals (metrics, events,
 traces) to the codebase to observe the system behavior and performance.
 
-The [entity model](entity-model.md) defines the **observed things (entities)**
-and how signals describe them. Entities are described by attributes that provide
-context to metrics, events, and traces, and a single signal can involve multiple
-entities at once. **Attribute cardinality must be bounded** to keep telemetry
-efficient and aggregations meaningful. Identifier stability matters for
-correlation across signals and restarts; refer to the stability guarantees in
-the entity model when adding new attributes.
+The [entity model](entity-model.md) defines the observed things, the "nouns" of
+our system, and how signals describe them. Entities are described by attributes
+that provide context to metrics, events, and traces, and a single signal can
+involve multiple entities at once. **Attribute cardinality must be bounded** to
+keep telemetry efficient and aggregations meaningful. Identifier stability
+matters for correlation across signals and restarts; refer to the stability
+guarantees in the entity model when adding new attributes.
 
 The naming conventions, units and general guidelines are in the
 [semantic conventions guide](semantic-conventions-guide.md). **Please read it
@@ -198,6 +209,15 @@ project, but a shared reference for how to introduce and evolve telemetry:
 - [System Events Guide](events-guide.md)
 - [System Traces Proposal](tracing-proposal.md) (not yet implemented)
 
+## Stability model
+
+Each signal definition (metric, event, trace) MUST declare a stability level:
+
+- experimental: may change without backward compatibility guarantees
+- stable: backward compatible changes only (additive changes are preferred)
+- deprecated: still emitted, but scheduled for removal and documented with a
+  replacement
+
 ## Implementation Details
 
 For implementation details of the telemetry SDK, including macros, schema
@@ -206,3 +226,17 @@ handling, and the dataflow for metric collection, see the
 
 Note: This SDK is internal to the project and optimized for our use cases. It is
 not intended for public use (at least not yet). It may change without notice.
+
+## Contributor workflow (minimum)
+
+When adding or changing telemetry:
+
+1) Update the semantic convention registry first (schema-first).
+2) Regenerate documentation and code (when applicable).
+3) Run CI validation (registry checks, live checks in tests).
+4) If the change is breaking, bump the registry version and add a migration
+   note.
+
+**Important Note**: This workflow is not yet fully supported by tooling. It is
+described here to set expectations for the future. For now, please coordinate
+with the maintainers when making telemetry changes.

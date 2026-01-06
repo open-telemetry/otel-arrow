@@ -38,7 +38,8 @@ telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
 - UpDownCounter: signed deltas that can increase or decrease over time.
 - ObserveCounter: monotonic counts recorded as observed cumulative values.
 - ObserveUpDownCounter: observed values that may go up or down.
-- Gauge: instantaneous measurements (capacity, utilization, queue depth).
+- Gauge: instantaneous measurements (last-value), used for capacity,
+  utilization, queue depth.
 
 Note: Histograms (distributions such as latency or batch size) are not yet
 supported, but will be added soon.
@@ -52,12 +53,28 @@ totals like `otelcol.pipeline.metrics.memory_usage` and
 values like `otelcol.pipeline.metrics.cpu_utilization` and
 `channel.receiver.capacity`.
 
+Guideline:
+- Use Gauge for point-in-time levels (queue depth, active tasks, memory in use).
+- Use (Observe)Counter for counts (items processed, drops).
+- Use ObserveUpDownCounter only when you have a strong reason to preserve the
+  "observed cumulative" interpretation across collection intervals.
+
 A *metric set* is a collection of metrics related to a single entity being
 observed. That entity often belongs to a larger system of entities, so metric
 set attributes are usually a composition of multiple entity attributes (for
 example, resource + engine + pipeline + node + channel). All metrics in a set
 share the same attribute set, which contains only entity-related attributes. In
-this project, non-entity attributes are prohibited in core metrics.
+this project, core metrics prioritize entity identity. However, bounded
+signal-specific attributes MAY be used when they are necessary to interpret the
+measurement (for example, a small enum such as a "state" dimension). When used,
+signal-specific attributes MUST be:
+- bounded and documented as a closed set
+- meaningful under aggregation
+- preferably namespaced under the metric namespace as recommended by OTel naming
+  guidance
+
+**Important note**: non-entity/bounded signal-specific attributes are not yet
+supported by our internal telemetry SDK.
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and
@@ -150,9 +167,3 @@ Metric sets are optimized for low overhead:
 
 More details about the telemetry SDK implementation are in
 [crates/telemetry](../../crates/telemetry/README.md).
-
-## ToDo/Open Questions
-
-Should we support dynamic bounded attribute based on closed sets (enums)? For 
-example, `pipeline.state` with values `starting|running|stopped` or`signal.type`
-with values `metric|log|trace`.

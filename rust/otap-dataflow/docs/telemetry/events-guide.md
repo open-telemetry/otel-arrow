@@ -18,6 +18,10 @@ Use events to record:
 If the signal is high-volume or needs aggregation, prefer metrics. If the
 event is part of a dataflow trace, record it as a span event.
 
+Exception rule (traces):
+- If you are recording an actual exception on a span, the span event name MUST
+  be `exception` and the standard exception attributes MUST be used.
+
 In this project, events are preferred to unstructured logs. Event names are
 codified (see below), and their attributes consist of the attributes of the
 relevant entity or entities (stable context), combined with event-specific
@@ -48,8 +52,8 @@ Where:
 - `<verb>` is the action or occurrence (e.g. `start`, `complete`, `fail`,
   `reload`, `shutdown`).
 
-Note: The `event_name` field in OTLP logs corresponds to the event name defined
-here.
+Note: OpenTelemetry Events are represented as LogRecords with an event name.
+In OTLP, this is carried in the LogRecord `event_name` field (not in the body).
 
 ## Attributes and Context
 

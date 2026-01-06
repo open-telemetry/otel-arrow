@@ -61,7 +61,12 @@ other semantic identifiers.
 Source:
 [https://opentelemetry.io/docs/specs/semconv/general/naming/](https://opentelemetry.io/docs/specs/semconv/general/naming/)
 
----
+### Custom Namespacing Policy
+
+* The `otel.*` namespace is reserved.
+* Custom metric, event, and attribute names SHOULD use a project-specific prefix
+  and MUST NOT clash with existing semantic convention namespaces. We use the
+  same prefix as the OTel Collector: `otelcol.*`.
 
 ## 2. Metric Naming and Semantics
 
@@ -100,7 +105,7 @@ Source:
 Example:
 
 ```
-http.server.request.duration{http.method="GET", http.status_code=200}
+http.server.request.duration{http.method="GET", http.outcome=success}
 ```
 
 ---
@@ -249,6 +254,14 @@ Before introducing a new metric or event, verify:
 * Instrument type matches semantic intent.
 * Attributes are reusable, well-scoped, and low cardinality.
 * Meaning remains clear under aggregation.
+
+Error conventions (cross-signal)
+
+* Use `error.type` as a low-cardinality classifier for failures when applicable.
+* For exceptions:
+  - logs use `exception.type` and/or `exception.message`, and may include
+    `exception.stacktrace` in context where security allows.
+  - span exception events MUST be named `exception`
 
 When in doubt, **refer to the upstream OpenTelemetry Semantic Conventions**,
 which remain the authoritative source.

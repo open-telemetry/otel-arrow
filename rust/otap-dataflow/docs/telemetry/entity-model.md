@@ -1,4 +1,4 @@
-# OTAP Engine - Entity Model
+# OTAP Dataflow Engine - Entity Model
 
 ## Introduction
 
@@ -22,6 +22,18 @@ Note: This document will be replaced by formal OpenTelemetry Semantic
 Conventions in the future. For now, it serves as an internal reference for the
 project.
 
+## Attribute Ownership
+
+- Resource attributes describe the producing service/process/host/container and
+  MUST be attached at the resource level.
+- Entity attributes identify in-process entities (pipelines, nodes, channels)
+  and MUST be stable for the entity lifetime.
+- Signal-specific attributes (when used) MUST be bounded and documented
+  alongside the signal.
+
+Project-specific entity attributes use the `otelcol.*` prefix to avoid
+collisions with existing and future semantic conventions.
+
 ## Project Entities
 
 ### Service
@@ -33,18 +45,20 @@ Attributes (resource level):
 - `service.instance.id`: A unique identifier for the service instance.
 
 Note: `process.instance.id` is currently used in the project but will be
-replaced by `service.instance.id` in the future. `service.name` is not yet set
-but will be added later.
+replaced by `service.instance.id` in the future. `service.name` SHOULD be set
+for all emitted telemetry.
 
 ### Host
 
 The physical or virtual machine where the OTAP Engine is running.
 
 Attributes (resource level):
+- `host.id`: A unique identifier for the host machine.
 - `host.name`: The hostname of the machine.
 
-Note: `host.id` is currently used in the project but will be replaced by
-`host.name` in the future.
+Note: `host.id` SHOULD be set when available as a unique host identifier, and
+`host.name` SHOULD also be set for human readability. Do not drop `host.id`
+when adding `host.name`.
 
 ### Container
 
@@ -79,8 +93,8 @@ replaced by `numa_node.logical_number` and `cpu.logical_number` in the future.
 A data processing pipeline running within the OTAP Execution Engine.
 
 Attributes:
-- `pipeline_group.id`: Pipeline group unique identifier.
-- `pipeline.id`: Pipeline unique identifier.
+- `otelcol.pipeline_group.id`: Pipeline group unique identifier.
+- `otelcol.pipeline.id`: Pipeline unique identifier.
 
 ### Node
 
@@ -90,9 +104,9 @@ A processing unit within a pipeline. There are three types of nodes:
 - Exporter: Delivers processed data to external systems
 
 Attributes:
-- `node.id`: Node unique identifier (in scope of the pipeline). 
-- `node.urn`: Node plugin URN.
-- `node.type`: Node type (e.g. "receiver", "processor", "exporter").
+- `otelcol.node.id`: Node unique identifier (in scope of the pipeline). 
+- `otelcol.node.urn`: Node plugin URN.
+- `otelcol.node.type`: Node type (e.g. "receiver", "processor", "exporter").
 
 ### Channels
 
@@ -102,24 +116,30 @@ Channels connect nodes within a pipeline. There are two types of channels:
 - PData Channel: Used for ingesting batches of telemetry signals (metrics, logs,
   events, spans)
 
-Channels are composed of 2 sub-entities: sender and receiver. These 2
-sub-entities share the same `channel.id`, attribute set, and differ only by the
-metric set they emit (e.g. `channel.sender` vs `channel.receiver`).
+Channels are observed via two endpoint perspectives: sender and receiver.
+
+- Sender-side signals attach the sender node identity plus `otelcol.channel.*` attributes.
+- Receiver-side signals attach the receiver node identity plus `otelcol.channel.*` attributes.
+- `otelcol.channel.id` connects sender and receiver signals that belong to the
+  same channel.
 
 Attributes:
-- `channel.id`: Unique channel identifier (in scope of the pipeline).
-- `channel.kind`: Channel payload kind ("control" or "pdata").
-- `channel.mode`: Concurrency mode of the channel ("local" or "shared").
-- `channel.type`: Channel type ("mpsc", "mpmc", "spsc", "spmc").
-- `channel.impl`: Channel implementation ("tokio", "flume", "internal").
-- `channel.sender.out.port`: Output port of the sender node.
 
-The `channel.id` format depends on the channel kind:
+- `otelcol.channel.id`: Unique channel identifier (in scope of the pipeline).
+- `otelcol.channel.kind`: Channel payload kind ("control" or "pdata").
+- `otelcol.channel.mode`: Concurrency mode of the channel ("local" or "shared").
+- `otelcol.channel.type`: Channel type ("mpsc", "mpmc", "spsc", "spmc").
+- `otelcol.channel.impl`: Channel implementation ("tokio", "flume", "internal").
+- `otelcol.channel.sender.out.port`: Output port of the sender node.
+
+The `otelcol.channel.id` format depends on the channel kind:
+
 - Control Channel: `control:{node.id}`
 - PData Channel: `pdata:{source_node.id}:{out_port}`
 
-Notes: `channel.sender.out.port` is not yet set but will be added later. The
-`channel.id` format is not yet enforced but will be standardized in the future.
+Notes: `otelcol.channel.sender.out.port` is not yet set but will be added later.
+The `otelcol.channel.id` format is not yet enforced but will be standardized in
+the future.
 
 ## Stability and Identity Guarantees
 
@@ -135,12 +155,14 @@ and may change on restart or reconfiguration.
 - `numa_node.logical_number`, `cpu.logical_number`: Stable for a host boot; may
   change with CPU or NUMA reconfiguration.
 - `thread.id`: Stable for the thread lifetime; may be reused after thread exit.
-- `pipeline_group.id`, `pipeline.id`, `node.id`: Stable across configuration
-  reloads; intended to remain consistent for the same logical pipeline graph.
-- `channel.id`: Identifies the source + output port only and is stable across
-  configuration reloads as long as the source node id and port are unchanged.
-- `channel.sender.out.port`: Stable across configuration reloads for a given
-  pipeline graph.
+- `otelcol.pipeline_group.id`, `otelcol.pipeline.id`, `otelcol.node.id`: Stable
+  across configuration reloads; intended to remain consistent for the same
+  logical pipeline graph.
+- `otelcol.channel.id`: Identifies the source + output port only and is stable
+  across configuration reloads as long as the source node id and port are
+  unchanged.
+- `otelcol.channel.sender.out.port`: Stable across configuration reloads for a
+  given pipeline graph.
 
 ## Entity Relationships
 
@@ -152,8 +174,8 @@ Containment chain:
 Service -> Process -> Execution Engine -> Pipeline Group -> Pipeline -> Node
 
 Channels connect nodes:
-- `channel.id` identifies the source node + output port only; fan-out receivers
-  share the same `channel.id`.
-- Node identity is carried by the `node.*` attributes on each signal.
+- `otelcol.channel.id` identifies the source node + output port only; fan-out
+  receivers share the same `otelcol.channel.id`.
+- Node identity is carried by the `otelcol.node.*` attributes on each signal.
 - Endpoint role is implied by the metric set (e.g. `channel.sender` vs
   `channel.receiver`), not by a channel attribute.
