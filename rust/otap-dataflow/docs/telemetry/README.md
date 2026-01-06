@@ -1,11 +1,18 @@
-# Internal Telemetry Documentation
+# Internal Telemetry Documentation and Policy
 
 Status: **Draft** – under active development.
 
-## Scope and normative language
+## Scope
 
-This documentation specifies the internal telemetry of the OTAP dataflow engine
-runtime and its core libraries.
+This documentation applies to all telemetry produced by the OTAP dataflow engine
+(runtime and its core libraries):
+
+- metrics
+- events (structured logs with an event name)
+- traces (when implemented)
+- resource metadata (service, host, container, process)
+
+## Normative Language
 
 The key words MUST, SHOULD, and MAY are to be interpreted as normative
 requirements.
@@ -40,14 +47,29 @@ API, backward compatibility, semantic clarity, and versioning discipline are
 essential. Changes to telemetry should be intentional, reviewed, and aligned
 with the overall observability model.
 
-## Goals and Design Principles
+## Goals
 
-The goals and principles below define how internal telemetry is designed,
-implemented, validated, and evolved in this project. They are intentionally
-opinionated and serve as a shared contract between contributors, tooling, and
-runtime behavior.
+Internal telemetry MUST enable:
 
-### 1. Schema-first telemetry
+- reliable operation and incident response
+- performance analysis and regression detection
+- capacity planning and saturation detection
+- change impact analysis (deploys, config reloads, topology changes)
+- long-term trend analysis with stable schema and naming
+
+Telemetry MUST NOT compromise:
+
+- system safety and correctness
+- performance budgets on hot paths
+- confidentiality (PII, secrets, sensitive payloads)
+
+## Core Principles
+
+The principles below define how internal telemetry is designed, implemented, 
+validated, and evolved in this project. They are intentionally opinionated and
+serve as a shared contract between contributors, tooling, and runtime behavior.
+
+### 1. Schema-first
 
 All telemetry is defined **schema-first**. Entities, signals, attributes, and
 their relationships must be described explicitly in a schema before or alongside
@@ -64,7 +86,7 @@ for:
 Ad hoc or implicit telemetry definitions are discouraged, as they undermine
 consistency, tooling, and long-term maintainability.
 
-### 2. Entity-centric modeling
+### 2. Entity-centric
 
 Telemetry is modeled around **entities**, which represent stable, identifiable
 subjects of observation. Signals describe the state, behavior, or performance of
@@ -184,6 +206,20 @@ consumers over the lifetime of the project.
 and principles are not yet fully implemented. Expect changes and refinements
 over time.
 
+## Runtime Safety and Failure Behavior
+
+Telemetry MUST be non-fatal and bounded:
+
+- Export failures MUST NOT break the dataflow engine.
+- Telemetry pipelines MUST use bounded buffers.
+- Under pressure, the default behavior SHOULD be to drop telemetry rather than
+  block critical work.
+- Drops SHOULD be observable via counters (by drop reason) and optionally debug
+  events.
+
+The telemetry system MUST NOT introduce deadlocks, unbounded memory growth, or
+process termination.
+
 ## Instrumentation Guides
 
 **Instrumentation** is the act of adding telemetry signals (metrics, events,
@@ -217,6 +253,27 @@ Each signal definition (metric, event, trace) MUST declare a stability level:
 - stable: backward compatible changes only (additive changes are preferred)
 - deprecated: still emitted, but scheduled for removal and documented with a
   replacement
+
+This project is still in early development, so many signals will start as
+experimental.
+
+The goal is to promote frequently used signals to stable once they prove useful
+and consistent.
+
+### Compatibility expectations
+
+For signals marked **stable**:
+
+Backward compatible changes include:
+- adding a new metric to an existing metric set
+- adding a new optional attribute with bounded cardinality
+- clarifying descriptions (no semantic changes)
+
+Breaking changes (require versioning + migration notes):
+- renaming a metric/event/attribute/metric set/span name
+- changing units
+- changing instrument semantic meaning (counter vs gauge, ...)
+- removing a metric/event/attribute or shrinking an enum value set
 
 ## Implementation Details
 

@@ -127,14 +127,6 @@ When context is useful but high-cardinality, normalize it:
 - IP address -> prefix or bucket
 - Error message -> error class or code
 
-### Checklist for New Metrics
-
-- The metric name follows the semantic conventions guide.
-- The instrument type matches the intended meaning.
-- Units are specified and valid.
-- Attributes are stable and cardinality is bounded.
-- The metric can be interpreted using the entity model attributes.
-
 ## Units
 
 Units must be specified for every metric as part of its metadata. They must
@@ -167,3 +159,22 @@ Metric sets are optimized for low overhead:
 
 More details about the telemetry SDK implementation are in
 [crates/telemetry](../../crates/telemetry/README.md).
+
+## Metric Stability and Compatibility
+
+Metrics and metric sets MUST follow the stability model in
+[README.md](README.md):
+
+- experimental metrics may change freely
+- stable metrics require backward compatible evolution and documented migrations for breaking changes
+
+### Checklist for New Metrics
+
+- The metric name follows the semantic conventions guide.
+- The instrument type matches the intended meaning.
+- Units are specified and valid.
+- Attributes are stable and cardinality is bounded.
+- The metric can be interpreted using the entity model attributes.
+- Failure-oriented metrics SHOULD include a low-cardinality error classifier
+  when applicable (`error.type`).
+
