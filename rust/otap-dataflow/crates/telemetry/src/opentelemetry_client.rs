@@ -95,6 +95,13 @@ impl OpentelemetryClient {
 
         let tracing_setup = tracing_subscriber::registry().with(get_env_filter(config.logs.level));
 
+        let logerr = |err| {
+            use std::io::Write;
+            let _ = std::io::stderr().write_fmt(format_args!(
+                "could not install global tracing/logging subscriber: {err}"
+            ));
+        };
+
         let (logger_provider, runtime) = if !config.logs.internal.enabled {
             let (logger_provider, runtime) =
                 LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
@@ -108,7 +115,9 @@ impl OpentelemetryClient {
 
             // Try to initialize the global subscriber. In tests, this may fail if already set,
             // which is acceptable as we're only validating the configuration works.
-            let _ = tracing_setup.with(fmt_layer).with(sdk_layer).try_init();
+            if let Err(err) = tracing_setup.with(fmt_layer).with(sdk_layer).try_init() {
+                logerr(err);
+            }
             (Some(logger_provider), runtime)
         } else {
             let writer = if std::env::var("NO_COLOR").is_ok() {
@@ -117,7 +126,9 @@ impl OpentelemetryClient {
                 ConsoleWriter::color()
             };
             // See comment above.
-            let _ = tracing_setup.with(RawLoggingLayer::new(writer)).try_init();
+            if let Err(err) = tracing_setup.with(RawLoggingLayer::new(writer)).try_init() {
+                logerr(err);
+            }
 
             (None, runtime)
         };
