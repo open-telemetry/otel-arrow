@@ -75,10 +75,7 @@ impl OpentelemetryClient {
             // Try to initialize the global subscriber. In tests, this may fail if already set,
             // which is acceptable as we're only validating the configuration works.
             let _ = tracing_setup.with(fmt_layer).with(sdk_layer).try_init();
-            (
-                Some(logger_provider),
-                runtime,
-            )
+            (Some(logger_provider), runtime)
         } else {
             let writer = if std::env::var("NO_COLOR").is_ok() {
                 ConsoleWriter::no_color()
@@ -87,7 +84,7 @@ impl OpentelemetryClient {
             };
             // See comment above.
             let _ = tracing_setup.with(RawLoggingLayer::new(writer)).try_init();
-            
+
             (None, runtime)
         };
 

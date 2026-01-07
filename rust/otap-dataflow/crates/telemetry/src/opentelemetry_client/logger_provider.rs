@@ -189,7 +189,7 @@ mod tests {
     use opentelemetry_sdk::Resource;
     use otap_df_config::pipeline::service::telemetry::{
         logs::{
-            LogLevel, LogsInternalConfig, LogsConfig,
+            LogLevel, LogsConfig, LogsInternalConfig,
             processors::{
                 BatchLogProcessorConfig,
                 batch::{LogBatchProcessorExporterConfig, otlp::OtlpExporterConfig},

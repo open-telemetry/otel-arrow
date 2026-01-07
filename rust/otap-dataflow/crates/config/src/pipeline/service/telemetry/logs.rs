@@ -25,9 +25,7 @@ pub struct LogsConfig {
 }
 
 fn default_internal() -> LogsInternalConfig {
-    LogsInternalConfig {
-        enabled: true,
-    }
+    LogsInternalConfig { enabled: true }
 }
 
 /// Log level for internal engine logs.

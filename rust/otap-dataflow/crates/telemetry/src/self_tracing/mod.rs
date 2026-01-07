@@ -73,7 +73,10 @@ impl LogRecord {
     pub fn new(event: &Event<'_>) -> Self {
         let metadata = event.metadata();
 
-        // Encode body and attributes to bytes
+        // Encode body and attributes to bytes.
+        // Note! TODO: we could potentially avoid allocating for the intermediate
+        // protobuf slice with work to support a fixed-size buffer and cursor
+        // instead of a Vec<u8>.
         let mut buf = ProtoBuffer::with_capacity(256);
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         event.record(&mut visitor);

@@ -41,8 +41,6 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
         self.buf
             .extend_from_slice(&record.timestamp_ns.to_le_bytes());
 
-        // Note: the next two fields could be pre-encoded by Level
-
         // Encode severity_number (field 2, varint)
         let severity = level_to_severity_number(&callsite.level);
         self.buf
@@ -223,7 +221,7 @@ impl FmtWrite for DebugWriter<'_> {
 impl tracing::field::Visit for DirectFieldVisitor<'_> {
     fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
         if field.name() == "message" {
-            // Body will be formatted later if needed
+            // TODO: encode f64 body
             return;
         }
         self.encode_double_attribute(field.name(), value);
@@ -231,6 +229,7 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
 
     fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
         if field.name() == "message" {
+            // TODO: encode i64 body
             return;
         }
         self.encode_int_attribute(field.name(), value);
@@ -238,6 +237,7 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         if field.name() == "message" {
+            // TODO: encode u64 body
             return;
         }
         self.encode_int_attribute(field.name(), value as i64);
@@ -245,6 +245,7 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
 
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "message" {
+            // TODO: encode bool body
             return;
         }
         self.encode_bool_attribute(field.name(), value);

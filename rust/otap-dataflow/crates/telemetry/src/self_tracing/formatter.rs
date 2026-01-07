@@ -52,20 +52,15 @@ impl ColorMode {
     /// Write level with color and padding.
     #[inline]
     fn write_level(self, w: &mut BufWriter<'_>, level: &Level) {
-        self.write_ansi(w, Self::level_color(level));
-        let _ = match *level {
-            Level::TRACE => w.write_all(b"TRACE"),
-            Level::DEBUG => w.write_all(b"DEBUG"),
-            Level::INFO => w.write_all(b"INFO "),
-            Level::WARN => w.write_all(b"WARN "),
-            Level::ERROR => w.write_all(b"ERROR"),
-        };
+        self.write_ansi(w, Self::color(level));
+        let _ = w.write_all(level.as_str().as_bytes());
         self.write_ansi(w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
     }
 
     /// Get ANSI color code for a severity level.
     #[inline]
-    fn level_color(level: &Level) -> AnsiCode {
+    fn color(level: &Level) -> AnsiCode {
         match *level {
             Level::ERROR => AnsiCode::Red,
             Level::WARN => AnsiCode::Yellow,
@@ -140,7 +135,6 @@ impl ConsoleWriter {
         cm.write_ansi(&mut w, AnsiCode::Reset);
         let _ = w.write_all(b"  ");
         cm.write_level(&mut w, callsite.level);
-        let _ = w.write_all(b"  ");
         cm.write_ansi(&mut w, AnsiCode::Bold);
         Self::write_event_name(&mut w, callsite);
         cm.write_ansi(&mut w, AnsiCode::Reset);
@@ -340,15 +334,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::self_tracing::DirectLogRecordEncoder;
+    use crate::self_tracing::encoder::level_to_severity_number;
     use bytes::Bytes;
+    use otap_df_pdata::otlp::ProtoBuffer;
     use otap_df_pdata::prost::Message;
+    use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::prelude::*;
 
     struct CaptureLayer {
-        output: Arc<Mutex<String>>,
+        formatted: Arc<Mutex<String>>,
+        encoded: Arc<Mutex<Bytes>>,
     }
 
     impl<S> TracingLayer<S> for CaptureLayer
@@ -358,52 +357,150 @@ mod tests {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             let record = LogRecord::new(event);
             let callsite = SavedCallsite::new(event.metadata());
+
+            // Capture formatted output
             let writer = ConsoleWriter::no_color();
-            *self.output.lock().unwrap() = writer.format_log_record(&record, &callsite);
+            *self.formatted.lock().unwrap() = writer.format_log_record(&record, &callsite);
+
+            // Capture full OTLP encoding
+            let mut buf = ProtoBuffer::with_capacity(512);
+            let mut encoder = DirectLogRecordEncoder::new(&mut buf);
+            let _ = encoder.encode_log_record(record, &callsite);
+            *self.encoded.lock().unwrap() = buf.into_bytes();
         }
     }
 
-    // strip timestamp and newline
-    fn strip_ts(s: &str) -> &str {
-        s[26..].trim_end()
+    fn new_capture_layer() -> (CaptureLayer, Arc<Mutex<String>>, Arc<Mutex<Bytes>>) {
+        let formatted = Arc::new(Mutex::new(String::new()));
+        let encoded = Arc::new(Mutex::new(Bytes::new()));
+        let layer = CaptureLayer {
+            formatted: formatted.clone(),
+            encoded: encoded.clone(),
+        };
+        (layer, formatted, encoded)
     }
 
-    fn assert_log_format(output: &Arc<Mutex<String>>, expected_level: &str, expected_suffix: &str) {
-        let binding = output.lock().unwrap();
-        let result = strip_ts(&binding);
+    // strip timestamp and newline
+    fn strip_ts(s: &str) -> (&str, &str) {
+        // timestamp is 24 bytes, see assertion below.
+        (&s[..24], s[26..].trim_end())
+    }
+
+    fn format_timestamp(nanos: u64) -> String {
+        let mut buf = [0u8; 32];
+        let mut w = Cursor::new(buf.as_mut_slice());
+        ConsoleWriter::write_timestamp(&mut w, nanos);
+        let len = w.position() as usize;
+        assert_eq!(len, 24);
+        String::from_utf8_lossy(&buf[..len]).into_owned()
+    }
+
+    fn format_attrs(attrs: &[KeyValue]) -> String {
+        if attrs.is_empty() {
+            return String::new();
+        }
+        let mut result = String::from(" [");
+        for (i, kv) in attrs.iter().enumerate() {
+            if i > 0 {
+                result.push_str(", ");
+            }
+            result.push_str(&kv.key);
+            result.push('=');
+            if let Some(ref v) = kv.value {
+                if let Some(ref val) = v.value {
+                    match val {
+                        Value::StringValue(s) => result.push_str(s),
+                        Value::IntValue(i) => result.push_str(&i.to_string()),
+                        Value::BoolValue(b) => result.push_str(if *b { "true" } else { "false" }),
+                        Value::DoubleValue(d) => result.push_str(&format!("{:.6}", d)),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+        result.push(']');
+        result
+    }
+
+    fn assert_log_record(
+        formatted: &Arc<Mutex<String>>,
+        encoded: &Arc<Mutex<Bytes>>,
+        expected_level: Level,
+        expected_body: &str,
+        expected_attrs: Vec<KeyValue>,
+    ) {
+        // Decode the OTLP bytes
+        let bytes = encoded.lock().unwrap();
+        let decoded = ProtoLogRecord::decode(bytes.as_ref()).expect("decode failed");
+
+        // Verify OTLP encoding
+        let sev_text = expected_level.as_str();
+        assert_eq!(
+            decoded.severity_number,
+            level_to_severity_number(&expected_level) as i32,
+            "severity_number mismatch"
+        );
+        assert_eq!(decoded.severity_text, sev_text, "severity_text mismatch");
+        assert_eq!(
+            decoded.body,
+            Some(AnyValue::new_string(expected_body)),
+            "body mismatch"
+        );
+        assert_eq!(decoded.attributes, expected_attrs, "attributes mismatch");
+
+        // Build expected text suffix
+        let attrs_text = format_attrs(&expected_attrs);
+        let expected_suffix = format!(": {}{}", expected_body, attrs_text);
+
+        // Verify text formatting
+        let binding = formatted.lock().unwrap();
+        let (ts_str, rest) = strip_ts(&binding);
+
+        // Verify timestamp matches OTLP value
+        let expected_ts = format_timestamp(decoded.time_unix_nano);
+        assert_eq!(ts_str, expected_ts, "timestamp mismatch");
+
         assert!(
-            result.starts_with(expected_level),
+            rest.starts_with(sev_text),
             "expected level '{}', got: {}",
-            expected_level,
-            result
+            sev_text,
+            rest
         );
         assert!(
-            result.ends_with(expected_suffix),
+            rest.ends_with(&expected_suffix),
             "expected suffix '{}', got: {}",
             expected_suffix,
-            result
+            rest
         );
     }
 
     #[test]
     fn test_log_format() {
-        let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-
-        let layer = CaptureLayer {
-            output: output.clone(),
-        };
+        let (layer, formatted, encoded) = new_capture_layer();
         let subscriber = tracing_subscriber::registry().with(layer);
         let dispatch = tracing::Dispatch::new(subscriber);
         let _guard = tracing::dispatcher::set_default(&dispatch);
 
         tracing::info!("hello world");
-        assert_log_format(&output, "INFO ", ": hello world");
+        assert_log_record(&formatted, &encoded, Level::INFO, "hello world", vec![]);
 
-        tracing::warn!(count = 42, "warning");
-        assert_log_format(&output, "WARN ", ": warning [count=42]");
+        tracing::warn!(count = 42i64, "something odd");
+        assert_log_record(
+            &formatted,
+            &encoded,
+            Level::WARN,
+            "something odd",
+            vec![KeyValue::new("count", AnyValue::new_int(42))],
+        );
 
-        tracing::error!(msg = "oops", "failed");
-        assert_log_format(&output, "ERROR", ": failed [msg=oops]");
+        tracing::error!(msg = "oops", "we failed");
+        assert_log_record(
+            &formatted,
+            &encoded,
+            Level::ERROR,
+            "we failed",
+            vec![KeyValue::new("msg", AnyValue::new_string("oops"))],
+        );
     }
 
     #[test]
@@ -420,7 +517,16 @@ mod tests {
 
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO   test_module::submodule::test_event (src/test.rs:123): \n"
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123): \n"
+        );
+
+        let writer = ConsoleWriter::color();
+        let output = writer.format_log_record(&record, &test_callsite());
+
+        // With ANSI codes: dim timestamp, green INFO, bold event name
+        assert_eq!(
+            output,
+            "\x1b[2m2024-01-15T12:30:45.678Z\x1b[0m  \x1b[32mINFO\x1b[0m  \x1b[1mtest_module::submodule::test_event (src/test.rs:123)\x1b[0m: \n"
         );
     }
 
