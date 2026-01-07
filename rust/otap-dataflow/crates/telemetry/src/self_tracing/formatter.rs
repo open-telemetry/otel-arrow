@@ -455,6 +455,15 @@ mod tests {
         let attrs_text = format_attrs(&expected_attrs);
         let expected_suffix = format!(": {}{}", expected_body, attrs_text);
 
+        // Verify event_name has correct prefix (target::name)
+        let expected_prefix = "otap_df_telemetry::self_tracing::formatter::tests::event crates/telemetry/src/self_tracing/formatter.rs:";
+        assert!(
+            decoded.event_name.starts_with(expected_prefix),
+            "event_name should start with '{}', got: {}",
+            expected_prefix,
+            decoded.event_name
+        );
+
         // Verify text formatting
         let binding = formatted.lock().unwrap();
         let (ts_str, rest) = strip_ts(&binding);
@@ -511,7 +520,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             // 2024-01-15T12:30:45.678Z
-            timestamp_ns: 1705321845_678_000_000,
+            timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::new(),
         };
 
@@ -530,6 +539,20 @@ mod tests {
         assert_eq!(
             output,
             "\x1b[2m2024-01-15T12:30:45.678Z\x1b[0m  \x1b[32mINFO\x1b[0m  \x1b[1mtest_module::submodule::test_event (src/test.rs:123)\x1b[0m: \n"
+        );
+
+        // Verify full OTLP encoding with known callsite
+        let mut buf = ProtoBuffer::with_capacity(256);
+        let mut encoder = DirectLogRecordEncoder::new(&mut buf);
+        let _ = encoder.encode_log_record(record, &test_callsite());
+        let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
+
+        assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
+        assert_eq!(decoded.severity_number, 9); // INFO
+        assert_eq!(decoded.severity_text, "INFO");
+        assert_eq!(
+            decoded.event_name,
+            "test_module::submodule::test_event (src/test.rs:123)"
         );
     }
 
@@ -554,7 +577,7 @@ mod tests {
 
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
-            timestamp_ns: 1705321845_678_000_000,
+            timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::from(encoded),
         };
 

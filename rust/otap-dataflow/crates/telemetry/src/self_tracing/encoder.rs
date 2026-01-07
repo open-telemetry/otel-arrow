@@ -51,9 +51,40 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
         self.buf
             .encode_string(LOG_RECORD_SEVERITY_TEXT, callsite.level.as_str());
 
+        // Encode event_name (field 12, string) - format: "target::name (file:line)"
+        encode_event_name(self.buf, callsite);
+
         self.buf.extend_from_slice(&record.body_attrs_bytes);
 
         self.buf.len() - start_len
+    }
+}
+
+/// Encode the event name from callsite metadata.
+/// Format: "target::name (file:line)" or "target::name" if no file/line.
+fn encode_event_name(buf: &mut ProtoBuffer, callsite: &SavedCallsite) {
+    proto_encode_len_delimited_unknown_size!(
+        LOG_RECORD_EVENT_NAME,
+        {
+            buf.extend_from_slice(callsite.target.as_bytes());
+            buf.extend_from_slice(b"::");
+            buf.extend_from_slice(callsite.name.as_bytes());
+            if let (Some(file), Some(line)) = (callsite.file, callsite.line) {
+                let _ = write!(ProtoWriter(buf), " ({}:{})", file, line);
+            }
+        },
+        buf
+    );
+}
+
+/// Wrapper that implements fmt::Write for a ProtoBuffer.
+struct ProtoWriter<'a>(&'a mut ProtoBuffer);
+
+impl FmtWrite for ProtoWriter<'_> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
     }
 }
 
@@ -201,21 +232,10 @@ fn encode_debug_string(buf: &mut ProtoBuffer, value: &dyn std::fmt::Debug) {
     proto_encode_len_delimited_unknown_size!(
         ANY_VALUE_STRING_VALUE,
         {
-            let _ = write!(DebugWriter(buf), "{:?}", value);
+            let _ = write!(ProtoWriter(buf), "{:?}", value);
         },
         buf
     );
-}
-
-/// Wrapper that implements fmt::Write for a ProtoBuffer.
-struct DebugWriter<'a>(&'a mut ProtoBuffer);
-
-impl FmtWrite for DebugWriter<'_> {
-    #[inline]
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.0.extend_from_slice(s.as_bytes());
-        Ok(())
-    }
 }
 
 impl tracing::field::Visit for DirectFieldVisitor<'_> {
