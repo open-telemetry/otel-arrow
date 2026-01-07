@@ -17,12 +17,18 @@ pub use otap_df_pdata_otlp_macros::qualified; // Required for derived code
 pub mod attributes;
 /// Common utilities for protobuf encoding.
 pub mod common;
+/// Common methods for batching.
+pub mod batching;
 /// Common methods for OTLP/OTAP logs.
 pub mod logs;
 /// Common methods for OTLP/OTAP metrics.
 pub mod metrics;
 /// Common methods for OTLP/OTAP traces.
 pub mod traces;
+
+#[cfg(test)]
+mod batching_tests;
+
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +44,20 @@ pub enum OtlpProtoBytes {
 }
 
 impl OtlpProtoBytes {
+    /// Constructs a new message from bytes and signal type.
+    #[must_use]
+    pub fn new_from_bytes<B>(signal: SignalType, b: B) -> Self
+    where
+        B: Into<Vec<u8>>,
+    {
+        let bytes: Bytes = b.into().into();
+        match signal {
+            SignalType::Logs => Self::ExportLogsRequest(bytes),
+            SignalType::Metrics => Self::ExportMetricsRequest(bytes),
+            SignalType::Traces => Self::ExportTracesRequest(bytes),
+        }
+    }
+
     /// Create a new empty request object of a certain signal type.
     #[must_use]
     pub fn empty(signal: SignalType) -> Self {
@@ -57,6 +77,12 @@ impl OtlpProtoBytes {
             | OtlpProtoBytes::ExportMetricsRequest(bytes)
             | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.as_ref(),
         }
+    }
+
+    /// Return the byte-size of this message.
+    #[must_use]
+    pub fn num_bytes(&self) -> usize {
+        self.as_bytes().len()
     }
 }
 
