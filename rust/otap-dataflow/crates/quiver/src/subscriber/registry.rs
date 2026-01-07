@@ -111,8 +111,6 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
     /// Segment data provider.
     segment_provider: Arc<P>,
-    /// Self-reference for callbacks.
-    self_ref: RwLock<Option<Arc<Self>>>,
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -171,11 +169,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             subscribers: RwLock::new(subscribers),
             dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
-            self_ref: RwLock::new(None),
         });
-
-        // Store self-reference for callbacks
-        *registry.self_ref.write().expect("self_ref lock poisoned") = Some(registry.clone());
 
         Ok(registry)
     }
