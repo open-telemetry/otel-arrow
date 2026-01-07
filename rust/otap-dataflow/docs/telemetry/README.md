@@ -7,14 +7,14 @@ Status: **Draft** – under active development.
 This documentation applies to all telemetry produced by the OTAP dataflow engine
 (runtime and its core libraries):
 
+- resource metadata (service, host, container, process)
 - metrics
 - events (structured logs with an event name)
 - traces (when implemented)
-- resource metadata (service, host, container, process)
 
 ## Normative language
 
-The key words MUST, SHOULD, and MAY are to be interpreted as normative
+The keywords MUST, SHOULD, and MAY are to be interpreted as normative
 requirements in all the documentation within this directory.
 
 ## Overview
@@ -26,7 +26,7 @@ principles, guidelines, and implementation details governing the project's
 internal telemetry.
 
 We follow an **observability by design** approach: observability requirements
-are defined early and evolve alongside the system itself. All entities or
+are defined early and evolve alongside the system itself. All main entities or
 components are expected to be instrumented consistently, using well-defined
 schemas and conventions, so that emitted telemetry is coherent, actionable, and
 suitable for long-term analysis and optimization.
@@ -119,7 +119,26 @@ Instrumentation APIs should:
 
 Correctness, efficiency, and safety take precedence over convenience.
 
-### 4. Alignment with OpenTelemetry semantic conventions
+### 4. Runtime-safe and failure-resilient telemetry
+
+Telemetry is designed to be runtime-safe and failure-resilient by default.
+
+Instrumentation and telemetry pipelines MUST be non-fatal, bounded, and isolated
+from critical execution paths.
+
+Specifically:
+
+- Export failures MUST NOT break or stall the dataflow engine.
+- Telemetry pipelines MUST use bounded buffers.
+- Under pressure, the default behavior SHOULD be to drop telemetry rather than
+  block critical work.
+- Drops SHOULD be observable via counters, categorized by drop reason, and
+  optionally via debug events.
+
+The telemetry system MUST NOT introduce deadlocks, unbounded memory growth, or
+process termination.
+
+### 5. Alignment with OpenTelemetry semantic conventions
 
 This project adopts **OpenTelemetry semantic conventions** as the baseline
 vocabulary and modeling framework.
@@ -134,7 +153,7 @@ This registry formally describes:
 * the signals emitted by the system,
 * the allowed attributes, types, units, and stability guarantees.
 
-### 5. First-class support for multivariate metrics
+### 6. First-class support for multivariate metrics
 
 The internal telemetry model and SDK natively support **multivariate metric
 sets**.
@@ -155,7 +174,7 @@ encoding. We plan to contribute multivariate support to OpenTelemetry protocols
 in the future. In the meantime, this project serves as a proving ground for the
 concept.
 
-### 6. Tooling-driven validation and documentation with Weaver
+### 7. Tooling-driven validation and documentation with Weaver
 
 Telemetry correctness and completeness are enforced through **tooling, not
 convention alone**.
@@ -177,7 +196,7 @@ Security and deployment guidance for this endpoint is in the
 Registry compliance checks and live checks are not yet enforced in CI. See
 [Implementation Gaps](implementation-gaps.md).
 
-### 7. Automated client SDK generation (longer term)
+### 8. Automated client SDK generation (longer term)
 
 In the longer term, the custom semantic convention registry will be used to
 generate **type-safe Rust client SDKs** via Weaver.
@@ -191,27 +210,11 @@ The objective is to:
 
 This is considered a strategic investment and will be introduced incrementally.
 
-### 8. Telemetry as a stable interface
+### 9. Telemetry as a stable interface
 
 Telemetry is treated as a **stable interface of the system**.
 Refer to [Stability and Compatibility Guide](stability-compatibility-guide.md).
 
-For items that are documented but not yet implemented or enforced, see
-[Implementation Gaps](implementation-gaps.md).
-
-## Runtime safety and failure behavior
-
-Telemetry MUST be non-fatal and bounded:
-
-- Export failures MUST NOT break the dataflow engine.
-- Telemetry pipelines MUST use bounded buffers.
-- Under pressure, the default behavior SHOULD be to drop telemetry rather than
-  block critical work.
-- Drops SHOULD be observable via counters (by drop reason) and optionally debug
-  events.
-
-The telemetry system MUST NOT introduce deadlocks, unbounded memory growth, or
-process termination.
 
 ## Instrumentation guides
 
@@ -256,7 +259,7 @@ aspects of internal telemetry. The current implementation does not yet fully
 realize all goals and principles described here, but it is evolving rapidly.
 The [implementation gaps](implementation-gaps.md) document tracks the progress.
 
-## Contributor workflow (minimum)
+## Contributor workflow
 
 When adding or changing telemetry:
 
