@@ -1,4 +1,4 @@
-# System Events Guide
+# System events guide
 
 This guide defines how to add **system events** for the OTAP engine. It
 complements the [semantic conventions guide](semantic-conventions-guide.md) and
@@ -13,7 +13,7 @@ the [entity model](entity-model.md).
 - Sensitive data and stacktrace gating:
   [Security and Privacy Guide](security-privacy-guide.md)
 
-## What Events Are For
+## What events are for
 
 Events are discrete occurrences that benefit from context and correlation but do
 not need to be aggregated as metrics. In OTLP, the event name MUST be carried in
@@ -42,7 +42,7 @@ attributes (dynamic context).
 Treat event names as schema identifiers. Evolution rules are defined in
 [Stability and Compatibility Guide](stability-compatibility-guide.md).
 
-## Event Naming
+## Event naming
 
 Event names MUST be low-cardinality and stable. Follow the semantic conventions
 guide for naming:
@@ -72,7 +72,7 @@ Where:
 Note: OpenTelemetry Events are represented as LogRecords with an event name.
 In OTLP, this is carried in the LogRecord `event_name` field (not in the body).
 
-## Attributes and Context
+## Attributes and context
 
 Always attach the relevant entity attributes (stable context):
 
@@ -89,7 +89,7 @@ Optionally, add occurrence-specific attributes (dynamic context):
 - Follow [Security and Privacy Guide](security-privacy-guide.md) to avoid
   sensitive data.
 
-## Severity and Placement
+## Severity and placement
 
 When events are exported as logs, set an appropriate severity. When they are
 attached to traces, use span events with the same name and attributes.
@@ -149,7 +149,7 @@ across names. Don't introduce alternatives such as `finish` or `error`. Use
 one success verb `complete`, one failure verb `fail`, one external
 termination verb `cancel`, and one internal safety verb `abort`.
 
-## Checklist for New Events
+## Checklist for new events
 
 - The event name follows the semantic conventions guide and the `otelcol.<entity>[.<thing>].<verb>` pattern.
 - The event name is stable, low-cardinality, and contains no IDs or dynamic values.

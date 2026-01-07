@@ -1,4 +1,4 @@
-# Stability and Compatibility Guide
+# Stability and compatibility guide
 
 Status: Draft
 

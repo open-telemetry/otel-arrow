@@ -1,4 +1,4 @@
-# OpenTelemetry Semantic Conventions – Contributor Guide
+# OpenTelemetry semantic conventions – contributor guide
 
 This document summarizes the **core rules and guidelines contributors must
 follow in this project** when defining **metric names**, **units**,
@@ -35,12 +35,12 @@ consolidated in:
 - [Stability and Compatibility Guide](stability-compatibility-guide.md)
 - [Security and Privacy Guide](security-privacy-guide.md)
 
-## 1. General Naming Conventions
+## 1. General naming conventions
 
 These rules apply to **metric names**, **attribute names**, **event names**, and
 other semantic identifiers.
 
-### Core Rules
+### Core rules
 
 * Names MUST be lowercase.
 * Use **dot (`.`) separators** to express hierarchy and namespaces.
@@ -67,9 +67,9 @@ Source:
   and MUST NOT clash with existing semantic convention namespaces. We use the
   same prefix as the OTel Collector: `otelcol.*`.
 
-## 2. Metric Naming and Semantics
+## 2. Metric naming and semantics
 
-### Metric Names
+### Metric names
 
 * Metric names **must follow general naming conventions**.
 * Names should represent **what is being measured**, not how it is aggregated.
@@ -92,7 +92,7 @@ Source:
 
 ---
 
-### Metric Attributes
+### Metric attributes
 
 * Attributes add **dimensions**, not meaning.
 * Reuse existing semantic attributes whenever possible.
@@ -109,7 +109,7 @@ http.server.request.duration{http.request.method="GET"}
 
 ---
 
-### Instrument Semantics
+### Instrument semantics
 
 * Counters represent **monotonically increasing values**.
 * UpDownCounters represent values that may increase or decrease.
@@ -120,9 +120,9 @@ The instrument type must align with the semantic meaning of the metric.
 
 ---
 
-## 3. Units Guidelines
+## 3. Units guidelines
 
-### General Rules
+### General rules
 
 * Units **must not be embedded in metric names**.
 * Units must be provided as metric metadata.
@@ -140,7 +140,7 @@ Source:
 
 ---
 
-### Duration and Time
+### Duration and time
 
 * Durations should be expressed in **seconds (`s`)**.
 * Time counters should also use `s`.
@@ -153,7 +153,7 @@ process.cpu.time   unit: s
 
 ---
 
-### Ratios and Utilization
+### Ratios and utilization
 
 * Ratios and utilization metrics are **dimensionless**.
 * Use unit `1`.
@@ -183,9 +183,9 @@ Examples:
 
 ---
 
-## 4. Events and Attributes
+## 4. Events and attributes
 
-### Event Naming
+### Event naming
 
 * Event names must be **low cardinality** and stable.
 * Names must follow general naming conventions.
@@ -206,7 +206,7 @@ connection.close
 
 ---
 
-### Event Attributes
+### Event attributes
 
 * Attributes provide structured context for events.
 * Attribute naming rules are identical to metric attribute rules.
@@ -219,9 +219,9 @@ Source:
 
 ---
 
-## 5. Examples and Best Practices
+## 5. Examples and best practices
 
-### Good Metric Examples
+### Good metric examples
 
 ```
 http.server.request.duration   unit: s
@@ -229,7 +229,7 @@ system.memory.usage            unit: By
 system.cpu.utilization         unit: 1
 ```
 
-### Good Attribute Examples
+### Good attribute examples
 
 ```
 http.method = "GET"
@@ -237,7 +237,7 @@ http.status_code = 200
 network.transport = "tcp"
 ```
 
-### Anti-Patterns
+### Anti-patterns
 
 Avoid:
 
@@ -248,7 +248,7 @@ Avoid:
 
 ---
 
-## 6. Contributor Checklist
+## 6. Contributor checklist
 
 Before introducing a new metric or event, verify:
 

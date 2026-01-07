@@ -1,4 +1,4 @@
-# OTAP Dataflow Engine - Entity Model
+# OTAP dataflow engine entity model
 
 ## Introduction
 
@@ -28,7 +28,7 @@ project.
 - Stability rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
 - Implementation status: [implementation-gaps.md](implementation-gaps.md)
 
-## Attribute Ownership
+## Attribute ownership
 
 - Resource attributes describe the producing service/process/host/container and
   MUST be attached at the resource level.
@@ -40,7 +40,7 @@ project.
 Project-specific entity attributes use the `otelcol.*` prefix to avoid
 collisions with existing and future semantic conventions.
 
-## Project Entities
+## Project entities
 
 ### Service
 
@@ -77,7 +77,7 @@ Attributes (resource level):
 - `process.pid`
 - `process.creation.time`
 
-### OTAP Execution Engine
+### OTAP execution engine
 
 The OTAP pipeline execution engine running in the process.
 
@@ -142,7 +142,7 @@ The `otelcol.channel.id` format depends on the channel kind:
 - Control Channel: `control:{node.id}`
 - PData Channel: `pdata:{source_node.id}:{out_port}`
 
-## Stability and Identity Guarantees
+## Stability and identity guarantees
 
 Unless noted otherwise, identifiers are stable for the lifetime of their entity
 and may change on restart or reconfiguration.
@@ -165,7 +165,7 @@ and may change on restart or reconfiguration.
 - `otelcol.channel.sender.out.port`: Stable across configuration reloads for a
   given pipeline graph.
 
-## Entity Relationships
+## Entity relationships
 
 Relationships are implicit and expressed through co-located attribute sets on
 the same signal. The entity model can be read as a containment chain plus a DAG

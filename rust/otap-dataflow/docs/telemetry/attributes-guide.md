@@ -1,4 +1,4 @@
-# Attributes Guide
+# Attributes guide
 
 Status: Draft
 
@@ -16,11 +16,11 @@ It complements:
 - [security-privacy-guide.md](security-privacy-guide.md) for sensitive-data
   constraints
 
-## Attribute Categories
+## Attribute categories
 
 Attributes fall into three categories.
 
-### 1) Resource Attributes
+### 1) Resource attributes
 
 Describe the producing service and runtime environment.
 
@@ -29,7 +29,7 @@ Describe the producing service and runtime environment.
 - SHOULD reuse upstream semantic conventions (`service.*`, `host.*`,
   `process.*`, `container.*`)
 
-### 2) Entity Attributes
+### 2) Entity attributes
 
 Identify stable in-process entities (pipelines, nodes, channels, runtime
 threads).
@@ -40,7 +40,7 @@ threads).
 - MUST be bounded and known at entity creation time
 - MUST be the foundation of metric set identity for core system telemetry
 
-### 3) Signal-Specific Attributes
+### 3) Signal-specific attributes
 
 Provide additional bounded context needed to interpret a measurement or event
 occurrence.
@@ -49,14 +49,14 @@ occurrence.
 - MUST be bounded and documented
 - MUST remain meaningful under aggregation (metrics) and filtering (events)
 
-## Naming and Namespaces
+## Naming and namespaces
 
-### Reuse Upstream First
+### Reuse upstream first
 
 - Reuse existing OpenTelemetry semantic attributes whenever possible.
 - Do not redefine upstream attributes with different meaning.
 
-### Project-Defined Namespace
+### Project-defined namespace
 
 Project-defined entity attributes MUST be namespaced to avoid collisions with
 upstream conventions.
@@ -66,7 +66,7 @@ Policy:
 - Use `otelcol.*` for project-defined attributes.
 - Do not introduce new un-prefixed top-level namespaces for custom entities.
 
-### Closed Sets (enums)
+### Closed sets (enums)
 
 When an attribute represents a categorical dimension:
 
@@ -77,7 +77,7 @@ When an attribute represents a categorical dimension:
 Adding enum values for stable telemetry follows the compatibility rules in
 [stability-compatibility-guide.md](stability-compatibility-guide.md).
 
-## Placement Rules
+## Placement rules
 
 - Resource attributes belong on the resource attributes.
 - Entity attributes belong on the scope attributes.
@@ -89,9 +89,9 @@ Do not duplicate information:
   signal-specific attribute.
 - Prefer a single canonical key.
 
-## Cardinality Policy
+## Cardinality policy
 
-### Core Rule
+### Core rule
 
 Attributes attached to core system metrics MUST have bounded cardinality.
 
@@ -102,7 +102,7 @@ Before adding an attribute, ask:
 
 If not, the attribute is mis-modeled for core system metrics.
 
-### Prohibited by Default in Core System Metrics
+### Prohibited by default in core system metrics
 
 The following are prohibited as metric attributes unless explicitly approved and
 normalized:
@@ -112,7 +112,7 @@ normalized:
 - raw SQL, raw error messages, unbounded file paths
 - unbounded plugin configuration values
 
-### Normalization Patterns
+### Normalization patterns
 
 When context is useful but high cardinality, normalize:
 
@@ -138,7 +138,7 @@ When recording an actual exception:
 - `exception.stacktrace` must follow
   [security-privacy-guide.md](security-privacy-guide.md) gating rules.
 
-## Attributes vs Event Body
+## Attributes vs event body
 
 This project distinguishes between queryable attributes and potentially large
 bodies:

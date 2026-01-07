@@ -1,4 +1,4 @@
-# Implementation Gaps
+# Implementation gaps
 
 Status: Draft
 

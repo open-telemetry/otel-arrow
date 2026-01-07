@@ -1,4 +1,4 @@
-# Security and Privacy Guide
+# Security and privacy guide
 
 Status: Draft
 

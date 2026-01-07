@@ -1,4 +1,4 @@
-# System Metrics Guide
+# System metrics guide
 
 This guide defines how to add and evolve system metrics for the OTAP dataflow
 engine. It complements the [semantic conventions guide](semantic-conventions-guide.md)
@@ -14,7 +14,7 @@ metrics in the engine.
 - Stability rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
 - Implementation status: [implementation-gaps.md](implementation-gaps.md)
 
-## Entity-Centric Modeling
+## Entity-centric modeling
 
 Start by naming the entity the metric describes. A metric set should map to a
 single entity type (pipeline, node, channel sender, channel receiver, runtime
@@ -25,7 +25,7 @@ Examples of stable entities:
 - Pipeline, node, channel endpoint (sender or receiver)
 - Queue, buffer, connection pool
 
-### Entity vs Event vs Request
+### Entity vs event vs request
 
 Metrics are for entity behavior, not request identity.
 - Events such as reloads, errors, or state changes are better captured as
@@ -36,7 +36,7 @@ Metrics are for entity behavior, not request identity.
   individual occurrences. Use events or traces for discrete, low-volume
   occurrences.
 
-## Metric and Metric Set
+## Metric and metric set
 
 *Metrics* in this project use the instrument types supported by our internal
 telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
@@ -106,7 +106,7 @@ project:
   - `otelcol.node.otlp_exporter`
   - ...
 
-## Attributes and Entity Context
+## Attributes and entity context
 
 Metric attributes MUST follow the project-wide attribute policy in
 [Attributes Guide](attributes-guide.md).
@@ -134,7 +134,7 @@ The most common units in this project are:
   - `{event}`: individual event records (log with an event name)
   - `{span}`: individual trace spans
 
-## Performance Considerations
+## Performance considerations
 
 Metric sets are optimized for low overhead:
 - The same attribute set is shared across all metrics in a metric set.
@@ -150,12 +150,12 @@ Metric sets are optimized for low overhead:
 More details about the telemetry SDK implementation are in
 [crates/telemetry](../../crates/telemetry/README.md).
 
-## Metric Stability and Compatibility
+## Metric stability and compatibility
 
 Metrics and metric sets MUST follow the stability model in
 [stability-compatibility-guide.md](stability-compatibility-guide.md).
 
-### Checklist for New Metrics
+### Checklist for new metrics
 
 - The metric name follows the semantic conventions guide.
 - The instrument type matches the intended meaning.
@@ -164,4 +164,3 @@ Metrics and metric sets MUST follow the stability model in
 - The metric can be interpreted using the entity model attributes.
 - Failure-oriented metrics SHOULD include a low-cardinality error classifier
   when applicable (`error.type`).
-

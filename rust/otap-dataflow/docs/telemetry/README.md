@@ -1,4 +1,4 @@
-# Internal Telemetry Documentation and Policy
+# Internal telemetry documentation and policy
 
 Status: **Draft** – under active development.
 
@@ -12,7 +12,7 @@ This documentation applies to all telemetry produced by the OTAP dataflow engine
 - traces (when implemented)
 - resource metadata (service, host, container, process)
 
-## Normative Language
+## Normative language
 
 The key words MUST, SHOULD, and MAY are to be interpreted as normative
 requirements in all the documentation within this directory.
@@ -66,7 +66,7 @@ Telemetry MUST NOT compromise:
 - performance budgets on hot paths
 - confidentiality (PII, secrets, sensitive payloads)
 
-## Core Principles
+## Core principles
 
 The principles below define how internal telemetry is designed, implemented, 
 validated, and evolved in this project. They are intentionally opinionated and
@@ -196,7 +196,7 @@ Refer to [Stability and Compatibility Guide](stability-compatibility-guide.md).
 For items that are documented but not yet implemented or enforced, see
 [Implementation Gaps](implementation-gaps.md).
 
-## Runtime Safety and Failure Behavior
+## Runtime safety and failure behavior
 
 Telemetry MUST be non-fatal and bounded:
 
@@ -210,7 +210,7 @@ Telemetry MUST be non-fatal and bounded:
 The telemetry system MUST NOT introduce deadlocks, unbounded memory growth, or
 process termination.
 
-## Instrumentation Guides
+## Instrumentation guides
 
 **Instrumentation** is the act of adding telemetry signals (metrics, events,
 traces) to the codebase to observe the system behavior and performance.
@@ -239,7 +239,7 @@ telemetry:
 - [Stability and Compatibility Guide](stability-compatibility-guide.md)
 - [Security and Privacy Guide](security-privacy-guide.md)
 
-## Implementation Details
+## Implementation details
 
 For implementation details of the telemetry SDK, including macros, schema
 handling, and the dataflow for metric collection, see the
