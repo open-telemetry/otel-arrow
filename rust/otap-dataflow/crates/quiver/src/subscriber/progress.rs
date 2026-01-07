@@ -262,7 +262,7 @@ impl SegmentProgressEntry {
     /// Returns the number of 64-bit words needed for `bundle_count` bundles.
     #[must_use]
     pub const fn words_needed(bundle_count: u32) -> usize {
-        ((bundle_count as usize) + 63) / 64
+        (bundle_count as usize).div_ceil(64)
     }
 
     /// Marks a bundle as acknowledged.
@@ -994,7 +994,7 @@ mod tests {
             dir.path(),
             &sub_id,
             SegmentSeq::new(1),
-            &[initial_entry.clone()],
+            std::slice::from_ref(&initial_entry),
         )
         .unwrap();
 
@@ -1010,7 +1010,7 @@ mod tests {
             dir.path(),
             &sub_id,
             SegmentSeq::new(2),
-            &[updated_entry.clone()],
+            std::slice::from_ref(&updated_entry),
         )
         .unwrap();
 

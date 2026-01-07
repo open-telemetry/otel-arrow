@@ -22,7 +22,7 @@ mod stress;
 mod stress_runner;
 mod subscriber;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -307,7 +307,7 @@ struct IterationResult {
 /// Runs a single iteration for stress testing (simplified, no detailed output).
 fn run_iteration_for_stress(
     args: &Args,
-    data_dir: &PathBuf,
+    data_dir: &Path,
     iteration: u64,
 ) -> Result<IterationResult, Box<dyn std::error::Error>> {
     // Generate test data
@@ -741,7 +741,7 @@ fn run_single_iteration(
     }
 }
 
-fn create_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64, no_wal: bool) -> QuiverConfig {
+fn create_config(data_dir: &Path, segment_size_mb: u64, wal_flush_interval_ms: u64, no_wal: bool) -> QuiverConfig {
     use quiver::DurabilityMode;
     
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
