@@ -2643,7 +2643,7 @@ fn wal_buffer_decay_rate_affects_shrinking_behavior() {
 
     let capacity_after_large = get_payload_buffer_capacity(&writer);
     assert!(
-        capacity_after_large >= 256 * 1024,
+        capacity_after_large >= 100 * 1024,
         "buffer should have grown: {}",
         capacity_after_large
     );

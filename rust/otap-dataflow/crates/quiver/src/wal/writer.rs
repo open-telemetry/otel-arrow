@@ -115,7 +115,6 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
@@ -591,7 +590,8 @@ impl WalWriter {
     /// Encodes a slot directly into `payload_buffer`, avoiding intermediate allocations.
     ///
     /// Writes the slot header (id, fingerprint, row_count, payload_len) followed by
-    /// the Arrow IPC-encoded payload bytes.
+    /// the Arrow IPC-encoded payload bytes. The payload is written directly to the
+    /// buffer, and the length is patched in afterwards.
     fn encode_slot_into_buffer(
         &mut self,
         slot_id: SlotId,
@@ -599,20 +599,39 @@ impl WalWriter {
     ) -> WalResult<()> {
         let row_count = u32::try_from(payload.batch.num_rows())
             .map_err(|_| WalError::RowCountOverflow(payload.batch.num_rows()))?;
-        let payload_bytes = encode_record_batch(payload.batch)?;
-        let payload_len = u32::try_from(payload_bytes.len())
-            .map_err(|_| WalError::PayloadTooLarge(payload_bytes.len()))?;
 
-        let buf = &mut self.active_file.payload_buffer;
+        // Write slot header with placeholder for payload_len
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&slot_id.0.to_le_bytes());
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&payload.schema_fingerprint);
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&row_count.to_le_bytes());
+        let payload_len_offset = self.active_file.payload_buffer.len();
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&0u32.to_le_bytes()); // placeholder
 
-        // Write slot header
-        buf.extend_from_slice(&slot_id.0.to_le_bytes());
-        buf.extend_from_slice(&payload.schema_fingerprint);
-        buf.extend_from_slice(&row_count.to_le_bytes());
-        buf.extend_from_slice(&payload_len.to_le_bytes());
+        // Encode Arrow IPC directly into buffer
+        let payload_start = self.active_file.payload_buffer.len();
+        {
+            let schema = payload.batch.schema();
+            let mut writer =
+                StreamWriter::try_new(&mut self.active_file.payload_buffer, &schema)
+                    .map_err(WalError::Arrow)?;
+            writer.write(payload.batch).map_err(WalError::Arrow)?;
+            writer.finish().map_err(WalError::Arrow)?;
+        }
+        let payload_len = self.active_file.payload_buffer.len() - payload_start;
 
-        // Write payload
-        buf.extend_from_slice(&payload_bytes);
+        // Patch the payload length
+        let payload_len_u32 =
+            u32::try_from(payload_len).map_err(|_| WalError::PayloadTooLarge(payload_len))?;
+        self.active_file.payload_buffer[payload_len_offset..payload_len_offset + 4]
+            .copy_from_slice(&payload_len_u32.to_le_bytes());
 
         Ok(())
     }
@@ -1278,17 +1297,6 @@ fn system_time_to_nanos(ts: SystemTime) -> WalResult<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| WalError::InvalidTimestamp)?;
     i64::try_from(duration.as_nanos()).map_err(|_| WalError::InvalidTimestamp)
-}
-
-fn encode_record_batch(batch: &RecordBatch) -> WalResult<Vec<u8>> {
-    let schema = batch.schema();
-    let mut buffer = Vec::new();
-    {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema).map_err(WalError::Arrow)?;
-        writer.write(batch).map_err(WalError::Arrow)?;
-        writer.finish().map_err(WalError::Arrow)?;
-    }
-    Ok(buffer)
 }
 
 fn sync_file_data(file: &File) -> WalResult<()> {
