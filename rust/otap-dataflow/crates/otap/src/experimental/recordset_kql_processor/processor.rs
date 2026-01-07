@@ -199,9 +199,18 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                 || new_config.bridge_options != self.config.bridge_options
                             {
                                 let bridge_options =
-                                    Self::parse_bridge_options(&new_config.bridge_options)
-                                        .ok()
-                                        .flatten();
+                                    match Self::parse_bridge_options(&new_config.bridge_options) {
+                                        Err(e) => {
+                                            otap_df_telemetry::otel_warn!(
+                                                "Processor.ReconfigureError",
+                                                processor = "kql",
+                                                message = format!("{e}")
+                                            );
+                                            None
+                                        }
+                                        Ok(v) => v,
+                                    };
+
                                 match parse_kql_query_into_pipeline(
                                     &new_config.query,
                                     bridge_options,
