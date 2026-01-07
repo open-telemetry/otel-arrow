@@ -37,6 +37,8 @@ nodes:
 service:
   telemetry:
     logs:
+      # The default level is "info".
       level: "debug"
       internal:
+        # Internal logging is enabled by default.
         enabled: true
