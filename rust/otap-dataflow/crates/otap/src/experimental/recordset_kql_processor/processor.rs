@@ -105,7 +105,7 @@ impl RecordsetKqlProcessor {
                     message = "Processing KQL query",
                     input_items = input_items,
                 );
-                self.process_logs(bytes, signal).await
+                self.process_logs(bytes, signal)
             }
             OtlpProtoBytes::ExportMetricsRequest(_bytes) => Err(Error::InternalError {
                 message: "Metrics processing not yet implemented in KQL bridge".to_string(),
@@ -155,7 +155,7 @@ impl RecordsetKqlProcessor {
         }
     }
 
-    async fn process_logs(
+    fn process_logs(
         &mut self,
         bytes: bytes::Bytes,
         signal: SignalType,
@@ -166,12 +166,12 @@ impl RecordsetKqlProcessor {
                 RecordSetEngineDiagnosticLevel::Warn,
                 &bytes,
             )
-            .map_err(|e| self.map_bridge_error(e, signal))?;
+            .map_err(|e| Self::map_bridge_error(e, signal))?;
 
         Ok(OtlpProtoBytes::ExportLogsRequest(included_records.into()))
     }
 
-    fn map_bridge_error(&mut self, error: BridgeError, signal: SignalType) -> Error {
+    fn map_bridge_error(error: BridgeError, signal: SignalType) -> Error {
         Error::InternalError {
             message: format!("KQL bridge error for {:?}: {}", signal, error),
         }
