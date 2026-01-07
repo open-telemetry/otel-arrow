@@ -5,17 +5,10 @@
 
 //! Benchmarks for the compact log formatter.
 //!
-//! # Benchmark Design
-//!
-//! These benchmarks emit a single tracing event but perform N encoding/formatting
-//! operations inside the callback. This amortizes tracing dispatch overhead to noise,
-//! allowing us to measure the true cost of encoding and formatting.
-//!
-//! # Interpreting Results
+//! These benchmarks emit a single tracing event but perform N
+//! encoding or encoding-and-formatting operations inside the callback
 //!
 //! Benchmark names follow the pattern: `group/description/N_events`
-//!
-//! To get per-event cost: `measured_time / N`
 //!
 //! Example: `compact_encode/3_attrs/1000_events` = 300 µs → 300 ns per event
 
@@ -38,12 +31,6 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-// =============================================================================
-// ENCODE ONLY BENCHMARK
-// Emit 1 event, encode body+attrs N times (partial OTLP)
-// =============================================================================
-
-/// Layer that encodes body+attrs N times to measure pure encoding cost.
 struct EncodeOnlyLayer {
     iterations: usize,
 }
@@ -66,9 +53,8 @@ where
     }
 }
 
-/// Benchmark: Pure encoding cost (body+attrs to partial OTLP bytes)
-fn bench_encode_only(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compact_encode");
+fn bench_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode");
 
     for iterations in [100, 1000].iter() {
         let _ = group.bench_with_input(
@@ -98,12 +84,6 @@ fn bench_encode_only(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
-// FORMAT ONLY BENCHMARK
-// Encode once, format N times
-// =============================================================================
-
-/// Layer that encodes once then formats N times.
 struct FormatOnlyLayer {
     iterations: usize,
 }
@@ -146,17 +126,15 @@ where
             body_attrs_bytes,
         };
 
-        // Format N times (without ANSI colors for consistent measurement)
         for _ in 0..self.iterations {
-            let line = format_log_record(&record, &cache, false);
+            let line = format_log_record(&record, &cache, true);
             let _ = std::hint::black_box(line);
         }
     }
 }
 
-/// Benchmark: Pure formatting cost (format already-encoded record to string)
-fn bench_format_only(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compact_format");
+fn bench_format(c: &mut Criterion) {
+    let mut group = c.benchmark_group("format");
 
     for iterations in [100, 1000].iter() {
         let _ = group.bench_with_input(
@@ -186,11 +164,6 @@ fn bench_format_only(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
-// ENCODE + FORMAT BENCHMARK (full pipeline)
-// =============================================================================
-
-/// Layer that encodes and formats N times (the full pipeline).
 struct EncodeFormatLayer {
     iterations: usize,
 }
@@ -234,15 +207,14 @@ where
                 body_attrs_bytes,
             };
 
-            let line = format_log_record(&record, &cache, false);
+            let line = format_log_record(&record, &cache, true);
             let _ = std::hint::black_box(line);
         }
     }
 }
 
-/// Benchmark: Full encode + format pipeline
-fn bench_encode_format(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compact_encode_format");
+fn bench_encode_and_format(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode_and_format");
 
     for iterations in [100, 1000].iter() {
         let _ = group.bench_with_input(
@@ -272,19 +244,14 @@ fn bench_encode_format(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
-// ATTRIBUTE COMPLEXITY BENCHMARK
-// =============================================================================
-
-/// Benchmark: Encoding cost with different attribute counts
-fn bench_by_attr_count(c: &mut Criterion) {
-    let mut group = c.benchmark_group("compact_format_by_attrs");
+fn bench_encode_attrs(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode_attrs");
     let iterations = 1000;
 
     // No attributes
     let _ = group.bench_function("0_attrs/1000_events", |b| {
         b.iter(|| {
-            let layer = EncodeFormatLayer::new(iterations);
+            let layer = EncodeOnlyLayer::new(iterations);
             let subscriber = tracing_subscriber::registry().with(layer);
             let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -299,7 +266,7 @@ fn bench_by_attr_count(c: &mut Criterion) {
     // 3 attributes
     let _ = group.bench_function("3_attrs/1000_events", |b| {
         b.iter(|| {
-            let layer = EncodeFormatLayer::new(iterations);
+            let layer = EncodeOnlyLayer::new(iterations);
             let subscriber = tracing_subscriber::registry().with(layer);
             let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -314,7 +281,7 @@ fn bench_by_attr_count(c: &mut Criterion) {
     // 10 attributes
     let _ = group.bench_function("10_attrs/1000_events", |b| {
         b.iter(|| {
-            let layer = EncodeFormatLayer::new(iterations);
+            let layer = EncodeOnlyLayer::new(iterations);
             let subscriber = tracing_subscriber::registry().with(layer);
             let dispatch = tracing::Dispatch::new(subscriber);
 
@@ -348,7 +315,7 @@ mod bench_entry {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_encode_only, bench_format_only, bench_encode_format, bench_by_attr_count
+        targets = bench_encode, bench_format, bench_encode_and_format, bench_encode_attrs
     );
 }
 

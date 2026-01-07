@@ -1,20 +1,115 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Compact log formatting for tokio-tracing events.
+//! Log encoding and formatting for Tokio tracing events.  This module
+//! stores pre-calculated encodings for the LogRecord event_name and
+//! avoids unnecessary encoding work for primitive fields (e.g., timestamp).
 //!
-//! This module provides a lightweight formatting layer for tokio-tracing events
-//! that encodes body+attributes to partial OTLP bytes, then formats them for
-//! console output.
+//! The intermediate representation is InternalLogRecord, includes the
+//! primitive fields and static references. The remaining data are
+//! placed in a partial OTLP encoding.
 
-pub mod compact_formatter;
 pub mod direct_encoder;
+pub mod formatter;
 
-// Compact formatter exports (the primary API)
-pub use compact_formatter::{
-    CachedCallsite, CallsiteCache, CompactFormatterLayer, CompactLogRecord, OutputTarget,
-    SimpleWriter, encode_body_and_attrs, format_log_record,
-};
+use super::Error;
+use bytes::Bytes;
+use std::collections::HashMap;
+use tracing::callsite::Identifier;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
-// Direct encoder exports (used internally, exposed for benchmarking)
+pub use formatter::{ConsoleWriter, Layer as RawLoggingLayer};
+
 pub use direct_encoder::{DirectFieldVisitor, ProtoBuffer};
+
+/// A log record with structural metadata and pre-encoded body/attributes.
+#[derive(Debug, Clone)]
+pub struct LogRecord {
+    /// Callsite identifier used to look up cached callsite info
+    pub callsite_id: Identifier,
+
+    /// Timestamp in UNIX epoch nanoseconds
+    pub timestamp_ns: u64,
+
+    /// Severity level, OpenTelemetry defined
+    pub severity_level: u8,
+
+    /// Severity text
+    pub severity_text: &'static str,
+
+    /// Pre-encoded body and attributes
+    pub body_attrs_bytes: Bytes,
+}
+
+/// Saved callsite information, populated via `register_callsite` hook.
+#[derive(Debug, Clone)]
+pub struct SavedCallsite {
+    /// Target (e.g., module path)
+    pub target: &'static str,
+
+    /// Event name
+    pub name: &'static str,
+
+    /// Source file
+    pub file: Option<&'static str>,
+
+    /// Source line
+    pub line: Option<u32>,
+}
+
+/// Map callsite information by `Identifier`.
+#[derive(Debug, Default)]
+pub struct CallsiteMap {
+    callsites: HashMap<Identifier, SavedCallsite>,
+}
+
+impl CallsiteMap {
+    /// Create a new empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a callsite from its metadata.
+    pub fn register(&mut self, metadata: &'static tracing::Metadata<'static>) {
+        let id = metadata.callsite();
+        let _ = self.callsites.entry(id).or_insert_with(|| SavedCallsite {
+            target: metadata.target(),
+            name: metadata.name(),
+            file: metadata.file(),
+            line: metadata.line(),
+        });
+    }
+
+    /// Get cached callsite info by identifier.
+    pub fn get(&self, id: &Identifier) -> Option<&SavedCallsite> {
+        self.callsites.get(id)
+    }
+}
+
+/// Initialize raw logging as early as possible.
+pub fn init_raw_logging() {
+    if let Err(err) = try_init_raw_logging() {
+        tracing::error!(
+            name: "init_failed",
+            "Failed to initialize raw logging subscriber: {}",
+            err.to_string(),
+        );
+    }
+}
+
+/// Try to initialize raw logging, returning an error if a subscriber is already set.
+pub fn try_init_raw_logging() -> Result<(), Error> {
+    // If RUST_LOG is set, use it for fine-grained control.
+    // Otherwise, default to INFO level with some noisy dependencies silenced.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,h2=off,hyper=off"));
+
+    let layer = RawLoggingLayer::new(ConsoleWriter::color());
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(layer)
+        .try_init()
+        .map_err(|e| Error::TracingInitError(e.to_string()))
+}
