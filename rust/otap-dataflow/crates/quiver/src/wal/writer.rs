@@ -345,6 +345,9 @@ struct WalCoordinator {
     cursor_state: CursorSidecar,
     /// Total bytes across the active WAL plus all rotated files.
     aggregate_bytes: u64,
+    /// Cumulative bytes written to WAL since writer opened (never decreases).
+    /// Used for accurate throughput measurement across rotations.
+    cumulative_bytes_written: u64,
     /// Metadata describing each rotated `wal.N` file on disk, ordered oldest-to-newest.
     rotated_files: VecDeque<RotatedWalFile>,
     /// WAL stream position at the start of the active file.
@@ -571,6 +574,12 @@ impl WalWriter {
         self.coordinator.purge_count
     }
 
+    /// Returns the cumulative bytes written to WAL since this writer opened.
+    /// This value never decreases, even as WAL files are rotated and purged.
+    pub(crate) fn cumulative_bytes_written(&self) -> u64 {
+        self.coordinator.cumulative_bytes_written
+    }
+
     /// Encodes a slot directly into `payload_buffer`, avoiding intermediate allocations.
     ///
     /// Writes the slot header (id, fingerprint, row_count, payload_len) followed by
@@ -741,6 +750,7 @@ impl WalCoordinator {
             sidecar_path,
             cursor_state,
             aggregate_bytes: active_header_size,
+            cumulative_bytes_written: 0,
             rotated_files: VecDeque::new(),
             // The active file's header tells us the WAL position at the start
             // of this file, which represents data from prior rotated files.
@@ -832,6 +842,7 @@ impl WalCoordinator {
 
     fn record_append(&mut self, entry_total_bytes: u64) {
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(entry_total_bytes);
+        self.cumulative_bytes_written = self.cumulative_bytes_written.saturating_add(entry_total_bytes);
     }
 
     fn preflight_append(

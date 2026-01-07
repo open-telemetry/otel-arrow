@@ -219,9 +219,9 @@ impl Ord for BundleRef {
 
 /// Terminal outcome of bundle processing.
 ///
-/// These are the only outcomes recorded in the durable ack log. Transient
-/// states (like "pending retry") are managed by the embedding layer and
-/// not persisted by Quiver.
+/// These are the only outcomes recorded in the subscriber's progress file.
+/// Transient states (like "pending retry") are managed by the embedding layer
+/// and not persisted by Quiver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AckOutcome {
     /// Bundle was successfully processed.

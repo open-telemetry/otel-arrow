@@ -114,6 +114,14 @@ impl QuiverEngine {
         &self.metrics
     }
 
+    /// Returns the cumulative bytes written to WAL since engine creation.
+    /// This value never decreases, even as WAL files are rotated and purged.
+    /// Useful for accurate throughput measurement without file system sampling.
+    pub fn wal_bytes_written(&self) -> u64 {
+        let writer = self.wal_writer.lock();
+        writer.cumulative_bytes_written()
+    }
+
     /// Returns WAL statistics (rotation count, purge count).
     ///
     /// Call this before dropping the engine to capture final stats.

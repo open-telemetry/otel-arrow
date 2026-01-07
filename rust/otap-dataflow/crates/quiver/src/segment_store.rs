@@ -65,7 +65,7 @@ impl SegmentHandle {
             #[cfg(feature = "mmap")]
             SegmentReadMode::Mmap => SegmentReader::open_mmap(&path),
         }
-        .map_err(|e| SubscriberError::AckLogIo {
+        .map_err(|e| SubscriberError::SegmentIo {
             path: path.clone(),
             source: std::io::Error::other(e.to_string()),
         })?;
@@ -96,7 +96,7 @@ impl SegmentHandle {
 
         self.reader
             .read_bundle(&manifest[idx])
-            .map_err(|e| SubscriberError::AckLogIo {
+            .map_err(|e| SubscriberError::SegmentIo {
                 path: self.path.clone(),
                 source: std::io::Error::other(e.to_string()),
             })
@@ -175,10 +175,41 @@ impl SegmentStore {
     /// Removes a segment from the store.
     ///
     /// Called when all subscribers have completed a segment and it can be
-    /// deleted.
+    /// deleted. This only removes the segment from the in-memory map;
+    /// use [`delete_segment`](Self::delete_segment) to also delete the file.
     pub fn unregister_segment(&self, seq: SegmentSeq) {
         let mut segments = self.segments.write();
         let _ = segments.remove(&seq);
+    }
+
+    /// Deletes a segment file from disk and removes it from the store.
+    ///
+    /// This is called when all subscribers have completed consuming a segment
+    /// and it is safe to permanently delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be deleted (e.g., permissions).
+    pub fn delete_segment(&self, seq: SegmentSeq) -> std::io::Result<()> {
+        // First remove from in-memory map so no new readers can access it
+        {
+            let mut segments = self.segments.write();
+            let _ = segments.remove(&seq);
+        }
+
+        // Delete the file from disk
+        let path = self.segment_path(seq);
+        if path.exists() {
+            // Segment files are read-only after finalization, make writable first
+            if let Ok(metadata) = path.metadata() {
+                let mut perms = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(&path, perms);
+            }
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
     }
 
     /// Returns the path for a segment file.
@@ -198,13 +229,13 @@ impl SegmentStore {
         let mut found = Vec::new();
 
         let entries =
-            std::fs::read_dir(&self.segment_dir).map_err(|e| SubscriberError::AckLogIo {
+            std::fs::read_dir(&self.segment_dir).map_err(|e| SubscriberError::SegmentIo {
                 path: self.segment_dir.clone(),
                 source: e,
             })?;
 
         for entry in entries {
-            let entry = entry.map_err(|e| SubscriberError::AckLogIo {
+            let entry = entry.map_err(|e| SubscriberError::SegmentIo {
                 path: self.segment_dir.clone(),
                 source: e,
             })?;
@@ -215,7 +246,8 @@ impl SegmentStore {
                     match self.register_segment(seq) {
                         Ok(bundle_count) => found.push((seq, bundle_count)),
                         Err(e) => {
-                            tracing::warn!(
+                            // Use debug level since this is expected during concurrent cleanup
+                            tracing::debug!(
                                 path = %path.display(),
                                 error = %e,
                                 "failed to load segment, skipping"

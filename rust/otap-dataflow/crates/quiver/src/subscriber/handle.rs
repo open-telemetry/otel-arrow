@@ -115,8 +115,8 @@ impl<C: ResolutionCallback> BundleHandle<C> {
 
     /// Acknowledges successful processing of the bundle.
     ///
-    /// This marks the bundle as complete and logs the outcome to the ack log.
-    /// The bundle will not be delivered again.
+    /// This marks the bundle as complete and records the outcome in the
+    /// subscriber's progress file. The bundle will not be delivered again.
     pub fn ack(mut self) {
         self.resolved = true;
         self.callback

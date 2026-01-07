@@ -4,7 +4,7 @@
 //! Per-subscriber state tracking.
 //!
 //! Each subscriber maintains independent progress through the segment stream.
-//! State is rebuilt from the ack log on recovery and updated in-memory during
+//! State is rebuilt from progress files on recovery and updated in-memory during
 //! normal operation.
 //!
 //! # Tracking Model
@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::segment::SegmentSeq;
 
+use super::progress::SegmentProgressEntry;
 use super::types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +112,14 @@ impl SegmentProgress {
     #[must_use]
     pub fn resolved_count(&self) -> u32 {
         self.resolved_count
+    }
+
+    /// Returns a clone of the resolved bitmap.
+    ///
+    /// Used for serializing progress to disk.
+    #[must_use]
+    pub fn resolved_bitmap(&self) -> Vec<u64> {
+        self.resolved.clone()
     }
 
     /// Returns the next unresolved bundle index, if any.
@@ -268,6 +277,15 @@ impl SubscriberState {
             .map(|(seq, _)| *seq)
     }
 
+    /// Returns the highest tracked segment sequence.
+    ///
+    /// This represents the high-water mark of segments this subscriber knows about.
+    /// Returns `None` if no segments are tracked.
+    #[must_use]
+    pub fn highest_tracked_segment(&self) -> Option<SegmentSeq> {
+        self.segments.keys().next_back().copied()
+    }
+
     /// Returns the next pending bundle to deliver.
     ///
     /// Scans segments in order (oldest first) and returns the first bundle
@@ -327,6 +345,24 @@ impl SubscriberState {
             .values()
             .map(|p| (p.bundle_count() - p.resolved_count()) as usize)
             .sum()
+    }
+
+    /// Converts this subscriber's state to progress entries for persistence.
+    ///
+    /// Returns a vector of segment progress entries in segment order (oldest first).
+    /// Used by the registry to serialize state to progress files.
+    #[must_use]
+    pub fn to_progress_entries(&self) -> Vec<SegmentProgressEntry> {
+        self.segments
+            .iter()
+            .map(|(&seg_seq, progress)| {
+                SegmentProgressEntry::from_bitmap(
+                    seg_seq,
+                    progress.bundle_count(),
+                    progress.resolved_bitmap(),
+                )
+            })
+            .collect()
     }
 }
 

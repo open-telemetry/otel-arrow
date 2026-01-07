@@ -46,17 +46,19 @@
 //! | `handle.rs`   | RAII bundle handle for consumption                |
 //! | `registry.rs` | Subscriber lifecycle management                   |
 
-// TODO: Replace ack_log.rs with progress.rs (see ARCHITECTURE.md)
-mod ack_log;
 mod error;
 mod handle;
+mod progress;
 mod registry;
 mod state;
 mod types;
 
-pub use ack_log::{AckLogEntry, AckLogReader, AckLogWriter};
-pub use error::SubscriberError;
+pub use error::{Result, SubscriberError};
 pub use handle::{BundleHandle, ResolutionCallback};
-pub use registry::{SegmentProvider, SubscriberRegistry};
+pub use progress::{
+    delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
+    write_progress_file, SegmentProgressEntry, SubscriberProgress,
+};
+pub use registry::{RegistryConfig, SegmentProvider, SubscriberRegistry};
 pub use state::SubscriberState;
 pub use types::{AckOutcome, BundleIndex, BundleRef, SubscriberId};

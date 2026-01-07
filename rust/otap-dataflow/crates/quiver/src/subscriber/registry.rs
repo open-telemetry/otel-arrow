@@ -7,13 +7,13 @@
 //!
 //! - Registers and unregisters subscribers
 //! - Tracks per-subscriber state
-//! - Coordinates ack log writes
+//! - Coordinates progress file writes
 //! - Provides bundle delivery API
 //!
 //! # Lifecycle
 //!
 //! ```text
-//! register(id) --> Inactive subscriber (state loaded from quiver.ack if present)
+//! register(id) --> Inactive subscriber (state loaded from progress file if present)
 //!     |
 //!     v
 //! activate(id) --> Active subscriber (receives new bundles)
@@ -27,16 +27,26 @@
 //!     v
 //! unregister(id) --> Removed (only for permanent removal)
 //! ```
+//!
+//! # Progress Persistence
+//!
+//! Subscriber progress is persisted to individual files (`quiver.sub.<id>`).
+//! In-memory state is updated immediately on each ack/reject. The embedding
+//! layer should call `flush_progress()` periodically (e.g., every 25ms) to
+//! write dirty subscribers to disk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
-use super::ack_log::{AckLogEntry, AckLogReader, AckLogWriter};
 use super::error::{Result, SubscriberError};
 use super::handle::{BundleHandle, ResolutionCallback};
+use super::progress::{
+    delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
+    write_progress_file,
+};
 use super::state::SubscriberState;
 use super::types::{AckOutcome, BundleRef, SubscriberId};
 
@@ -66,7 +76,7 @@ pub trait SegmentProvider: Send + Sync {
 /// Configuration for the subscriber registry.
 #[derive(Debug, Clone)]
 pub struct RegistryConfig {
-    /// Directory containing the ack log file.
+    /// Directory containing subscriber progress files.
     pub data_dir: PathBuf,
 }
 
@@ -78,12 +88,6 @@ impl RegistryConfig {
             data_dir: data_dir.into(),
         }
     }
-
-    /// Returns the path to the ack log file.
-    #[must_use]
-    pub fn ack_log_path(&self) -> PathBuf {
-        self.data_dir.join("quiver.ack")
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,12 +98,17 @@ impl RegistryConfig {
 ///
 /// Thread-safe coordinator for subscriber lifecycle, state tracking, and
 /// bundle delivery.
+///
+/// Uses per-subscriber locks to minimize contention: the main map uses a
+/// read-write lock for structural changes (register/unregister), while each
+/// subscriber has its own lock for state updates.
 pub struct SubscriberRegistry<P: SegmentProvider> {
     config: RegistryConfig,
     /// Per-subscriber state, keyed by subscriber ID.
-    subscribers: RwLock<HashMap<SubscriberId, SubscriberState>>,
-    /// Ack log writer (serializes writes).
-    ack_log: Mutex<AckLogWriter>,
+    /// Each subscriber has its own RwLock to allow concurrent access.
+    subscribers: RwLock<HashMap<SubscriberId, Arc<RwLock<SubscriberState>>>>,
+    /// Subscribers with uncommitted changes that need flushing.
+    dirty_subscribers: Mutex<HashSet<SubscriberId>>,
     /// Segment data provider.
     segment_provider: Arc<P>,
     /// Self-reference for callbacks.
@@ -109,40 +118,58 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
 impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Opens or creates a subscriber registry.
     ///
-    /// If an ack log exists, replays it to rebuild subscriber state.
+    /// Scans for existing progress files and loads subscriber state.
     ///
     /// # Errors
     ///
-    /// Returns an error if the ack log cannot be opened or is corrupted.
+    /// Returns an error if progress files cannot be read or are corrupted.
     pub fn open(config: RegistryConfig, segment_provider: Arc<P>) -> Result<Arc<Self>> {
-        let ack_log_path = config.ack_log_path();
-
-        // Load existing state from ack log if present
+        // Load existing state from progress files
         let mut subscribers = HashMap::new();
-        if ack_log_path.exists() {
-            let reader = AckLogReader::open(&ack_log_path)?;
-            let entries = reader.read_all()?;
 
-            for entry in entries {
-                let state = subscribers
-                    .entry(entry.subscriber_id.clone())
-                    .or_insert_with(|| SubscriberState::new(entry.subscriber_id.clone()));
+        // Scan for existing progress files
+        if config.data_dir.exists() {
+            let subscriber_ids = scan_progress_files(&config.data_dir)?;
 
-                // Ensure segment is tracked
-                // Note: We don't know the bundle count here, so we create with
-                // a placeholder. The actual count will be updated when the
-                // subscriber is activated.
-                state.add_segment(entry.bundle_ref.segment_seq, u32::MAX);
-                let _ = state.record_outcome(entry.bundle_ref, entry.outcome);
+            for sub_id in subscriber_ids {
+                let path = progress_file_path(&config.data_dir, &sub_id);
+                match read_progress_file(&path) {
+                    Ok((_oldest_incomplete, entries)) => {
+                        let mut state = SubscriberState::new(sub_id.clone());
+
+                        // Restore segment progress from entries
+                        for entry in entries {
+                            state.add_segment(entry.seg_seq, entry.bundle_count);
+                            // Mark acked bundles
+                            for bundle_idx in 0..entry.bundle_count {
+                                if entry.is_acked(bundle_idx) {
+                                    let bundle_ref = BundleRef::new(
+                                        entry.seg_seq,
+                                        super::types::BundleIndex::new(bundle_idx),
+                                    );
+                                    let _ = state.record_outcome(bundle_ref, AckOutcome::Acked);
+                                }
+                            }
+                        }
+
+                        // Wrap in Arc<RwLock<>> for per-subscriber locking
+                        let _ = subscribers.insert(sub_id, Arc::new(RwLock::new(state)));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            subscriber_id = %sub_id,
+                            error = %e,
+                            "failed to load progress file, subscriber will start fresh"
+                        );
+                    }
+                }
             }
         }
-
-        let ack_log = AckLogWriter::open(&ack_log_path)?;
 
         let registry = Arc::new(Self {
             config,
             subscribers: RwLock::new(subscribers),
-            ack_log: Mutex::new(ack_log),
+            dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
             self_ref: RwLock::new(None),
         });
@@ -161,7 +188,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
     /// Registers a new subscriber.
     ///
-    /// If the subscriber was previously registered (state exists from ack log),
+    /// If the subscriber was previously registered (state exists from progress file),
     /// this reactivates the existing state. Otherwise, creates new state
     /// starting from the latest segment.
     ///
@@ -172,13 +199,13 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
 
         if subscribers.contains_key(&id) {
-            // Already registered (possibly from ack log recovery)
+            // Already registered (possibly from progress file recovery)
             return Ok(());
         }
 
-        // Create new state
+        // Create new state wrapped in per-subscriber lock
         let state = SubscriberState::new(id.clone());
-        let _ = subscribers.insert(id, state);
+        let _ = subscribers.insert(id, Arc::new(RwLock::new(state)));
 
         Ok(())
     }
@@ -192,11 +219,16 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ///
     /// Returns an error if the subscriber is not registered.
     pub fn activate(&self, id: &SubscriberId) -> Result<()> {
-        let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+        // Get subscriber lock (read lock on map, then per-subscriber write lock)
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
 
-        let state = subscribers
-            .get_mut(id)
-            .ok_or_else(|| SubscriberError::not_found(id.as_str()))?;
+        let mut state = state_lock.write().expect("subscriber lock poisoned");
 
         if state.is_active() {
             return Ok(());
@@ -221,30 +253,45 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ///
     /// Returns an error if the subscriber is not registered.
     pub fn deactivate(&self, id: &SubscriberId) -> Result<()> {
-        let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
 
-        let state = subscribers
-            .get_mut(id)
-            .ok_or_else(|| SubscriberError::not_found(id.as_str()))?;
-
+        let mut state = state_lock.write().expect("subscriber lock poisoned");
         state.deactivate();
         Ok(())
     }
 
     /// Permanently unregisters a subscriber.
     ///
-    /// This removes all state for the subscriber. Use with caution—any
-    /// unprocessed bundles will be lost.
+    /// This removes all state for the subscriber and deletes its progress file.
+    /// Use with caution—any unprocessed bundles will be lost.
     ///
     /// # Errors
     ///
-    /// Returns an error if the subscriber is not registered.
+    /// Returns an error if the subscriber is not registered or if the progress
+    /// file cannot be deleted.
     pub fn unregister(&self, id: &SubscriberId) -> Result<()> {
-        let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
-
-        if subscribers.remove(id).is_none() {
-            return Err(SubscriberError::not_found(id.as_str()));
+        // Remove from in-memory state
+        {
+            let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+            if subscribers.remove(id).is_none() {
+                return Err(SubscriberError::not_found(id.as_str()));
+            }
         }
+
+        // Remove from dirty set
+        {
+            let mut dirty = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+            let _ = dirty.remove(id);
+        }
+
+        // Delete progress file
+        delete_progress_file(&self.config.data_dir, id)?;
 
         Ok(())
     }
@@ -254,9 +301,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Called by the engine when a segment is finalized. Active subscribers
     /// will start tracking the new segment.
     pub fn on_segment_finalized(&self, segment_seq: SegmentSeq, bundle_count: u32) {
-        let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+        // Read lock on map, then per-subscriber write locks
+        let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
 
-        for state in subscribers.values_mut() {
+        for state_lock in subscribers.values() {
+            let mut state = state_lock.write().expect("subscriber lock poisoned");
             if state.is_active() {
                 state.add_segment(segment_seq, bundle_count);
             }
@@ -274,12 +323,17 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         self: &Arc<Self>,
         id: &SubscriberId,
     ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
-        let bundle_ref = {
-            let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+        // Get subscriber lock with minimal map lock time
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
 
-            let state = subscribers
-                .get_mut(id)
-                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?;
+        let bundle_ref = {
+            let mut state = state_lock.write().expect("subscriber lock poisoned");
 
             if !state.is_active() {
                 return Err(SubscriberError::not_found(id.as_str()));
@@ -296,7 +350,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             bundle_ref
         };
 
-        // Read the bundle data (outside lock)
+        // Read the bundle data (outside all locks)
         let data = self.segment_provider.read_bundle(bundle_ref)?;
 
         let callback = Arc::new(RegistryCallback {
@@ -325,12 +379,17 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         id: &SubscriberId,
         bundle_ref: BundleRef,
     ) -> Result<BundleHandle<RegistryCallback<P>>> {
-        {
-            let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+        // Get subscriber lock with minimal map lock time
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
+        };
 
-            let state = subscribers
-                .get_mut(id)
-                .ok_or_else(|| SubscriberError::not_found(id.as_str()))?;
+        {
+            let mut state = state_lock.write().expect("subscriber lock poisoned");
 
             // Check if already resolved
             if state.is_resolved(&bundle_ref) {
@@ -348,7 +407,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             }
         }
 
-        // Read the bundle data (outside lock)
+        // Read the bundle data (outside all locks)
         let data = self.segment_provider.read_bundle(bundle_ref)?;
 
         let callback = Arc::new(RegistryCallback {
@@ -358,40 +417,44 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         Ok(BundleHandle::new(bundle_ref, id.clone(), data, callback))
     }
 
-    /// Records a resolution and writes to the ack log.
+    /// Records a resolution and marks subscriber as dirty.
+    ///
+    /// The embedding layer should call `flush_progress()` periodically to
+    /// persist dirty subscribers to disk.
     fn record_resolution(
         &self,
         subscriber_id: &SubscriberId,
         bundle_ref: BundleRef,
         outcome: AckOutcome,
     ) {
+        // Get subscriber lock with minimal map lock time
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers.get(subscriber_id).cloned()
+        };
+
         // Update in-memory state
-        {
-            let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
-            if let Some(state) = subscribers.get_mut(subscriber_id) {
-                let _ = state.record_outcome(bundle_ref, outcome);
-            }
+        if let Some(state_lock) = state_lock {
+            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let _ = state.record_outcome(bundle_ref, outcome);
         }
 
-        // Write to ack log
-        let entry = AckLogEntry::new(subscriber_id.clone(), bundle_ref, outcome);
-        let mut ack_log = self.ack_log.lock().expect("ack_log lock poisoned");
-        if let Err(e) = ack_log.append(&entry) {
-            // Log error but don't fail—in-memory state is already updated
-            tracing::error!(
-                subscriber_id = %subscriber_id,
-                bundle_ref = %bundle_ref,
-                outcome = %outcome,
-                error = %e,
-                "failed to write to ack log"
-            );
+        // Mark subscriber as dirty (needs flushing)
+        {
+            let mut dirty = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+            let _ = dirty.insert(subscriber_id.clone());
         }
     }
 
     /// Releases a bundle claim without resolving.
     fn release_bundle(&self, subscriber_id: &SubscriberId, bundle_ref: BundleRef) {
-        let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
-        if let Some(state) = subscribers.get_mut(subscriber_id) {
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers.get(subscriber_id).cloned()
+        };
+
+        if let Some(state_lock) = state_lock {
+            let mut state = state_lock.write().expect("subscriber lock poisoned");
             state.release(bundle_ref);
         }
     }
@@ -415,8 +478,63 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .read()
             .expect("subscribers lock poisoned")
             .values()
-            .filter_map(|s| s.oldest_incomplete_segment())
+            .filter_map(|state_lock| {
+                state_lock
+                    .read()
+                    .expect("subscriber lock poisoned")
+                    .oldest_incomplete_segment()
+            })
             .min()
+    }
+
+    /// Returns the minimum of the highest tracked segment across all active subscribers.
+    ///
+    /// When all tracked segments are complete (i.e., `oldest_incomplete_segment()` returns
+    /// `None`), segments up to this point can be safely deleted.
+    /// Returns `None` if there are no active subscribers with tracked segments.
+    #[must_use]
+    pub fn min_highest_tracked_segment(&self) -> Option<SegmentSeq> {
+        self.subscribers
+            .read()
+            .expect("subscribers lock poisoned")
+            .values()
+            .filter_map(|state_lock| {
+                let state = state_lock.read().expect("subscriber lock poisoned");
+                if state.is_active() {
+                    state.highest_tracked_segment()
+                } else {
+                    None
+                }
+            })
+            .min()
+    }
+
+    /// Returns debug info about subscriber segment counts (for debugging).
+    #[must_use]
+    pub fn debug_subscriber_segment_counts(&self) -> Vec<(String, usize, bool)> {
+        self.subscribers
+            .read()
+            .expect("subscribers lock poisoned")
+            .iter()
+            .map(|(id, state_lock)| {
+                let state = state_lock.read().expect("subscriber lock poisoned");
+                (id.as_str().to_string(), state.segment_count(), state.is_active())
+            })
+            .collect()
+    }
+
+    /// Cleans up internal tracking state for segments before the given sequence.
+    ///
+    /// Call this after deleting segment files to free memory tracking completed
+    /// segments. This calls `remove_completed_segments_before` on each subscriber.
+    pub fn cleanup_segments_before(&self, before: SegmentSeq) {
+        let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+        for state_lock in subscribers.values() {
+            state_lock
+                .write()
+                .expect("subscriber lock poisoned")
+                .remove_completed_segments_before(before);
+        }
     }
 
     /// Returns whether a subscriber is registered.
@@ -431,11 +549,92 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns whether a subscriber is active.
     #[must_use]
     pub fn is_active(&self, id: &SubscriberId) -> bool {
-        self.subscribers
-            .read()
-            .expect("subscribers lock poisoned")
-            .get(id)
-            .is_some_and(|s| s.is_active())
+        let state_lock = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            subscribers.get(id).cloned()
+        };
+
+        state_lock.is_some_and(|lock| lock.read().expect("subscriber lock poisoned").is_active())
+    }
+
+    /// Flushes all dirty subscribers to their progress files.
+    ///
+    /// This should be called periodically by the embedding layer (e.g., every
+    /// 25ms) to persist progress. Each subscriber's progress file is written
+    /// atomically.
+    ///
+    /// # Returns
+    ///
+    /// The number of subscribers that were flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any progress file cannot be written. Partial flushes
+    /// may occur—some subscribers may be persisted while others fail.
+    pub fn flush_progress(&self) -> Result<usize> {
+        // Take the dirty set
+        let dirty: Vec<SubscriberId> = {
+            let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+            dirty_set.drain().collect()
+        };
+
+        if dirty.is_empty() {
+            return Ok(0);
+        }
+
+        // Collect data we need while holding read lock briefly
+        let to_flush: Vec<(SubscriberId, Arc<RwLock<SubscriberState>>)> = {
+            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            dirty
+                .into_iter()
+                .filter_map(|sub_id| {
+                    subscribers.get(&sub_id).map(|s| (sub_id, s.clone()))
+                })
+                .collect()
+        };
+
+        let mut flushed = 0;
+
+        for (sub_id, state_lock) in to_flush {
+            // Get state data with per-subscriber lock
+            let (entries, oldest_incomplete) = {
+                let state = state_lock.read().expect("subscriber lock poisoned");
+                let entries = state.to_progress_entries();
+                let oldest = state
+                    .oldest_incomplete_segment()
+                    .unwrap_or_else(|| SegmentSeq::new(0));
+                (entries, oldest)
+            };
+
+            match write_progress_file(
+                &self.config.data_dir,
+                &sub_id,
+                oldest_incomplete,
+                &entries,
+            ) {
+                Ok(()) => {
+                    flushed += 1;
+                }
+                Err(e) => {
+                    // Re-add to dirty set and return error
+                    let mut dirty_set =
+                        self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                    let _ = dirty_set.insert(sub_id.clone());
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(flushed)
+    }
+
+    /// Returns the number of subscribers with uncommitted progress.
+    #[must_use]
+    pub fn dirty_count(&self) -> usize {
+        self.dirty_subscribers
+            .lock()
+            .expect("dirty lock poisoned")
+            .len()
     }
 }
 
@@ -691,6 +890,9 @@ mod tests {
 
             let handle = registry.next_bundle(&id).unwrap().unwrap();
             handle.ack();
+
+            // Flush progress files before closing
+            registry.flush_progress().unwrap();
         }
 
         // Reopen and verify state was recovered
@@ -722,6 +924,9 @@ mod tests {
 
             let handle = registry.next_bundle(&id).unwrap().unwrap();
             handle.reject(); // Dropped
+
+            // Flush progress files before closing
+            registry.flush_progress().unwrap();
         }
 
         // Reopen and verify state was recovered
