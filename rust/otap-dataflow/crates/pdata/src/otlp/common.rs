@@ -131,7 +131,7 @@ pub(crate) struct ScopeArrays<'a> {
 }
 
 /// Arrow DataType for the Scope struct array.
-pub static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
+static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
     DataType::Struct(Fields::from(vec![
         Field::new(
             consts::NAME,
@@ -493,20 +493,13 @@ macro_rules! proto_encode_len_delimited_unknown_size {
 }
 
 /// Write a 4-byte length placeholder for later patching.
-///
-/// This writes bytes that represent a zero-padded varint, which can be
-/// patched later with the actual length once content is written.
+/// Do not use directly, use proto_encode_len_delimited_unknown_size.
 pub fn encode_len_placeholder(buf: &mut ProtoBuffer) {
     buf.buffer.extend_from_slice(&[0x80, 0x80, 0x80, 0x00]);
 }
 
 /// Patch a previously written length placeholder with the actual length.
-///
-/// # Arguments
-/// * `buf` - The buffer containing the placeholder
-/// * `num_bytes` - Number of bytes in the placeholder (typically 4)
-/// * `len` - The actual content length to encode
-/// * `len_start_pos` - Position where the placeholder starts
+/// Do not use directly, use proto_encode_len_delimited_unknown_size.
 pub fn patch_len_placeholder(
     buf: &mut ProtoBuffer,
     num_bytes: usize,
