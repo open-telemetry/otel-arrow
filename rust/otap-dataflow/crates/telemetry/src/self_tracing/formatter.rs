@@ -455,8 +455,8 @@ mod tests {
         let attrs_text = format_attrs(&expected_attrs);
         let expected_suffix = format!(": {}{}", expected_body, attrs_text);
 
-        // Verify event_name has correct prefix (target::name)
-        let expected_prefix = "otap_df_telemetry::self_tracing::formatter::tests::event crates/telemetry/src/self_tracing/formatter.rs:";
+        // Verify event_name has correct prefix. Note: file:line are not always available, not tested.
+        let expected_prefix = "otap_df_telemetry::self_tracing::formatter::tests::event";
         assert!(
             decoded.event_name.starts_with(expected_prefix),
             "event_name should start with '{}', got: {}",
