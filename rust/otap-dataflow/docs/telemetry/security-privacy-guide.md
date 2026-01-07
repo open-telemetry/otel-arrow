@@ -94,7 +94,9 @@ resolved schema:
 
 - They SHOULD be protected by authentication and authorization, or limited to
   trusted network boundaries.
-- It MUST NOT expose secrets or raw configuration values.
+- They MUST be configurable to disable access entirely.
+- They MUST implement rate limiting to prevent abuse.
+- They MUST NOT expose secrets or raw configuration values.
 - Treat the endpoint as sensitive because it can reveal topology and
   identifiers.
 
