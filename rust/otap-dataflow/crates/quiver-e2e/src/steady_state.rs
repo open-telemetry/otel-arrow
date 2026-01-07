@@ -13,7 +13,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use quiver::segment_store::SegmentReadMode;
-use quiver::subscriber::{RegistryConfig, SegmentProvider, SubscriberId, SubscriberRegistry};
+use quiver::subscriber::{RegistryConfig, SubscriberId, SubscriberRegistry};
 use quiver::{QuiverConfig, QuiverEngine, SegmentStore};
 use tempfile::TempDir;
 use tracing::{info, warn};
@@ -96,6 +96,7 @@ pub struct SteadyStateTestConfig {
     pub leak_threshold_mb: f64,
     pub keep_temp: bool,
     pub report_interval: Duration,
+    pub wal_flush_interval_ms: u64,
 }
 
 /// Run the unified steady-state stress test.
@@ -156,7 +157,7 @@ pub fn run(
     };
 
     // Create a single QuiverEngine that will run for the entire duration
-    let engine_config = create_engine_config(&data_dir, config.segment_size_mb);
+    let engine_config = create_engine_config(&data_dir, config.segment_size_mb, config.wal_flush_interval_ms);
     let engine = Arc::new(QuiverEngine::new(engine_config)?);
 
     // Create SHARED segment store and registry for all subscribers
@@ -201,7 +202,6 @@ pub fn run(
 
     let subscriber_handles = spawn_subscriber_threads(
         sub_ids.clone(),
-        segment_store.clone(),
         registry.clone(),
         running.clone(),
         total_consumed.clone(),
@@ -466,7 +466,6 @@ fn spawn_scanner_thread(
 
 fn spawn_subscriber_threads(
     sub_ids: Vec<SubscriberId>,
-    segment_store: Arc<SegmentStore>,
     registry: Arc<SubscriberRegistry<SharedStoreProvider>>,
     running: Arc<AtomicBool>,
     total_consumed: Arc<AtomicU64>,
@@ -479,7 +478,6 @@ fn spawn_subscriber_threads(
         let sub_running = running.clone();
         let sub_consumed = total_consumed.clone();
         let sub_registry = registry.clone();
-        let sub_store = segment_store.clone();
 
         let handle = thread::spawn(move || {
             let delay = SubscriberDelay::new(delay_ms);
@@ -498,24 +496,16 @@ fn spawn_subscriber_threads(
                     }
                 };
 
-                let bundle_ref = bundle_handle.bundle_ref();
+                // Bundle data is already loaded in bundle_handle.data()
+                // No need to read again from sub_store
+                delay.apply();
+                bundle_handle.ack();
+                let _ = sub_consumed.fetch_add(1, Ordering::Relaxed);
+                bundles_since_flush += 1;
 
-                match sub_store.read_bundle(bundle_ref) {
-                    Ok(_bundle) => {
-                        delay.apply();
-                        bundle_handle.ack();
-                        let _ = sub_consumed.fetch_add(1, Ordering::Relaxed);
-                        bundles_since_flush += 1;
-
-                        if bundles_since_flush >= flush_interval {
-                            let _ = sub_registry.flush_progress();
-                            bundles_since_flush = 0;
-                        }
-                    }
-                    Err(_) => {
-                        let _ = bundle_handle.defer();
-                        thread::sleep(Duration::from_millis(50));
-                    }
+                if bundles_since_flush >= flush_interval {
+                    let _ = sub_registry.flush_progress();
+                    bundles_since_flush = 0;
                 }
             }
         });
@@ -526,7 +516,7 @@ fn spawn_subscriber_threads(
     handles
 }
 
-fn create_engine_config(data_dir: &std::path::Path, segment_size_mb: u64) -> QuiverConfig {
+fn create_engine_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64) -> QuiverConfig {
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
 
     config.segment.target_size_bytes =
@@ -537,6 +527,7 @@ fn create_engine_config(data_dir: &std::path::Path, segment_size_mb: u64) -> Qui
         std::num::NonZeroU64::new(256 * 1024 * 1024).expect("256MB is non-zero");
     config.wal.rotation_target_bytes =
         std::num::NonZeroU64::new(32 * 1024 * 1024).expect("32MB is non-zero");
+    config.wal.flush_interval = Duration::from_millis(wal_flush_interval_ms);
 
     config
 }

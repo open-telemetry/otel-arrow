@@ -90,7 +90,7 @@ struct Args {
     segment_size_mb: u64,
 
     /// Simulate network failures (subscriber goes offline mid-stream)
-    #[arg(long, default_value = "true")]
+    #[arg(long, default_value = "false")]
     simulate_failures: bool,
 
     /// Probability of simulated failure (0.0-1.0)
@@ -130,14 +130,18 @@ struct Args {
     #[arg(long, default_value = "0")]
     subscriber_delay_ms: u64,
 
-    /// Use TUI dashboard for stress mode (default: true when --duration is set)
-    #[arg(long, default_value = "true")]
-    tui: bool,
+    /// Disable TUI dashboard for stress mode (use text output instead)
+    #[arg(long)]
+    no_tui: bool,
 
     /// Steady-state mode: single long-running QuiverEngine with concurrent ingest/consume.
     /// Tests internal cleanup/retention rather than external cleanup between iterations.
     #[arg(long)]
     steady_state: bool,
+
+    /// WAL flush interval in milliseconds (0 = flush after every write)
+    #[arg(long, default_value = "25")]
+    wal_flush_interval_ms: u64,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -145,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if this is stress mode with TUI - don't initialize tracing in TUI mode
     // as it interferes with the terminal display
-    let use_tui = args.duration.is_some() && args.tui;
+    let use_tui = args.duration.is_some() && !args.no_tui;
     
     if !use_tui {
         // Initialize tracing only for non-TUI modes
@@ -177,7 +181,7 @@ fn run_stress_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn std::e
     use stress_runner::{OutputMode, StressTestConfig, IterationResult};
     
     // Initialize tracing for text mode (before any logging)
-    if !args.tui {
+    if args.no_tui {
         let tracing_sub = FmtSubscriber::builder()
             .with_max_level(Level::INFO)
             .finish();
@@ -198,7 +202,7 @@ fn run_stress_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn std::e
     };
 
     // Create output mode
-    let output_mode = if args.tui {
+    let output_mode = if !args.no_tui {
         let dashboard = Dashboard::new(duration, data_dir.clone())?;
         OutputMode::tui(dashboard)
     } else {
@@ -269,10 +273,11 @@ fn run_steady_state_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn 
         leak_threshold_mb: args.leak_threshold_mb,
         keep_temp: args.keep_temp,
         report_interval: Duration::from_secs(args.report_interval),
+        wal_flush_interval_ms: args.wal_flush_interval_ms,
     };
     
     // Create output mode (TUI or Text)
-    let output_mode = if args.tui {
+    let output_mode = if !args.no_tui {
         let dashboard = Dashboard::new(duration, data_dir.clone())?;
         OutputMode::tui(dashboard)
     } else {
@@ -305,7 +310,7 @@ fn run_iteration_for_stress(
         bundle::generate_test_bundles(args.bundles, args.rows_per_bundle, args.string_size);
 
     // Ingest
-    let config = create_config(data_dir, args.segment_size_mb);
+    let config = create_config(data_dir, args.segment_size_mb, args.wal_flush_interval_ms);
     let engine = Arc::new(QuiverEngine::new(config)?);
 
     for test_bundle in &bundles {
@@ -476,7 +481,7 @@ fn run_single_iteration(
     info!("");
     info!("═══ Phase 2: Ingesting data ═══");
 
-    let config = create_config(&data_dir, args.segment_size_mb);
+    let config = create_config(&data_dir, args.segment_size_mb, args.wal_flush_interval_ms);
     let engine = Arc::new(QuiverEngine::new(config)?);
     mem_tracker.checkpoint("engine_created");
 
@@ -731,7 +736,7 @@ fn run_single_iteration(
     }
 }
 
-fn create_config(data_dir: &std::path::Path, segment_size_mb: u64) -> QuiverConfig {
+fn create_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64) -> QuiverConfig {
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
 
     config.segment.target_size_bytes =
@@ -743,6 +748,7 @@ fn create_config(data_dir: &std::path::Path, segment_size_mb: u64) -> QuiverConf
         std::num::NonZeroU64::new(256 * 1024 * 1024).expect("256MB is non-zero");
     config.wal.rotation_target_bytes =
         std::num::NonZeroU64::new(32 * 1024 * 1024).expect("32MB is non-zero");
+    config.wal.flush_interval = Duration::from_millis(wal_flush_interval_ms);
 
     config
 }
