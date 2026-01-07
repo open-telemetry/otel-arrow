@@ -20,6 +20,9 @@ pub struct OtlpExporterConfig {
     /// The temporality of the metrics to be exported.
     #[serde(default)]
     pub temporality: Temporality,
+
+    /// TLS configuration for secure communication.
+    pub tls: Option<TlsConfig>,
 }
 
 /// The Otlp communication protocol to use when exporting data.
@@ -37,6 +40,13 @@ pub enum OtlpProtocol {
     #[serde(rename = "http/json")]
     /// Use HTTP with JSON encoding for communication.
     HttpJson,
+}
+
+/// TLS configuration for secure communication.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct TlsConfig {
+    /// Path to the CA certificate file.
+    pub ca_file: String,
 }
 
 #[cfg(test)]

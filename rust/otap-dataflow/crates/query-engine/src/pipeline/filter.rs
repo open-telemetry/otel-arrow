@@ -1754,11 +1754,12 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::proto::opentelemetry::trace::v1::span::{Event, Link};
     use otap_df_pdata::proto::opentelemetry::trace::v1::{Span, Status};
-    use otap_df_pdata::testing::round_trip::otlp_to_otap;
+    use otap_df_pdata::testing::round_trip::{
+        otlp_to_otap, to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
+    };
 
     use crate::pipeline::test::{
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
-        to_logs_data, to_otap_logs, to_otap_metrics, to_otap_traces,
     };
 
     #[tokio::test]

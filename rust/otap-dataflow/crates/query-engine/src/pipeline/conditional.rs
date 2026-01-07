@@ -210,6 +210,7 @@ impl PipelineStage for ConditionalPipelineStage {
 
 #[cfg(test)]
 mod test {
+    use crate::pipeline::{Pipeline, test::exec_logs_pipeline_expr};
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
         LogicalExpression, PipelineExpression, PipelineExpressionBuilder, QueryLocation,
@@ -219,11 +220,7 @@ mod test {
         common::v1::{AnyValue, KeyValue},
         logs::v1::LogRecord,
     };
-
-    use crate::pipeline::{
-        Pipeline,
-        test::{exec_logs_pipeline_expr, to_logs_data},
-    };
+    use otap_df_pdata::testing::round_trip::to_logs_data;
 
     use super::*;
 

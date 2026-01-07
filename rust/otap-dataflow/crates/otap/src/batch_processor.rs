@@ -34,9 +34,9 @@ use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -47,9 +47,10 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
-use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_pdata::otap::batching::make_output_batches;
-use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
+use otap_df_pdata::{
+    OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes, error::Error as PDataError,
+    otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
+};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -63,15 +64,16 @@ use std::time::{Duration, Instant};
 /// URN for the OTAP batch processor
 pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
 
-/// Default configuration values (parity-aligned as we confirm Go defaults)
-pub const DEFAULT_MIN_SIZE_ITEMS: usize = 8192;
+/// Default configuration item min-size (OTAP default)
+pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: usize = 8192;
+
+/// Default configuration item min-size (OTLP default)
+pub const DEFAULT_OTLP_MIN_SIZE_BYTES: usize = 262144;
 
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
 
 /// Log messages
-const LOG_MSG_DROP_CONVERSION_FAILED: &str =
-    "OTAP batch processor: dropping message: OTAP conversion failed";
 const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
 const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 
@@ -80,7 +82,7 @@ const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
 /// Note: these are not always supported. In the present code, the only
 /// supported Sizer value is Items. We expect future support for bytes and
 /// requests sizers.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Sizer {
     /// Count requests. This metric counts one per OtapPdata message.
@@ -92,31 +94,81 @@ pub enum Sizer {
     Bytes,
 }
 
-/// Batch processor configuration.
+impl Sizer {
+    /// Returns Sizer-specific size logic.
+    fn batch_size<T: OtapPayloadHelpers>(&self, payload: &T) -> Result<usize, PDataError> {
+        match self {
+            Self::Requests => Ok(1),
+            Self::Items => Ok(payload.num_items()),
+            Self::Bytes => payload.num_bytes().ok_or_else(|| PDataError::Format {
+                error: "bytes encoding not known".into(),
+            }),
+        }
+    }
+}
+
+/// Min/max size for a specific format
 #[derive(Debug, Clone, Deserialize)]
-pub struct Config {
+pub struct FormatConfig {
     /// Flush current batch when this count is reached, as a
     /// minimum. Measures the quantity indicated by `sizer`. When
     /// pending data reaches this threshold a new batch will form and
     /// be sent.
-    #[serde(default = "default_min_size_items")]
     pub min_size: Option<NonZeroUsize>,
 
     /// Optionally limit batch sizes to an upper bound. Measured in
     /// the quantity indicated by `sizer`, as described for min_size.
     /// This limit is passed to the lower-level batching logic as a
     /// not-to-exceed maximum.
-    #[serde(default = "default_max_size_items")]
     pub max_size: Option<NonZeroUsize>,
 
     /// The sizer, "requests", "items", or "bytes".  See `Sizer`.
-    #[serde(default = "default_sizer_items")]
     pub sizer: Sizer,
+}
+
+/// Batching format option.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchingFormat {
+    /// Force to OTAP (default).
+    Otap,
+
+    /// Force to OTLP.
+    Otlp,
+
+    /// Preserve format, support both independently.
+    Preserve,
+}
+
+/// The common signature of the batching methods
+trait Batcher<T: OtapPayloadHelpers> {
+    fn make_batches(
+        fmtcfg: &FormatConfig,
+        signal: SignalType,
+        records: Vec<T>,
+    ) -> Result<Vec<T>, PDataError>;
+
+    /// We are using an empty DelayData request as a one-shot
+    /// timer. This returns the appropriate empty request.
+    /// TODO: Add proper one-shot timer and cancellation, see #1472.
+    fn wakeup(signal: SignalType) -> T;
+}
+
+/// Batch processor configuration.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Config {
+    /// The OTAP configuration.
+    #[serde(default = "default_otap")]
+    pub otap: FormatConfig,
+
+    /// The OTLP configuration.
+    #[serde(default = "default_otlp")]
+    pub otlp: FormatConfig,
 
     /// Flush non-empty batches on this interval, which may be 0 for
     /// immediate flush or None for no timeout.
-    #[serde(with = "humantime_serde", default = "default_timeout_duration")]
-    pub timeout: Duration,
+    #[serde(with = "humantime_serde", default = "default_flush_timeout")]
+    pub flush_timeout: Duration,
 
     /// Limits the number of pending requests for ack/nack tracking.
     #[serde(default = "default_inbound_request_limit")]
@@ -125,22 +177,40 @@ pub struct Config {
     /// Limits the number of outbound requests for ack/nack tracking.
     #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
+
+    /// Batching format choice. Default is to preserve format, meaning
+    /// to batch OTAP and OTLP separately.
+    #[serde(default = "default_batching_format")]
+    pub format: BatchingFormat,
 }
 
-const fn default_min_size_items() -> Option<NonZeroUsize> {
-    NonZeroUsize::new(DEFAULT_MIN_SIZE_ITEMS)
+const fn default_otap_min_size_items() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(DEFAULT_OTAP_MIN_SIZE_ITEMS)
 }
 
-const fn default_sizer_items() -> Sizer {
-    Sizer::Items
-}
-
-const fn default_max_size_items() -> Option<NonZeroUsize> {
+const fn default_otap_max_size_items() -> Option<NonZeroUsize> {
     // No upper-bound
     None
 }
 
-const fn default_timeout_duration() -> Duration {
+const fn default_otap_sizer_items() -> Sizer {
+    Sizer::Bytes
+}
+
+const fn default_otlp_min_size_bytes() -> Option<NonZeroUsize> {
+    NonZeroUsize::new(DEFAULT_OTLP_MIN_SIZE_BYTES)
+}
+
+const fn default_otlp_max_size_bytes() -> Option<NonZeroUsize> {
+    // No upper-bound
+    None
+}
+
+const fn default_otlp_sizer_bytes() -> Sizer {
+    Sizer::Bytes
+}
+
+const fn default_flush_timeout() -> Duration {
     Duration::from_millis(DEFAULT_TIMEOUT_MS)
 }
 
@@ -152,15 +222,35 @@ const fn default_outbound_request_limit() -> NonZeroUsize {
     NonZeroUsize::new(512).expect("ok") // default_min_size/16
 }
 
+const fn default_batching_format() -> BatchingFormat {
+    BatchingFormat::Preserve
+}
+
+const fn default_otap() -> FormatConfig {
+    FormatConfig {
+        min_size: default_otap_min_size_items(),
+        max_size: default_otap_max_size_items(),
+        sizer: default_otap_sizer_items(),
+    }
+}
+
+const fn default_otlp() -> FormatConfig {
+    FormatConfig {
+        min_size: default_otlp_min_size_bytes(),
+        max_size: default_otlp_max_size_bytes(),
+        sizer: default_otlp_sizer_bytes(),
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
-            min_size: default_min_size_items(),
-            max_size: default_max_size_items(),
-            sizer: default_sizer_items(),
-            timeout: default_timeout_duration(),
+            otap: default_otap(),
+            otlp: default_otlp(),
+            flush_timeout: default_flush_timeout(),
             inbound_request_limit: default_inbound_request_limit(),
             outbound_request_limit: default_outbound_request_limit(),
+            format: default_batching_format(),
         }
     }
 }
@@ -168,6 +258,51 @@ impl Default for Config {
 impl Config {
     /// Validates the configuration.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        let no_timeout = self.flush_timeout == Duration::ZERO;
+        match self.format {
+            BatchingFormat::Otap => {
+                self.otap.validate(SignalFormat::OtapRecords, no_timeout)?;
+            }
+            BatchingFormat::Otlp => {
+                self.otlp.validate(SignalFormat::OtlpBytes, no_timeout)?;
+            }
+            BatchingFormat::Preserve => {
+                self.otap.validate(SignalFormat::OtapRecords, no_timeout)?;
+                self.otlp.validate(SignalFormat::OtlpBytes, no_timeout)?;
+            }
+        };
+
+        Ok(())
+    }
+}
+
+impl FormatConfig {
+    #[cfg(test)]
+    fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
+        FormatConfig {
+            min_size: NonZeroUsize::new(min_size),
+            max_size: NonZeroUsize::new(max_size),
+            sizer: Sizer::Items,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
+        FormatConfig {
+            min_size: NonZeroUsize::new(min_size),
+            max_size: NonZeroUsize::new(max_size),
+            sizer: Sizer::Bytes,
+        }
+    }
+
+    /// The lower of the two size limits.
+    fn lower_limit(&self) -> usize {
+        self.min_size.or(self.max_size).expect("valid").get()
+    }
+
+    /// Validate the config, given its format. `no_timeout` indicates the
+    /// parent Config has flush_timeout == 0.
+    pub fn validate(&self, format: SignalFormat, no_timeout: bool) -> Result<(), ConfigError> {
         // At least one size is set.
         if self.min_size.or(self.max_size).is_none() {
             return Err(ConfigError::InvalidUserConfig {
@@ -175,35 +310,45 @@ impl Config {
             });
         }
 
-        // Presently we have only the OTAP mode of batching, which supports only Items.
-        if self.sizer != Sizer::Items {
+        // Check for a supported sizer. Presently, OTAP supports only
+        // items, OTLP supports only bytes.
+        let (expect_sizer, with_msg) = match format {
+            SignalFormat::OtapRecords => (Sizer::Items, "OTAP batch sizer: must be items"),
+            SignalFormat::OtlpBytes => (Sizer::Bytes, "OTLP batch sizer: must be bytes"),
+        };
+        if self.sizer != expect_sizer {
             return Err(ConfigError::InvalidUserConfig {
-                error: "sizer: must be items".into(),
+                error: with_msg.into(),
             });
         }
 
-        // If both sizes are set, check max_size is >= the batch_size.
-        if let (Some(max_size), Some(batch_size)) = (self.max_size, self.min_size) {
-            if max_size < batch_size {
+        // If both sizes are set, check max_size is >= the min_size.
+        if let (Some(max_size), Some(min_size)) = (self.max_size, self.min_size) {
+            if max_size < min_size {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!(
                         "max_size ({}) must be >= min_size ({}) or unset",
-                        max_size, batch_size,
+                        max_size, min_size,
                     ),
                 });
             }
         }
 
-        // Zero-timeout is a valid split-only configuration.
-        if self.timeout == Duration::ZERO {
-            if let Some(batch_size) = self.min_size {
+        // no_timeout indicates there is not a time-based flush criteria, which
+        // raises requirements:
+        if no_timeout {
+            // If min_size is set, we need a timeout to avoid
+            // indefinite delay.
+            if self.min_size.is_some() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!("min_size ({}) requires a timeout", batch_size),
+                    error: "min_size set requires flush_timeout is set".into(),
                 });
             }
+            // If max_size is unset, we're doing nothing with a batch processor,
+            // so this is considered an error.
             if self.max_size.is_none() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: "max_size required for split-only (no timeout) configuration".into(),
+                    error: "flush_timeout unset requires max_size is set".into(),
                 });
             }
         }
@@ -213,10 +358,10 @@ impl Config {
 }
 
 /// Per-signal state
-struct SignalBatches {
-    logs: SignalBuffer,
-    metrics: SignalBuffer,
-    traces: SignalBuffer,
+struct SignalBatches<T: OtapPayloadHelpers> {
+    logs: SignalBuffer<T>,
+    metrics: SignalBuffer<T>,
+    traces: SignalBuffer<T>,
 }
 
 /// Per-input wait context, including the arriving request's context.
@@ -235,10 +380,9 @@ struct BatchPortion {
     items: usize,
 }
 
-#[derive(Default)]
-struct Inputs {
+struct Inputs<T: OtapPayloadHelpers> {
     /// Input batches.
-    pending: Vec<OtapArrowRecords>,
+    pending: Vec<T>,
 
     /// Waiter context
     context: Vec<BatchPortion>,
@@ -253,9 +397,9 @@ struct MultiContext {
 }
 
 /// Per-signal buffer state
-struct SignalBuffer {
+struct SignalBuffer<T: OtapPayloadHelpers> {
     /// Pending input state.
-    inputs: Inputs,
+    inputs: Inputs<T>,
 
     /// Map of inbound requests.  This contains a limited number of pending request
     /// contexts with details for the impl to notify after an outcome is available.
@@ -273,9 +417,27 @@ struct SignalBuffer {
 /// Local (!Send) batch processor
 pub struct BatchProcessor {
     config: Config,
-    signals: SignalBatches,
-    lower_limit: NonZeroUsize,
+    otap_signals: Option<SignalBatches<OtapArrowRecords>>,
+    otlp_signals: Option<SignalBatches<OtlpProtoBytes>>,
     metrics: MetricSet<BatchProcessorMetrics>,
+}
+
+struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
+    config: &'a Config,
+    fmtcfg: &'a FormatConfig,
+    signals: &'a mut SignalBatches<T>,
+    metrics: &'a mut MetricSet<BatchProcessorMetrics>,
+}
+
+struct BatchProcessorSignal<'a, T: OtapPayloadHelpers>
+where
+    SignalBuffer<T>: Batcher<T>,
+{
+    signal: SignalType,
+    config: &'a Config,
+    fmtcfg: &'a FormatConfig,
+    buffer: &'a mut SignalBuffer<T>,
+    metrics: &'a mut MetricSet<BatchProcessorMetrics>,
 }
 
 /// There are three reasons to flush.
@@ -377,17 +539,23 @@ impl BatchProcessor {
                 error: format!("invalid OTAP batch processor config: {e}"),
             })?;
 
-        // This checks that if both are present, max_size >= batch_size, and
+        // This checks that if both are present, max_size >= min_size, and
         // that at least one is present so that lower_limit is valid below.
         config.validate()?;
 
-        let signals = SignalBatches::new(&config);
-        let lower_limit = config.min_size.or(config.max_size).expect("valid");
+        let otap_signals: Option<SignalBatches<OtapArrowRecords>> = config
+            .format
+            .has_otap()
+            .then(|| SignalBatches::new(&config));
+        let otlp_signals: Option<SignalBatches<OtlpProtoBytes>> = config
+            .format
+            .has_otlp()
+            .then(|| SignalBatches::new(&config));
 
         Ok(BatchProcessor {
             config,
-            signals,
-            lower_limit,
+            otap_signals,
+            otlp_signals,
             metrics,
         })
     }
@@ -414,10 +582,42 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         for signal in [SignalType::Logs, SignalType::Traces, SignalType::Metrics] {
-            self.flush_signal_impl(signal, effect, Instant::now(), FlushReason::Shutdown)
-                .await?;
+            if let Some(mut otap_signals) = self.otap_format() {
+                otap_signals
+                    .for_signal(signal)
+                    .flush_signal_impl(effect, Instant::now(), FlushReason::Shutdown)
+                    .await?;
+            }
+            if let Some(mut otlp_signals) = self.otlp_format() {
+                otlp_signals
+                    .for_signal(signal)
+                    .flush_signal_impl(effect, Instant::now(), FlushReason::Shutdown)
+                    .await?;
+            }
         }
         Ok(())
+    }
+
+    fn otap_format(&mut self) -> Option<BatchProcessorFormat<'_, OtapArrowRecords>> {
+        self.otap_signals
+            .as_mut()
+            .map(|signals| BatchProcessorFormat {
+                fmtcfg: &self.config.otap,
+                config: &self.config,
+                signals,
+                metrics: &mut self.metrics,
+            })
+    }
+
+    fn otlp_format(&mut self) -> Option<BatchProcessorFormat<'_, OtlpProtoBytes>> {
+        self.otlp_signals
+            .as_mut()
+            .map(|signals| BatchProcessorFormat {
+                fmtcfg: &self.config.otlp,
+                config: &self.config,
+                signals,
+                metrics: &mut self.metrics,
+            })
     }
 
     /// Process one incoming batch. Immediately acks empty requests.
@@ -425,22 +625,19 @@ impl BatchProcessor {
     /// flush at least one output.
     async fn process_signal_impl(
         &mut self,
-        signal: SignalType,
         effect: &mut local::EffectHandler<OtapPdata>,
-        ctx: Context,
-        rec: OtapArrowRecords,
+        request: OtapPdata,
     ) -> Result<(), EngineError> {
-        let items = rec.num_items();
+        let items = request.num_items();
 
         if items == 0 {
             self.metrics.dropped_empty_records.inc();
-            effect
-                .notify_ack(AckMsg::new(OtapPdata::new(ctx, rec.into())))
-                .await?;
+            effect.notify_ack(AckMsg::new(request)).await?;
             return Ok(());
         }
 
         // Increment consumed_items for the appropriate signal
+        let signal = request.signal_type();
         match signal {
             SignalType::Logs => {
                 self.metrics.consumed_items_logs.add(items as u64);
@@ -454,19 +651,123 @@ impl BatchProcessor {
                 self.metrics.consumed_items_traces.add(items as u64);
                 self.metrics.consumed_batches_traces.add(1);
             }
-        }
-
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
         };
 
+        let (ctx, payload) = request.into_parts();
+
+        match payload {
+            OtapPayload::OtapArrowRecords(otap) => {
+                if self.otap_signals.is_some() {
+                    self.otap_format()
+                        .expect("some")
+                        .for_signal(signal)
+                        .accept_payload(effect, ctx, otap, items)
+                        .await?
+                } else {
+                    self.otlp_format()
+                        .expect("some")
+                        .for_signal(signal)
+                        .accept_payload(effect, ctx, otap.try_into()?, items)
+                        .await?
+                }
+            }
+            OtapPayload::OtlpBytes(otlp) => {
+                if self.otlp_signals.is_some() {
+                    self.otlp_format()
+                        .expect("some")
+                        .for_signal(signal)
+                        .accept_payload(effect, ctx, otlp, items)
+                        .await?
+                } else {
+                    self.otap_format()
+                        .expect("some")
+                        .for_signal(signal)
+                        .accept_payload(effect, ctx, otlp.try_into()?, items)
+                        .await?
+                }
+            }
+        };
+        Ok(())
+    }
+}
+
+impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T>
+where
+    SignalBuffer<T>: Batcher<T>,
+{
+    fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
+        BatchProcessorSignal {
+            signal,
+            config: self.config,
+            fmtcfg: self.fmtcfg,
+            buffer: match signal {
+                SignalType::Logs => &mut self.signals.logs,
+                SignalType::Traces => &mut self.signals.traces,
+                SignalType::Metrics => &mut self.signals.metrics,
+            },
+            metrics: self.metrics,
+        }
+    }
+}
+
+impl Batcher<OtapArrowRecords> for SignalBuffer<OtapArrowRecords> {
+    fn make_batches(
+        fmtcfg: &FormatConfig,
+        signal: SignalType,
+        pending: Vec<OtapArrowRecords>,
+    ) -> Result<Vec<OtapArrowRecords>, PDataError> {
+        // OTAP only supports Sizer::Items (checked in validate)
+        debug_assert_eq!(fmtcfg.sizer, Sizer::Items);
+        make_item_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
+    }
+
+    fn wakeup(signal: SignalType) -> OtapArrowRecords {
+        match signal {
+            SignalType::Logs => OtapArrowRecords::Logs(otap_df_pdata::otap::Logs::default()),
+            SignalType::Metrics => {
+                OtapArrowRecords::Metrics(otap_df_pdata::otap::Metrics::default())
+            }
+            SignalType::Traces => OtapArrowRecords::Traces(otap_df_pdata::otap::Traces::default()),
+        }
+    }
+}
+
+impl Batcher<OtlpProtoBytes> for SignalBuffer<OtlpProtoBytes> {
+    fn make_batches(
+        fmtcfg: &FormatConfig,
+        signal: SignalType,
+        pending: Vec<OtlpProtoBytes>,
+    ) -> Result<Vec<OtlpProtoBytes>, PDataError> {
+        // OTLP only supports Sizer::Bytes (checked in validate)
+        debug_assert_eq!(fmtcfg.sizer, Sizer::Bytes);
+        make_bytes_batches(signal, nzu_to_nz64(fmtcfg.max_size), pending)
+    }
+
+    fn wakeup(signal: SignalType) -> OtlpProtoBytes {
+        match signal {
+            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
+            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
+            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
+        }
+    }
+}
+
+impl<'a, T: OtapPayloadHelpers> BatchProcessorSignal<'a, T>
+where
+    SignalBuffer<T>: Batcher<T>,
+{
+    async fn accept_payload(
+        &mut self,
+        effect: &mut local::EffectHandler<OtapPdata>,
+        ctx: Context,
+        payload: T,
+        items: usize,
+    ) -> Result<(), EngineError> {
         // If there are subscribers, calculate an inbound slot key.
         let inkey = ctx
             .has_subscribers()
             .then(|| {
-                buffer
+                self.buffer
                     .inbound
                     .allocate(|| {
                         (
@@ -485,22 +786,25 @@ impl BatchProcessor {
             .map(|(bc, _)| bc);
 
         // Set the arrival time when the current input is empty.
-        let timeout = self.config.timeout;
+        let timeout = self.config.flush_timeout;
         let mut arrival: Option<Instant> = None;
-        if timeout != Duration::ZERO && buffer.inputs.is_empty() {
+        if timeout != Duration::ZERO && self.buffer.inputs.is_empty() {
             let now = Instant::now();
             arrival = Some(now);
-            buffer.set_arrival(signal, now, timeout, effect).await?;
+            self.buffer
+                .set_arrival(self.signal, now, timeout, effect)
+                .await?;
         }
 
-        buffer.inputs.accept(rec, BatchPortion::new(inkey, items));
+        self.buffer
+            .inputs
+            .accept(payload, BatchPortion::new(inkey, items));
 
         // Flush based on size when the batch reaches the lower limit.
-        if self.config.timeout != Duration::ZERO && buffer.inputs.items < self.lower_limit.get() {
+        if timeout != Duration::ZERO && self.buffer.inputs.items < self.fmtcfg.lower_limit() {
             Ok(())
         } else {
             self.flush_signal_impl(
-                signal,
                 effect,
                 arrival.unwrap_or_else(Instant::now),
                 FlushReason::Size,
@@ -518,32 +822,26 @@ impl BatchProcessor {
     ///   will be retained as first-in-line.
     async fn flush_signal_impl(
         &mut self,
-        signal: SignalType,
         effect: &mut local::EffectHandler<OtapPdata>,
         now: Instant,
         reason: FlushReason,
     ) -> Result<(), EngineError> {
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
-        };
-
         // If the input is empty.
-        if buffer.inputs.is_empty() {
+        if self.buffer.inputs.is_empty() {
             return Ok(());
         }
+
         // If this is a timer-based flush and we were called too soon,
         // skip. this may happen if the batch for which the timer was set
         // flushes for size before the timer.
         if reason == FlushReason::Timer
-            && self.config.timeout != Duration::ZERO
-            && now.duration_since(buffer.arrival.expect("timed")) < self.config.timeout
+            && self.config.flush_timeout != Duration::ZERO
+            && now.duration_since(self.buffer.arrival.expect("timed")) < self.config.flush_timeout
         {
             return Ok(());
         }
 
-        let mut inputs = buffer.inputs.drain();
+        let mut inputs = self.buffer.inputs.drain();
 
         match reason {
             FlushReason::Size => self.metrics.flushes_size.inc(),
@@ -552,19 +850,19 @@ impl BatchProcessor {
         }
 
         let count = inputs.requests();
-        let upper_limit = self.config.max_size;
         let pending = inputs.take_pending();
+
         let mut output_batches =
-            match make_output_batches(signal, nzu_to_nz64(upper_limit), pending) {
+            match SignalBuffer::<T>::make_batches(self.fmtcfg, self.signal, pending) {
                 Ok(v) => v,
                 Err(e) => {
                     self.metrics.batching_errors.add(count as u64);
-                    log_batching_failed(effect, signal, &e).await;
+                    log_batching_failed(effect, self.signal, &e).await;
                     let str = e.to_string();
                     let res = Err(str.clone());
                     // In this case, we are sending failure to all the pending inputs.
-                    buffer
-                        .handle_partial_responses(signal, effect, &res, inputs.context)
+                    self.buffer
+                        .handle_partial_responses(self.signal, effect, &res, inputs.context)
                         .await?;
                     return Err(EngineError::InternalError { message: str });
                 }
@@ -572,22 +870,43 @@ impl BatchProcessor {
 
         // If size-triggered and we requested splitting (upper_limit is Some), re-buffer the last partial
         // output if it is smaller than the configured lower_limit. Timer/Shutdown flush everything.
-        if self.config.timeout != Duration::ZERO
+        if self.config.flush_timeout != Duration::ZERO
             && reason == FlushReason::Size
-            && upper_limit.is_some()
+            && self.fmtcfg.max_size.is_some()
             && output_batches.len() > 1
         {
-            debug_assert!(output_batches[0].num_items() >= self.lower_limit.get());
-
-            if let Some(last_items) = output_batches.last().map(|last| last.num_items()) {
-                if last_items < self.lower_limit.get() {
-                    buffer.take_remaining(&mut inputs, &mut output_batches, last_items);
-
-                    // We use the latest arrival time as the new arrival for timeout purposes.
-                    buffer
-                        .set_arrival(signal, now, self.config.timeout, effect)
-                        .await?;
+            let num_output = output_batches.len();
+            let sizer = self.fmtcfg.sizer;
+            match sizer {
+                Sizer::Items => {
+                    // This property holds because item-based batches never batches
+                    // short of min_size.
+                    debug_assert!(
+                        sizer
+                            .batch_size(&output_batches[0])
+                            .expect("first over lower_limit")
+                            >= self.fmtcfg.lower_limit()
+                    );
                 }
+                Sizer::Requests => unreachable!("requests sizer not implemented"),
+                Sizer::Bytes => {
+                    // All batches can be under or over. We know byte size.
+                    debug_assert!(sizer.batch_size(&output_batches[num_output - 1]).is_ok());
+                }
+            };
+
+            let last_batch_size = self
+                .fmtcfg
+                .sizer
+                .batch_size(&output_batches[num_output - 1])?;
+
+            if last_batch_size < self.fmtcfg.lower_limit() {
+                self.buffer.take_remaining(&mut inputs, &mut output_batches);
+
+                // We use the latest arrival time as the new arrival for timeout purposes.
+                self.buffer
+                    .set_arrival(self.signal, now, self.config.flush_timeout, effect)
+                    .await?;
             }
         }
 
@@ -598,7 +917,7 @@ impl BatchProcessor {
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
             // Increment produced_items for the appropriate signal
-            match signal {
+            match self.signal {
                 SignalType::Logs => {
                     self.metrics.produced_items_logs.add(items as u64);
                     self.metrics.produced_batches_logs.add(1);
@@ -614,16 +933,17 @@ impl BatchProcessor {
             }
 
             // If any items require notification, get an outbound slot and subscribe.
-            if let Some(ctxs) = buffer.drain_context(items, &mut input_context) {
+            if let Some(ctxs) = self.buffer.drain_context(items, &mut input_context) {
                 let (outkey, _notused) =
-                    buffer.outbound.allocate(|| (ctxs, ())).ok_or_else(|| {
-                        EngineError::ProcessorError {
+                    self.buffer
+                        .outbound
+                        .allocate(|| (ctxs, ()))
+                        .ok_or_else(|| EngineError::ProcessorError {
                             processor: effect.processor_id(),
                             kind: ProcessorErrorKind::Other,
                             error: "outbound slots not available".into(),
                             source_detail: "".into(),
-                        }
-                    })?;
+                        })?;
 
                 effect.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
@@ -637,12 +957,32 @@ impl BatchProcessor {
         Ok(())
     }
 
+    async fn handle(
+        &mut self,
+        signal: SignalType,
+        calldata: CallData,
+        effect: &mut local::EffectHandler<OtapPdata>,
+        res: &Result<(), String>,
+    ) -> Result<(), EngineError> {
+        let outkey: SlotKey = calldata.try_into()?;
+
+        if let Some(parts) = self.buffer.outbound.take(outkey) {
+            self.buffer
+                .handle_partial_responses(signal, effect, res, parts)
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+
+impl BatchProcessor {
     async fn handle_ack(
         &mut self,
         effect: &mut local::EffectHandler<OtapPdata>,
         ack: AckMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.handle_response(ack.accepted.signal_type(), ack.calldata, effect, &Ok(()))
+        self.handle_response(*ack.accepted, ack.calldata, effect, &Ok(()))
             .await
     }
 
@@ -652,13 +992,13 @@ impl BatchProcessor {
         nack: NackMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
         let res = Err(nack.reason);
-        self.handle_response(nack.refused.signal_type(), nack.calldata, effect, &res)
+        self.handle_response(*nack.refused, nack.calldata, effect, &res)
             .await
     }
 
     async fn handle_response(
         &mut self,
-        signal: SignalType,
+        retdata: OtapPdata,
         calldata: CallData,
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
@@ -666,20 +1006,24 @@ impl BatchProcessor {
         if calldata.is_empty() {
             return Ok(());
         }
-        let buffer = match signal {
-            SignalType::Logs => &mut self.signals.logs,
-            SignalType::Metrics => &mut self.signals.metrics,
-            SignalType::Traces => &mut self.signals.traces,
-        };
-        let outkey: SlotKey = calldata.try_into()?;
 
-        if let Some(parts) = buffer.outbound.take(outkey) {
-            buffer
-                .handle_partial_responses(signal, effect, res, parts)
-                .await?;
+        let signal = retdata.signal_type();
+        match retdata.signal_format() {
+            SignalFormat::OtapRecords => {
+                self.otap_format()
+                    .expect("some")
+                    .for_signal(signal)
+                    .handle(signal, calldata, effect, res)
+                    .await
+            }
+            SignalFormat::OtlpBytes => {
+                self.otlp_format()
+                    .expect("some")
+                    .for_signal(signal)
+                    .handle(signal, calldata, effect, res)
+                    .await
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -723,40 +1067,59 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                 }),
                 NodeControlMsg::DelayedData { data, when } => {
                     let signal = data.signal_type();
-                    self.flush_signal_impl(signal, effect, when, FlushReason::Timer)
-                        .await?;
+
+                    match data.signal_format() {
+                        SignalFormat::OtapRecords => {
+                            self.otap_format()
+                                .expect("some")
+                                .for_signal(signal)
+                                .flush_signal_impl(effect, when, FlushReason::Timer)
+                                .await?
+                        }
+                        SignalFormat::OtlpBytes => {
+                            self.otlp_format()
+                                .expect("some")
+                                .for_signal(signal)
+                                .flush_signal_impl(effect, when, FlushReason::Timer)
+                                .await?
+                        }
+                    };
+
                     Ok(())
                 }
                 NodeControlMsg::Ack(ack) => self.handle_ack(effect, ack).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(effect, nack).await,
                 NodeControlMsg::TimerTick { .. } => unreachable!(),
             },
-            Message::PData(mut request) => {
-                let signal_type = request.signal_type();
-                let payload = request.take_payload();
-
-                match OtapArrowRecords::try_from(payload) {
-                    Ok(rec) => {
-                        let (ctx, _) = request.into_parts();
-                        self.process_signal_impl(signal_type, effect, ctx, rec)
-                            .await
-                    }
-                    Err(e) => {
-                        // Conversion failed, drop the data. Count, Nack, and Log.
-                        self.metrics.dropped_conversion.inc();
-                        effect
-                            .notify_nack(NackMsg::new(e.to_string(), request))
-                            .await?;
-                        effect.info(LOG_MSG_DROP_CONVERSION_FAILED).await;
-                        Ok(())
-                    }
-                }
-            }
+            Message::PData(request) => self.process_signal_impl(effect, request).await,
         }
     }
 }
 
-impl SignalBatches {
+impl<T: OtapPayloadHelpers> Default for Inputs<T> {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            context: Vec::new(),
+            items: 0,
+        }
+    }
+}
+
+impl BatchingFormat {
+    fn has_otlp(&self) -> bool {
+        !matches!(self, Self::Otap)
+    }
+
+    fn has_otap(&self) -> bool {
+        !matches!(self, Self::Otlp)
+    }
+}
+
+impl<T: OtapPayloadHelpers> SignalBatches<T>
+where
+    SignalBuffer<T>: Batcher<T>,
+{
     fn new(config: &Config) -> Self {
         Self {
             logs: SignalBuffer::new(config),
@@ -778,7 +1141,7 @@ impl MultiContext {
     }
 }
 
-impl Inputs {
+impl<T: OtapPayloadHelpers> Inputs<T> {
     fn drain(&mut self) -> Self {
         Self {
             pending: self.pending.drain(..).collect(),
@@ -795,13 +1158,13 @@ impl Inputs {
         self.pending.len()
     }
 
-    fn accept(&mut self, batch: OtapArrowRecords, part: BatchPortion) {
+    fn accept(&mut self, batch: T, part: BatchPortion) {
         self.items += part.items;
         self.pending.push(batch);
         self.context.push(part);
     }
 
-    fn take_pending(&mut self) -> Vec<OtapArrowRecords> {
+    fn take_pending(&mut self) -> Vec<T> {
         std::mem::take(&mut self.pending)
     }
 
@@ -810,7 +1173,11 @@ impl Inputs {
     }
 }
 
-impl SignalBuffer {
+impl<T: OtapPayloadHelpers> SignalBuffer<T>
+where
+    Inputs<T>: Default,
+    Self: Batcher<T>,
+{
     fn new(cfg: &Config) -> Self {
         Self {
             inputs: Inputs::default(),
@@ -823,15 +1190,11 @@ impl SignalBuffer {
     /// Takes the residual batch, used in case the final output is less than
     /// the lower bound. This removes the last output btach, the corresponding
     /// context, and places it back in the pending buffer as the first in line.
-    fn take_remaining(
-        &mut self,
-        from_inputs: &mut Inputs,
-        output_batches: &mut Vec<OtapArrowRecords>,
-        last_items: usize,
-    ) {
+    fn take_remaining(&mut self, from_inputs: &mut Inputs<T>, output_batches: &mut Vec<T>) {
         // SAFETY: protected by output_batches.len() > 1.
         let remaining = output_batches.pop().expect("has last");
         let last_input = from_inputs.context.last().expect("has last");
+        let last_items = remaining.num_items();
         let new_part = BatchPortion::new(last_input.inkey, last_items);
 
         from_inputs.items -= last_items;
@@ -926,24 +1289,13 @@ impl SignalBuffer {
     ) -> Result<(), EngineError> {
         self.arrival = Some(now);
 
-        // TODO: We are using an empty DelayData request, which is
-        // relatively bogus way to set a timer. We should revisit how
-        // to set one-shot timers. Note! The processor trait does not
-        // have a start() method, so it's relatively not easy to set a
-        // periodic timer in this component. Note! This means we might
-        // have a bunch of timers pending, when we want a timer we can
-        // cancel.
-        let wakeup: OtapPayload = match signal {
-            SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(Bytes::new()),
-            SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(Bytes::new()),
-            SignalType::Traces => OtlpProtoBytes::ExportTracesRequest(Bytes::new()),
-        }
-        .into();
-
         effect
             .delay_data(
                 now + timeout,
-                Box::new(OtapPdata::new(Context::default(), wakeup)),
+                Box::new(OtapPdata::new(
+                    Context::default(),
+                    Self::wakeup(signal).into(),
+                )),
             )
             .await
             .map_err(|_| EngineError::ProcessorError {
@@ -996,7 +1348,7 @@ mod tests {
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::fixtures::DataGenerator;
-    use otap_df_pdata::testing::round_trip::otap_to_otlp;
+    use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
     use otap_df_telemetry::registry::MetricsRegistryHandle;
     use serde_json::json;
     use std::collections::HashSet;
@@ -1114,7 +1466,10 @@ mod tests {
             NodeKind::Processor,
             OTAP_BATCH_PROCESSOR_URN.into(),
             serde_json::json!({
-                "batch_send_size": "1000",
+                "otap": {
+                    "sizer": "items",
+                    "min_size": 1000
+                },
             }),
         );
         let mut dests: HashSet<otap_df_config::NodeId> = HashSet::new();
@@ -1149,69 +1504,87 @@ mod tests {
     fn test_config_validation() {
         // Both sizes set, max >= batch: OK
         let cfg = Config {
-            min_size: NonZeroUsize::new(100),
-            max_size: NonZeroUsize::new(200),
-            timeout: Duration::from_millis(100),
+            otap: FormatConfig::new_items(100, 200),
+            otlp: FormatConfig::new_bytes(10000, 20000),
+            flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
-        // Only batch size: OK
+        // The OTLP configuration is invalid, but that's OK because
+        // format is OTAP.
         let cfg = Config {
-            min_size: NonZeroUsize::new(100),
-            max_size: None,
-            timeout: Duration::from_millis(100),
+            otap: FormatConfig::new_items(100, 0),
+            otlp: FormatConfig::new_items(0, 0),
+            flush_timeout: Duration::from_millis(100),
+            format: BatchingFormat::Otap,
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
-        // Only max size: OK
+        // Only max size: OK (OTLP default)
         let cfg = Config {
-            min_size: None,
-            max_size: NonZeroUsize::new(200),
-            timeout: Duration::from_millis(100),
+            otap: FormatConfig::new_items(0, 200),
+            flush_timeout: Duration::from_millis(100),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+
+        // All formats
+        let cfg = Config {
+            otap: FormatConfig::new_items(0, 200),
+            otlp: FormatConfig::new_bytes(20000, 0),
+            flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
         // Split-only: OK
         let cfg = Config {
-            min_size: None,
-            max_size: NonZeroUsize::new(100),
-            timeout: Duration::ZERO,
+            otlp: FormatConfig::new_bytes(0, 100),
+            otap: FormatConfig::new_items(0, 0),
+            flush_timeout: Duration::ZERO,
+            format: BatchingFormat::Otlp,
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
 
+        // Format: preserve, 1 invalid
+        let cfg = Config {
+            otlp: FormatConfig::new_bytes(0, 0),
+            format: BatchingFormat::Preserve,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+
         // Both None: ERROR
         let cfg = Config {
-            min_size: None,
-            max_size: None,
-            timeout: Duration::from_millis(100),
+            otap: FormatConfig::new_bytes(0, 0),
+            format: BatchingFormat::Otap,
+            flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
 
         // Max < batch: ERROR
         let cfg = Config {
-            min_size: NonZeroUsize::new(200),
-            max_size: NonZeroUsize::new(100),
-            timeout: Duration::from_millis(100),
+            otap: FormatConfig::new_items(200, 100),
+            flush_timeout: Duration::from_millis(100),
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
 
         // lower-bound without timeout: ERROR
         let cfg = Config {
-            min_size: NonZeroUsize::new(200),
-            max_size: NonZeroUsize::new(100),
-            timeout: Duration::ZERO,
+            otap: FormatConfig::new_items(100, 200),
+            flush_timeout: Duration::ZERO,
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
     }
 
     /// Test event: either process input or deliver pending timers
+    #[derive(Clone)]
     enum TestEvent {
         Input(OtlpProtoMessage),
         Elapsed, // Signal to deliver all pending DelayedData messages
@@ -1244,6 +1617,11 @@ mod tests {
                 })
                 .expect("ok")
         }
+    }
+
+    fn otap_pdata_to_message(data: &OtapPdata) -> OtlpProtoMessage {
+        let rec: OtapArrowRecords = data.clone().payload().try_into().unwrap();
+        otap_to_otlp(&rec)
     }
 
     fn run_batch_processor_test<F, P>(
@@ -1442,12 +1820,7 @@ mod tests {
                 // Verify all outputs are equivalent to inputs
                 let outputs: Vec<OtlpProtoMessage> = event_outputs
                     .iter()
-                    .flat_map(|out| {
-                        out.outputs.iter().map(|p| {
-                            let rec: OtapArrowRecords = p.clone().payload().try_into().unwrap();
-                            otap_to_otlp(&rec)
-                        })
-                    })
+                    .flat_map(|out| out.outputs.iter().map(otap_pdata_to_message))
                     .collect();
 
                 let output_item_count: usize = outputs.iter().map(|m| m.num_items()).sum();
@@ -1478,9 +1851,12 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "min_size": 4,
-                "max_size": 5,
-                "timeout": "1s"
+                "otap": {
+                    "min_size": 4,
+                    "max_size": 5,
+                    "sizer": "items",
+                },
+                "flush_timeout": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1532,9 +1908,12 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "min_size": 10,  // Higher than input (3 items), so won't trigger size flush
-                "max_size": 10,
-                "timeout": "50ms"
+                "otap": {
+                    "min_size": 10,  // Higher than input (3 items), so won't trigger size flush
+                    "max_size": 10,
+                    "sizer": "items",
+                },
+                "flush_timeout": "50ms"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1590,9 +1969,12 @@ mod tests {
             events.into_iter(),
             subscribe,
             json!({
-                "min_size": 3,
-                "max_size": 3,
-                "timeout": "1s"
+                "otap": {
+                    "min_size": 3,
+                    "max_size": 3,
+                    "sizer": "items",
+                },
+                "flush_timeout": "1s"
             }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
@@ -1640,16 +2022,17 @@ mod tests {
             inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
         events.push(TestEvent::Elapsed);
 
-        let cfg = json!({
-            "min_size": 5,
-            "max_size": 10,
-            "timeout": "1s"
-        });
-
         run_batch_processor_test(
-            events.into_iter(),
+            events.iter().cloned(),
             subscribe,
-            cfg,
+            json!({
+                "otap": {
+                    "min_size": 5,
+                    "max_size": 10,
+                    "sizer": "items",
+                },
+                "flush_timeout": "1s"
+            }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
@@ -1663,6 +2046,22 @@ mod tests {
                     assert_eq!(batch.num_items(), 6, "each batch should have 6 items");
                 }
             },
+        );
+
+        run_batch_processor_test(
+            events.iter().cloned(),
+            subscribe,
+            json!({
+                "otlp": {
+                    "min_size": 50,
+                    "max_size": 100,
+                    "sizer": "bytes",
+                },
+                "format": "otlp",
+                "flush_timeout": "1s"
+            }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
+            |_| {},
         );
     }
 
@@ -1695,21 +2094,22 @@ mod tests {
         let inputs: Vec<_> = inputs_otlp.collect();
         let events: Vec<TestEvent> = inputs.iter().map(|i| TestEvent::Input(i.clone())).collect();
 
-        let cfg = json!({
-            "min_size": null,
-            "max_size": 2,
-            "timeout": "0s",
-        });
-
         run_batch_processor_test(
-            events.into_iter(),
+            events.clone().into_iter(),
             subscribe,
-            cfg,
+            json!({
+                "otap": {
+                    "min_size": null,
+                    "max_size": 2,
+                    "sizer": "items",
+                },
+                "format": "otap",
+                "flush_timeout": "0s"
+            }),
             None::<fn(usize, &OtapPdata) -> AckPolicy>,
             |event_outputs| {
                 // Collect all outputs across events
                 let all_outputs: Vec<_> = event_outputs.iter().flat_map(|e| e.messages()).collect();
-
                 // With no min_size and no timeout, flushes immediately on every input
                 // With max_size=2, each 3-item input splits to [2, 1]
                 assert_eq!(all_outputs.len(), 4, "should emit 4 batches: 2, 1, 2, 1");
@@ -1721,6 +2121,22 @@ mod tests {
                     "split pattern without rebuffering"
                 );
             },
+        );
+
+        run_batch_processor_test(
+            events.into_iter(),
+            subscribe,
+            json!({
+                "otlp": {
+                    "min_size": null,
+                    "max_size": 20,
+                    "sizer": "bytes",
+                },
+                "format": "otlp",
+                "flush_timeout": "0s"
+            }),
+            None::<fn(usize, &OtapPdata) -> AckPolicy>,
+            |_| {},
         );
     }
 
@@ -1754,12 +2170,6 @@ mod tests {
         extract_markers: impl Fn(&OtlpProtoMessage) -> Vec<u64> + Send + Clone + 'static,
         nack_position: usize,
     ) {
-        let cfg = json!({
-            "min_size": 4,
-            "max_size": 5,
-            "timeout": "1s",
-        });
-
         // Use inputs with unique markers
         let num_inputs = 20;
         let inputs_otlp: Vec<OtlpProtoMessage> = (0..num_inputs).map(create_marked_input).collect();
@@ -1770,43 +2180,64 @@ mod tests {
             .collect();
         events.push(TestEvent::Elapsed);
 
-        run_batch_processor_test(
-            events.into_iter(),
-            true,
-            cfg,
-            Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
-                if idx == nack_position {
-                    AckPolicy::Nack("test nack")
-                } else {
-                    AckPolicy::Ack
-                }
+        for cfg in [
+            json!({
+                "otap": {
+                    "min_size": 4,
+                    "max_size": 5,
+                    "sizer": "items",
+                },
+                "flush_timeout": "1s"
             }),
-            move |event_outputs| {
-                let mut max_marker: Option<u64> = None;
-
-                for output_msg in event_outputs {
-                    let markers: Vec<_> = output_msg
-                        .messages()
-                        .iter()
-                        .flat_map(&extract_markers)
-                        .collect();
-
-                    if markers.is_empty() {
-                        continue;
+            json!({
+                "otlp": {
+                    "min_size": 20,
+                    "max_size": 30,
+                    "sizer": "bytes",
+                },
+                "format": "otlp",
+                "flush_timeout": "1s"
+            }),
+        ] {
+            let extract_markers = extract_markers.clone();
+            run_batch_processor_test(
+                events.iter().cloned(),
+                true,
+                cfg,
+                Some(move |idx: usize, _output: &OtapPdata| -> AckPolicy {
+                    if idx == nack_position {
+                        AckPolicy::Nack("test nack")
+                    } else {
+                        AckPolicy::Ack
                     }
+                }),
+                move |event_outputs| {
+                    let mut max_marker: Option<u64> = None;
 
-                    let batch_min = *markers.iter().min().unwrap();
-                    let batch_max = *markers.iter().max().unwrap();
+                    for output_msg in event_outputs {
+                        let markers: Vec<_> = output_msg
+                            .messages()
+                            .iter()
+                            .flat_map(&extract_markers)
+                            .collect();
 
-                    // Verify in-line property: current batch's minimum must be > previous max
-                    if let Some(prev_max) = max_marker {
-                        assert!(batch_min > prev_max);
+                        if markers.is_empty() {
+                            continue;
+                        }
+
+                        let batch_min = *markers.iter().min().unwrap();
+                        let batch_max = *markers.iter().max().unwrap();
+
+                        // Verify in-line property: current batch's minimum must be > previous max
+                        if let Some(prev_max) = max_marker {
+                            assert!(batch_min > prev_max);
+                        }
+
+                        max_marker = Some(batch_max);
                     }
-
-                    max_marker = Some(batch_max);
-                }
-            },
-        );
+                },
+            );
+        }
     }
 
     /// Create traces with unique timestamps as markers
@@ -1925,5 +2356,105 @@ mod tests {
     #[test]
     fn test_logs_nack_ordering_position_3() {
         test_split_with_nack_ordering(create_marked_logs, extract_log_markers, 3);
+    }
+
+    /// Test Preserve mode: this can't use the same test harness used above because it
+    /// arranges mixed-format inputs.
+    #[test]
+    fn test_preserve_mode_mixed_formats() {
+        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+            "format": "preserve",
+            "otap": {
+                "min_size": 100,  // Won't trigger size flush
+                "max_size": 100,
+                "sizer": "items",
+            },
+            "otlp": {
+                "min_size": 10000,  // Won't trigger size flush
+                "max_size": 20000,
+                "sizer": "bytes",
+            },
+            "flush_timeout": "50ms"
+        }));
+
+        phase
+            .run_test(move |mut ctx| async move {
+                let (pipeline_tx, mut pipeline_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_tx);
+
+                // Create test data
+                let mut datagen = DataGenerator::new(1);
+                let logs1: OtlpProtoMessage = datagen.generate_logs().into();
+                let logs2: OtlpProtoMessage = datagen.generate_logs().into();
+
+                // Convert to OTAP format
+                let otlp_message1 = otlp_message_to_bytes(&logs1);
+                let otap_message2 = otlp_to_otap(&logs2);
+
+                let mut outputs = Vec::new();
+                let mut pending_delays: Vec<(Instant, Box<OtapPdata>)> = Vec::new();
+
+                // Send both
+                ctx.process(Message::PData(OtapPdata::new_default(otlp_message1.into())))
+                    .await
+                    .expect("process otap");
+
+                ctx.process(Message::PData(OtapPdata::new_default(otap_message2.into())))
+                    .await
+                    .expect("process otlp");
+
+                // Drain control channel for DelayData
+                while let Ok(PipelineControlMsg::DelayData { when, data, .. }) =
+                    pipeline_rx.try_recv()
+                {
+                    pending_delays.push((when, data));
+                }
+
+                assert!(
+                    ctx.drain_pdata().await.is_empty(),
+                    "no outputs before timeout"
+                );
+
+                // Trigger timeout
+                for (when, data) in pending_delays {
+                    ctx.process(Message::Control(NodeControlMsg::DelayedData { when, data }))
+                        .await
+                        .expect("process delayed");
+                }
+
+                // Drain outputs after timeout
+                let mut drained_outputs = ctx.drain_pdata().await;
+                outputs.append(&mut drained_outputs);
+                assert!(!outputs.is_empty(), "should have outputs after timeout");
+
+                // Verify both formats
+                let mut has_otap = false;
+                let mut has_otlp = false;
+                for output in &outputs {
+                    match output.signal_format() {
+                        SignalFormat::OtapRecords => has_otap = true,
+                        SignalFormat::OtlpBytes => has_otlp = true,
+                    }
+                }
+
+                assert!(has_otap, "should have OTAP output");
+                assert!(has_otlp, "should have OTLP output");
+
+                // Test equivalence.
+                let outputs: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
+
+                assert_equivalent(&[logs1, logs2], &outputs);
+
+                // Collect telemetry for verify_item_metrics.
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect telemetry");
+            })
+            .validate(move |_| async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                verify_item_metrics(&metrics_registry, SignalType::Logs, 6);
+            });
     }
 }
