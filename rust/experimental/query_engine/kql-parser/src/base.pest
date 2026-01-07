@@ -1,6 +1,10 @@
-// KQL Grammar is heavily influenced by the following sources:
+// Base KQL Grammar is heavily influenced by the following sources:
 // https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/KqlTokens.g4
 // https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/Kql.g4
+
+// Parsers that support KQL expressions can use this grammar and provide an additional grammar
+// with queries, tabular expressions, etc. that the language supports, as well as any special
+// language features.
 
 // These two special rules, when defined, are implicitly allowed at:
 // - at every sequence (split by ~)

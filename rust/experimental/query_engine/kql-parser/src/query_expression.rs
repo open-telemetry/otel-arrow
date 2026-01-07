@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::{Parser, iterators::Pair};
+use pest::Parser;
 
 use crate::{
     KqlPestParser, Rule, scalar_expression::parse_scalar_expression, shared_expressions::*,

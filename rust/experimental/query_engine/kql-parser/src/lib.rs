@@ -20,7 +20,7 @@ pub(crate) mod shared_expressions;
 pub mod tabular_expressions;
 
 pub mod base_parser;
-pub use scalar_expression::ScalarExprPrattParser;
+pub use scalar_expression::ScalarExprRules;
 
 pub use kql_parser::*;
 

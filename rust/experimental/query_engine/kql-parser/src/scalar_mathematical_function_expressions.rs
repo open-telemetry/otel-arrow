@@ -5,32 +5,35 @@ use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
-use crate::{base_parser::Rule, scalar_expression::*};
+use crate::{
+    base_parser::{Rule, TryAsBaseRule},
+    scalar_expression::*,
+};
 
-pub(crate) fn parse_math_unary_expressions<R, E>(
-    math_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_math_unary_expressions<'a, R>(
+    math_unary_expressions_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = math_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule().try_into().map_err(|e| e.into())? {
+    match rule.try_as_base_rule()? {
         Rule::negate_expression => parse_negate_expression(rule, scope),
         Rule::bin_expression => parse_bin_expression(rule, scope),
         _ => panic!("Unexpected rule in math_unary_expressions: {rule}"),
     }
 }
 
-fn parse_negate_expression<R, E>(
-    negate_expression_rule: Pair<R>,
+fn parse_negate_expression<'a, R>(
+    negate_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&negate_expression_rule);
     let mut inner = negate_expression_rule.into_inner();
@@ -45,13 +48,13 @@ where
     )))
 }
 
-fn parse_bin_expression<R, E>(
-    bin_expression_rule: Pair<R>,
+fn parse_bin_expression<'a, R>(
+    bin_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&bin_expression_rule);
 

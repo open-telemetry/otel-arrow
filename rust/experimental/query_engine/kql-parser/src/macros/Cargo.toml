@@ -1,5 +1,5 @@
 [package]
-name = "data_engine_parser_macros"
+name = "data_engine_kql_parser_macros"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

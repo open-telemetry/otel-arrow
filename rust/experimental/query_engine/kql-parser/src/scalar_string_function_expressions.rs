@@ -6,21 +6,21 @@ use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    base_parser::Rule,
-    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+    base_parser::{Rule, TryAsBaseRule},
+    scalar_expression::{ScalarExprRules, parse_scalar_expression},
 };
 
-pub(crate) fn parse_string_unary_expressions<R, E>(
-    string_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_string_unary_expressions<'a, R>(
+    string_unary_expressions_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = string_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule().try_into().map_err(|e| e.into())? {
+    match rule.try_as_base_rule()? {
         Rule::strlen_expression => parse_strlen_expression(rule, scope),
         Rule::replace_string_expression => parse_replace_string_expression(rule, scope),
         Rule::substring_expression => parse_substring_expression(rule, scope),
@@ -31,13 +31,13 @@ where
     }
 }
 
-fn parse_strlen_expression<R, E>(
-    strlen_expression_rule: Pair<R>,
+fn parse_strlen_expression<'a, R>(
+    strlen_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&strlen_expression_rule);
 
@@ -63,13 +63,13 @@ where
     )))
 }
 
-fn parse_replace_string_expression<R, E>(
-    replace_string_expression_rule: Pair<R>,
+fn parse_replace_string_expression<'a, R>(
+    replace_string_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&replace_string_expression_rule);
 
@@ -85,13 +85,13 @@ where
         ),
     )));
 
-    fn parse_and_validate_string_rule<R, E>(
-        rule: Pair<R>,
+    fn parse_and_validate_string_rule<'a, R>(
+        rule: Pair<'a, R>,
         scope: &dyn ParserScope,
     ) -> Result<ScalarExpression, ParserError>
     where
-        R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-        E: Into<ParserError>,
+        R: RuleType + ScalarExprRules,
+        Pair<'a, R>: TryAsBaseRule,
     {
         let location = to_query_location(&rule);
 
@@ -111,13 +111,13 @@ where
     }
 }
 
-fn parse_substring_expression<R, E>(
-    substring_expression_rule: Pair<R>,
+fn parse_substring_expression<'a, R>(
+    substring_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&substring_expression_rule);
 
@@ -165,13 +165,13 @@ where
     )))
 }
 
-fn parse_strcat_expression<R, E>(
-    strcat_expression_rule: Pair<R>,
+fn parse_strcat_expression<'a, R>(
+    strcat_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&strcat_expression_rule);
 
@@ -199,13 +199,13 @@ where
     )))
 }
 
-fn parse_strcat_delim_expression<R, E>(
-    strcat_delim_expression_rule: Pair<R>,
+fn parse_strcat_delim_expression<'a, R>(
+    strcat_delim_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&strcat_delim_expression_rule);
 
@@ -232,13 +232,13 @@ where
     )))
 }
 
-fn parse_extract_expression<R, E>(
-    extract_expression_rule: Pair<R>,
+fn parse_extract_expression<'a, R>(
+    extract_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&extract_expression_rule);
 

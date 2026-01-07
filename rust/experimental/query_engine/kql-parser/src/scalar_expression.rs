@@ -1,18 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    sync::LazyLock,
-};
+use std::collections::{BTreeMap, HashMap};
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair, pratt_parser::*};
 
 use crate::{
-    base_parser::{self, Rule},
-    kql_parser,
+    base_parser::{Rule, TryAsBaseRule},
     logical_expressions::to_logical_expression,
     scalar_array_function_expressions::*,
     scalar_conditional_function_expressions::*,
@@ -25,111 +21,54 @@ use crate::{
     scalar_temporal_function_expressions::*,
 };
 
-// static PRATT_PARSER: LazyLock<PrattParser<Rule>> = LazyLock::new(|| {
-//     use Assoc::*;
-//     use Rule::*;
-
-//     // Lowest precedence first
-//     PrattParser::new()
-//         // or
-//         .op(Op::infix(or_token, Left))
-//         // and
-//         .op(Op::infix(and_token, Left))
-//         // == !=
-//         .op(Op::infix(equals_token, Left)
-//             | Op::infix(equals_insensitive_token, Left)
-//             | Op::infix(not_equals_token, Left)
-//             | Op::infix(not_equals_insensitive_token, Left)
-//             | Op::infix(invalid_equals_token, Left))
-//         // <= >= < >
-//         .op(Op::infix(less_than_or_equal_to_token, Left)
-//             | Op::infix(greater_than_or_equal_to_token, Left)
-//             | Op::infix(less_than_token, Left)
-//             | Op::infix(greater_than_token, Left))
-//         // contains & has
-//         .op(Op::infix(not_contains_cs_token, Left)
-//             | Op::infix(not_contains_token, Left)
-//             | Op::infix(not_has_cs_token, Left)
-//             | Op::infix(not_has_token, Left)
-//             | Op::infix(contains_cs_token, Left)
-//             | Op::infix(contains_token, Left)
-//             | Op::infix(has_cs_token, Left)
-//             | Op::infix(has_token, Left))
-//         // in
-//         .op(Op::infix(not_in_insensitive_token, Left)
-//             | Op::infix(not_in_token, Left)
-//             | Op::infix(in_insensitive_token, Left)
-//             | Op::infix(in_token, Left))
-//         // matches
-//         .op(Op::infix(matches_regex_token, Left))
-//         // + -
-//         .op(Op::infix(plus_token, Left) | Op::infix(minus_token, Left))
-//         // * / %
-//         .op(Op::infix(multiply_token, Left)
-//             | Op::infix(divide_token, Left)
-//             | Op::infix(modulo_token, Left))
-
-//     // ^ ** (right-associative)
-//     //.op(Op::infix(power, Right))
-// });
-
-// TODO comment on what this is doing ..
-pub trait ScalarExprPrattParser: RuleType {
+/// Trait for parser Rule types that can be used to parse scalar expressions.
+pub trait ScalarExprRules: RuleType + 'static {
+    /// Returns the PrattParser configured for parsing scalar expressions.
+    /// 
+    /// The scalar expression uses a pratt parser to handle operator precedence, but because
+    /// pest's pratt parser takes the `Pair`, and not just the `Rule`, and pest doesn't provide
+    /// a way to have a common `Pair` type across different parser `Rule` types, we need a way to
+    /// access the pratt parser for each derived parser Rule type.
+    /// 
+    /// This can be derived for the rule type using the macros in the ./src/macros crate.
     fn pratt_parser() -> &'static PrattParser<Self>;
 }
 
-// impl ScalarExprPrattParser for base_parser::Rule {
-//     fn pratt_parser() -> &'static PrattParser<Self> {
-//         &PRATT_PARSER
-//     }
-// }
-
-// impl ScalarExprPrattParser for kql_parser::Rule {
-//     fn pratt_parser() -> &'static PrattParser<Self> {
-//         todo!()
-//     }
-// }
-
-pub(crate) fn parse_scalar_expression<R, E>(
-    scalar_expression_rule: Pair<R>,
+pub(crate) fn parse_scalar_expression<'a, R>(
+    scalar_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E> + ScalarExprPrattParser + 'static,
-    E: Into<ParserError>,
+    Pair<'a, R>: TryAsBaseRule,
+    R: ScalarExprRules,
 {
     R::pratt_parser()
-        // TODO no unwrap
-        .map_primary(
-            |primary| match primary.as_rule().try_into().map_err(|e| e.into())? {
-                Rule::scalar_unary_expression => parse_scalar_unary_expression(primary, scope),
-                Rule::scalar_expression => parse_scalar_expression(primary, scope),
-                Rule::scalar_list_expression => {
-                    let location = to_query_location(&primary);
+        .map_primary(|primary| match primary.try_as_base_rule()? {
+            Rule::scalar_unary_expression => parse_scalar_unary_expression(primary, scope),
+            Rule::scalar_expression => parse_scalar_expression(primary, scope),
+            Rule::scalar_list_expression => {
+                let location = to_query_location(&primary);
 
-                    let mut values = Vec::new();
+                let mut values = Vec::new();
 
-                    for rule in primary.into_inner() {
-                        let scalar = parse_scalar_expression(rule, scope)?;
+                for rule in primary.into_inner() {
+                    let scalar = parse_scalar_expression(rule, scope)?;
 
-                        values.push(scalar);
-                    }
-
-                    Ok(ScalarExpression::Collection(
-                        CollectionScalarExpression::List(ListScalarExpression::new(
-                            location, values,
-                        )),
-                    ))
+                    values.push(scalar);
                 }
-                _ => panic!("Unexpected rule in scalar_expression: {primary}"),
-            },
-        )
+
+                Ok(ScalarExpression::Collection(
+                    CollectionScalarExpression::List(ListScalarExpression::new(location, values)),
+                ))
+            }
+            _ => panic!("Unexpected rule in scalar_expression: {primary}"),
+        })
         .map_infix(|lhs, op, rhs| {
             let location = to_query_location(&op);
             let lhs = lhs?;
             let rhs = rhs?;
 
-            Ok(match op.as_rule().try_into().map_err(|e| e.into())? {
+            Ok(match op.try_as_base_rule()? {
                 Rule::equals_token => ScalarExpression::Logical(
                     LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                         location, lhs, rhs, false,
@@ -322,17 +261,17 @@ where
         .parse(scalar_expression_rule.into_inner())
 }
 
-pub(crate) fn parse_scalar_unary_expression<R, E>(
-    scalar_unary_expression_rule: Pair<R>,
+pub(crate) fn parse_scalar_unary_expression<'a, R>(
+    scalar_unary_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E> + ScalarExprPrattParser + 'static,
-    E: Into<ParserError>,
+    R: ScalarExprRules + 'static,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = scalar_unary_expression_rule.into_inner().next().unwrap();
 
-    Ok(match rule.as_rule().try_into().map_err(|e| e.into())? {
+    Ok(match rule.try_as_base_rule()? {
         Rule::type_unary_expressions => {
             ScalarExpression::Static(parse_type_unary_expressions(rule)?)
         }
@@ -482,7 +421,7 @@ where
                 let mut rules = argument_rule.into_inner();
 
                 while let Some(argument_rule) = rules.next() {
-                    match argument_rule.as_rule().try_into().map_err(|e| e.into())? {
+                    match argument_rule.try_as_base_rule()? {
                         Rule::identifier_literal => {
                             found_named = true;
 

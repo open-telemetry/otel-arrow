@@ -11,7 +11,7 @@ rust-version.workspace = true
 [dependencies]
 data_engine_expressions = { workspace = true }
 data_engine_parser_abstractions = { workspace = true }
-data_engine_parser_macros = { workspace = true }
+data_engine_kql_parser_macros = { workspace = true }
 data_engine_kql_parser = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }

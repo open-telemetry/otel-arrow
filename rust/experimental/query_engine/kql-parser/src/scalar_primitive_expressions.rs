@@ -9,19 +9,19 @@ use data_engine_parser_abstractions::*;
 use pest::RuleType;
 use pest::iterators::Pair;
 
-use crate::base_parser::Rule;
+use crate::base_parser::{Rule, TryAsBaseRule};
 use crate::map_kql_errors;
-use crate::scalar_expression::{ScalarExprPrattParser, parse_scalar_expression};
+use crate::scalar_expression::{ScalarExprRules, parse_scalar_expression};
 
-pub(crate) fn parse_type_unary_expressions<R, E>(
-    type_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_type_unary_expressions<'a, R>(
+    type_unary_expressions_rule: Pair<'a, R>,
 ) -> Result<StaticScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E>,
-    E: Into<ParserError>,
+    R: RuleType,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = type_unary_expressions_rule.into_inner().next().unwrap();
-    Ok(match rule.as_rule().try_into().map_err(|e| e.into())? {
+    Ok(match rule.try_as_base_rule()? {
         Rule::null_literal => parse_standard_null_literal(rule),
         Rule::real_expression => parse_real_expression(rule)?,
         Rule::datetime_expression => parse_datetime_expression(rule)?,
@@ -93,18 +93,18 @@ where
     StaticScalarExpression::String(StringScalarExpression::new(query_location, s.as_str()))
 }
 
-fn parse_datetime_expression<R, E>(
-    datetime_expression_rule: Pair<R>,
+fn parse_datetime_expression<'a, R>(
+    datetime_expression_rule: Pair<'a, R>,
 ) -> Result<StaticScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E>,
-    E: Into<ParserError>,
+    R: RuleType,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&datetime_expression_rule);
 
     let datetime_rule = datetime_expression_rule.into_inner().next().unwrap();
 
-    let original_value: String = match datetime_rule.as_rule().try_into().map_err(|e| e.into())? {
+    let original_value: String = match datetime_rule.try_as_base_rule()? {
         Rule::string_literal => match parse_string_literal(datetime_rule) {
             StaticScalarExpression::String(v) => v.get_value().into(),
             _ => panic!("Unexpected type returned from parse_string_literal"),
@@ -129,12 +129,12 @@ where
     }
 }
 
-fn parse_timespan_expression<R, E>(
-    time_expression_rule: Pair<R>,
+fn parse_timespan_expression<'a, R>(
+    time_expression_rule: Pair<'a, R>,
 ) -> Result<StaticScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E>,
-    E: Into<ParserError>,
+    R: RuleType,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&time_expression_rule);
 
@@ -142,7 +142,7 @@ where
 
     let first_rule = inner_rules.next().unwrap();
 
-    let string_value = match first_rule.as_rule().try_into().map_err(|e| e.into())? {
+    let string_value = match first_rule.try_as_base_rule()? {
         Rule::string_literal => match parse_string_literal(first_rule) {
             StaticScalarExpression::String(v) => v,
             _ => panic!("Unexpected type returned from parse_string_literal"),
@@ -249,12 +249,12 @@ where
     }
 }
 
-fn parse_regex_expression<R, E>(
-    regex_expression_rule: Pair<R>,
+fn parse_regex_expression<'a, R>(
+    regex_expression_rule: Pair<'a, R>,
 ) -> Result<StaticScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E>,
-    E: Into<ParserError>,
+    R: RuleType,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&regex_expression_rule);
 
@@ -277,29 +277,25 @@ where
     )))
 }
 
-fn parse_dynamic_expression<R, E>(
-    dynamic_expression_rule: Pair<R>,
+fn parse_dynamic_expression<'a, R>(
+    dynamic_expression_rule: Pair<'a, R>,
 ) -> Result<StaticScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E>,
-    E: Into<ParserError>,
+    R: RuleType,
+    Pair<'a, R>: TryAsBaseRule,
 {
     return parse_dynamic_inner_expression(dynamic_expression_rule.into_inner().next().unwrap());
 
-    fn parse_dynamic_inner_expression<R, E>(
-        dynamic_inner_expression_rule: Pair<R>,
+    fn parse_dynamic_inner_expression<'a, R>(
+        dynamic_inner_expression_rule: Pair<'a, R>,
     ) -> Result<StaticScalarExpression, ParserError>
     where
-        R: RuleType + TryInto<Rule, Error = E>,
-        E: Into<ParserError>,
+        R: RuleType,
+        Pair<'a, R>: TryAsBaseRule,
     {
         let query_location = to_query_location(&dynamic_inner_expression_rule);
 
-        match dynamic_inner_expression_rule
-            .as_rule()
-            .try_into()
-            .map_err(|e| e.into())?
-        {
+        match dynamic_inner_expression_rule.try_as_base_rule()? {
             Rule::type_unary_expressions => {
                 Ok(parse_type_unary_expressions(dynamic_inner_expression_rule)?)
             }
@@ -349,18 +345,18 @@ where
     }
 }
 
-fn parse_real_expression<R, E>(
-    real_expression_rule: Pair<R>,
+fn parse_real_expression<'a, R>(
+    real_expression_rule: Pair<'a, R>,
 ) -> Result<StaticScalarExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E>,
-    E: Into<ParserError>,
+    R: RuleType,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&real_expression_rule);
 
     let real_rule = real_expression_rule.into_inner().next().unwrap();
 
-    match real_rule.as_rule().try_into().map_err(|e| e.into())? {
+    match real_rule.try_as_base_rule()? {
         Rule::positive_infinity_token => Ok(StaticScalarExpression::Double(
             DoubleScalarExpression::new(query_location, f64::INFINITY),
         )),
@@ -397,14 +393,14 @@ where
 ///   on [`ParserState`].
 ///
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
-pub(crate) fn parse_accessor_expression<R, E>(
-    accessor_expression_rule: Pair<R>,
+pub(crate) fn parse_accessor_expression<'a, R>(
+    accessor_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
     allow_root_scalar: bool,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&accessor_expression_rule);
 
@@ -416,11 +412,7 @@ where
     let mut root_full_identifier_literal_depth = 0;
     let mut root_full_identifier_literal = String::new();
 
-    let root_accessor_identity = match root_accessor_identity_rule
-        .as_rule()
-        .try_into()
-        .map_err(|e| e.into())?
-    {
+    let root_accessor_identity = match root_accessor_identity_rule.try_as_base_rule()? {
         Rule::string_literal => match parse_string_literal(root_accessor_identity_rule) {
             StaticScalarExpression::String(v) => {
                 root_full_identifier_literal_complete = true;
@@ -451,7 +443,7 @@ where
 
         let pair = accessor.unwrap();
         let pair_value = pair.as_str();
-        let add_to_root_literal = match pair.as_rule().try_into().map_err(|e| e.into())? {
+        let add_to_root_literal = match pair.try_as_base_rule()? {
             Rule::integer_literal => {
                 match parse_standard_integer_literal(pair)? {
                     StaticScalarExpression::Integer(v) => {

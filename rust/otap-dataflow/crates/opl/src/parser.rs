@@ -5,15 +5,14 @@
 use data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState,
 };
-use data_engine_parser_macros::{BaseRuleCompatible, ScalarExprPrattParser};
-use pest::{Parser as _, RuleType, iterators::Pair};
+use data_engine_kql_parser_macros::BaseRuleCompatible;
+use pest::Parser as _;
 
 use crate::parser::tabular_expression::parse_tabular_expression;
 
-mod query_expression;
 mod tabular_expression;
 
-#[derive(pest_derive::Parser, BaseRuleCompatible, ScalarExprPrattParser)]
+#[derive(pest_derive::Parser, BaseRuleCompatible)]
 #[grammar = "../../../../experimental/query_engine/kql-parser/src/base.pest"]
 #[grammar = "opl.pest"]
 struct OplPestParser {}
@@ -39,9 +38,6 @@ impl Parser for OplParser {
         let query_rule = parser_rules.next().unwrap();
         for rule in query_rule.into_inner() {
             match rule.as_rule() {
-                Rule::variable_definition_expression => {
-                    todo!("handle variable expression")
-                }
                 Rule::tabular_expression => {
                     let expressions = match parse_tabular_expression(rule, &state) {
                         Ok(exprs) => exprs,
@@ -78,7 +74,6 @@ mod test {
     #[test]
     fn test_olp_parser() {
         let result = OplParser::parse("logs | where x == 1; logs | where x == 2");
-        // let result = OplParser::parse("");
         assert!(result.is_ok());
 
         println!("result: {:#?}", result.unwrap());

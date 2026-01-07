@@ -1,5 +1,6 @@
-// TODO put the comments back
-
+// KQL Grammar. This inherits rules from the base grammar and defines
+// the queries, tabular expressions, and other language features unique
+// to this KQL parser implementation.
 
 summarize_expression = {
     "summarize"
@@ -7,7 +8,6 @@ summarize_expression = {
         ~ ("by" ~ group_by_expression ~ ("," ~ group_by_expression)*)?
         ~ ("|" ~ tabular_expressions)*
 }
-
 
 tabular_expressions = _{
     extend_expression

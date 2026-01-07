@@ -6,33 +6,34 @@ use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    base_parser::Rule, logical_expressions::parse_logical_expression,
-    scalar_expression::ScalarExprPrattParser,
+    base_parser::{Rule, TryAsBaseRule},
+    logical_expressions::parse_logical_expression,
+    scalar_expression::ScalarExprRules,
 };
 
-pub(crate) fn parse_logical_unary_expressions<R, E>(
-    logical_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_logical_unary_expressions<'a, R>(
+    logical_unary_expressions_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = logical_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule().try_into().map_err(|e| e.into())? {
+    match rule.try_as_base_rule()? {
         Rule::not_expression => parse_not_expression(rule, scope),
         _ => panic!("Unexpected rule in logical_unary_expressions: {rule}"),
     }
 }
 
-fn parse_not_expression<R, E>(
-    not_expression_rule: Pair<R>,
+fn parse_not_expression<'a, R>(
+    not_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&not_expression_rule);
 

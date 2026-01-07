@@ -53,7 +53,7 @@ otap-df-otap = { path = "crates/otap" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
 data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
-data_engine_parser_macros = { path = "../experimental/query_engine/kql-parser/src/macros" }
+data_engine_kql_parser_macros = { path = "../experimental/query_engine/kql-parser/src/macros" }
 data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
 
 ahash = "0.8.11"

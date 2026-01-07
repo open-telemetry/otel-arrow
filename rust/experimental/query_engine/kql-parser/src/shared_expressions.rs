@@ -6,15 +6,17 @@ use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    base_parser::Rule,
-    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+    base_parser::{Rule, TryAsBaseRule},
+    scalar_expression::{ScalarExprRules, parse_scalar_expression},
     scalar_primitive_expressions::parse_accessor_expression,
 };
 
-pub(crate) fn parse_typeof_expression<R, E>(typeof_expression_rule: Pair<R>) -> Option<ValueType>
+pub(crate) fn parse_typeof_expression<'a, R>(
+    typeof_expression_rule: Pair<'a, R>,
+) -> Option<ValueType>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let typeof_rules = typeof_expression_rule.into_inner();
 
@@ -39,13 +41,13 @@ pub(crate) fn parse_type_literal(type_literal: &str) -> Option<ValueType> {
     }
 }
 
-pub(crate) fn parse_source_assignment_expression<R, E>(
-    assignment_expression_rule: Pair<R>,
+pub(crate) fn parse_source_assignment_expression<'a, R>(
+    assignment_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<(QueryLocation, ScalarExpression, SourceScalarExpression), ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&assignment_expression_rule);
 
@@ -55,11 +57,7 @@ where
     let destination_rule_location = to_query_location(&destination_rule);
     let destination_rule_str = destination_rule.as_str();
 
-    let accessor = match destination_rule
-        .as_rule()
-        .try_into()
-        .map_err(|e| e.into())?
-    {
+    let accessor = match destination_rule.try_as_base_rule()? {
         // Note: Root-level static accessors are not valid in an assignment
         // expression so allow_root_scalar=false is passed here. Example:
         // accessor(some_constant1) = [expression] cannot be folded as
@@ -97,7 +95,7 @@ where
 
     let source_rule = assignment_rules.next().unwrap();
 
-    let scalar = match source_rule.as_rule().try_into().map_err(|e| e.into())? {
+    let scalar = match source_rule.try_as_base_rule()? {
         Rule::scalar_expression => parse_scalar_expression(source_rule, scope)?,
         _ => panic!("Unexpected rule in assignment_expression: {source_rule}"),
     };
@@ -105,13 +103,13 @@ where
     Ok((query_location, scalar, destination))
 }
 
-pub(crate) fn parse_variable_definition_expression<R, E>(
-    variable_definition_expression_rule: Pair<R>,
+pub(crate) fn parse_variable_definition_expression<'a, R>(
+    variable_definition_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&variable_definition_expression_rule);
 

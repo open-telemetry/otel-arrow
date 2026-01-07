@@ -6,33 +6,33 @@ use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    base_parser::Rule,
-    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+    base_parser::{Rule, TryAsBaseRule},
+    scalar_expression::{ScalarExprRules, parse_scalar_expression},
 };
 
-pub(crate) fn parse_temporal_unary_expressions<R, E>(
-    temporal_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_temporal_unary_expressions<'a, R>(
+    temporal_unary_expressions_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = temporal_unary_expressions_rule.into_inner().next().unwrap();
 
-    match rule.as_rule().try_into().map_err(|e| e.into())? {
+    match rule.try_as_base_rule()? {
         Rule::now_expression => parse_now_expression(rule, scope),
         _ => panic!("Unexpected rule in temporal_unary_expressions: {rule}"),
     }
 }
 
-fn parse_now_expression<R, E>(
-    now_expression_rule: Pair<R>,
+fn parse_now_expression<'a, R>(
+    now_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&now_expression_rule);
 
@@ -42,7 +42,7 @@ where
         None => Ok(ScalarExpression::Temporal(TemporalScalarExpression::Now(
             NowScalarExpression::new(query_location),
         ))),
-        Some(r) => match r.as_rule().try_into().map_err(|e| e.into())? {
+        Some(r) => match r.try_as_base_rule()? {
             Rule::scalar_expression => {
                 let offset = parse_scalar_expression(r, scope)?;
 

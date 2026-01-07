@@ -6,25 +6,25 @@ use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    base_parser::Rule,
+    base_parser::{Rule, TryAsBaseRule},
     logical_expressions::parse_logical_expression,
-    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+    scalar_expression::{ScalarExprRules, parse_scalar_expression},
 };
 
-pub(crate) fn parse_conditional_unary_expressions<R, E>(
-    conditional_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_conditional_unary_expressions<'a, R>(
+    conditional_unary_expressions_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = conditional_unary_expressions_rule
         .into_inner()
         .next()
         .unwrap();
 
-    match rule.as_rule().try_into().map_err(|e| e.into())? {
+    match rule.try_as_base_rule()? {
         Rule::conditional_expression => parse_conditional_expression(rule, scope),
         Rule::case_expression => parse_case_expression(rule, scope),
         Rule::coalesce_expression => parse_coalesce_expression(rule, scope),
@@ -32,13 +32,13 @@ where
     }
 }
 
-fn parse_conditional_expression<R, E>(
-    conditional_expression_rule: Pair<R>,
+fn parse_conditional_expression<'a, R>(
+    conditional_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&conditional_expression_rule);
 
@@ -60,13 +60,13 @@ where
     ))
 }
 
-fn parse_case_expression<R, E>(
-    case_expression_rule: Pair<R>,
+fn parse_case_expression<'a, R>(
+    case_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&case_expression_rule);
 
@@ -119,13 +119,13 @@ where
     )))
 }
 
-fn parse_coalesce_expression<R, E>(
-    coalesce_expression_rule: Pair<R>,
+fn parse_coalesce_expression<'a, R>(
+    coalesce_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&coalesce_expression_rule);
 

@@ -3,20 +3,20 @@
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::{RuleType, iterators::Pair};
+use pest::iterators::Pair;
 
 use crate::{
-    base_parser::Rule,
-    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+    base_parser::TryAsBaseRule,
+    scalar_expression::{ScalarExprRules, parse_scalar_expression},
 };
 
-pub(crate) fn parse_logical_expression<R, E>(
-    logical_expression_rule: Pair<R>,
+pub(crate) fn parse_logical_expression<'a, R>(
+    logical_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<LogicalExpression, ParserError>
 where
-    R: RuleType + TryInto<Rule, Error = E> + ScalarExprPrattParser + 'static,
-    E: Into<ParserError>,
+    Pair<'a, R>: TryAsBaseRule,
+    R: ScalarExprRules + 'static,
 {
     let scalar = parse_scalar_expression(logical_expression_rule, scope)?;
 
@@ -49,7 +49,7 @@ mod tests {
     use pest::Parser;
     use regex::Regex;
 
-    use crate::base_parser::BasePestParser;
+    use crate::base_parser::{BasePestParser, Rule};
 
     use super::*;
 

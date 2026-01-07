@@ -6,24 +6,24 @@ use data_engine_parser_abstractions::*;
 use pest::{RuleType, iterators::Pair};
 
 use crate::{
-    base_parser::Rule,
-    scalar_expression::{ScalarExprPrattParser, parse_scalar_expression},
+    base_parser::{Rule, TryAsBaseRule},
+    scalar_expression::{ScalarExprRules, parse_scalar_expression},
 };
 
-pub(crate) fn parse_conversion_unary_expressions<R, E>(
-    conversion_unary_expressions_rule: Pair<R>,
+pub(crate) fn parse_conversion_unary_expressions<'a, R>(
+    conversion_unary_expressions_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let rule = conversion_unary_expressions_rule
         .into_inner()
         .next()
         .unwrap();
 
-    match rule.as_rule().try_into().map_err(|e| e.into())? {
+    match rule.try_as_base_rule()? {
         Rule::tostring_expression => parse_tostring_expression(rule, scope),
         Rule::toint_expression => parse_toint_expression(rule, scope),
         Rule::tobool_expression => parse_tobool_expression(rule, scope),
@@ -37,13 +37,13 @@ where
     }
 }
 
-fn parse_tostring_expression<R, E>(
-    tostring_rule: Pair<R>,
+fn parse_tostring_expression<'a, R>(
+    tostring_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&tostring_rule);
     let mut inner = tostring_rule.into_inner();
@@ -58,13 +58,13 @@ where
     )))
 }
 
-fn parse_toint_expression<R, E>(
-    toint_rule: Pair<R>,
+fn parse_toint_expression<'a, R>(
+    toint_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&toint_rule);
     let mut inner = toint_rule.into_inner();
@@ -79,13 +79,13 @@ where
     )))
 }
 
-fn parse_tobool_expression<R, E>(
-    tobool_rule: Pair<R>,
+fn parse_tobool_expression<'a, R>(
+    tobool_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&tobool_rule);
     let mut inner = tobool_rule.into_inner();
@@ -98,13 +98,13 @@ where
     )))
 }
 
-fn parse_tofloat_expression<R, E>(
-    tofloat_rule: Pair<R>,
+fn parse_tofloat_expression<'a, R>(
+    tofloat_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&tofloat_rule);
     let mut inner = tofloat_rule.into_inner();
@@ -117,13 +117,13 @@ where
     )))
 }
 
-fn parse_tolong_expression<R, E>(
-    tolong_rule: Pair<R>,
+fn parse_tolong_expression<'a, R>(
+    tolong_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&tolong_rule);
     let mut inner = tolong_rule.into_inner();
@@ -136,13 +136,13 @@ where
     )))
 }
 
-fn parse_toreal_expression<R, E>(
-    toreal_rule: Pair<R>,
+fn parse_toreal_expression<'a, R>(
+    toreal_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&toreal_rule);
     let mut inner = toreal_rule.into_inner();
@@ -155,13 +155,13 @@ where
     )))
 }
 
-fn parse_todouble_expression<R, E>(
-    todouble_rule: Pair<R>,
+fn parse_todouble_expression<'a, R>(
+    todouble_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&todouble_rule);
     let mut inner = todouble_rule.into_inner();
@@ -174,13 +174,13 @@ where
     )))
 }
 
-fn parse_todatetime_expression<R, E>(
-    todatetime_rule: Pair<R>,
+fn parse_todatetime_expression<'a, R>(
+    todatetime_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&todatetime_rule);
     let mut inner = todatetime_rule.into_inner();
@@ -196,13 +196,13 @@ where
     ))
 }
 
-fn parse_totimespan_expression<R, E>(
-    totimespan_rule: Pair<R>,
+fn parse_totimespan_expression<'a, R>(
+    totimespan_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<ScalarExpression, ParserError>
 where
-    R: RuleType + ScalarExprPrattParser + TryInto<Rule, Error = E> + 'static,
-    E: Into<ParserError>,
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
 {
     let query_location = to_query_location(&totimespan_rule);
     let mut inner = totimespan_rule.into_inner();
