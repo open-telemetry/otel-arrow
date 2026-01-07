@@ -125,7 +125,6 @@ pub(crate) fn parse_query(
                                 Rule::type_literal => {
                                     let value_type = parse_type_literal(table_schema_or_type.as_str());
                                     if let Some(default_value) = rules.next() {
-
                                         match parse_scalar_expression(default_value, &state) {
                                             Ok(mut s) => {
                                                 match s.try_resolve_static(&state.get_pipeline().get_resolution_scope()) {

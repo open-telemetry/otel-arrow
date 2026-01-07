@@ -15,7 +15,7 @@
 //!
 //! This module also defines the [`TryAsBaseRule`] trait for converting derived parser `Rule` to the
 //! base parser `Rule`. It's not necessary to implement this trait manually, as it can be derived
-//! ```no_run
+//! ```ignore`
 //! use data_engine_kql_parser_macros::BaseRuleCompatible;
 //!
 //! #[derive(pest_derive::Parser, BaseRuleCompatible)]
