@@ -31,7 +31,7 @@ pub enum ParserError {
     },
 
     #[error("{0}")]
-    RuleConversionError(String)
+    RuleConversionError(String),
 }
 
 impl From<&ExpressionError> for ParserError {
