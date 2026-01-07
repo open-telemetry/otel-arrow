@@ -36,6 +36,7 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
+use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
@@ -82,8 +83,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
-        // Note: Raw logging is initialized early in main.rs via init_raw_logging().
-        // OpenTelemetry client integration will be added in a future phase.
+        let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -257,7 +257,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        // Note: OpenTelemetry client shutdown will be added when the client is re-enabled.
+        opentelemetry_client.shutdown()?;
 
         Ok(())
     }
