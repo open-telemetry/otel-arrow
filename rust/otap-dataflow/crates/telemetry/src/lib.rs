@@ -49,6 +49,16 @@ pub mod semconv;
 #[doc(hidden)]
 pub use internal_events::_private;
 
+// Re-export tracing span macros and types for crates that need span instrumentation.
+// This allows dependent crates to use spans without adding tracing as a direct dependency.
+// Re-exported with otel_ prefix for naming consistency with otel_info!, otel_warn!, etc.
+pub use tracing::Span as OtelSpan;
+pub use tracing::debug_span as otel_debug_span;
+pub use tracing::error_span as otel_error_span;
+pub use tracing::info_span as otel_info_span;
+pub use tracing::trace_span as otel_trace_span;
+pub use tracing::warn_span as otel_warn_span;
+
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.

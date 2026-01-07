@@ -94,7 +94,7 @@ impl ConsoleWriter {
         if self.use_ansi {
             let level_color = Self::level_color(record.severity_level);
             format!(
-                "{}{}{}  {}{:5}{}  {}{}{}: {}",
+                "{}{}{}  {}{:5}{}  {}{}{}: {}\n",
                 ANSI_DIM,
                 Self::format_timestamp(record.timestamp_ns),
                 ANSI_RESET,
@@ -108,7 +108,7 @@ impl ConsoleWriter {
             )
         } else {
             format!(
-                "{}  {:5}  {}: {}",
+                "{}  {:5}  {}: {}\n",
                 Self::format_timestamp(record.timestamp_ns),
                 record.severity_text,
                 event_name,
@@ -458,11 +458,11 @@ mod tests {
 
     #[test]
     fn test_level_to_severity() {
-        assert_eq!(ConsoleWriter::level_to_severity(&Level::TRACE), 1);
-        assert_eq!(ConsoleWriter::level_to_severity(&Level::DEBUG), 5);
-        assert_eq!(ConsoleWriter::level_to_severity(&Level::INFO), 9);
-        assert_eq!(ConsoleWriter::level_to_severity(&Level::WARN), 13);
-        assert_eq!(ConsoleWriter::level_to_severity(&Level::ERROR), 17);
+        assert_eq!(Layer::level_to_severity(&Level::TRACE), 1);
+        assert_eq!(Layer::level_to_severity(&Level::DEBUG), 5);
+        assert_eq!(Layer::level_to_severity(&Level::INFO), 9);
+        assert_eq!(Layer::level_to_severity(&Level::WARN), 13);
+        assert_eq!(Layer::level_to_severity(&Level::ERROR), 17);
     }
 
     #[test]
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn test_layer_integration() {
         // Create the layer and subscriber
-        let layer = Layer::stderr();
+        let layer = Layer::new(ConsoleWriter::no_color());
         let subscriber = tracing_subscriber::registry().with(layer);
 
         // Set as default for this thread temporarily

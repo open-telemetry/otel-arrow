@@ -109,7 +109,7 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize raw logging as early as possible so that log messages during
     // config parsing and validation appear well formatted.
-    otap_df_telemetry::init_raw_logging();
+    otap_df_telemetry::self_tracing::init_raw_logging();
 
     // Initialize rustls crypto provider (required for rustls 0.23+)
     // We use ring as the default provider
