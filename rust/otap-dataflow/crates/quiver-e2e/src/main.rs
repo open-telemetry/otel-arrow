@@ -142,6 +142,10 @@ struct Args {
     /// WAL flush interval in milliseconds (0 = flush after every write)
     #[arg(long, default_value = "25")]
     wal_flush_interval_ms: u64,
+
+    /// Disable WAL for higher throughput (data only durable after segment finalization)
+    #[arg(long)]
+    no_wal: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -274,6 +278,7 @@ fn run_steady_state_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn 
         keep_temp: args.keep_temp,
         report_interval: Duration::from_secs(args.report_interval),
         wal_flush_interval_ms: args.wal_flush_interval_ms,
+        no_wal: args.no_wal,
     };
     
     // Create output mode (TUI or Text)
@@ -310,7 +315,7 @@ fn run_iteration_for_stress(
         bundle::generate_test_bundles(args.bundles, args.rows_per_bundle, args.string_size);
 
     // Ingest
-    let config = create_config(data_dir, args.segment_size_mb, args.wal_flush_interval_ms);
+    let config = create_config(data_dir, args.segment_size_mb, args.wal_flush_interval_ms, args.no_wal);
     let engine = Arc::new(QuiverEngine::new(config)?);
 
     for test_bundle in &bundles {
@@ -481,7 +486,7 @@ fn run_single_iteration(
     info!("");
     info!("═══ Phase 2: Ingesting data ═══");
 
-    let config = create_config(&data_dir, args.segment_size_mb, args.wal_flush_interval_ms);
+    let config = create_config(&data_dir, args.segment_size_mb, args.wal_flush_interval_ms, args.no_wal);
     let engine = Arc::new(QuiverEngine::new(config)?);
     mem_tracker.checkpoint("engine_created");
 
@@ -736,14 +741,21 @@ fn run_single_iteration(
     }
 }
 
-fn create_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64) -> QuiverConfig {
+fn create_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64, no_wal: bool) -> QuiverConfig {
+    use quiver::DurabilityMode;
+    
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
+
+    // Set durability mode
+    if no_wal {
+        config.durability = DurabilityMode::SegmentOnly;
+    }
 
     config.segment.target_size_bytes =
         std::num::NonZeroU64::new(segment_size_mb * 1024 * 1024).expect("segment size is non-zero");
     config.segment.max_open_duration = Duration::from_secs(30);
 
-    // WAL config - ensure rotation target <= max size
+    // WAL config - ensure rotation target <= max size (ignored if no_wal)
     config.wal.max_size_bytes =
         std::num::NonZeroU64::new(256 * 1024 * 1024).expect("256MB is non-zero");
     config.wal.rotation_target_bytes =

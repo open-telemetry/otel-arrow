@@ -33,7 +33,7 @@ pub mod subscriber;
 pub mod telemetry;
 pub(crate) mod wal;
 
-pub use config::{QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
+pub use config::{DurabilityMode, QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
 pub use engine::QuiverEngine;
 pub use error::{QuiverError, Result};
 pub use segment::SegmentError;

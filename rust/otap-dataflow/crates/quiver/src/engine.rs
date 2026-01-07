@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 
-use crate::config::QuiverConfig;
+use crate::config::{DurabilityMode, QuiverConfig};
 use crate::error::Result;
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
@@ -146,17 +146,19 @@ impl QuiverEngine {
     pub fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
 
-        // Step 1: Append to WAL for durability
-        let wal_offset = {
-            let mut writer = self.wal_writer.lock();
-            writer.append_bundle(bundle)?
-        };
+        // Step 1: Append to WAL for durability (if enabled)
+        if self.config.durability == DurabilityMode::Wal {
+            let wal_offset = {
+                let mut writer = self.wal_writer.lock();
+                writer.append_bundle(bundle)?
+            };
 
-        // Step 2: Update cursor to include this entry
-        let cursor = WalConsumerCursor::from_offset(&wal_offset);
-        {
-            let mut cp = self.segment_cursor.lock();
-            *cp = cursor;
+            // Step 2: Update cursor to include this entry
+            let cursor = WalConsumerCursor::from_offset(&wal_offset);
+            {
+                let mut cp = self.segment_cursor.lock();
+                *cp = cursor;
+            }
         }
 
         // Step 3: Append to open segment accumulator
@@ -420,6 +422,76 @@ mod tests {
         assert_eq!(entry.sequence, 0);
         assert_eq!(entry.slots.len(), 1);
         assert_eq!(entry.slot_bitmap.count_ones(), 1);
+    }
+
+    /// Test that DurabilityMode::SegmentOnly skips WAL writes.
+    ///
+    /// This test verifies:
+    /// 1. Ingest succeeds with SegmentOnly mode
+    /// 2. WAL file is not written to (or contains no entries)
+    /// 3. Segments are still created normally
+    #[test]
+    fn ingest_segment_only_mode_skips_wal() {
+        use crate::config::DurabilityMode;
+        use crate::segment::SegmentReader;
+
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Small segment to trigger finalization
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::new(config).expect("engine created");
+
+        // Ingest a bundle
+        let bundle = DummyBundle::with_rows(10);
+        engine.ingest(&bundle).expect("ingest succeeds");
+
+        // Verify metrics
+        assert_eq!(engine.metrics().ingest_attempts(), 1);
+
+        drop(engine);
+
+        // === Verify segment file was created ===
+        let segment_dir = temp_dir.path().join("segments");
+        let segment_files: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+
+        assert_eq!(segment_files.len(), 1, "expected one segment file");
+
+        // Verify segment contents
+        let segment_path = segment_files[0].path();
+        let reader = SegmentReader::open(&segment_path).expect("open segment");
+        assert_eq!(reader.bundle_count(), 1);
+
+        let manifest = reader.manifest();
+        let reconstructed = reader.read_bundle(&manifest[0]).expect("read bundle");
+        let payload = reconstructed
+            .payload(SlotId::new(0))
+            .expect("slot 0 exists");
+        assert_eq!(payload.num_rows(), 10);
+
+        // === Verify WAL contains no entries ===
+        let wal_path = temp_dir.path().join("wal").join("quiver.wal");
+        let mut wal_reader = WalReader::open(&wal_path).expect("open WAL");
+        let mut iter = wal_reader.iter_from(0).expect("iterator");
+
+        // WAL should have no entries when using SegmentOnly mode
+        assert!(
+            iter.next().is_none(),
+            "WAL should have no entries in SegmentOnly mode"
+        );
     }
 
     #[test]

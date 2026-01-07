@@ -97,6 +97,7 @@ pub struct SteadyStateTestConfig {
     pub keep_temp: bool,
     pub report_interval: Duration,
     pub wal_flush_interval_ms: u64,
+    pub no_wal: bool,
 }
 
 /// Run the unified steady-state stress test.
@@ -157,7 +158,7 @@ pub fn run(
     };
 
     // Create a single QuiverEngine that will run for the entire duration
-    let engine_config = create_engine_config(&data_dir, config.segment_size_mb, config.wal_flush_interval_ms);
+    let engine_config = create_engine_config(&data_dir, config.segment_size_mb, config.wal_flush_interval_ms, config.no_wal);
     let engine = Arc::new(QuiverEngine::new(engine_config)?);
 
     // Create SHARED segment store and registry for all subscribers
@@ -516,8 +517,15 @@ fn spawn_subscriber_threads(
     handles
 }
 
-fn create_engine_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64) -> QuiverConfig {
+fn create_engine_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64, no_wal: bool) -> QuiverConfig {
+    use quiver::DurabilityMode;
+    
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
+
+    // Set durability mode
+    if no_wal {
+        config.durability = DurabilityMode::SegmentOnly;
+    }
 
     config.segment.target_size_bytes =
         std::num::NonZeroU64::new(segment_size_mb * 1024 * 1024).expect("segment size is non-zero");

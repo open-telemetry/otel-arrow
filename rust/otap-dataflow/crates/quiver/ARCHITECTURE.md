@@ -490,6 +490,48 @@ Protects processed data; smaller footprint, buffers during downstream outages
 8. **Default Strict Durability**: `backpressure` is the default size-cap
   policy, guaranteeing no segment loss prior to acknowledgement; `drop_oldest`
   must be explicitly selected to allow controlled loss.
+9. **Configurable Durability Mode**: The `DurabilityMode` setting controls
+  whether WAL is used at all, enabling operators to trade durability for
+  throughput.
+
+### Durability Modes
+
+Quiver supports two durability modes, configured via `QuiverConfig::durability`:
+
+| Mode           | Throughput | Data Loss on Crash    | Use Case                       |
+| -------------- | ---------- | --------------------- | ------------------------------ |
+| `Wal` (default)| Baseline   | Since last WAL fsync  | Production, critical data      |
+| `SegmentOnly`  | ~3x higher | Entire open segment   | High-throughput, loss-tolerant |
+
+#### `DurabilityMode::Wal` (Default)
+
+Each `RecordBundle` is written to the WAL before acknowledgement. On crash,
+only bundles written since the last WAL fsync are lost (controlled by
+`WalConfig::flush_interval`).
+
+```rust
+let config = QuiverConfig::default();
+// config.durability == DurabilityMode::Wal
+```
+
+#### `DurabilityMode::SegmentOnly`
+
+WAL writes are skipped entirely. Data is only durable after segment
+finalization. Provides approximately 3x higher throughput but a crash loses
+the entire open segment (potentially thousands of bundles).
+
+Use this when:
+
+- Throughput is more important than durability
+- Data can be re-fetched from upstream on crash
+- You have other durability guarantees (e.g., upstream acknowledgement)
+
+```rust
+use quiver::{QuiverConfig, DurabilityMode};
+
+let mut config = QuiverConfig::default();
+config.durability = DurabilityMode::SegmentOnly;
+```
 
 ### Subscriber Lifecycle
 
@@ -1129,6 +1171,9 @@ nodes:
     config:
       # Platform-appropriate persistent storage location
       path: ./quiver_data
+      # Durability mode: "wal" (default) or "segment_only"
+      # Use "segment_only" for ~3x throughput when data loss is acceptable
+      durability: wal
       segment:
         target_size: 32MB
       wal:

@@ -9,11 +9,42 @@ use std::time::Duration;
 
 use crate::error::{QuiverError, Result};
 
+/// Controls the durability/throughput tradeoff for ingested data.
+///
+/// This determines whether the write-ahead log (WAL) is used to protect
+/// data in the open segment before it is finalized to disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum DurabilityMode {
+    /// Full WAL protection: each bundle is written to the WAL before acknowledgement.
+    ///
+    /// On crash, only bundles written since the last WAL fsync are lost
+    /// (controlled by [`WalConfig::flush_interval`]).
+    ///
+    /// This is the safest option but has lower throughput (~125 bundles/sec typical).
+    #[default]
+    Wal,
+
+    /// Segment-only durability: WAL is disabled, data is only durable after
+    /// segment finalization.
+    ///
+    /// On crash, the entire open segment is lost (potentially thousands of bundles).
+    /// Provides ~3x higher throughput than WAL mode.
+    ///
+    /// Use this when:
+    /// - Throughput is more important than durability
+    /// - Data can be re-fetched from upstream on crash
+    /// - You have other durability guarantees (e.g., upstream acknowledgement)
+    SegmentOnly,
+}
+
 /// Top-level configuration for the persistence engine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuiverConfig {
-    /// Write-ahead log tuning parameters.
+    /// Controls durability vs throughput tradeoff.
+    pub durability: DurabilityMode,
+    /// Write-ahead log tuning parameters (ignored when durability is `SegmentOnly`).
     pub wal: WalConfig,
     /// Segment creation tuning parameters.
     pub segment: SegmentConfig,
@@ -32,7 +63,10 @@ impl QuiverConfig {
 
     /// Ensures the configuration holds sane, non-zero values.
     pub fn validate(&self) -> Result<()> {
-        self.wal.validate()?;
+        // Only validate WAL config if WAL is enabled
+        if self.durability == DurabilityMode::Wal {
+            self.wal.validate()?;
+        }
         self.segment.validate()?;
         self.retention.validate()?;
 
@@ -55,6 +89,7 @@ impl QuiverConfig {
 impl Default for QuiverConfig {
     fn default() -> Self {
         Self {
+            durability: DurabilityMode::default(),
             wal: WalConfig::default(),
             segment: SegmentConfig::default(),
             retention: RetentionConfig::default(),
@@ -67,6 +102,7 @@ impl Default for QuiverConfig {
 /// backwards compatible.
 #[derive(Debug, Default)]
 pub struct QuiverConfigBuilder {
+    durability: DurabilityMode,
     wal: WalConfig,
     segment: SegmentConfig,
     retention: RetentionConfig,
@@ -74,6 +110,13 @@ pub struct QuiverConfigBuilder {
 }
 
 impl QuiverConfigBuilder {
+    /// Sets the durability mode.
+    #[must_use]
+    pub fn durability(mut self, durability: DurabilityMode) -> Self {
+        self.durability = durability;
+        self
+    }
+
     /// Applies a custom WAL configuration.
     #[must_use]
     pub fn wal(mut self, wal: WalConfig) -> Self {
@@ -105,6 +148,7 @@ impl QuiverConfigBuilder {
     /// Consumes the builder and validates the resulting configuration.
     pub fn build(self) -> Result<QuiverConfig> {
         let cfg = QuiverConfig {
+            durability: self.durability,
             wal: self.wal,
             segment: self.segment,
             retention: self.retention,
