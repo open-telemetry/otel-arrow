@@ -9,12 +9,16 @@ pub mod meter_provider;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
-    AttributeValue, AttributeValueArray, TelemetryConfig,
+    AttributeValue, AttributeValueArray, TelemetryConfig, logs::LogLevel,
 };
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     error::Error,
     opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
+    self_tracing::{ConsoleWriter, RawLoggingLayer},
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -23,8 +27,26 @@ pub struct OpentelemetryClient {
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
-    logger_provider: SdkLoggerProvider,
+    logger_provider: Option<SdkLoggerProvider>,
     // TODO: Add traces providers.
+}
+
+// If RUST_LOG is set, use it for fine-grained control.
+// Otherwise, fall back to the config level with some noisy dependencies silenced.
+// Users can override by setting RUST_LOG explicitly.
+fn get_env_filter(level: LogLevel) -> EnvFilter {
+    let level = match level {
+        LogLevel::Off => LevelFilter::OFF,
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Info => LevelFilter::INFO,
+        LogLevel::Warn => LevelFilter::WARN,
+        LogLevel::Error => LevelFilter::ERROR,
+    };
+
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Default filter: use config level, but silence known noisy HTTP dependencies
+        EnvFilter::new(format!("{level},h2=off,hyper=off"))
+    })
 }
 
 impl OpentelemetryClient {
@@ -37,7 +59,37 @@ impl OpentelemetryClient {
         let (meter_provider, runtime) =
             MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?.into_parts();
 
-        let (logger_provider, runtime) = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
+        let tracing_setup = tracing_subscriber::registry().with(get_env_filter(config.logs.level));
+
+        let (logger_provider, runtime) = if !config.logs.internal.enabled {
+            let (logger_provider, runtime) =
+                LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
+
+            // Tokio provides a console formatting layer, OTel
+            // provides other behaviors.
+            let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
+            let sdk_layer = opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(
+                &logger_provider,
+            );
+
+            // Try to initialize the global subscriber. In tests, this may fail if already set,
+            // which is acceptable as we're only validating the configuration works.
+            let _ = tracing_setup.with(fmt_layer).with(sdk_layer).try_init();
+            (
+                Some(logger_provider),
+                runtime,
+            )
+        } else {
+            let writer = if std::env::var("NO_COLOR").is_ok() {
+                ConsoleWriter::no_color()
+            } else {
+                ConsoleWriter::color()
+            };
+            // See comment above.
+            let _ = tracing_setup.with(RawLoggingLayer::new(writer)).try_init();
+            
+            (None, runtime)
+        };
 
         //TODO: Configure traces provider.
 
@@ -94,14 +146,18 @@ impl OpentelemetryClient {
 
     /// Get a reference to the logger provider.
     #[must_use]
-    pub fn logger_provider(&self) -> &SdkLoggerProvider {
+    pub fn logger_provider(&self) -> &Option<SdkLoggerProvider> {
         &self.logger_provider
     }
 
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
-        let logger_provider_shutdown_result = self.logger_provider().shutdown();
+        let logger_provider_shutdown_result = self
+            .logger_provider()
+            .as_ref()
+            .map(|x| x.shutdown())
+            .transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));

@@ -25,36 +25,7 @@ pub struct LoggerProvider {
 }
 
 impl LoggerProvider {
-    /// Initializes internal logging for the OTAP engine.
-    ///
-    /// The log level can be controlled via:
-    /// 1. The `logs.level` config setting (off, debug, info, warn, error)
-    /// 2. The `RUST_LOG` environment variable for fine-grained control
-    ///
-    /// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
-    /// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
-    /// noisy HTTP/2 and hyper logs.
-    ///
-    /// TODO: The engine uses a thread-per-core model
-    /// and is NUMA aware.
-    /// The fmt::init() here is truly global, and hence
-    /// this will be a source of contention.
-    /// We need to evaluate alternatives:
-    ///
-    /// 1. Set up per thread subscriber.
-    ///    ```ignore
-    ///    // start of thread
-    ///    let _guard = tracing::subscriber::set_default(subscriber);
-    ///    // now, with this thread, all tracing calls will go to this subscriber
-    ///    // eliminating contention.
-    ///    // end of thread
-    ///    ```
-    ///
-    /// 2. Use custom subscriber that batches logs in thread-local buffer, and
-    ///    flushes them periodically.
-    ///
-    /// The TODO here is to evaluate these options and implement one of them.
-    /// As of now, this causes contention, and we just need to accept temporarily.
+    /// Initializes OpenTelemetry logging for the OTAP engine.
     pub fn configure(
         sdk_resource: Resource,
         logger_config: &LogsConfig,
@@ -214,6 +185,18 @@ impl LoggerProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opentelemetry_otlp::Protocol;
+    use opentelemetry_sdk::Resource;
+    use otap_df_config::pipeline::service::telemetry::{
+        logs::{
+            LogLevel, LogsInternalConfig, LogsConfig,
+            processors::{
+                BatchLogProcessorConfig,
+                batch::{LogBatchProcessorExporterConfig, otlp::OtlpExporterConfig},
+            },
+        },
+        metrics::readers::periodic::otlp::OtlpProtocol,
+    };
     use tracing::error;
 
     #[test]
@@ -221,6 +204,7 @@ mod tests {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
             level: LogLevel::Info,
+            internal: LogsInternalConfig::default(),
             processors: vec![
                 otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig::Batch(
                     BatchLogProcessorConfig {
@@ -244,6 +228,7 @@ mod tests {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
             level: LogLevel::Info,
+            internal: LogsInternalConfig::default(),
             processors: vec![
                 otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig::Batch(
                     BatchLogProcessorConfig {
@@ -274,6 +259,7 @@ mod tests {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
             level: LogLevel::default(),
+            internal: LogsInternalConfig::default(),
             processors: vec![],
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;

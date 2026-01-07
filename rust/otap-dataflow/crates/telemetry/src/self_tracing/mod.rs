@@ -12,12 +12,9 @@
 pub mod direct_encoder;
 pub mod formatter;
 
-use super::Error;
 use bytes::Bytes;
 use std::collections::HashMap;
 use tracing::callsite::Identifier;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
 pub use formatter::{ConsoleWriter, Layer as RawLoggingLayer};
 
@@ -85,31 +82,4 @@ impl CallsiteMap {
     pub fn get(&self, id: &Identifier) -> Option<&SavedCallsite> {
         self.callsites.get(id)
     }
-}
-
-/// Initialize raw logging as early as possible.
-pub fn init_raw_logging() {
-    if let Err(err) = try_init_raw_logging() {
-        tracing::error!(
-            name: "init_failed",
-            "Failed to initialize raw logging subscriber: {}",
-            err.to_string(),
-        );
-    }
-}
-
-/// Try to initialize raw logging, returning an error if a subscriber is already set.
-pub fn try_init_raw_logging() -> Result<(), Error> {
-    // If RUST_LOG is set, use it for fine-grained control.
-    // Otherwise, default to INFO level with some noisy dependencies silenced.
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,h2=off,hyper=off"));
-
-    let layer = RawLoggingLayer::new(ConsoleWriter::color());
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(layer)
-        .try_init()
-        .map_err(|e| Error::TracingInitError(e.to_string()))
 }
