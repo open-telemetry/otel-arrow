@@ -5,6 +5,8 @@
 //!
 //! This module provides a single implementation that works with both TUI and text output modes.
 
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +29,7 @@ use crate::subscriber::{cleanup_completed_segments, SharedStoreProvider, Subscri
 /// Output mode for the steady-state runner.
 pub enum OutputMode {
     /// TUI dashboard with sparklines.
-    Tui(Option<Dashboard>),
+    Tui(Option<Box<Dashboard>>),
     /// Text-based logging via tracing.
     Text,
 }
@@ -35,7 +37,7 @@ pub enum OutputMode {
 impl OutputMode {
     /// Create TUI mode with a dashboard.
     pub fn tui(dashboard: Dashboard) -> Self {
-        OutputMode::Tui(Some(dashboard))
+        OutputMode::Tui(Some(Box::new(dashboard)))
     }
 
     /// Check if the user requested to quit (TUI mode only).
@@ -223,7 +225,7 @@ pub fn run(
 
         // Periodic cleanup of completed segments
         if last_cleanup.elapsed() >= cleanup_interval {
-            if let Ok(deleted) = cleanup_completed_segments(&*registry, &*segment_store) {
+            if let Ok(deleted) = cleanup_completed_segments(&*registry, &segment_store) {
                 if deleted > 0 {
                     let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
                 }
@@ -327,13 +329,9 @@ pub fn run(
     // 6. Final cleanup
     let cleanup_start = Instant::now();
     let mut final_cleanup_count = 0u64;
-    loop {
-        if let Ok(deleted) = cleanup_completed_segments(&*registry, &*segment_store) {
-            if deleted > 0 {
-                final_cleanup_count += deleted as u64;
-            } else {
-                break;
-            }
+    while let Ok(deleted) = cleanup_completed_segments(&*registry, &segment_store) {
+        if deleted > 0 {
+            final_cleanup_count += deleted as u64;
         } else {
             break;
         }

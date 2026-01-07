@@ -3,6 +3,8 @@
 
 //! Long-running stress test support for detecting memory and storage leaks.
 
+#![allow(clippy::print_stdout)]
+
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -15,16 +17,16 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         return Err("empty duration string".to_string());
     }
 
-    let (num_str, unit) = if s.ends_with("ms") {
-        (&s[..s.len() - 2], "ms")
-    } else if s.ends_with('s') {
-        (&s[..s.len() - 1], "s")
-    } else if s.ends_with('m') {
-        (&s[..s.len() - 1], "m")
-    } else if s.ends_with('h') {
-        (&s[..s.len() - 1], "h")
-    } else if s.ends_with('d') {
-        (&s[..s.len() - 1], "d")
+    let (num_str, unit) = if let Some(stripped) = s.strip_suffix("ms") {
+        (stripped, "ms")
+    } else if let Some(stripped) = s.strip_suffix('s') {
+        (stripped, "s")
+    } else if let Some(stripped) = s.strip_suffix('m') {
+        (stripped, "m")
+    } else if let Some(stripped) = s.strip_suffix('h') {
+        (stripped, "h")
+    } else if let Some(stripped) = s.strip_suffix('d') {
+        (stripped, "d")
     } else {
         // Default to seconds
         (s, "s")

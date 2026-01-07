@@ -3,6 +3,8 @@
 
 //! Unified stress test runner supporting both TUI and text output modes.
 
+#![allow(clippy::print_stdout)]
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -16,7 +18,7 @@ use crate::stress::{calculate_disk_usage, StressStats};
 /// Output mode for the stress runner.
 pub enum OutputMode {
     /// TUI dashboard mode.
-    Tui(Option<Dashboard>),
+    Tui(Option<Box<Dashboard>>),
     /// Text-based logging via tracing.
     Text,
 }
@@ -24,7 +26,7 @@ pub enum OutputMode {
 impl OutputMode {
     /// Create TUI mode with a dashboard.
     pub fn tui(dashboard: Dashboard) -> Self {
-        OutputMode::Tui(Some(dashboard))
+        OutputMode::Tui(Some(Box::new(dashboard)))
     }
 
     /// Check if the user requested to quit (TUI mode only).
