@@ -18,7 +18,7 @@ use crate::{
     shared_expressions::parse_source_assignment_expression,
 };
 
-pub fn parse_extend_expression<'a, R>(
+pub(crate) fn parse_extend_expression<'a, R>(
     extend_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError>
@@ -49,7 +49,7 @@ where
     Ok(set_expressions)
 }
 
-pub fn parse_project_expression<'a, R>(
+pub(crate) fn parse_project_expression<'a, R>(
     project_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError>
@@ -122,7 +122,7 @@ where
     Ok(expressions)
 }
 
-pub fn parse_project_keep_expression<'a, R>(
+pub(crate) fn parse_project_keep_expression<'a, R>(
     project_keep_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError>
@@ -201,7 +201,7 @@ where
     Ok(expressions)
 }
 
-pub fn parse_project_away_expression<'a, R>(
+pub(crate) fn parse_project_away_expression<'a, R>(
     project_away_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<Vec<TransformExpression>, ParserError>
@@ -280,7 +280,7 @@ where
     Ok(expressions)
 }
 
-pub fn parse_project_rename_expression<'a, R>(
+pub(crate) fn parse_project_rename_expression<'a, R>(
     project_rename_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<TransformExpression, ParserError>
@@ -345,7 +345,7 @@ where
     }
 }
 
-pub fn parse_where_expression<'a, R>(
+pub(crate) fn parse_where_expression<'a, R>(
     where_expression_rule: Pair<'a, R>,
     scope: &dyn ParserScope,
 ) -> Result<DataExpression, ParserError>
@@ -541,21 +541,42 @@ pub(crate) fn parse_tabular_expression_rule(
     let mut expressions = Vec::new();
 
     match tabular_expression_rule.as_rule() {
-        Rule::extend_expression => {
+        Rule::summarize_expression => {
+            expressions.push(parse_summarize_expression(tabular_expression_rule, scope)?)
+        }
+        _ => return parse_common_tabular_expression_rule(tabular_expression_rule, scope),
+    }
+
+    Ok(expressions)
+}
+
+/// parse tabular expression rules that are common to multiple parsers
+pub fn parse_common_tabular_expression_rule<'a, R>(
+    tabular_expression_rule: Pair<'a, R>,
+    scope: &dyn ParserScope,
+) -> Result<Vec<DataExpression>, ParserError>
+where
+    R: RuleType + ScalarExprRules,
+    Pair<'a, R>: TryAsBaseRule,
+{
+    let mut expressions = Vec::new();
+
+    match tabular_expression_rule.try_as_base_rule()? {
+        BaseRule::extend_expression => {
             let extend_expressions = parse_extend_expression(tabular_expression_rule, scope)?;
 
             for e in extend_expressions {
                 expressions.push(DataExpression::Transform(e));
             }
         }
-        Rule::project_expression => {
+        BaseRule::project_expression => {
             let project_expressions = parse_project_expression(tabular_expression_rule, scope)?;
 
             for e in project_expressions {
                 expressions.push(DataExpression::Transform(e));
             }
         }
-        Rule::project_keep_expression => {
+        BaseRule::project_keep_expression => {
             let project_keep_expressions =
                 parse_project_keep_expression(tabular_expression_rule, scope)?;
 
@@ -563,7 +584,7 @@ pub(crate) fn parse_tabular_expression_rule(
                 expressions.push(DataExpression::Transform(e));
             }
         }
-        Rule::project_away_expression => {
+        BaseRule::project_away_expression => {
             let project_away_expressions =
                 parse_project_away_expression(tabular_expression_rule, scope)?;
 
@@ -571,20 +592,19 @@ pub(crate) fn parse_tabular_expression_rule(
                 expressions.push(DataExpression::Transform(e));
             }
         }
-        Rule::project_rename_expression => expressions.push(DataExpression::Transform(
+        BaseRule::project_rename_expression => expressions.push(DataExpression::Transform(
             parse_project_rename_expression(tabular_expression_rule, scope)?,
         )),
-        Rule::where_expression => {
+        BaseRule::where_expression => {
             expressions.push(parse_where_expression(tabular_expression_rule, scope)?)
         }
-        Rule::summarize_expression => {
-            expressions.push(parse_summarize_expression(tabular_expression_rule, scope)?)
+        other => {
+            let query_location = to_query_location(&tabular_expression_rule);
+            return Err(ParserError::SyntaxError(
+                query_location,
+                format!("Unexpected rule in tabular_expression: {other:?}"),
+            ));
         }
-        // TODO add this back
-        // Rule::if_else_expression => {
-        //     expressions.push(parse_if_else_expression(tabular_expression_rule, scope)?);
-        // }
-        _ => panic!("Unexpected rule in tabular_expression: {tabular_expression_rule}"),
     }
 
     Ok(expressions)

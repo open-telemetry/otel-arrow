@@ -8,13 +8,13 @@
 use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{format_ident, quote};
 
-const BASE_PEST_SOURCE: &'static str = include_str!("../../base.pest");
+const BASE_PEST_SOURCE: &str = include_str!("../../base.pest");
 
 extern crate proc_macro;
 
-/// This marco derives the implementation of `TryFrom<`Rule`>` for `kql_parser::base_rule::Rule` 
+/// This marco derives the implementation of `TryFrom<`Rule`>` for `kql_parser::base_rule::Rule`
 /// for  `Rule` enum derived from the pest_derive::Parser marco. This allows converting between
-/// the derived parser `Rule` type and the base parser `Rule` type, which allows the rules for 
+/// the derived parser `Rule` type and the base parser `Rule` type, which allows the rules for
 /// the derived parser to used in the parsing utilities in the kql-parser crate.
 #[proc_macro_derive(BaseRuleCompatible)]
 pub fn derive_base_rule_compatible(_input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -50,14 +50,15 @@ pub fn derive_base_rule_compatible(_input: proc_macro::TokenStream) -> proc_macr
 
     // derive the pratt parser for the scalar expressions
     let scalar_expr_pratt_parser_impl = generate_scalar_expr_pratt_parser();
-    
+
     quote! {
         #rule_conversion
         #scalar_expr_pratt_parser_impl
-    }.into()
+    }
+    .into()
 }
 
-/// Determine the crate path for data_engine_kql_parser, either "crate" if the macro is being 
+/// Determine the crate path for data_engine_kql_parser, either "crate" if the macro is being
 /// executed in the kql parser crate, otheriwse reference the crate by name.
 fn kql_parser_crate_name() -> proc_macro2::TokenStream {
     match crate_name("data_engine_kql_parser").expect("data_engine_kql_parser is present") {

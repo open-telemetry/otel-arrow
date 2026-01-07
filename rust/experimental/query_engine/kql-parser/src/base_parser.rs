@@ -12,19 +12,19 @@
 //! BasePestParser here that only includes the base.pest grammar. Many of the parsing utilities
 //! for handling scalar expressions will be generic over derived `Rule` types, that can be converted
 //! to the base rules derived for [`BasePestParser`].
-//! 
+//!
 //! This module also defines the [`TryAsBaseRule`] trait for converting derived parser `Rule` to the
 //! base parser `Rule`. It's not necessary to implement this trait manually, as it can be derived
 //! ```no_run
 //! use data_engine_kql_parser_macros::BaseRuleCompatible;
-//! 
+//!
 //! #[derive(pest_derive::Parser, BaseRuleCompatible)]
 //! #[grammar = "path/to/derived_language.pest"]
 //! struct DerivedLanguagePestParser {}
 //! ```
 
-use data_engine_parser_abstractions::ParserError;
 use data_engine_kql_parser_macros::ScalarExprPrattParser;
+use data_engine_parser_abstractions::ParserError;
 use pest::{RuleType, iterators::Pair};
 
 use crate::ScalarExprRules;
@@ -36,9 +36,9 @@ pub struct BasePestParser;
 /// Trait for converting derived parser Rule types to the base parser Rule type.
 /// This is used to allow parsing utilities to work with different parser Rule types
 /// that share a common base grammar.
-/// 
+///
 /// It's not necessary to implement this trait manually, as it can be derived for any
-/// parsers that use the base.pest grammar via the 
+/// parsers that use the base.pest grammar via the
 /// [`BaseRuleCompatible`](data_engine_kql_parser_macros::BaseRuleCompatible) macro.
 pub trait TryAsBaseRule {
     fn try_as_base_rule(&self) -> Result<Rule, ParserError>;

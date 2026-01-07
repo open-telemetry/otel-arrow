@@ -24,12 +24,12 @@ use crate::{
 /// Trait for parser Rule types that can be used to parse scalar expressions.
 pub trait ScalarExprRules: RuleType + 'static {
     /// Returns the PrattParser configured for parsing scalar expressions.
-    /// 
+    ///
     /// The scalar expression uses a pratt parser to handle operator precedence, but because
     /// pest's pratt parser takes the `Pair`, and not just the `Rule`, and pest doesn't provide
     /// a way to have a common `Pair` type across different parser `Rule` types, we need a way to
     /// access the pratt parser for each derived parser Rule type.
-    /// 
+    ///
     /// This can be derived for the rule type using the macros in the ./src/macros crate.
     fn pratt_parser() -> &'static PrattParser<Self>;
 }

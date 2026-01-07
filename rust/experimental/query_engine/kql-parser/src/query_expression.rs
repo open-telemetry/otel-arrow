@@ -8,8 +8,8 @@ use data_engine_parser_abstractions::*;
 use pest::Parser;
 
 use crate::{
-    KqlPestParser, Rule, scalar_expression::parse_scalar_expression, shared_expressions::*,
-    tabular_expressions::parse_tabular_expression,
+    KqlPestParser, Rule, map_parse_error, scalar_expression::parse_scalar_expression,
+    shared_expressions::*, tabular_expressions::parse_tabular_expression,
 };
 
 pub(crate) fn parse_query(
@@ -22,38 +22,8 @@ pub(crate) fn parse_query(
 
     let parse_result = KqlPestParser::parse(Rule::query, query);
 
-    if parse_result.is_err() {
-        let pest_error = if let Err(error) = parse_result {
-            error
-        } else {
-            unreachable!()
-        };
-
-        let (start, end) = match pest_error.location {
-            pest::error::InputLocation::Pos(p) => (0, p),
-            pest::error::InputLocation::Span(s) => s,
-        };
-
-        let (line, column) = match pest_error.line_col {
-            pest::error::LineColLocation::Pos(p) => p,
-            pest::error::LineColLocation::Span(l, _) => l,
-        };
-
-        let content = if line > 0 && column > 0 {
-            &query
-                .lines()
-                .nth(line - 1)
-                .expect("Query line did not exist")[column - 1..]
-        } else {
-            &query[start..end]
-        };
-
-        errors.push(ParserError::SyntaxNotSupported(
-            QueryLocation::new(start, end, line, column)
-                .expect("QueryLocation could not be constructed"),
-            format!("Syntax '{content}' supplied in query is not supported"),
-        ));
-
+    if let Err(pest_error) = parse_result {
+        errors.push(map_parse_error(query, pest_error));
         return Err(errors);
     }
 
