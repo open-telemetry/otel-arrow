@@ -34,7 +34,7 @@ Describe the producing service and runtime environment.
 Identify stable in-process entities (pipelines, nodes, channels, runtime
 threads).
 
-- MUST be attached at the scope level
+- MUST be attached/translated as scope attributes in OTLP exports
 - MUST NOT be duplicated on every signal
 - MUST be stable for the lifetime of the entity
 - MUST be bounded and known at entity creation time
@@ -88,8 +88,6 @@ Do not duplicate information:
 - If a value is already present as an entity attribute, do not repeat it as a
   signal-specific attribute.
 - Prefer a single canonical key.
-
-## Cardinality policy
 
 ### Core rule
 

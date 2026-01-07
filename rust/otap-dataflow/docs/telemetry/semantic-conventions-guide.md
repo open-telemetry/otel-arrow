@@ -200,7 +200,7 @@ Examples:
 
 ```
 http.request.start
-pipeline.config.reload
+otelcol.pipeline.config.apply
 connection.close
 ```
 

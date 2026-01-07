@@ -160,7 +160,7 @@ concept.
 Telemetry correctness and completeness are enforced through **tooling, not
 convention alone**.
 
-This project integrates with **Weaver** to:
+This project plans to integrate with **Weaver** to:
 
 * validate emitted telemetry against the versioned semantic convention registry,
 * perform registry compliance checks in CI,
@@ -173,6 +173,9 @@ support inspection, debugging, and tooling integration.
 
 Security and deployment guidance for this endpoint is in the
 [Security and Privacy Guide](security-privacy-guide.md).
+
+Registry compliance checks and live checks are not yet enforced in CI. See
+[Implementation Gaps](implementation-gaps.md).
 
 ### 7. Automated client SDK generation (longer term)
 
@@ -259,7 +262,7 @@ When adding or changing telemetry:
 
 1) Update the semantic convention registry first (schema-first).
 2) Regenerate documentation and code (when applicable).
-3) Run CI validation (registry checks, live checks in tests).
+3) Run CI validation when available (registry checks, live checks in tests).
 4) If the change is breaking, bump the registry version and add a migration
    note.
 

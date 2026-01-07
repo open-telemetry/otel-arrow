@@ -37,7 +37,7 @@ Goal:
 | Execution engine | `thread.id` not set                                               |
 | Execution engine | `core.id` used instead of `cpu.logical_number`                    |
 | Execution engine | `numa.node.id` used instead of `otelcol.numa_node.logical_number` |
-| Channels         | `channel.sender.out.port` not set                                 |
+| Channels         | `otelcol.channel.sender.out.port` not set                         |
 | Channels         | Channel id format not enforced                                    |
 
 ### Tooling and process
@@ -48,6 +48,7 @@ Goal:
 | Stability      | Stability level not declared for all signals           | Hard to apply compatibility discipline          |
 | Deprecation    | Migration windows and dual emission not implemented    | Breaking changes may slip into stable telemetry |
 | SDK generation | Automated client SDK generation not implemented yet    | Manual duplication between schema and code      |
+| Registry files | Semantic convention registry is not yet available as files; definitions live in macros. A set of files will be created and an optimized client SDK will be generated to mimic the current macro-based SDK, giving us time to refine the optimized SDK code before generating it from a registry. | Limited tooling and visibility until the registry files exist |
 
 ### Open questions
 

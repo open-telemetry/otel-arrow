@@ -8,6 +8,11 @@ System metrics are intended to describe the behavior of stable entities over
 time. This document summarizes the patterns we follow when instrumenting system
 metrics in the engine.
 
+In this documentation, core system metrics/telemetry refers to telemetry used
+to operate a system in a reliable way and to understand the behavior of the
+main entities/components of the observed system. It is not for product
+analytics or business telemetry.
+
 ## Related guides
 
 - Attribute policy: [attributes-guide.md](attributes-guide.md)
