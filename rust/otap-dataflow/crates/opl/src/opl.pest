@@ -32,45 +32,9 @@ tabular_expression = {
     identifier_literal ~ ("|" ~ tabular_expressions)*
 }
 
-variable_definition_expression = { "let" ~ identifier_literal ~ "=" ~ scalar_expression ~ statement_end_token }
-
-user_defined_function_parameter_definition_expression = {
-	identifier_literal
-    ~ ":"
-    ~ (
-    	(type_literal ~ ("=" ~ scalar_expression)?)
-        | user_defined_function_tabular_parameter_definition_expression
-      )
-}
-
-user_defined_function_tabular_parameter_definition_expression = {
-	"("
-    ~ (
-    	"*"
-        | (identifier_literal ~ ":" ~ type_literal ~ ("," ~ identifier_literal ~ ":" ~ type_literal)*)
-      )
-    ~ ")"
-}
-
-user_defined_function_body_definition_expression = {
-    (user_defined_function_expressions ~ (";" ~ user_defined_function_expressions)* ~ ";")?
-    ~ (scalar_expression)?
-    ~ ";"?
-}
-
-user_defined_function_expressions = _{
-	variable_definition_expression
-}
-
-user_defined_function_definition_expression = {
-	"let" ~ identifier_literal ~ "=" ~ "("
-    ~ (user_defined_function_parameter_definition_expression ~ ("," ~ user_defined_function_parameter_definition_expression)*)?
-    ~ ")"
-    ~ "{" ~ user_defined_function_body_definition_expression ~ "}"
-}
 
 query_expressions = _{
-    variable_definition_expression|user_defined_function_definition_expression|tabular_expression
+    variable_definition_expression|tabular_expression
 }
 
 query = {

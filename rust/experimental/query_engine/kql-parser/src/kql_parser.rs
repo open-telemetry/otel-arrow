@@ -5,7 +5,7 @@ use data_engine_parser_abstractions::*;
 use data_engine_parser_macros::{BaseRuleCompatible, ScalarExprPrattParser};
 use pest_derive::Parser;
 
-use crate::{base_parser, kql_parser, query_expression::parse_query};
+use crate::query_expression::parse_query;
 
 #[derive(Parser, BaseRuleCompatible, ScalarExprPrattParser)]
 #[grammar = "base.pest"]

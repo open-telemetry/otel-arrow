@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 
 use data_engine_expressions::*;
 use data_engine_parser_abstractions::*;
-use pest::iterators::Pair;
+use pest::{RuleType, iterators::Pair};
 use regex::Regex;
 
 use crate::{
-    Rule,
+    Rule, ScalarExprPrattParser,
     aggregate_expressions::parse_aggregate_expression,
     logical_expressions::parse_logical_expression,
     scalar_expression::{parse_scalar_expression, try_resolve_identifier},
@@ -17,17 +17,21 @@ use crate::{
     shared_expressions::parse_source_assignment_expression,
 };
 
-pub(crate) fn parse_extend_expression(
-    extend_expression_rule: Pair<Rule>,
+pub fn parse_extend_expression<R, E>(
+    extend_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<Vec<TransformExpression>, ParserError> {
+) -> Result<Vec<TransformExpression>, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let extend_rules = extend_expression_rule.into_inner();
 
     let mut set_expressions = Vec::new();
 
     for rule in extend_rules {
-        match rule.as_rule() {
-            Rule::assignment_expression => {
+        match rule.as_rule().try_into().map_err(|e| e.into())? {
+            crate::base_parser::Rule::assignment_expression => {
                 let (query_location, source, destination) =
                     parse_source_assignment_expression(rule, scope)?;
 
@@ -44,10 +48,14 @@ pub(crate) fn parse_extend_expression(
     Ok(set_expressions)
 }
 
-pub(crate) fn parse_project_expression(
-    project_expression_rule: Pair<Rule>,
+pub fn parse_project_expression<R, E>(
+    project_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<Vec<TransformExpression>, ParserError> {
+) -> Result<Vec<TransformExpression>, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&project_expression_rule);
 
     let project_rules = project_expression_rule.into_inner();
@@ -59,8 +67,8 @@ pub(crate) fn parse_project_expression(
     for rule in project_rules {
         let rule_location = to_query_location(&rule);
 
-        match rule.as_rule() {
-            Rule::assignment_expression => {
+        match rule.as_rule().try_into().map_err(|e| e.into())? {
+            crate::base_parser::Rule::assignment_expression => {
                 let (query_location, source, destination) =
                     parse_source_assignment_expression(rule, scope)?;
 
@@ -77,7 +85,7 @@ pub(crate) fn parse_project_expression(
                     MutableValueExpression::Source(destination),
                 )));
             }
-            Rule::accessor_expression => {
+            crate::base_parser::Rule::accessor_expression => {
                 let accessor_expression = parse_accessor_expression(rule, scope, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
@@ -113,10 +121,14 @@ pub(crate) fn parse_project_expression(
     Ok(expressions)
 }
 
-pub(crate) fn parse_project_keep_expression(
-    project_keep_expression_rule: Pair<Rule>,
+pub fn parse_project_keep_expression<R, E>(
+    project_keep_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<Vec<TransformExpression>, ParserError> {
+) -> Result<Vec<TransformExpression>, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&project_keep_expression_rule);
 
     let project_keep_rules = project_keep_expression_rule.into_inner();
@@ -128,8 +140,8 @@ pub(crate) fn parse_project_keep_expression(
     for rule in project_keep_rules {
         let rule_location = to_query_location(&rule);
 
-        match rule.as_rule() {
-            Rule::identifier_or_pattern_literal => {
+        match rule.as_rule().try_into().map_err(|e| e.into())? {
+            crate::base_parser::Rule::identifier_or_pattern_literal => {
                 if let Some(identifier_or_pattern) =
                     parse_identifier_or_pattern_literal(scope, rule_location.clone(), rule)?
                 {
@@ -152,7 +164,7 @@ pub(crate) fn parse_project_keep_expression(
                     ));
                 }
             }
-            Rule::accessor_expression => {
+            crate::base_parser::Rule::accessor_expression => {
                 let accessor_expression = parse_accessor_expression(rule, scope, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
@@ -188,10 +200,14 @@ pub(crate) fn parse_project_keep_expression(
     Ok(expressions)
 }
 
-pub(crate) fn parse_project_away_expression(
-    project_away_expression_rule: Pair<Rule>,
+pub fn parse_project_away_expression<R, E>(
+    project_away_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<Vec<TransformExpression>, ParserError> {
+) -> Result<Vec<TransformExpression>, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&project_away_expression_rule);
 
     let project_away_rules = project_away_expression_rule.into_inner();
@@ -203,8 +219,8 @@ pub(crate) fn parse_project_away_expression(
     for rule in project_away_rules {
         let rule_location = to_query_location(&rule);
 
-        match rule.as_rule() {
-            Rule::identifier_or_pattern_literal => {
+        match rule.as_rule().try_into().map_err(|e| e.into())? {
+            crate::base_parser::Rule::identifier_or_pattern_literal => {
                 if let Some(identifier_or_pattern) =
                     parse_identifier_or_pattern_literal(scope, rule_location.clone(), rule)?
                 {
@@ -227,7 +243,7 @@ pub(crate) fn parse_project_away_expression(
                     ));
                 }
             }
-            Rule::accessor_expression => {
+            crate::base_parser::Rule::accessor_expression => {
                 let accessor_expression = parse_accessor_expression(rule, scope, true)?;
 
                 if let ScalarExpression::Source(s) = &accessor_expression {
@@ -263,10 +279,14 @@ pub(crate) fn parse_project_away_expression(
     Ok(expressions)
 }
 
-pub(crate) fn parse_project_rename_expression(
-    project_rename_expression_rule: Pair<Rule>,
+pub fn parse_project_rename_expression<R, E>(
+    project_rename_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<TransformExpression, ParserError> {
+) -> Result<TransformExpression, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&project_rename_expression_rule);
 
     let project_rename_rules = project_rename_expression_rule.into_inner();
@@ -274,8 +294,8 @@ pub(crate) fn parse_project_rename_expression(
     let mut expressions = Vec::new();
 
     for rule in project_rename_rules {
-        match rule.as_rule() {
-            Rule::assignment_expression => {
+        match rule.as_rule().try_into().map_err(|e| e.into())? {
+            crate::base_parser::Rule::assignment_expression => {
                 let e = parse_source_assignment_expression(rule, scope)?;
                 if let ScalarExpression::Source(s) = e.1 {
                     expressions.push((e.0, s, e.2));
@@ -324,16 +344,22 @@ pub(crate) fn parse_project_rename_expression(
     }
 }
 
-pub(crate) fn parse_where_expression(
-    where_expression_rule: Pair<Rule>,
+pub fn parse_where_expression<R, E>(
+    where_expression_rule: Pair<R>,
     scope: &dyn ParserScope,
-) -> Result<DataExpression, ParserError> {
+) -> Result<DataExpression, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let query_location = to_query_location(&where_expression_rule);
 
     let where_rule = where_expression_rule.into_inner().next().unwrap();
 
-    let predicate = match where_rule.as_rule() {
-        Rule::logical_expression => parse_logical_expression(where_rule, scope)?,
+    let predicate = match where_rule.as_rule().try_into().map_err(|e| e.into())? {
+        crate::base_parser::Rule::logical_expression => {
+            parse_logical_expression(where_rule, scope)?
+        }
         _ => panic!("Unexpected rule in where_expression: {where_rule}"),
     };
 
@@ -592,16 +618,20 @@ enum IdentifierOrPattern {
     Pattern(RegexScalarExpression),
 }
 
-fn parse_identifier_or_pattern_literal(
+fn parse_identifier_or_pattern_literal<R, E>(
     scope: &dyn ParserScope,
     location: QueryLocation,
-    identifier_or_pattern_literal: Pair<Rule>,
-) -> Result<Option<IdentifierOrPattern>, ParserError> {
+    identifier_or_pattern_literal: Pair<R>,
+) -> Result<Option<IdentifierOrPattern>, ParserError>
+where
+    R: RuleType + TryInto<crate::base_parser::Rule, Error = E> + ScalarExprPrattParser + 'static,
+    E: Into<ParserError>,
+{
     let raw = identifier_or_pattern_literal.as_str();
 
     let value: Box<str> = match identifier_or_pattern_literal.into_inner().next() {
-        Some(r) => match r.as_rule() {
-            Rule::string_literal => match parse_string_literal(r) {
+        Some(r) => match r.as_rule().try_into().map_err(|e| e.into())? {
+            crate::base_parser::Rule::string_literal => match parse_string_literal(r) {
                 StaticScalarExpression::String(v) => v.get_value().into(),
                 _ => panic!("Unexpected type returned from parse_string_literal"),
             },
