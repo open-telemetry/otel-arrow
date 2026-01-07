@@ -10,7 +10,6 @@ use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use std::io::{Cursor, Write};
-use tracing::span::Record;
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
@@ -281,7 +280,7 @@ impl ConsoleWriter {
         };
     }
 
-    /// Write an ANSI SGR escape sequence.
+    /// Write an ANSI escape sequence.
     #[inline]
     fn write_ansi(w: &mut BufWriter<'_>, code: u8) {
         let _ = write!(w, "\x1b[{}m", code);
@@ -318,10 +317,6 @@ where
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +350,99 @@ mod tests {
         tracing::error!(error = "something failed", "Error occurred");
 
         // The test verifies no panics occur; actual output goes to stderr
+    }
+
+    #[test]
+    fn test_log_format() {
+        // Test the formatter by capturing output through our layer
+        use std::sync::{Arc, Mutex};
+
+        let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let output_clone = output.clone();
+
+        struct CaptureLayer {
+            output: Arc<Mutex<String>>,
+        }
+        impl<S> TracingLayer<S> for CaptureLayer
+        where
+            S: Subscriber + for<'a> LookupSpan<'a>,
+        {
+            fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+                let record = LogRecord::new(event);
+                let callsite = SavedCallsite::new(event.metadata());
+                let writer = ConsoleWriter::no_color();
+                *self.output.lock().unwrap() = writer.format_log_record(&record, &callsite);
+            }
+        }
+
+        // Helper to strip timestamp (24 char timestamp + 2 spaces)
+        fn strip_ts(s: &str) -> &str {
+            s[26..].trim_end()
+        }
+
+        let layer = CaptureLayer { output: output_clone };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+
+        // Test info
+        tracing::info!("hello world");
+        let binding = output.lock().unwrap();
+        let result = strip_ts(&binding);
+        assert!(result.starts_with("INFO "), "got: {}", result);
+        assert!(result.ends_with(": hello world"), "got: {}", result);
+        drop(binding);
+
+        // Test warn with attribute
+        tracing::warn!(count = 42, "warning");
+        let binding = output.lock().unwrap();
+        let result = strip_ts(&binding);
+        assert!(result.starts_with("WARN "), "got: {}", result);
+        assert!(result.ends_with(": warning [count=42]"), "got: {}", result);
+        drop(binding);
+
+        // Test error with string attribute
+        tracing::error!(msg = "oops", "failed");
+        let binding = output.lock().unwrap();
+        let result = strip_ts(&binding);
+        assert!(result.starts_with("ERROR"), "got: {}", result);
+        assert!(result.ends_with(": failed [msg=oops]"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_full_format_with_known_timestamp() {
+        use bytes::Bytes;
+
+        let record = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            // 2024-01-15T12:30:45.678Z
+            timestamp_ns: 1705321845_678_000_000,
+            body_attrs_bytes: Bytes::new(),
+        };
+
+        let callsite = SavedCallsite {
+            target: "my_crate::module",
+            name: "event",
+            file: Some("src/lib.rs"),
+            line: Some(42),
+            level: &Level::INFO,
+        };
+
+        let writer = ConsoleWriter::no_color();
+        let output = writer.format_log_record(&record, &callsite);
+
+        assert_eq!(
+            output,
+            "2024-01-15T12:30:45.678Z  INFO   my_crate::module::event (src/lib.rs:42): \n"
+        );
+    }
+
+    static TEST_CALLSITE: TestCallsite = TestCallsite;
+    struct TestCallsite;
+    impl tracing::Callsite for TestCallsite {
+        fn set_interest(&self, _: tracing::subscriber::Interest) {}
+        fn metadata(&self) -> &tracing::Metadata<'_> {
+            unimplemented!()
+        }
     }
 }
