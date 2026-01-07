@@ -35,6 +35,11 @@ impl MemoryTracker {
         stats::allocated::read().unwrap_or(0) as u64
     }
 
+    /// Gets current allocated memory in MB (public for stress testing).
+    pub fn current_allocated_mb() -> f64 {
+        Self::current_allocated() as f64 / 1024.0 / 1024.0
+    }
+
     /// Resets the baseline to current memory usage.
     ///
     /// Call this after generating test data so the baseline excludes
