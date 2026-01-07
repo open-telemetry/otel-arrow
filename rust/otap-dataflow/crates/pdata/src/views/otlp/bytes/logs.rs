@@ -153,6 +153,17 @@ pub struct RawLogRecord<'a> {
     bytes_parser: ProtoBytesParser<'a, LogFieldOffsets>,
 }
 
+impl<'a> RawLogRecord<'a> {
+    /// Create a new instance of `RawLogRecord` from a byte slice containing
+    /// a serialized LogRecord message (or partial message with just body/attributes).
+    #[must_use]
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self {
+            bytes_parser: ProtoBytesParser::new(buf),
+        }
+    }
+}
+
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct LogFieldOffsets {
     scalar_fields: [Cell<Option<(NonZeroUsize, NonZeroUsize)>>; 13],

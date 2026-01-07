@@ -6,11 +6,9 @@
 use super::{LogRecord, SavedCallsite};
 use bytes::Bytes;
 use chrono::{DateTime, Datelike, Timelike, Utc};
-use otap_df_pdata::proto::consts::field_num::logs::{LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY};
-use otap_df_pdata::proto::consts::wire_types;
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
-use otap_df_pdata::views::otlp::bytes::common::{RawAnyValue, RawKeyValue};
-use otap_df_pdata::views::otlp::bytes::decode::read_varint;
+use otap_df_pdata::views::logs::LogRecordView;
+use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use std::io::{Cursor, Write};
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Level, Subscriber};
@@ -164,83 +162,40 @@ impl ConsoleWriter {
         }
     }
 
-    /// Format timestamp as String (for testing).
-    fn format_timestamp(nanos: u64) -> String {
-        let mut buf = [0u8; 32];
-        let mut w = Cursor::new(&mut buf[..]);
-        Self::write_timestamp(&mut w, nanos);
-        let pos = w.position() as usize;
-        String::from_utf8_lossy(&buf[..pos]).into_owned()
-    }
-
-    /// Write body+attrs bytes to buffer.
+    /// Write body+attrs bytes to buffer using LogRecordView.
     fn write_body_attrs(w: &mut BufWriter<'_>, bytes: &Bytes) {
         if bytes.is_empty() {
             return;
         }
 
-        let data = bytes.as_ref();
-        let mut pos = 0;
-        let mut first_attr = true;
-        let mut has_attrs = false;
+        // A partial protobuf message (just body + attributes) is still a valid message.
+        // We can use the RawLogRecord view to access just the fields we encoded.
+        let record = RawLogRecord::new(bytes.as_ref());
 
-        while pos < data.len() {
-            let (tag, next_pos) = match read_varint(data, pos) {
-                Some(v) => v,
-                None => break,
-            };
-            pos = next_pos;
+        // Write body if present
+        if let Some(body) = record.body() {
+            Self::write_any_value(w, &body);
+        }
 
-            let field_num = tag >> 3;
-            let wire_type = tag & 0x7;
-
-            if wire_type != wire_types::LEN {
-                break;
-            }
-
-            let (len, next_pos) = match read_varint(data, pos) {
-                Some(v) => v,
-                None => break,
-            };
-            pos = next_pos;
-            let end = pos + len as usize;
-
-            if end > data.len() {
-                break;
-            }
-
-            let field_bytes = &data[pos..end];
-
-            if field_num == LOG_RECORD_BODY {
-                let any_value = RawAnyValue::new(field_bytes);
-                Self::write_any_value(w, &any_value);
-            } else if field_num == LOG_RECORD_ATTRIBUTES {
-                if !has_attrs {
-                    let _ = w.write_all(b" [");
-                    has_attrs = true;
-                }
-
-                if !first_attr {
+        // Write attributes if present
+        let mut attrs = record.attributes().peekable();
+        if attrs.peek().is_some() {
+            let _ = w.write_all(b" [");
+            let mut first = true;
+            for attr in attrs {
+                if !first {
                     let _ = w.write_all(b", ");
                 }
-                first_attr = false;
-
-                let kv = RawKeyValue::new(field_bytes);
-                let _ = w.write_all(kv.key());
+                first = false;
+                let _ = w.write_all(attr.key());
                 let _ = w.write_all(b"=");
-
-                match kv.value() {
+                match attr.value() {
                     Some(v) => Self::write_any_value(w, &v),
                     None => {
                         let _ = w.write_all(b"<?>");
                     }
                 }
             }
-
-            pos = end;
-        }
-
-        if has_attrs {
             let _ = w.write_all(b"]");
         }
     }
