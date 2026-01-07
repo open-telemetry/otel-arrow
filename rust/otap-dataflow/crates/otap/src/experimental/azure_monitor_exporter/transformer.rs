@@ -36,6 +36,7 @@ enum LogRecordField {
     SeverityNumber,
     SeverityText,
     Body,
+    EventName,
 }
 
 impl LogRecordField {
@@ -57,6 +58,9 @@ impl LogRecordField {
             Some(Self::SeverityText)
         } else if s.eq_ignore_ascii_case("body") {
             Some(Self::Body)
+        } else if s.eq_ignore_ascii_case("event_name") {
+            // Add this
+            Some(Self::EventName)
         } else {
             None
         }
@@ -274,6 +278,9 @@ impl Transformer {
                 .body()
                 .map(|b| Value::String(Self::extract_string_value(&b)))
                 .unwrap_or(Value::Null),
+            LogRecordField::EventName => {
+                Value::String(Self::str_to_string(log_record.event_name().unwrap_or(b"")))
+            }
         }
     }
 
@@ -944,5 +951,53 @@ mod tests {
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
         // NaN cannot be represented in JSON, so it becomes null
         assert_eq!(json["ServiceName"], json!(null));
+    }
+
+    #[test]
+    fn test_event_name_field() {
+        let mut config = create_test_config();
+        config.api.schema.log_record_mapping = HashMap::from([
+            ("event_name".into(), json!("EventName")),
+            ("severity_text".into(), json!("Severity")),
+        ]);
+
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![
+                        LogRecord {
+                            event_name: "user.login".into(),
+                            severity_text: "INFO".into(),
+                            ..Default::default()
+                        },
+                        LogRecord {
+                            event_name: String::new(),
+                            severity_text: String::new(),
+                            ..Default::default()
+                        },
+                    ],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 2);
+
+        let json1: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json1["EventName"], "user.login");
+        assert_eq!(json1["Severity"], "INFO");
+
+        let json2: Value = serde_json::from_slice(&result[1]).unwrap();
+        assert_eq!(json2["EventName"], "");
+        assert_eq!(json2["Severity"], "");
     }
 }
