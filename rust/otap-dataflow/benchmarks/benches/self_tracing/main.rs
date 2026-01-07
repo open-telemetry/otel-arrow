@@ -133,9 +133,9 @@ macro_rules! emit_log {
 }
 
 /// Run a benchmark with the given layer, invoking the log emitter.
-fn run_bench<L, F>(b: &mut criterion::Bencher, layer: L, emit: F)
+fn run_bench<L, F>(b: &mut criterion::Bencher<'_>, layer: L, emit: F)
 where
-    L: Layer<tracing_subscriber::Registry> + 'static,
+    L: Layer<tracing_subscriber::Registry> + Send + Sync + 'static,
     F: Fn(),
 {
     let subscriber = tracing_subscriber::registry().with(layer);
@@ -155,7 +155,7 @@ fn bench_op(c: &mut Criterion, group_name: &str, op: BenchOp) {
         for &(attr_count, attr_label) in &[(0, "0_attrs"), (3, "3_attrs"), (10, "10_attrs")] {
             let id = BenchmarkId::new(attr_label, format!("{}_events", iterations));
 
-            group.bench_with_input(id, &iterations, |b, &iters| {
+            let _ = group.bench_with_input(id, &iterations, |b, &iters| {
                 let layer = BenchLayer::new(iters, op);
                 match attr_count {
                     0 => run_bench(b, layer, || emit_log!(0)),
