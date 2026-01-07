@@ -393,7 +393,6 @@ pub struct DashboardConfig {
     pub rows_per_bundle: usize,
     pub subscribers: usize,
     pub subscriber_delay_ms: u64,
-    pub use_registry: bool,
     pub simulate_failures: bool,
     pub data_dir: String,
 }
@@ -731,12 +730,11 @@ fn render_config(frame: &mut Frame<'_>, area: Rect, config: &DashboardConfig) {
     let config_lines = vec![
         Line::from(format!("Data dir: {}", config.data_dir)),
         Line::from(format!(
-            "Bundles: {} │ Rows/bundle: {} │ Subscribers: {} │ Delay: {} │ Registry: {} │ Failures: {}",
+            "Bundles: {} │ Rows/bundle: {} │ Subscribers: {} │ Delay: {} │ Failures: {}",
             config.bundles_per_iteration,
             config.rows_per_bundle,
             config.subscribers,
             delay_str,
-            if config.use_registry { "yes" } else { "no" },
             if config.simulate_failures { "yes" } else { "no" },
         )),
     ];
