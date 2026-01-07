@@ -207,7 +207,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     bridge_options,
                                 ) {
                                     Ok(pipeline) => {
-                                        otap_df_telemetry::otel_error!(
+                                        otap_df_telemetry::otel_info!(
                                             "Processor.Reconfigured",
                                             processor = "kql",
                                         );
