@@ -34,15 +34,10 @@ impl OpentelemetryClient {
 
         let runtime = None;
 
-        let meter_provider =
-            MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?;
+        let (meter_provider, runtime) =
+            MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?.into_parts();
 
-        // Extract the meter provider and runtime by consuming the MeterProvider
-        let (meter_provider, runtime) = meter_provider.into_parts();
-
-        let logger_provider = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
-
-        let (logger_provider, runtime) = logger_provider.into_parts();
+        let (logger_provider, runtime) = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
 
         //TODO: Configure traces provider.
 

@@ -402,6 +402,7 @@ pub(crate) struct PipelineMetricsMonitor {
     last_allocated: u64,
     last_deallocated: u64,
 
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
     rusage_thread_supported: bool,
 
     // These timestamps mark the beginning of the current measurement interval
@@ -451,6 +452,7 @@ impl PipelineMetricsMonitor {
         #[cfg(windows)]
         let (jemalloc_supported, last_allocated, last_deallocated) = (false, 0, 0);
 
+        #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
         let rusage_thread_supported = Self::init_rusage_baseline();
         let tokio_rt = tokio::runtime::Handle::try_current()
             .ok()
@@ -465,6 +467,7 @@ impl PipelineMetricsMonitor {
             deallocated,
             last_allocated,
             last_deallocated,
+            #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
             rusage_thread_supported,
             wall_start: now,
             cpu_start: ThreadTime::now(),
@@ -704,6 +707,7 @@ impl PipelineMetricsMonitor {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
     fn init_rusage_baseline() -> bool {
         #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
         {

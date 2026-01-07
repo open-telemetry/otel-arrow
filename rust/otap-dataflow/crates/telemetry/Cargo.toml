@@ -39,7 +39,7 @@ opentelemetry_sdk = { workspace = true }
 opentelemetry-stdout = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "metrics", "logs"] }
 opentelemetry-prometheus = { workspace = true }
-opentelemetry-appender-tracing = { workspace = true }
+#opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
