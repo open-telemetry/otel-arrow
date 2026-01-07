@@ -78,11 +78,11 @@ pub struct ConsoleWriter {
 }
 
 /// A minimal alternative to `tracing_subscriber::fmt::layer()`.
-pub struct RawLayer {
+pub struct RawLoggingLayer {
     writer: ConsoleWriter,
 }
 
-impl RawLayer {
+impl RawLoggingLayer {
     /// Return a new formatting layer with associated writer.
     #[must_use]
     pub fn new(writer: ConsoleWriter) -> Self {
@@ -315,7 +315,7 @@ impl ConsoleWriter {
     }
 }
 
-impl<S> TracingLayer<S> for RawLayer
+impl<S> TracingLayer<S> for RawLoggingLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {

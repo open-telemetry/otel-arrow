@@ -19,7 +19,7 @@ use tracing::callsite::Identifier;
 use tracing::{Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
-pub use formatter::{ConsoleWriter, RawLayer as RawLoggingLayer};
+pub use formatter::{ConsoleWriter, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 #[derive(Debug, Clone)]
