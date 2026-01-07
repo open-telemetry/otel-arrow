@@ -84,6 +84,7 @@ pub struct RawLayer {
 
 impl RawLayer {
     /// Return a new formatting layer with associated writer.
+    #[must_use]
     pub fn new(writer: ConsoleWriter) -> Self {
         Self { writer }
     }
@@ -95,6 +96,7 @@ pub type BufWriter<'a> = Cursor<&'a mut [u8]>;
 
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
+    #[must_use]
     pub fn no_color() -> Self {
         Self {
             color_mode: ColorMode::NoColor,
@@ -102,6 +104,7 @@ impl ConsoleWriter {
     }
 
     /// Create a writer that outputs to stderr with ANSI colors.
+    #[must_use]
     pub fn color() -> Self {
         Self {
             color_mode: ColorMode::Color,

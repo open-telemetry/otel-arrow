@@ -42,7 +42,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
             .extend_from_slice(&record.timestamp_ns.to_le_bytes());
 
         // Encode severity_number (field 2, varint)
-        let severity = level_to_severity_number(&callsite.level);
+        let severity = level_to_severity_number(callsite.level);
         self.buf
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
@@ -273,6 +273,7 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
 ///
 /// See: https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber
 #[inline]
+#[must_use]
 pub fn level_to_severity_number(level: &Level) -> u8 {
     match *level {
         Level::TRACE => 1,

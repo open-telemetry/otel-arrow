@@ -57,6 +57,7 @@ pub struct SavedCallsite {
 
 impl SavedCallsite {
     /// Construct saved callsite information from tracing Metadata.
+    #[must_use]
     pub fn new(metadata: &'static Metadata<'static>) -> Self {
         Self {
             level: metadata.level(),
@@ -70,6 +71,7 @@ impl SavedCallsite {
 
 impl LogRecord {
     /// Construct a log record, partially encoding its dynamic content.
+    #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
         let metadata = event.metadata();
 
