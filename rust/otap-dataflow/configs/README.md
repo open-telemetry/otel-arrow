@@ -103,6 +103,14 @@ A basic OTLP pipeline configuration:
 - Receives OTLP traffic on `127.0.0.1:4317`
 - Exports OTLP traffic to `http://127.0.0.1:1235`
 
+### `otlp-http-otlp.yaml`
+
+OTLP receiver over both protocols:
+
+- Receives OTLP/gRPC on `127.0.0.1:4317`
+- Receives OTLP/HTTP on `127.0.0.1:4318`
+- Exports OTLP/gRPC traffic to `http://127.0.0.1:4319`
+
 ### `otlp-perf.yaml`
 
 OTLP receiver with performance metrics:

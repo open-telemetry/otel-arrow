@@ -14,12 +14,12 @@
 //!
 //! The implementation uses HTTP CONNECT method to establish tunnels through proxies.
 
+use crate::socket_options;
 use base64::Engine;
 use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
 use serde::Deserialize;
-use socket2::{Socket, TcpKeepalive};
 use std::borrow::Cow;
 use std::env;
 use std::io;
@@ -575,10 +575,6 @@ async fn http_connect_tunnel_on_stream(
 }
 
 /// Applies TCP socket options (nodelay, keepalive) to a stream.
-///
-/// This function performs a series of conversions (tokio -> std -> socket2 -> std -> tokio)
-/// to apply socket options that are not directly exposed by tokio's TcpStream.
-/// Specifically, `socket2` is required to set detailed keepalive parameters (interval, retries).
 fn apply_socket_options(
     stream: TcpStream,
     tcp_nodelay: bool,
@@ -586,41 +582,13 @@ fn apply_socket_options(
     tcp_keepalive_interval: Option<Duration>,
     tcp_keepalive_retries: Option<u32>,
 ) -> io::Result<TcpStream> {
-    // Convert tokio TcpStream to std TcpStream, then to Socket
-    stream.set_nodelay(tcp_nodelay)?;
-
-    let std_stream = stream.into_std()?;
-    let socket: Socket = std_stream.into();
-
-    // Apply TCP keepalive settings
-    if let Some(keepalive_time) = tcp_keepalive {
-        let mut keepalive = TcpKeepalive::new().with_time(keepalive_time);
-
-        if let Some(interval) = tcp_keepalive_interval {
-            keepalive = keepalive.with_interval(interval);
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        if let Some(retries) = tcp_keepalive_retries {
-            keepalive = keepalive.with_retries(retries);
-        }
-
-        #[cfg(target_os = "windows")]
-        if tcp_keepalive_retries.is_some() {
-            otap_df_telemetry::otel_warn!(
-                "Proxy.KeepaliveRetriesIgnored",
-                platform = "windows",
-                message = "tcp_keepalive_retries is configured but ignored on Windows: TcpKeepalive::with_retries is not available on this platform"
-            );
-        }
-
-        socket.set_tcp_keepalive(&keepalive)?;
-    }
-
-    // Convert back to std TcpStream, then to tokio TcpStream
-    let std_stream: std::net::TcpStream = socket.into();
-    std_stream.set_nonblocking(true)?;
-    TcpStream::from_std(std_stream)
+    socket_options::apply_socket_options(
+        stream,
+        tcp_nodelay,
+        tcp_keepalive,
+        tcp_keepalive_interval,
+        tcp_keepalive_retries,
+    )
 }
 
 /// Establishes a TCP connection to a target, optionally through an HTTP CONNECT proxy.

@@ -1,0 +1,45 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      # OTLP/gRPC receiver (default port: 4317)
+      listening_addr: "127.0.0.1:4317"
+
+      # OTLP/HTTP receiver (default port: 4318)
+      http:
+        listening_addr: "127.0.0.1:4318"
+        # wait_for_result: false
+        # max_concurrent_requests: 0
+        # max_request_body_size: "4MiB"
+        # accept_compressed_requests: true
+
+      # timeout: "30s"  # Optional: timeout for gRPC requests
+
+      # TLS / mTLS (receiver-side; gRPC only today)
+      # tls:
+      #   cert_file: "/path/to/server.crt"   # or `cert_pem: | ...`
+      #   key_file: "/path/to/server.key"    # or `key_pem: | ...`
+      #   client_ca_file: "/path/to/client-ca.crt"  # or `client_ca_pem: | ...`
+      #   include_system_ca_certs_pool: false
+      #   handshake_timeout: "10s"
+      #   reload_interval: "5m"
+
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otlp:exporter"
+    config:
+      # Downstream OTLP/gRPC collector endpoint.
+      # Uses a different port than this receiver to avoid accidental loops.
+      grpc_endpoint: "http://127.0.0.1:4319"
+      # timeout: "15s"
