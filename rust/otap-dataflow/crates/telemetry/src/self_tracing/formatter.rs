@@ -17,20 +17,18 @@ use tracing_subscriber::registry::LookupSpan;
 /// Default buffer size for log formatting.
 pub const LOG_BUFFER_SIZE: usize = 4096;
 
-/// Console formatter writes to stdout or stderr.
+/// Console writes formatted text to stdout or stderr.
 #[derive(Debug, Clone, Copy)]
 pub struct ConsoleWriter {
     use_ansi: bool,
 }
 
-/// A minimal formatting layer that outputs log records to stdout/stderr.
-///
-/// This is a lightweight alternative to `tracing_subscriber::fmt::layer()`.
+/// A minimal alternative to `tracing_subscriber::fmt::layer()`.
 pub struct RawLayer {
     writer: ConsoleWriter,
 }
 
-// ANSI SGR (Select Graphic Rendition) codes
+// ANSI "Select Graphic Rendition" codes
 const ANSI_RESET: u8 = 0;
 const ANSI_BOLD: u8 = 1;
 const ANSI_DIM: u8 = 2;
@@ -182,6 +180,9 @@ impl ConsoleWriter {
             let _ = w.write_all(b" [");
             let mut first = true;
             for attr in attrs {
+                if Self::is_full(w) {
+                    break;
+                }
                 if !first {
                     let _ = w.write_all(b", ");
                 }
@@ -197,6 +198,12 @@ impl ConsoleWriter {
             }
             let _ = w.write_all(b"]");
         }
+    }
+
+    /// Check if the buffer is full (position >= capacity).
+    #[inline]
+    fn is_full(w: &BufWriter<'_>) -> bool {
+        w.position() as usize >= w.get_ref().len()
     }
 
     /// Write an AnyValue to buffer.
@@ -303,14 +310,12 @@ impl<S> TracingLayer<S> for RawLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
+    // Allocates a buffer on the stack, formats the event to a LogRecord
+    // with partial OTLP bytes.
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let metadata = event.metadata();
-
-        // Build compact record
         let record = LogRecord::new(event);
+        let callsite = SavedCallsite::new(event.metadata());
 
-        // Allocate buffer on stack and format directly
-        let callsite = SavedCallsite::new(metadata);
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let len = self.writer.write_log_record(&mut buf, &record, &callsite);
         self.writer.write_line(callsite.level, &buf[..len]);
@@ -320,72 +325,46 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use otap_df_pdata::prost::Message;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
+    use std::sync::{Arc, Mutex};
     use tracing_subscriber::prelude::*;
 
-    #[test]
-    fn test_simple_writer_creation() {
-        let _stdout = ConsoleWriter::color();
-        let _stderr = ConsoleWriter::no_color();
+    struct CaptureLayer {
+        output: Arc<Mutex<String>>,
     }
 
-    #[test]
-    fn test_formatter_layer_creation() {
-        let _color = RawLayer::new(ConsoleWriter::color());
-        let _nocolor = RawLayer::new(ConsoleWriter::no_color());
-    }
-
-    #[test]
-    fn test_layer_integration() {
-        // Create the layer and subscriber
-        let layer = RawLayer::new(ConsoleWriter::no_color());
-        let subscriber = tracing_subscriber::registry().with(layer);
-
-        // Set as default for this thread temporarily
-        let dispatch = tracing::Dispatch::new(subscriber);
-        let _guard = tracing::dispatcher::set_default(&dispatch);
-
-        // Emit some events - these should be formatted and written to stderr
-        tracing::info!("Test info message");
-        tracing::warn!(count = 42, "Warning with attribute");
-        tracing::error!(error = "something failed", "Error occurred");
-
-        // The test verifies no panics occur; actual output goes to stderr
+    impl<S> TracingLayer<S> for CaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let record = LogRecord::new(event);
+            let callsite = SavedCallsite::new(event.metadata());
+            let writer = ConsoleWriter::no_color();
+            *self.output.lock().unwrap() = writer.format_log_record(&record, &callsite);
+        }
     }
 
     #[test]
     fn test_log_format() {
-        // Test the formatter by capturing output through our layer
-        use std::sync::{Arc, Mutex};
-
         let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let output_clone = output.clone();
 
-        struct CaptureLayer {
-            output: Arc<Mutex<String>>,
-        }
-        impl<S> TracingLayer<S> for CaptureLayer
-        where
-            S: Subscriber + for<'a> LookupSpan<'a>,
-        {
-            fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-                let record = LogRecord::new(event);
-                let callsite = SavedCallsite::new(event.metadata());
-                let writer = ConsoleWriter::no_color();
-                *self.output.lock().unwrap() = writer.format_log_record(&record, &callsite);
-            }
-        }
-
-        // Helper to strip timestamp (24 char timestamp + 2 spaces)
+        // strip timestamp and newline
         fn strip_ts(s: &str) -> &str {
             s[26..].trim_end()
         }
 
-        let layer = CaptureLayer { output: output_clone };
+        let layer = CaptureLayer {
+            output: output_clone,
+        };
         let subscriber = tracing_subscriber::registry().with(layer);
         let dispatch = tracing::Dispatch::new(subscriber);
         let _guard = tracing::dispatcher::set_default(&dispatch);
 
-        // Test info
         tracing::info!("hello world");
         let binding = output.lock().unwrap();
         let result = strip_ts(&binding);
@@ -393,7 +372,6 @@ mod tests {
         assert!(result.ends_with(": hello world"), "got: {}", result);
         drop(binding);
 
-        // Test warn with attribute
         tracing::warn!(count = 42, "warning");
         let binding = output.lock().unwrap();
         let result = strip_ts(&binding);
@@ -401,7 +379,6 @@ mod tests {
         assert!(result.ends_with(": warning [count=42]"), "got: {}", result);
         drop(binding);
 
-        // Test error with string attribute
         tracing::error!(msg = "oops", "failed");
         let binding = output.lock().unwrap();
         let result = strip_ts(&binding);
@@ -410,9 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_full_format_with_known_timestamp() {
-        use bytes::Bytes;
-
+    fn test_timestamp_format() {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             // 2024-01-15T12:30:45.678Z
@@ -420,20 +395,69 @@ mod tests {
             body_attrs_bytes: Bytes::new(),
         };
 
-        let callsite = SavedCallsite {
-            target: "my_crate::module",
-            name: "event",
-            file: Some("src/lib.rs"),
-            line: Some(42),
-            level: &Level::INFO,
-        };
-
         let writer = ConsoleWriter::no_color();
-        let output = writer.format_log_record(&record, &callsite);
+        let output = writer.format_log_record(&record, &test_callsite());
 
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO   my_crate::module::event (src/lib.rs:42): \n"
+            "2024-01-15T12:30:45.678Z  INFO   test_module::submodule::test_event (src/test.rs:123): \n"
+        );
+    }
+
+    #[test]
+    fn test_buffer_overflow() {
+        let mut attrs = Vec::new();
+        for i in 0..200 {
+            attrs.push(KeyValue::new(
+                format!("attribute_key_{:03}", i),
+                AnyValue::new_string(format!("value_{:03}", i)),
+            ));
+        }
+
+        let proto_record = ProtoLogRecord {
+            body: Some(AnyValue::new_string("This is the log message body")),
+            attributes: attrs,
+            ..Default::default()
+        };
+
+        let mut encoded = Vec::new();
+        proto_record.encode(&mut encoded).unwrap();
+
+        let record = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            timestamp_ns: 1705321845_678_000_000,
+            body_attrs_bytes: Bytes::from(encoded),
+        };
+
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let writer = ConsoleWriter::no_color();
+        let len = writer.write_log_record(&mut buf, &record, &test_callsite());
+
+        // Fills exactly to capacity due to overflow.
+        // Note! we could append a ... or some other indicator.
+        assert_eq!(len, LOG_BUFFER_SIZE);
+
+        // Verify the output starts correctly with timestamp and body
+        let output = std::str::from_utf8(&buf[..len]).unwrap();
+        assert!(
+            output.starts_with("2024-01-15T12:30:45.678Z"),
+            "got: {}",
+            output
+        );
+        assert!(
+            output.contains("This is the log message body"),
+            "got: {}",
+            output
+        );
+        assert!(
+            output.contains("attribute_key_000=value_000"),
+            "got: {}",
+            output
+        );
+        assert!(
+            output.contains("attribute_key_010=value_010"),
+            "got: {}",
+            output
         );
     }
 
@@ -442,7 +466,22 @@ mod tests {
     impl tracing::Callsite for TestCallsite {
         fn set_interest(&self, _: tracing::subscriber::Interest) {}
         fn metadata(&self) -> &tracing::Metadata<'_> {
-            unimplemented!()
+            &TEST_METADATA
         }
+    }
+
+    static TEST_METADATA: tracing::Metadata<'static> = tracing::Metadata::new(
+        "test_event",
+        "test_module::submodule",
+        Level::INFO,
+        Some("src/test.rs"),
+        Some(123),
+        Some("test_module::submodule"),
+        tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&TEST_CALLSITE)),
+        tracing::metadata::Kind::EVENT,
+    );
+
+    fn test_callsite() -> SavedCallsite {
+        SavedCallsite::new(&TEST_METADATA)
     }
 }

@@ -38,6 +38,9 @@ mod validation;
 pub use decode::decoder::Consumer;
 pub use encode::producer::Producer;
 
+/// Re-export prost for proto message encoding/decoding.
+pub use prost;
+
 /// TraceID identifier of a Trace
 #[derive(Eq, PartialEq, Clone, Copy, Debug, Default)]
 pub struct TraceID([u8; 16]);
