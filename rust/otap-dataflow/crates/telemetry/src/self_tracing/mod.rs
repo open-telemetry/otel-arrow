@@ -9,7 +9,7 @@
 //! primitive fields and static references. The remaining data are
 //! placed in a partial OTLP encoding.
 
-pub mod direct_encoder;
+pub mod encoder;
 pub mod formatter;
 
 use bytes::Bytes;
@@ -17,8 +17,6 @@ use std::collections::HashMap;
 use tracing::callsite::Identifier;
 
 pub use formatter::{ConsoleWriter, Layer as RawLoggingLayer};
-
-pub use direct_encoder::{DirectFieldVisitor, ProtoBuffer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 #[derive(Debug, Clone)]

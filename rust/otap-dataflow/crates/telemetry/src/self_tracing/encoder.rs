@@ -2,42 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
-//!
-//! This module provides zero-allocation encoding from `tracing::Event` directly to
-//! OTLP protobuf bytes, bypassing the View abstraction entirely. The key insight is
-//! that the tracing `Visit` trait gives us access to field data during a callback,
-//! and we can encode directly to a protobuf buffer during that callback.
-//!
-//! # Design
-//!
-//! Instead of:
-//! 1. Visit event fields → allocate intermediate struct → encode via View trait
-//!
-//! We do:
-//! 1. Visit event fields → encode directly to protobuf buffer
-//!
-//! This eliminates all intermediate allocations and lifetime complexities.
-//!
-//! # Protocol Buffer Encoding
-//!
-//! The encoder produces bytes in the OTLP LogRecord protobuf format. For single-record
-//! use cases, it encodes just the LogRecord message. For batched use cases, see
-//! `StatefulDirectEncoder` which maintains open ResourceLogs/ScopeLogs containers.
 
 use bytes::Bytes;
 use std::fmt::Write as FmtWrite;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{Event, Level};
-
-// Re-export ProtoBuffer and helpers from pdata for direct use
-pub use otap_df_pdata::otlp::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
+use otap_df_pdata::otlp::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
 use otap_df_pdata::proto::consts::{field_num::common::*, field_num::logs::*, wire_types};
 
 /// Position marker for a length-delimited field that needs patching.
 ///
-/// When encoding protobuf, we don't know the length of nested messages until we've
-/// written all their content. We reserve 4 bytes for the length, write the content,
-/// then patch the length back.
+/// TODO: This would belong in otap_df_pdata::otlp, for use in place
+/// of directly calling encode_len_placeholder, patch_len_placeholder,
+/// except we should use the macros defined there instead. Remove.
 #[derive(Debug, Clone, Copy)]
 pub struct LengthPlaceholder {
     /// Position in buffer where the 4-byte length placeholder starts
@@ -59,10 +36,8 @@ impl LengthPlaceholder {
     }
 }
 
-/// Wrapper for ProtoBuffer that implements `std::fmt::Write`.
-///
-/// This allows direct formatting of `Debug` values into the protobuf buffer
-/// without allocating an intermediate `String`.
+/// Wrapper for ProtoBuffer for formatting of Debug values without
+/// allocating an intermediate String.
 struct ProtoBufferWriter<'a> {
     buf: &'a mut ProtoBuffer,
 }
@@ -76,21 +51,6 @@ impl FmtWrite for ProtoBufferWriter<'_> {
 }
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
-///
-/// This encoder writes directly to a provided `ProtoBuffer`, producing the
-/// protobuf encoding of a LogRecord message without any intermediate structs.
-///
-/// # Example
-///
-/// ```ignore
-/// use tracing_subscriber::layer::Layer;
-///
-/// // In a Layer::on_event callback:
-/// fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-///     let mut encoder = DirectLogRecordEncoder::new(&mut self.buffer);
-///     encoder.encode_event(event);
-/// }
-/// ```
 pub struct DirectLogRecordEncoder<'buf> {
     buf: &'buf mut ProtoBuffer,
 }
@@ -185,6 +145,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
     /// Encode an attribute (KeyValue message) with a string value.
     #[inline]
     pub fn encode_string_attribute(&mut self, key: &str, value: &str) {
+
         // KeyValue message as LOG_RECORD_ATTRIBUTES field (tag 6)
         self.buf.encode_field_tag(LOG_RECORD_ATTRIBUTES, wire_types::LEN);
         let kv_placeholder = LengthPlaceholder::new(self.buf.len());
@@ -373,20 +334,7 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        // Zero-allocation path: write Debug output directly to protobuf buffer.
-        //
-        // Note: This method is only called for types that don't implement the specific
-        // Visit methods (record_i64, record_f64, record_bool, record_str). Primitives
-        // are encoded as native OTLP AnyValue types (int_value, double_value, etc.),
-        // preserving type fidelity. Only complex types fall through to this Debug path.
-        //
-        // TODO: The Debug trait only provides string formatting, not structural access.
-        // std::fmt::Formatter is opaque with no public constructor, so we cannot intercept
-        // the debug_struct/debug_list/field calls to encode as nested OTLP AnyValue messages.
-        // To support structured encoding, types would need to implement an alternative trait:
-        // - `serde::Serialize` → encode to AnyValue::kvlist_value / array_value
-        // - `valuable::Valuable` → designed for structured inspection (limited adoption)
-        // - `tracing::Value` → unstable, may provide this in the future
+        // The Rust Debug type cannot be destructured, only formatted.
         if field.name() == "message" {
             self.encode_body_debug(value);
         } else {

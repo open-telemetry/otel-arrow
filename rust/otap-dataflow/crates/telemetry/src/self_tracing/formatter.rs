@@ -1,25 +1,23 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! A `fmt::layer()` alternative using self_tracing::LogRecord.
+//! An alternative to Tokio fmt::layer().
 
 use bytes::Bytes;
 use std::io::Write;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use otap_df_pdata::proto::consts::field_num::logs::{LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY};
 use otap_df_pdata::proto::consts::wire_types;
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::otlp::bytes::common::{RawAnyValue, RawKeyValue};
 use otap_df_pdata::views::otlp::bytes::decode::read_varint;
-
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
-
-use super::direct_encoder::{DirectFieldVisitor, ProtoBuffer};
+use otap_df_pdata::otlp::ProtoBuffer;
+use super::encoder::DirectFieldVisitor;
 use super::{CallsiteMap, LogRecord};
 
 /// Console formatter writes to stdout or stderr.
