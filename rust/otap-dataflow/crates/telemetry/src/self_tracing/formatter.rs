@@ -3,22 +3,18 @@
 
 //! An alternative to Tokio fmt::layer().
 
+use super::{LogRecord, SavedCallsite};
 use bytes::Bytes;
-use std::io::Write;
-use std::sync::RwLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 use otap_df_pdata::proto::consts::field_num::logs::{LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY};
 use otap_df_pdata::proto::consts::wire_types;
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::otlp::bytes::common::{RawAnyValue, RawKeyValue};
 use otap_df_pdata::views::otlp::bytes::decode::read_varint;
+use std::io::Write;
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
-use otap_df_pdata::otlp::ProtoBuffer;
-use super::encoder::DirectFieldVisitor;
-use super::{CallsiteMap, LogRecord};
 
 /// Console formatter writes to stdout or stderr.
 #[derive(Debug)]
@@ -29,8 +25,7 @@ pub struct ConsoleWriter {
 /// A minimal formatting layer that outputs log records to stdout/stderr.
 ///
 /// This is a lightweight alternative to `tracing_subscriber::fmt::layer()`.
-pub struct Layer {
-    callsites: RwLock<CallsiteMap>,
+pub struct RawLayer {
     writer: ConsoleWriter,
 }
 
@@ -44,24 +39,10 @@ const ANSI_MAGENTA: &str = "\x1b[35m";
 const ANSI_DIM: &str = "\x1b[2m";
 const ANSI_BOLD: &str = "\x1b[1m";
 
-impl Layer {
+impl RawLayer {
     /// Return a new fomatting layer with associated writer.
     pub fn new(writer: ConsoleWriter) -> Self {
-        Self {
-            callsites: RwLock::new(CallsiteMap::new()),
-            writer,
-        }
-    }
-
-    /// Convert tracing Level to OTLP severity number.
-    fn level_to_severity(level: &Level) -> u8 {
-        match *level {
-            Level::TRACE => 1,
-            Level::DEBUG => 5,
-            Level::INFO => 9,
-            Level::WARN => 13,
-            Level::ERROR => 17,
-        }
+        Self { writer }
     }
 }
 
@@ -79,25 +60,20 @@ impl ConsoleWriter {
     /// Format a InternalLogRecord as a human-readable string.
     ///
     /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
-    pub fn format_log_record(&self, record: &LogRecord, map: &CallsiteMap) -> String {
-        let callsite = map.get(&record.callsite_id);
-
-        let event_name = match callsite {
-            Some(cs) => Self::format_event_name(cs.target, cs.name, cs.file, cs.line),
-            None => "<unknown>".to_string(),
-        };
+    pub fn format_log_record(&self, record: &LogRecord, callsite: &SavedCallsite) -> String {
+        let event_name = Self::format_event_name(callsite);
 
         let body_attrs = Self::format_body_attrs(&record.body_attrs_bytes);
 
         if self.use_ansi {
-            let level_color = Self::level_color(record.severity_level);
+            let level_color = Self::level_color(callsite.level);
             format!(
                 "{}{}{}  {}{:5}{}  {}{}{}: {}\n",
                 ANSI_DIM,
                 Self::format_timestamp(record.timestamp_ns),
                 ANSI_RESET,
                 level_color,
-                record.severity_text,
+                callsite.level.as_str(),
                 ANSI_RESET,
                 ANSI_BOLD,
                 event_name,
@@ -108,7 +84,7 @@ impl ConsoleWriter {
             format!(
                 "{}  {:5}  {}: {}\n",
                 Self::format_timestamp(record.timestamp_ns),
-                record.severity_text,
+                callsite.level.as_str(),
                 event_name,
                 body_attrs,
             )
@@ -119,15 +95,12 @@ impl ConsoleWriter {
     ///
     /// Format: "target::name (file.rs:42)" or "target::name" if file/line unavailable.
     #[inline]
-    fn format_event_name(
-        target: &str,
-        name: &str,
-        file: Option<&str>,
-        line: Option<u32>,
-    ) -> String {
-        match (file, line) {
-            (Some(file), Some(line)) => format!("{}::{} ({}:{})", target, name, file, line),
-            _ => format!("{}::{}", target, name),
+    fn format_event_name(callsite: &SavedCallsite) -> String {
+        match (callsite.file, callsite.line) {
+            (Some(file), Some(line)) => {
+                format!("{}::{} ({}:{})", callsite.target, callsite.name, file, line)
+            }
+            _ => format!("{}::{}", callsite.target, callsite.name),
         }
     }
 
@@ -248,9 +221,6 @@ impl ConsoleWriter {
     }
 
     /// Format an AnyValue for display.
-    ///
-    /// This is based on the same logic used in `otlp_bytes_formatter.rs`, providing
-    /// consistent formatting across the crate.
     fn format_any_value<'a>(value: &impl AnyValueView<'a>) -> String {
         match value.value_type() {
             ValueType::String => {
@@ -321,9 +291,14 @@ impl ConsoleWriter {
     }
 
     /// Write a log line
-    fn write_line(&self, level: u8, line: &str) {
-        // Ignore erorr
-        let _error = if level >= 13 {
+    fn write_line(&self, level: &Level, line: &str) {
+        let use_stderr = match *level {
+            Level::ERROR => true,
+            Level::WARN => true,
+            _ => false,
+        };
+        // Ignore error from write()
+        let _ = if use_stderr {
             std::io::stderr().write(line.as_bytes())
         } else {
             std::io::stdout().write(line.as_bytes())
@@ -332,62 +307,31 @@ impl ConsoleWriter {
 
     /// Get ANSI color code for a severity level.
     #[inline]
-    fn level_color(level: u8) -> &'static str {
-        if level >= 17 {
-            ANSI_RED
-        } else if level >= 13 {
-            ANSI_YELLOW
-        } else if level >= 9 {
-            ANSI_GREEN
-        } else if level >= 5 {
-            ANSI_BLUE
-        } else {
-            ANSI_MAGENTA
+    fn level_color(level: &Level) -> &'static str {
+        match *level {
+            Level::ERROR => ANSI_RED,
+            Level::WARN => ANSI_YELLOW,
+            Level::INFO => ANSI_GREEN,
+            Level::DEBUG => ANSI_BLUE,
+            Level::TRACE => ANSI_MAGENTA,
         }
     }
 }
 
-// ============================================================================
-// Layer Implementation
-// ============================================================================
-
-impl<S> TracingLayer<S> for Layer
+impl<S> TracingLayer<S> for RawLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn register_callsite(
-        &self,
-        metadata: &'static tracing::Metadata<'static>,
-    ) -> tracing::subscriber::Interest {
-        self.callsites.write().unwrap().register(metadata);
-        tracing::subscriber::Interest::always()
-    }
-
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
 
-        // Encode body and attributes to bytes
-        let body_attrs_bytes = encode_body_and_attrs(event);
-
-        // Get current timestamp
-        let timestamp_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
         // Build compact record
-        let record = LogRecord {
-            callsite_id: metadata.callsite(),
-            timestamp_ns,
-            severity_level: Self::level_to_severity(metadata.level()),
-            severity_text: metadata.level().as_str(),
-            body_attrs_bytes,
-        };
+        let record = LogRecord::new(event);
 
         // Format and write immediately
-        let map = self.callsites.read().unwrap();
-        let line = self.writer.format_log_record(&record, &map);
-        self.writer.write_line(record.severity_level, &line);
+        let callsite = SavedCallsite::new(metadata);
+        let line = self.writer.format_log_record(&record, &callsite);
+        self.writer.write_line(callsite.level, &line);
     }
 
     fn on_new_span(&self, _attrs: &Attributes<'_>, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
@@ -409,17 +353,6 @@ where
     fn on_close(&self, _id: tracing::span::Id, _ctx: Context<'_, S>) {
         // Not handling spans
     }
-}
-
-/// Encode only body and attributes from an event to OTLP bytes.
-pub fn encode_body_and_attrs(event: &Event<'_>) -> Bytes {
-    let mut buf = ProtoBuffer::with_capacity(256);
-
-    // Visit fields to encode body (field 5) and attributes (field 6)
-    let mut visitor = DirectFieldVisitor::new(&mut buf);
-    event.record(&mut visitor);
-
-    buf.into_bytes()
 }
 
 // ============================================================================
@@ -455,21 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn test_level_to_severity() {
-        assert_eq!(Layer::level_to_severity(&Level::TRACE), 1);
-        assert_eq!(Layer::level_to_severity(&Level::DEBUG), 5);
-        assert_eq!(Layer::level_to_severity(&Level::INFO), 9);
-        assert_eq!(Layer::level_to_severity(&Level::WARN), 13);
-        assert_eq!(Layer::level_to_severity(&Level::ERROR), 17);
-    }
-
-    #[test]
-    fn test_callsites() {
-        let map = CallsiteMap::new();
-        assert!(map.callsites.is_empty());
-    }
-
-    #[test]
     fn test_simple_writer_creation() {
         let _stdout = ConsoleWriter::color();
         let _stderr = ConsoleWriter::no_color();
@@ -477,14 +395,14 @@ mod tests {
 
     #[test]
     fn test_formatter_layer_creation() {
-        let _color = Layer::new(ConsoleWriter::color());
-        let _nocolor = Layer::new(ConsoleWriter::no_color());
+        let _color = RawLayer::new(ConsoleWriter::color());
+        let _nocolor = RawLayer::new(ConsoleWriter::no_color());
     }
 
     #[test]
     fn test_layer_integration() {
         // Create the layer and subscriber
-        let layer = Layer::new(ConsoleWriter::no_color());
+        let layer = RawLayer::new(ConsoleWriter::no_color());
         let subscriber = tracing_subscriber::registry().with(layer);
 
         // Set as default for this thread temporarily

@@ -1,11 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Log encoding and formatting for Tokio tracing events.  This module
-//! stores pre-calculated encodings for the LogRecord event_name and
-//! avoids unnecessary encoding work for primitive fields (e.g., timestamp).
+//! Log encoding and formatting for Tokio tracing events.
 //!
-//! The intermediate representation is InternalLogRecord, includes the
+//! The intermediate representation is LogRecord, includes the
 //! primitive fields and static references. The remaining data are
 //! placed in a partial OTLP encoding.
 
@@ -13,10 +11,12 @@ pub mod encoder;
 pub mod formatter;
 
 use bytes::Bytes;
-use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::callsite::Identifier;
+use tracing::{Level, Metadata};
 
-pub use formatter::{ConsoleWriter, Layer as RawLoggingLayer};
+pub use formatter::{ConsoleWriter, RawLayer as RawLoggingLayer};
+pub use encoder::DirectLogRecordEncoder;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 #[derive(Debug, Clone)]
@@ -26,12 +26,6 @@ pub struct LogRecord {
 
     /// Timestamp in UNIX epoch nanoseconds
     pub timestamp_ns: u64,
-
-    /// Severity level, OpenTelemetry defined
-    pub severity_level: u8,
-
-    /// Severity text
-    pub severity_text: &'static str,
 
     /// Pre-encoded body and attributes
     pub body_attrs_bytes: Bytes,
@@ -51,33 +45,50 @@ pub struct SavedCallsite {
 
     /// Source line
     pub line: Option<u32>,
+
+    /// Severity level
+    pub level: &'static Level,
 }
 
-/// Map callsite information by `Identifier`.
-#[derive(Debug, Default)]
-pub struct CallsiteMap {
-    callsites: HashMap<Identifier, SavedCallsite>,
-}
-
-impl CallsiteMap {
-    /// Create a new empty cache.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register a callsite from its metadata.
-    pub fn register(&mut self, metadata: &'static tracing::Metadata<'static>) {
-        let id = metadata.callsite();
-        let _ = self.callsites.entry(id).or_insert_with(|| SavedCallsite {
+impl SavedCallsite {
+    /// Construct saved callsite information from tracing Metadata.
+    pub fn new(metadata: &'static Metadata<'static>) -> Self {
+        Self {
+            level: metadata.level(),
             target: metadata.target(),
             name: metadata.name(),
             file: metadata.file(),
             line: metadata.line(),
-        });
+        }
+    }
+}
+
+use encoder::DirectFieldVisitor;
+use otap_df_pdata::otlp::ProtoBuffer;
+use tracing::Event;
+
+impl LogRecord {
+    /// Construct a log record, partially encoding its dynamic content.
+    pub fn new(event: &Event<'_>) -> Self {
+        let metadata = event.metadata();
+
+        // Encode body and attributes to bytes
+        let mut buf = ProtoBuffer::with_capacity(256);
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        event.record(&mut visitor);
+
+        Self {
+            callsite_id: metadata.callsite(),
+            timestamp_ns: Self::get_timestamp_nanos(),
+            body_attrs_bytes: buf.into_bytes(),
+        }
     }
 
-    /// Get cached callsite info by identifier.
-    pub fn get(&self, id: &Identifier) -> Option<&SavedCallsite> {
-        self.callsites.get(id)
+    /// Get current timestamp in UNIX epoch nanoseconds.
+    fn get_timestamp_nanos() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
     }
 }

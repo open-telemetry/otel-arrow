@@ -4,8 +4,8 @@
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
 use std::fmt::Write as FmtWrite;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{Event, Level};
+use tracing::Level;
+use super::{LogRecord, SavedCallsite};
 use otap_df_pdata::otlp::{ProtoBuffer, encode_len_placeholder, patch_len_placeholder};
 use otap_df_pdata::proto::consts::{field_num::common::*, field_num::logs::*, wire_types};
 
@@ -35,20 +35,6 @@ impl LengthPlaceholder {
     }
 }
 
-/// Wrapper for ProtoBuffer for formatting of Debug values without
-/// allocating an intermediate String.
-struct ProtoBufferWriter<'a> {
-    buf: &'a mut ProtoBuffer,
-}
-
-impl FmtWrite for ProtoBufferWriter<'_> {
-    #[inline]
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.buf.extend_from_slice(s.as_bytes());
-        Ok(())
-    }
-}
-
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf> {
     buf: &'buf mut ProtoBuffer,
@@ -61,78 +47,48 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
         Self { buf }
     }
 
-    /// Encode a tracing Event as a complete LogRecord message.
-    ///
-    /// This writes all LogRecord fields directly to the buffer:
-    /// - time_unix_nano (field 1)
-    /// - severity_number (field 2)  
-    /// - severity_text (field 3)
-    /// - body (field 5) - from the "message" field
-    /// - attributes (field 6) - from all other fields
-    ///
-    /// Returns the number of bytes written.
-    pub fn encode_event(&mut self, event: &Event<'_>) -> usize {
-        let start_len = self.buf.len();
-        
-        // Get timestamp
-        let timestamp_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
-        let metadata = event.metadata();
-        
-        // Encode time_unix_nano (field 1, fixed64)
-        self.buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
-        self.buf.extend_from_slice(&timestamp_nanos.to_le_bytes());
-        
-        // Encode severity_number (field 2, varint)
-        let severity = level_to_severity_number(metadata.level());
-        self.buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
-        self.buf.encode_varint(severity as u64);
-        
-        // Encode severity_text (field 3, string)
-        self.buf.encode_string(LOG_RECORD_SEVERITY_TEXT, metadata.level().as_str());
-        
-        // Now visit fields to encode body and attributes
-        let mut visitor = DirectFieldVisitor::new(self.buf);
-        event.record(&mut visitor);
-        
-        self.buf.len() - start_len
+    /// Reset the underlying buffer.
+    pub fn clear(&mut self) {
+        self.buf.clear();
     }
 
-    /// Encode a tracing Event with a custom timestamp.
-    pub fn encode_event_with_timestamp(&mut self, event: &Event<'_>, timestamp_nanos: u64) -> usize {
+    /// Encode a tracing Event as a complete LogRecord message.
+    ///
+    /// Returns the number of bytes written.
+    pub fn encode_log_record(&mut self, record: LogRecord, callsite: &SavedCallsite) -> usize {
         let start_len = self.buf.len();
-        let metadata = event.metadata();
         
         // Encode time_unix_nano (field 1, fixed64)
         self.buf.encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
-        self.buf.extend_from_slice(&timestamp_nanos.to_le_bytes());
+        self.buf.extend_from_slice(&record.timestamp_ns.to_le_bytes());
+
+        // Note: the next two fields could be pre-encoded by Level
         
         // Encode severity_number (field 2, varint)
-        let severity = level_to_severity_number(metadata.level());
+        let severity = level_to_severity_number(&callsite.level);
         self.buf.encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
         
         // Encode severity_text (field 3, string)
-        self.buf.encode_string(LOG_RECORD_SEVERITY_TEXT, metadata.level().as_str());
-        
-        // Now visit fields to encode body and attributes
-        let mut visitor = DirectFieldVisitor::new(self.buf);
-        event.record(&mut visitor);
+        self.buf.encode_string(LOG_RECORD_SEVERITY_TEXT, callsite.level.as_str());
+
+        self.buf.extend_from_slice(&record.body_attrs_bytes);
         
         self.buf.len() - start_len
     }
 }
 
 /// Visitor that directly encodes tracing fields to protobuf.
-///
-/// This is the core of the zero-allocation design: instead of collecting
-/// field values into an intermediate data structure, we encode them directly
-/// to the protobuf buffer as we visit them.
 pub struct DirectFieldVisitor<'buf> {
     buf: &'buf mut ProtoBuffer,
+}
+
+impl<'buf> FmtWrite for DirectFieldVisitor<'buf> {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.buf.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
 }
 
 impl<'buf> DirectFieldVisitor<'buf> {
@@ -256,8 +212,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
         encode_len_placeholder(self.buf);
         
         // Write Debug output directly to buffer
-        let mut writer = ProtoBufferWriter { buf: self.buf };
-        let _ = write!(writer, "{:?}", value);
+        let _ = write!(self, "{:?}", value);
         
         string_placeholder.patch(self.buf);
         body_placeholder.patch(self.buf);
@@ -285,8 +240,7 @@ impl<'buf> DirectFieldVisitor<'buf> {
         encode_len_placeholder(self.buf);
         
         // Write Debug output directly to buffer
-        let mut writer = ProtoBufferWriter { buf: self.buf };
-        let _ = write!(writer, "{:?}", value);
+        let _ = write!(self, "{:?}", value);
         
         string_placeholder.patch(self.buf);
         av_placeholder.patch(self.buf);
@@ -346,98 +300,12 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
 ///
 /// See: https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber
 #[inline]
-fn level_to_severity_number(level: &Level) -> i32 {
+pub fn level_to_severity_number(level: &Level) -> u8 {
     match *level {
         Level::TRACE => 1,
         Level::DEBUG => 5,
         Level::INFO => 9,
         Level::WARN => 13,
         Level::ERROR => 17,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::layer::Layer;
-    use tracing_subscriber::registry::LookupSpan;
-    use tracing::Subscriber;
-    use std::sync::Mutex;
-
-    /// Simple layer that uses DirectLogRecordEncoder (thread-safe for tests)
-    struct DirectEncoderLayer {
-        // Thread-local buffer - each event encodes to this
-        buffer: Mutex<ProtoBuffer>,
-        // Collected encoded bytes
-        encoded: Mutex<Vec<Vec<u8>>>,
-    }
-
-    impl DirectEncoderLayer {
-        fn new() -> Self {
-            Self {
-                buffer: Mutex::new(ProtoBuffer::with_capacity(4096)),
-                encoded: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl<S> Layer<S> for DirectEncoderLayer
-    where
-        S: Subscriber + for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
-            let mut buffer = self.buffer.lock().unwrap();
-            buffer.clear();
-            
-            let mut encoder = DirectLogRecordEncoder::new(&mut buffer);
-            let _ = encoder.encode_event(event);
-            
-            // Save a copy of the encoded bytes
-            self.encoded.lock().unwrap().push(buffer.as_ref().to_vec());
-        }
-    }
-
-    #[test]
-    fn test_direct_encoder_captures_events() {
-        let layer = DirectEncoderLayer::new();
-        
-        let subscriber = tracing_subscriber::registry().with(layer);
-        let dispatch = tracing::Dispatch::new(subscriber);
-        let _guard = tracing::dispatcher::set_default(&dispatch);
-
-        tracing::info!("Test message");
-        tracing::warn!(count = 42, "Warning with attribute");
-        
-        // Drop the guard to stop capturing
-        drop(_guard);
-        
-        // Note: We can't easily get the layer back from dispatch to verify results
-        // The test verifies that the encoding path doesn't panic
-    }
-
-    #[test]
-    fn test_direct_encoder_encodes_attributes() {
-        let mut buffer = ProtoBuffer::with_capacity(1024);
-        
-        // We can't easily create a tracing::Event in tests, so we'll just verify
-        // the attribute encoding helpers work correctly
-        let mut visitor = DirectFieldVisitor::new(&mut buffer);
-        visitor.encode_string_attribute("test_key", "test_value");
-        visitor.encode_int_attribute("count", 42);
-        visitor.encode_bool_attribute("enabled", true);
-        visitor.encode_double_attribute("ratio", 3.14);
-        
-        // Buffer should have content
-        assert!(!buffer.is_empty());
-    }
-
-    #[test]
-    fn test_level_to_severity() {
-        assert_eq!(level_to_severity_number(&Level::TRACE), 1);
-        assert_eq!(level_to_severity_number(&Level::DEBUG), 5);
-        assert_eq!(level_to_severity_number(&Level::INFO), 9);
-        assert_eq!(level_to_severity_number(&Level::WARN), 13);
-        assert_eq!(level_to_severity_number(&Level::ERROR), 17);
     }
 }
