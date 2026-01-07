@@ -17,26 +17,75 @@ use tracing_subscriber::registry::LookupSpan;
 /// Default buffer size for log formatting.
 pub const LOG_BUFFER_SIZE: usize = 4096;
 
+/// ANSI codes a.k.a. "Select Graphic Rendition" codes.
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum AnsiCode {
+    Reset = 0,
+    Bold = 1,
+    Dim = 2,
+    Red = 31,
+    Green = 32,
+    Yellow = 33,
+    Blue = 34,
+    Magenta = 35,
+}
+
+/// Color mode for console output.
+#[derive(Debug, Clone, Copy)]
+pub enum ColorMode {
+    /// Enable ANSI color codes.
+    Color,
+    /// Disable ANSI color codes.
+    NoColor,
+}
+
+impl ColorMode {
+    /// Write an ANSI escape sequence (no-op for NoColor).
+    #[inline]
+    fn write_ansi(self, w: &mut BufWriter<'_>, code: AnsiCode) {
+        if let ColorMode::Color = self {
+            let _ = write!(w, "\x1b[{}m", code as u8);
+        }
+    }
+
+    /// Write level with color and padding.
+    #[inline]
+    fn write_level(self, w: &mut BufWriter<'_>, level: &Level) {
+        self.write_ansi(w, Self::level_color(level));
+        let _ = match *level {
+            Level::TRACE => w.write_all(b"TRACE"),
+            Level::DEBUG => w.write_all(b"DEBUG"),
+            Level::INFO => w.write_all(b"INFO "),
+            Level::WARN => w.write_all(b"WARN "),
+            Level::ERROR => w.write_all(b"ERROR"),
+        };
+        self.write_ansi(w, AnsiCode::Reset);
+    }
+
+    /// Get ANSI color code for a severity level.
+    #[inline]
+    fn level_color(level: &Level) -> AnsiCode {
+        match *level {
+            Level::ERROR => AnsiCode::Red,
+            Level::WARN => AnsiCode::Yellow,
+            Level::INFO => AnsiCode::Green,
+            Level::DEBUG => AnsiCode::Blue,
+            Level::TRACE => AnsiCode::Magenta,
+        }
+    }
+}
+
 /// Console writes formatted text to stdout or stderr.
 #[derive(Debug, Clone, Copy)]
 pub struct ConsoleWriter {
-    use_ansi: bool,
+    color_mode: ColorMode,
 }
 
 /// A minimal alternative to `tracing_subscriber::fmt::layer()`.
 pub struct RawLayer {
     writer: ConsoleWriter,
 }
-
-// ANSI "Select Graphic Rendition" codes
-const ANSI_RESET: u8 = 0;
-const ANSI_BOLD: u8 = 1;
-const ANSI_DIM: u8 = 2;
-const ANSI_RED: u8 = 31;
-const ANSI_GREEN: u8 = 32;
-const ANSI_YELLOW: u8 = 33;
-const ANSI_BLUE: u8 = 34;
-const ANSI_MAGENTA: u8 = 35;
 
 impl RawLayer {
     /// Return a new formatting layer with associated writer.
@@ -52,12 +101,16 @@ pub type BufWriter<'a> = Cursor<&'a mut [u8]>;
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
     pub fn no_color() -> Self {
-        Self { use_ansi: false }
+        Self {
+            color_mode: ColorMode::NoColor,
+        }
     }
 
     /// Create a writer that outputs to stderr with ANSI colors.
     pub fn color() -> Self {
-        Self { use_ansi: true }
+        Self {
+            color_mode: ColorMode::Color,
+        }
     }
 
     /// Format a LogRecord as a human-readable string (for testing/compatibility).
@@ -80,45 +133,22 @@ impl ConsoleWriter {
         callsite: &SavedCallsite,
     ) -> usize {
         let mut w = Cursor::new(buf);
+        let cm = self.color_mode;
 
-        if self.use_ansi {
-            Self::write_ansi(&mut w, ANSI_DIM);
-            Self::write_timestamp(&mut w, record.timestamp_ns);
-            Self::write_ansi(&mut w, ANSI_RESET);
-            let _ = w.write_all(b"  ");
-            Self::write_ansi(&mut w, Self::level_color(callsite.level));
-            Self::write_level(&mut w, callsite.level);
-            Self::write_ansi(&mut w, ANSI_RESET);
-            let _ = w.write_all(b"  ");
-            Self::write_ansi(&mut w, ANSI_BOLD);
-            Self::write_event_name(&mut w, callsite);
-            Self::write_ansi(&mut w, ANSI_RESET);
-            let _ = w.write_all(b": ");
-        } else {
-            Self::write_timestamp(&mut w, record.timestamp_ns);
-            let _ = w.write_all(b"  ");
-            Self::write_level(&mut w, callsite.level);
-            let _ = w.write_all(b"  ");
-            Self::write_event_name(&mut w, callsite);
-            let _ = w.write_all(b": ");
-        }
-
+        cm.write_ansi(&mut w, AnsiCode::Dim);
+        Self::write_timestamp(&mut w, record.timestamp_ns);
+        cm.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+        cm.write_level(&mut w, callsite.level);
+        let _ = w.write_all(b"  ");
+        cm.write_ansi(&mut w, AnsiCode::Bold);
+        Self::write_event_name(&mut w, callsite);
+        cm.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b": ");
         Self::write_body_attrs(&mut w, &record.body_attrs_bytes);
         let _ = w.write_all(b"\n");
 
         w.position() as usize
-    }
-
-    /// Write level with padding.
-    #[inline]
-    fn write_level(w: &mut BufWriter<'_>, level: &Level) {
-        let _ = match *level {
-            Level::TRACE => w.write_all(b"TRACE"),
-            Level::DEBUG => w.write_all(b"DEBUG"),
-            Level::INFO => w.write_all(b"INFO "),
-            Level::WARN => w.write_all(b"WARN "),
-            Level::ERROR => w.write_all(b"ERROR"),
-        };
     }
 
     /// Write callsite details as event_name to buffer.
@@ -285,24 +315,6 @@ impl ConsoleWriter {
         } else {
             std::io::stdout().write_all(data)
         };
-    }
-
-    /// Write an ANSI escape sequence.
-    #[inline]
-    fn write_ansi(w: &mut BufWriter<'_>, code: u8) {
-        let _ = write!(w, "\x1b[{}m", code);
-    }
-
-    /// Get ANSI color code for a severity level.
-    #[inline]
-    fn level_color(level: &Level) -> u8 {
-        match *level {
-            Level::ERROR => ANSI_RED,
-            Level::WARN => ANSI_YELLOW,
-            Level::INFO => ANSI_GREEN,
-            Level::DEBUG => ANSI_BLUE,
-            Level::TRACE => ANSI_MAGENTA,
-        }
     }
 }
 
