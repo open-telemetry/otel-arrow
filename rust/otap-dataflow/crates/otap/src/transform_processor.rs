@@ -43,6 +43,7 @@ use self::metrics::Metrics;
 
 mod config;
 mod metrics;
+mod routing;
 
 /// URN for the TransformProcessor
 pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:transform:processor";

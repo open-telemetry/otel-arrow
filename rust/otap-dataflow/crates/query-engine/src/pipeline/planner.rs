@@ -4,10 +4,7 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
-    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
-    PipelineExpression, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
-    ScalarExpression, StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
+    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression, OutputExpression, PipelineExpression, ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue, TransformExpression, ValueAccessor
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -22,6 +19,7 @@ use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
 use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
 use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
+use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Converts an pipeline expression (AST) into a series of executable pipeline stages.
@@ -134,6 +132,14 @@ impl PipelinePlanner {
                 let pipeline_stage =
                     ConditionalPipelineStage::new(pipeline_branches, default_branch);
                 Ok(vec![Box::new(pipeline_stage)])
+            }
+
+            DataExpression::Output(output_expr) => {
+                match output_expr.get_output() {
+                    OutputExpression::NamedSink(name) => {
+                        Ok(vec![Box::new(RouteToPipelineStage::new(name.get_value()))])
+                    }
+                }
             }
 
             // TODO support other DataExpressions

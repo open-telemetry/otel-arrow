@@ -29,6 +29,9 @@ mod filter;
 mod functions;
 mod planner;
 
+/// TODO docs
+pub mod routing;
+
 /// A stage in the pipeline.
 ///
 /// Used for the physical execution of one or more pipeline expressions. Stages are compiled

@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::process::Output;
+
 use crate::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -16,6 +18,9 @@ pub enum DataExpression {
 
     /// Conditional data expression.
     Conditional(ConditionalDataExpression),
+
+    /// Output data expression
+    Output(OutputDataExpression),
 }
 
 impl DataExpression {
@@ -28,6 +33,7 @@ impl DataExpression {
             DataExpression::Summary(s) => s.try_fold(scope),
             DataExpression::Transform(t) => t.try_fold(scope),
             DataExpression::Conditional(c) => c.try_fold(scope),
+            DataExpression::Output(o) => o.try_fold(scope),
         }
     }
 }
@@ -39,6 +45,7 @@ impl Expression for DataExpression {
             DataExpression::Summary(s) => s.get_query_location(),
             DataExpression::Transform(t) => t.get_query_location(),
             DataExpression::Conditional(c) => c.get_query_location(),
+            DataExpression::Output(o) => o.get_query_location(),
         }
     }
 
@@ -48,6 +55,7 @@ impl Expression for DataExpression {
             DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
             DataExpression::Conditional(_) => "DataExpression(Conditional)",
+            DataExpression::Output(_) => "DataExpression(Output)",
         }
     }
 
@@ -57,6 +65,7 @@ impl Expression for DataExpression {
             DataExpression::Summary(s) => s.fmt_with_indent(f, indent),
             DataExpression::Transform(t) => t.fmt_with_indent(f, indent),
             DataExpression::Conditional(c) => c.fmt_with_indent(f, indent),
+            DataExpression::Output(o) => o.fmt_with_indent(f, indent),
         }
     }
 }
@@ -294,4 +303,58 @@ impl ConditionalDataExpressionBranch {
     pub fn get_expressions(&self) -> &[DataExpression] {
         &self.expressions
     }
+}
+
+
+/// TODO comments
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputDataExpression {
+    query_location: QueryLocation,
+    output: OutputExpression,
+}
+
+impl OutputDataExpression {
+    pub fn new(query_location: QueryLocation, output: OutputExpression) -> Self {
+        Self {
+            query_location,
+            output,
+        }
+    }
+
+    pub fn get_output(&self) -> &OutputExpression {
+        &self.output
+    }
+
+    pub fn try_fold(
+        &mut self,
+        _scope: &PipelineResolutionScope,
+    ) -> Result<(), ExpressionError> {
+        // No folding currently supported for output expressions.
+        Ok(())
+    }
+}
+
+impl Expression for OutputDataExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "OutputDataExpression"
+    }
+
+    // TODO test this
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Output:")?;
+        write!(f, "{indent}└── ")?;
+        match &self.output {
+            OutputExpression::NamedSink(expr) => expr.fmt_with_indent(f, format!("{indent}    ").as_str()),
+        }
+    }
+}
+
+/// TODO comments
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputExpression {
+    NamedSink(StringScalarExpression)
 }
