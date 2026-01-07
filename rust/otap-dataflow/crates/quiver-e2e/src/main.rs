@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use clap::{Parser, ValueEnum};
 use quiver::segment_store::SegmentReadMode;
 use quiver::{QuiverConfig, QuiverEngine, SegmentStore};
-use tempfile::{TempDir, tempdir};
+use tempfile::TempDir;
 use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
@@ -395,15 +395,27 @@ fn cleanup_iteration_data(data_dir: &PathBuf) -> Result<(), Box<dyn std::error::
 }
 
 /// Sets up the data directory (temp or persistent).
+/// 
+/// When no data-dir is specified, creates a temp directory in ~/.quiver-e2e/
+/// rather than /tmp, since /tmp may be a tmpfs (RAM-backed) filesystem
+/// with limited capacity.
 fn setup_data_dir(args: &Args) -> Result<(Option<TempDir>, PathBuf), Box<dyn std::error::Error>> {
     if let Some(ref dir) = args.data_dir {
         std::fs::create_dir_all(dir)?;
         info!(path = %dir.display(), "Using persistent data directory");
         Ok((None, dir.clone()))
     } else {
-        let tmp = tempdir()?;
+        // Use ~/.quiver-e2e/ instead of system temp dir (/tmp) which may be tmpfs
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+        let base_dir = home.join(".quiver-e2e");
+        std::fs::create_dir_all(&base_dir)?;
+        let tmp = tempfile::Builder::new()
+            .prefix("run-")
+            .tempdir_in(&base_dir)?;
         let path = tmp.path().to_path_buf();
-        info!(path = %path.display(), "Created temp directory");
+        info!(path = %path.display(), "Created temp directory (in ~/.quiver-e2e to avoid tmpfs)");
         Ok((Some(tmp), path))
     }
 }
