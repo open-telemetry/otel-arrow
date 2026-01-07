@@ -319,12 +319,20 @@ struct ActiveWalFile {
     file: File,
     /// Scratch buffer used to serialize slot payloads before writing.
     payload_buffer: Vec<u8>,
+    /// Scratch buffer for building complete WAL entries before writing.
+    /// This allows a single write syscall per entry instead of multiple small writes.
+    entry_buffer: Vec<u8>,
     /// Rolling high-water mark for payload buffer size (bytes).
     ///
     /// Tracks typical peak usage over recent appends. Used to decide when
     /// shrinking is safe (capacity significantly exceeds high-water) without
     /// thrashing after one-off large bundles. Decays slowly each append.
     payload_high_water: usize,
+    /// Rolling high-water mark for entry buffer size (bytes).
+    ///
+    /// Same adaptive sizing logic as `payload_high_water`, applied to the
+    /// entry serialization buffer to prevent unbounded growth.
+    entry_high_water: usize,
     /// Decay rate for the high-water mark (numerator, denominator).
     buffer_decay_rate: (usize, usize),
     /// Timestamp of the most recent flush.
@@ -615,7 +623,9 @@ impl ActiveWalFile {
         Self {
             file,
             payload_buffer: Vec::new(),
+            entry_buffer: Vec::new(),
             payload_high_water: 0,
+            entry_high_water: 0,
             buffer_decay_rate,
             last_flush: Instant::now(),
             unflushed_bytes: 0,
@@ -655,6 +665,10 @@ impl ActiveWalFile {
     /// │ u32 len  │ entry header │  payload bytes  │ u32 crc  │
     /// └──────────┴──────────────┴─────────────────┴──────────┘
     /// ```
+    ///
+    /// Builds the complete entry in `entry_buffer` and writes with a single syscall.
+    /// The buffer is reused across calls with adaptive shrinking to balance memory
+    /// usage against reallocation overhead.
     fn write_entry(
         &mut self,
         entry_len: u32,
@@ -662,12 +676,53 @@ impl ActiveWalFile {
         payload: &[u8],
         crc: u32,
     ) -> WalResult<u64> {
-        let entry_start = self.seek_to_end()?;
-        self.file.write_all(&entry_len.to_le_bytes())?;
-        self.file.write_all(entry_header)?;
-        self.file.write_all(payload)?;
-        self.file.write_all(&crc.to_le_bytes())?;
+        // Record entry start position before writing
+        let entry_start = self.current_len;
+
+        // Calculate total entry size: 4 (len) + header + payload + 4 (crc)
+        let total_size = 4 + ENTRY_HEADER_LEN + payload.len() + 4;
+
+        // Reuse the buffer: clear sets len=0 but preserves capacity.
+        // Only reserve additional capacity if needed (reserve is a no-op if
+        // capacity is already sufficient).
+        self.entry_buffer.clear();
+        self.entry_buffer.reserve(total_size);
+
+        // Build complete entry
+        self.entry_buffer.extend_from_slice(&entry_len.to_le_bytes());
+        self.entry_buffer.extend_from_slice(entry_header);
+        self.entry_buffer.extend_from_slice(payload);
+        self.entry_buffer.extend_from_slice(&crc.to_le_bytes());
+
+        // Single write syscall for the complete entry
+        self.file.write_all(&self.entry_buffer)?;
+
+        // Adaptive shrinking: keep buffer sized appropriately for typical usage
+        self.maybe_shrink_entry_buffer(total_size);
+
         Ok(entry_start)
+    }
+
+    /// Updates the high-water mark and potentially shrinks the entry buffer.
+    ///
+    /// Uses the same adaptive algorithm as `maybe_shrink_payload_buffer`.
+    fn maybe_shrink_entry_buffer(&mut self, used_len: usize) {
+        // Update high-water with current usage
+        self.entry_high_water = self.entry_high_water.max(used_len);
+
+        // Apply decay so high-water adapts to reduced usage
+        let (numerator, denominator) = self.buffer_decay_rate;
+        self.entry_high_water = self.entry_high_water.saturating_mul(numerator) / denominator;
+
+        let capacity = self.entry_buffer.capacity();
+        let target = self.entry_high_water.saturating_add(SHRINK_HEADROOM);
+
+        // Only shrink if:
+        // - Capacity significantly exceeds the target (2× headroom)
+        // - Buffer is large enough to bother (> SHRINK_THRESHOLD)
+        if capacity > target.saturating_mul(2) && capacity > SHRINK_THRESHOLD {
+            self.entry_buffer.shrink_to(target);
+        }
     }
 
     fn maybe_flush(&mut self, policy: &FlushPolicy, bytes_written: u64) -> WalResult<()> {
