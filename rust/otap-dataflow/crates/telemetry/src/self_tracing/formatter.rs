@@ -313,6 +313,9 @@ where
     // Allocates a buffer on the stack, formats the event to a LogRecord
     // with partial OTLP bytes.
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        // TODO: there are allocations implied here that we would prefer
+        // to avoid, it will be an extensive change in the ProtoBuffer to
+        // stack-allocate this temporary.
         let record = LogRecord::new(event);
         let callsite = SavedCallsite::new(event.metadata());
 
@@ -348,42 +351,47 @@ mod tests {
         }
     }
 
+    // strip timestamp and newline
+    fn strip_ts(s: &str) -> &str {
+        s[26..].trim_end()
+    }
+
+    fn assert_log_format(output: &Arc<Mutex<String>>, expected_level: &str, expected_suffix: &str) {
+        let binding = output.lock().unwrap();
+        let result = strip_ts(&binding);
+        assert!(
+            result.starts_with(expected_level),
+            "expected level '{}', got: {}",
+            expected_level,
+            result
+        );
+        assert!(
+            result.ends_with(expected_suffix),
+            "expected suffix '{}', got: {}",
+            expected_suffix,
+            result
+        );
+    }
+
     #[test]
     fn test_log_format() {
         let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-        let output_clone = output.clone();
-
-        // strip timestamp and newline
-        fn strip_ts(s: &str) -> &str {
-            s[26..].trim_end()
-        }
 
         let layer = CaptureLayer {
-            output: output_clone,
+            output: output.clone(),
         };
         let subscriber = tracing_subscriber::registry().with(layer);
         let dispatch = tracing::Dispatch::new(subscriber);
         let _guard = tracing::dispatcher::set_default(&dispatch);
 
         tracing::info!("hello world");
-        let binding = output.lock().unwrap();
-        let result = strip_ts(&binding);
-        assert!(result.starts_with("INFO "), "got: {}", result);
-        assert!(result.ends_with(": hello world"), "got: {}", result);
-        drop(binding);
+        assert_log_format(&output, "INFO ", ": hello world");
 
         tracing::warn!(count = 42, "warning");
-        let binding = output.lock().unwrap();
-        let result = strip_ts(&binding);
-        assert!(result.starts_with("WARN "), "got: {}", result);
-        assert!(result.ends_with(": warning [count=42]"), "got: {}", result);
-        drop(binding);
+        assert_log_format(&output, "WARN ", ": warning [count=42]");
 
         tracing::error!(msg = "oops", "failed");
-        let binding = output.lock().unwrap();
-        let result = strip_ts(&binding);
-        assert!(result.starts_with("ERROR"), "got: {}", result);
-        assert!(result.ends_with(": failed [msg=oops]"), "got: {}", result);
+        assert_log_format(&output, "ERROR", ": failed [msg=oops]");
     }
 
     #[test]
