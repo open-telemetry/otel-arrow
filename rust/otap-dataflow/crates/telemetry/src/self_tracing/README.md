@@ -32,6 +32,6 @@ service:
         enabled: true
 ```
 
-The default configuration is subject to change.  In the future, the `internal` 
+The default configuration is subject to change. In the future, the `internal`
 configuration block will be extended to route internal logs through dedicated
 internal OTAP dataflow pipelines.
