@@ -24,6 +24,7 @@ otap-df-config = { workspace = true }
 
 axum = { workspace = true }
 bytes = { workspace = true }
+chrono = { workspace = true }
 flume = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
