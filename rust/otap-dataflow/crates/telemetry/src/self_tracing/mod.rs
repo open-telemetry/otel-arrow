@@ -11,27 +11,32 @@ pub mod encoder;
 pub mod formatter;
 
 use bytes::Bytes;
+use encoder::DirectFieldVisitor;
+use otap_df_pdata::otlp::ProtoBuffer;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::Event;
 use tracing::callsite::Identifier;
 use tracing::{Level, Metadata};
 
-pub use formatter::{ConsoleWriter, RawLayer as RawLoggingLayer};
 pub use encoder::DirectLogRecordEncoder;
+pub use formatter::{ConsoleWriter, RawLayer as RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 #[derive(Debug, Clone)]
 pub struct LogRecord {
-    /// Callsite identifier used to look up cached callsite info
+    /// Callsite identifier used to look up cached callsite info.
     pub callsite_id: Identifier,
 
-    /// Timestamp in UNIX epoch nanoseconds
+    /// Timestamp in UNIX epoch nanoseconds.
     pub timestamp_ns: u64,
 
-    /// Pre-encoded body and attributes
+    /// Pre-encoded body and attributes in OTLP bytes.
     pub body_attrs_bytes: Bytes,
 }
 
-/// Saved callsite information, populated via `register_callsite` hook.
+/// Saved callsite information. This is information that can easily be
+/// populated from Metadata, for example in a `register_callsite` hook
+/// for building a map by Identifier.
 #[derive(Debug, Clone)]
 pub struct SavedCallsite {
     /// Target (e.g., module path)
@@ -62,10 +67,6 @@ impl SavedCallsite {
         }
     }
 }
-
-use encoder::DirectFieldVisitor;
-use otap_df_pdata::otlp::ProtoBuffer;
-use tracing::Event;
 
 impl LogRecord {
     /// Construct a log record, partially encoding its dynamic content.

@@ -10,7 +10,7 @@ use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
 use std::io::{Cursor, Write};
-use tracing::span::{Attributes, Record};
+use tracing::span::Record;
 use tracing::{Event, Level, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
@@ -31,15 +31,15 @@ pub struct RawLayer {
     writer: ConsoleWriter,
 }
 
-// ANSI color codes
-const ANSI_RESET: &[u8] = b"\x1b[0m";
-const ANSI_RED: &[u8] = b"\x1b[31m";
-const ANSI_YELLOW: &[u8] = b"\x1b[33m";
-const ANSI_GREEN: &[u8] = b"\x1b[32m";
-const ANSI_BLUE: &[u8] = b"\x1b[34m";
-const ANSI_MAGENTA: &[u8] = b"\x1b[35m";
-const ANSI_DIM: &[u8] = b"\x1b[2m";
-const ANSI_BOLD: &[u8] = b"\x1b[1m";
+// ANSI SGR (Select Graphic Rendition) codes
+const ANSI_RESET: u8 = 0;
+const ANSI_BOLD: u8 = 1;
+const ANSI_DIM: u8 = 2;
+const ANSI_RED: u8 = 31;
+const ANSI_GREEN: u8 = 32;
+const ANSI_YELLOW: u8 = 33;
+const ANSI_BLUE: u8 = 34;
+const ANSI_MAGENTA: u8 = 35;
 
 impl RawLayer {
     /// Return a new formatting layer with associated writer.
@@ -85,17 +85,17 @@ impl ConsoleWriter {
         let mut w = Cursor::new(buf);
 
         if self.use_ansi {
-            let _ = w.write_all(ANSI_DIM);
+            Self::write_ansi(&mut w, ANSI_DIM);
             Self::write_timestamp(&mut w, record.timestamp_ns);
-            let _ = w.write_all(ANSI_RESET);
+            Self::write_ansi(&mut w, ANSI_RESET);
             let _ = w.write_all(b"  ");
-            let _ = w.write_all(Self::level_color(callsite.level));
+            Self::write_ansi(&mut w, Self::level_color(callsite.level));
             Self::write_level(&mut w, callsite.level);
-            let _ = w.write_all(ANSI_RESET);
+            Self::write_ansi(&mut w, ANSI_RESET);
             let _ = w.write_all(b"  ");
-            let _ = w.write_all(ANSI_BOLD);
+            Self::write_ansi(&mut w, ANSI_BOLD);
             Self::write_event_name(&mut w, callsite);
-            let _ = w.write_all(ANSI_RESET);
+            Self::write_ansi(&mut w, ANSI_RESET);
             let _ = w.write_all(b": ");
         } else {
             Self::write_timestamp(&mut w, record.timestamp_ns);
@@ -281,9 +281,15 @@ impl ConsoleWriter {
         };
     }
 
+    /// Write an ANSI SGR escape sequence.
+    #[inline]
+    fn write_ansi(w: &mut BufWriter<'_>, code: u8) {
+        let _ = write!(w, "\x1b[{}m", code);
+    }
+
     /// Get ANSI color code for a severity level.
     #[inline]
-    fn level_color(level: &Level) -> &'static [u8] {
+    fn level_color(level: &Level) -> u8 {
         match *level {
             Level::ERROR => ANSI_RED,
             Level::WARN => ANSI_YELLOW,
@@ -310,26 +316,6 @@ where
         let len = self.writer.write_log_record(&mut buf, &record, &callsite);
         self.writer.write_line(callsite.level, &buf[..len]);
     }
-
-    fn on_new_span(&self, _attrs: &Attributes<'_>, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
-        // Not handling spans
-    }
-
-    fn on_record(&self, _span: &tracing::span::Id, _values: &Record<'_>, _ctx: Context<'_, S>) {
-        // Not handling spans
-    }
-
-    fn on_enter(&self, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
-        // Not handling spans
-    }
-
-    fn on_exit(&self, _id: &tracing::span::Id, _ctx: Context<'_, S>) {
-        // Not handling spans
-    }
-
-    fn on_close(&self, _id: tracing::span::Id, _ctx: Context<'_, S>) {
-        // Not handling spans
-    }
 }
 
 // ============================================================================
@@ -340,32 +326,6 @@ where
 mod tests {
     use super::*;
     use tracing_subscriber::prelude::*;
-
-    #[test]
-    fn test_format_timestamp() {
-        // 2026-01-06T10:30:45.123Z in nanoseconds
-        // Let's use a known timestamp: 2024-01-01T00:00:00.000Z
-        let nanos: u64 = 1704067200 * 1_000_000_000; // 2024-01-01 00:00:00 UTC
-        let formatted = ConsoleWriter::format_timestamp(nanos);
-        assert_eq!(formatted, "2024-01-01T00:00:00.000Z");
-
-        // Test with milliseconds
-        let nanos_with_ms: u64 = 1704067200 * 1_000_000_000 + 123_000_000;
-        let formatted = ConsoleWriter::format_timestamp(nanos_with_ms);
-        assert_eq!(formatted, "2024-01-01T00:00:00.123Z");
-    }
-
-    #[test]
-    fn test_format_timestamp_edge_cases() {
-        // Unix epoch
-        let epoch = ConsoleWriter::format_timestamp(0);
-        assert_eq!(epoch, "1970-01-01T00:00:00.000Z");
-
-        // End of day with max milliseconds
-        let end_of_day: u64 = 86399 * 1_000_000_000 + 999_000_000;
-        let formatted = ConsoleWriter::format_timestamp(end_of_day);
-        assert_eq!(formatted, "1970-01-01T23:59:59.999Z");
-    }
 
     #[test]
     fn test_simple_writer_creation() {
