@@ -130,7 +130,6 @@ pub(crate) struct ScopeArrays<'a> {
     pub id: Option<&'a UInt16Array>,
 }
 
-/// Arrow DataType for the Scope struct array.
 static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
     DataType::Struct(Fields::from(vec![
         Field::new(

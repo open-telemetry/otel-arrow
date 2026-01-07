@@ -25,7 +25,7 @@ pub struct LoggerProvider {
 }
 
 impl LoggerProvider {
-    /// Initializes OpenTelemetry logging for the OTAP engine.
+    /// Initializes OpenTelemetry logger provider for the OTAP engine.
     pub fn configure(
         sdk_resource: Resource,
         logger_config: &LogsConfig,

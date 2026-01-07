@@ -51,6 +51,40 @@ fn get_env_filter(level: LogLevel) -> EnvFilter {
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
+    ///
+    /// Logging-specific notes:
+    ///
+    /// The log level can be controlled via:
+    /// 1. The `logs.level` config setting (off, debug, info, warn, error)
+    /// 2. The `RUST_LOG` environment variable for fine-grained control
+    ///
+    /// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
+    /// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
+    /// noisy HTTP/2 and hyper logs.
+    ///
+    /// TODO: The engine uses a thread-per-core model
+    /// and is NUMA aware.
+    /// The fmt::init() here is truly global, and hence
+    /// this will be a source of contention.
+    /// We need to evaluate alternatives:
+    ///
+    /// 1. Set up per thread subscriber.
+    ///    ```ignore
+    ///    // start of thread
+    ///    let _guard = tracing::subscriber::set_default(subscriber);
+    ///    // now, with this thread, all tracing calls will go to this subscriber
+    ///    // eliminating contention.
+    ///    // end of thread
+    ///    ```
+    ///
+    /// 2. Use custom subscriber that batches logs in thread-local buffer, and
+    ///    flushes them periodically.
+    ///
+    /// The TODO here is to evaluate these options and implement one of them.
+    /// As of now, this causes contention, and we just need to accept temporarily.
+    ///
+    /// TODO: Evaluate also alternatives for the contention caused by the global
+    /// OpenTelemetry logger provider added as layer.
     pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
