@@ -91,6 +91,7 @@ To test using the provided configuration file:
 
 # In another terminal, send test data:
 
+# TODO: Why not show fake-receiver instead?
 # Option A: Using telemetrygen (recommended)
 telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure --logs 10
 
@@ -134,13 +135,15 @@ resource_mapping:
 
 ### Scope Mapping
 
-Maps OpenTelemetry instrumentation scope to Azure fields:
+Maps OpenTelemetry instrumentation scope attributes to Azure fields:
 
 ```yaml
 scope_mapping:
   "otel.library.name": "LibraryName"
   "otel.library.version": "LibraryVersion"
 ```
+
+// TODO: Map Instrument Scope name,version,schema_url
 
 ### Log Record Mapping
 

@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use serde::Deserialize;
-use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -92,7 +91,7 @@ pub struct SchemaConfig {
 
     /// Log record field mappings
     #[serde(default)]
-    pub log_record_mapping: HashMap<String, Value>,
+    pub log_record_mapping: HashMap<String, String>,
 }
 
 impl Config {
@@ -112,6 +111,50 @@ impl Config {
         }
         if self.api.dcr.is_empty() {
             return Err("Invalid configuration: dcr must be non-empty".to_string());
+        }
+
+        // Validate schema mappings for duplicate target column names
+        self.api.schema.validate_no_duplicate_columns()?;
+
+        Ok(())
+    }
+}
+
+impl SchemaConfig {
+    /// Validate that there are no duplicate target column names across all mappings
+    pub fn validate_no_duplicate_columns(&self) -> Result<(), String> {
+        let mut seen_columns = HashSet::new();
+        let mut duplicates = Vec::new();
+
+        // Check resource_mapping target columns
+        for column_name in self.resource_mapping.values() {
+            if !seen_columns.insert(column_name.clone()) {
+                duplicates.push(column_name.clone());
+            }
+        }
+
+        // Check scope_mapping target columns
+        for column_name in self.scope_mapping.values() {
+            if !seen_columns.insert(column_name.clone()) {
+                duplicates.push(column_name.clone());
+            }
+        }
+
+        // Check log_record_mapping target columns
+        for column_name in self.log_record_mapping.values() {
+            if !seen_columns.insert(column_name.clone()) {
+                duplicates.push(column_name.clone());
+            }
+        }
+
+        if !duplicates.is_empty() {
+            // Remove duplicate entries from the duplicates list itself
+            duplicates.sort();
+            duplicates.dedup();
+            return Err(format!(
+                "Invalid configuration: duplicate target column names found: {}",
+                duplicates.join(", ")
+            ));
         }
 
         Ok(())
@@ -158,5 +201,105 @@ mod tests {
             config.validate().unwrap_err(),
             "Invalid configuration: dcr_endpoint must be non-empty"
         );
+    }
+
+    #[test]
+    fn test_duplicate_columns_across_mappings() {
+        let mut resource_mapping = HashMap::new();
+        resource_mapping.insert("service.name".to_string(), "ServiceName".to_string());
+
+        let mut scope_mapping = HashMap::new();
+        scope_mapping.insert("scope.name".to_string(), "ServiceName".to_string()); // Duplicate!
+
+        let schema = SchemaConfig {
+            resource_mapping,
+            scope_mapping,
+            log_record_mapping: HashMap::new(),
+        };
+
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema,
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("duplicate target column names")
+        );
+        assert!(result.unwrap_err().contains("ServiceName"));
+    }
+
+    #[test]
+    fn test_duplicate_columns_in_log_record_mapping() {
+        let mut resource_mapping = HashMap::new();
+        resource_mapping.insert("service.name".to_string(), "ServiceName".to_string());
+
+        let mut log_record_mapping = HashMap::new();
+        log_record_mapping.insert(
+            "body".to_string(),
+            "ServiceName".to_string(), // Duplicate!
+        );
+
+        let schema = SchemaConfig {
+            resource_mapping,
+            scope_mapping: HashMap::new(),
+            log_record_mapping,
+        };
+
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema,
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("duplicate target column names")
+        );
+    }
+
+    #[test]
+    fn test_no_duplicate_columns() {
+        let mut resource_mapping = HashMap::new();
+        resource_mapping.insert("service.name".to_string(), "ServiceName".to_string());
+
+        let mut scope_mapping = HashMap::new();
+        scope_mapping.insert("scope.name".to_string(), "ScopeName".to_string());
+
+        let mut log_record_mapping = HashMap::new();
+        log_record_mapping.insert("body".to_string(), "Body".to_string());
+
+        let schema = SchemaConfig {
+            resource_mapping,
+            scope_mapping,
+            log_record_mapping,
+        };
+
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema,
+            },
+            auth: AuthConfig::default(),
+        };
+
+        assert!(config.validate().is_ok());
     }
 }

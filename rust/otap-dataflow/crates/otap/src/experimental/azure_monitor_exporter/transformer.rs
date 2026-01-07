@@ -158,6 +158,7 @@ impl Transformer {
                 for log_record in scope_logs.log_records() {
                     record_map.clear();
 
+                    // TODO: Config is validated, revisit the below logic.
                     // normally config should be validated to avoid duplicate keys, but if that
                     // ever happens for any reason such as a bug, then the logic below ensures that
                     // the lowest level fields override the higher level ones.
