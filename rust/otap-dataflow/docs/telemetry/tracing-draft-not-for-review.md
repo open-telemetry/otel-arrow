@@ -1,7 +1,7 @@
 # Proposal: OpenTelemetry-based tracing for our dataflow engine
 
 Status: Experimental - Please do not use this proposal at this stage. This
-document will most likely be deeply updated. 
+document will most likely be deeply updated.
 
 ## Problem statement
 
@@ -26,8 +26,8 @@ traces that could be initiated outside the dataflow engine. This topic will need
 to be studied further at a later time.
 
 > Note: An RFC on the same topic was issued for the Go Collector. This document
-> is a refinement of
-> that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+> is a refinement of that
+> [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
 ## System overview
 
@@ -70,7 +70,6 @@ monitoring regardless of trace sampling.~~ This approach has not been adopted
 for the moment because it would involve too much memory allocation on the hot
 path.
 
-
 ## Mapping OTEL tracing primitives to the DAG
 
 ### Trace
@@ -82,13 +81,13 @@ path.
 
 - Definition: Captures a node's processing of a PData flow.
 - Attributes:
-  - otelcol.component.id: the node id.
-  - otelcol.component.kind: receiver, processor, or exporter.
-  - otelcol.signal: logs, metrics, events, or traces.
-  - otelcol.signal.output: logs, metrics, events, or traces.
-  - otelcol.pipeline.id: the pipeline id.
-  - pdata.batch.size, out.port
-  - stateful, error
+    - otelcol.component.id: the node id.
+    - otelcol.component.kind: receiver, processor, or exporter.
+    - otelcol.signal: logs, metrics, events, or traces.
+    - otelcol.signal.output: logs, metrics, events, or traces.
+    - otelcol.pipeline.id: the pipeline id.
+    - pdata.batch.size, out.port
+    - stateful, error
 - Purpose: Provides detailed, per-node insight into processing time, routing,
   state, and errors.
 
@@ -96,9 +95,9 @@ path.
 
 - Definition: Record significant in-node occurrences.
 - Examples:
-  - Control message handling (ack, time_tick, shutdown)
-  - State transitions (batch full/flush/drop)
-  - Output port selection, backpressure, errors
+    - Control message handling (ack, time_tick, shutdown)
+    - State transitions (batch full/flush/drop)
+    - Output port selection, backpressure, errors
 
 ### Span links
 
@@ -115,10 +114,10 @@ path.
 
 - Utilization Metrics (either maintained as direct metrics or derived from span,
   events/attributes):
-  - Queue depth at receive/send
-  - Time spent in input/output channels
-  - Rate of message arrival/departure per channel
-  - Backpressure events (as span events/attributes)
+    - Queue depth at receive/send
+    - Time spent in input/output channels
+    - Rate of message arrival/departure per channel
+    - Backpressure events (as span events/attributes)
 - Purpose: Highlights overloaded or underutilized channels, informs
   concurrency and buffer size tuning.
 

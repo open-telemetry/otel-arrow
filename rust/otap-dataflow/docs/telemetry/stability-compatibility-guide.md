@@ -26,15 +26,15 @@ Every schema element that is intended for reuse by operators or downstream
 tooling MUST declare a stability level:
 
 - **experimental**
-  - may change without backward compatibility guarantees
-  - intended for iteration and proving utility
+    - may change without backward compatibility guarantees
+    - intended for iteration and proving utility
 - **stable**
-  - only backward compatible evolution is allowed
-  - breaking changes require versioning and a migration plan
+    - only backward compatible evolution is allowed
+    - breaking changes require versioning and a migration plan
 - **deprecated**
-  - still emitted for a migration window
-  - has a documented replacement
-  - has a planned removal milestone
+    - still emitted for a migration window
+    - has a documented replacement
+    - has a planned removal milestone
 
 ### What must carry stability
 
@@ -47,7 +47,7 @@ At minimum, stability MUST be declared for:
 - each trace span name (when implemented)
 
 ## Compatibility rules
- 
+
 ### General rule
 
 For stable telemetry, changes MUST preserve the ability for existing dashboards,
@@ -80,6 +80,13 @@ Breaking changes include:
 - removing a metric, event, span, or attribute
 - changing the meaning of an attribute value
 - widening attribute cardinality such that aggregations change meaning or cost
+
+Important node: At this stage, the use of the Event Body is intentionally
+limited. Recent
+OpenTelemetry [Semantic Conventions](https://github.com/open-telemetry/semantic-conventions/blob/main/docs/general/events.md)
+recommend avoiding reliance on the Body for structured data, favoring explicitly
+named attributes instead. This guidance may be refined as instrumentation
+practices and upstream OpenTelemetry recommendations evolve.
 
 ## Compatibility by signal type
 

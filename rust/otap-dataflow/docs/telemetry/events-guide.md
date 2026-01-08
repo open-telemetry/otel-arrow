@@ -27,12 +27,14 @@ Use events to record:
 - Exceptional outcomes (errors, retries, drops).
 
 If the signal is high-volume or needs aggregation, prefer metrics. If the
-event is part of a dataflow trace, record it as a span event.
+event is part of a dataflow trace, use a regular event with a trace ID, not a
+span event record, as span events are
+becoming [deprecated](https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/4430-span-event-api-deprecation-plan.md).
 
 Exception rule (traces):
 
-- If you are recording an actual exception on a span, the span event name MUST
-  be `exception` and the standard exception attributes MUST be used.
+- If you are recording an actual exception on a span, the regular event name
+  MUST be `exception` and the standard exception attributes MUST be used.
 
 In this project, events are preferred to unstructured logs. Event names are
 codified (see below), and their attributes consist of the attributes of the
@@ -91,8 +93,7 @@ Optionally, add occurrence-specific attributes (dynamic context):
 
 ## Severity and placement
 
-When events are exported as logs, set an appropriate severity. When they are
-attached to traces, use span events with the same name and attributes.
+When events are exported as logs, set an appropriate severity.
 
 Regarding severity, some events may be logged at different levels depending on
 their severity or impact. For example, a `node.shutdown` event may be logged at
@@ -105,15 +106,15 @@ best reflects the significance of the event.
 The following stages are recommended for event names:
 
 - `pipeline`:
-  - `build`: Pipeline construction phase.
-  - `run`: Pipeline execution phase.
-  - `report`: Pipeline metrics reporting phase.
+    - `build`: Pipeline construction phase.
+    - `run`: Pipeline execution phase.
+    - `report`: Pipeline metrics reporting phase.
 - `node`:
-  - `build`: Node construction phase.
-  - `run`: Node execution phase.
+    - `build`: Node construction phase.
+    - `run`: Node execution phase.
 - `channel`:
-  - `send`: Channel send phase.
-  - `recv`: Channel receive phase.
+    - `send`: Channel send phase.
+    - `recv`: Channel receive phase.
 
 This list is not exhaustive. Choose stages that best describe the context while
 maintaining clarity and consistency.
@@ -139,8 +140,12 @@ The following verbs are recommended for event names:
 - `nack`: A negative acknowledgment occurrence.
 - `tick`: A timer tick occurrence.
 - `sleep`: A sleep occurrence.
-- `cancel`: An operation was intentionally stopped by an external decision before it finished. Triggered by a caller, operator, controller, or policy. Usually expected and often benign. Not an error in itself.
-- `abort`: An operation was forced to stop due to an internal safety condition or unrecoverable state. Triggered inside the system. Indicates something went wrong or became unsafe. Usually unexpected.
+- `cancel`: An operation was intentionally stopped by an external decision
+  before it finished. Triggered by a caller, operator, controller, or policy.
+  Usually expected and often benign. Not an error in itself.
+- `abort`: An operation was forced to stop due to an internal safety condition
+  or unrecoverable state. Triggered inside the system. Indicates something went
+  wrong or became unsafe. Usually unexpected.
 - `timeout`: A timeout occurrence.
 
 This list is not exhaustive. Choose verbs that best describe the action while
@@ -151,10 +156,14 @@ termination verb `cancel`, and one internal safety verb `abort`.
 
 ## Checklist for new events
 
-- The event name follows the semantic conventions guide and the `otelcol.<entity>[.<thing>].<verb>` pattern.
-- The event name is stable, low-cardinality, and contains no IDs or dynamic values.
-- The event represents a discrete occurrence; use metrics instead for high-volume signals.
+- The event name follows the semantic conventions guide and the
+  `otelcol.<entity>[.<thing>].<verb>` pattern.
+- The event name is stable, low-cardinality, and contains no IDs or dynamic
+  values.
+- The event represents a discrete occurrence; use metrics instead for
+  high-volume signals.
 - Relevant entity attributes are included (pipeline/node/channel/etc).
 - Dynamic attributes are bounded and avoid sensitive or high-cardinality data.
-- Error events use standard exception attributes; stacktraces only at debug or lower.
+- Error events use standard exception attributes; stacktraces only at debug or
+  lower.
 - Severity is appropriate and consistent with the event meaning.

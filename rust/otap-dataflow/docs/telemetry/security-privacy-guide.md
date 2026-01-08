@@ -30,6 +30,10 @@ The following MUST NOT be recorded in metrics, events, traces, or attributes:
 
 If in doubt, do not emit it.
 
+Important note: The system must allow users, if they choose to do so, to log
+certain sensitive data (e.g. `user_id`) only when it is gated behind an explicit
+debug mode.
+
 ## Allowed data with constraints
 
 The following are generally allowed if they remain bounded and non-sensitive:
@@ -56,8 +60,8 @@ Do not emit raw content that can include secrets or user identifiers.
 
 Exceptions often include sensitive data. Rules:
 
-- Use structured exception attributes (`exception.type`, `exception.message`)
-  when needed.
+- Use structured exception attributes (e.g. `exception.type`) when needed.
+- `exeption.message` MUST NOT include sensitive data or raw user input.
 - `exception.stacktrace` SHOULD be gated behind:
     - debug severity, or
     - an explicit configuration flag
@@ -65,7 +69,7 @@ Exceptions often include sensitive data. Rules:
 
 ## Events, body size, and spill risk
 
-Events are often exported as logs.
+Events are exported as logs.
 
 - Prefer small, queryable fields in attributes.
 - Large payloads SHOULD go into the event body only when strictly required.
@@ -84,7 +88,8 @@ When exporting events as logs and trace context exists:
 - include trace correlation (trace id and span id) so operators can pivot
 - do not copy trace ids into custom attributes unless required by tooling
 
-Trace and Span ids are not secrets but they can be used to join information across
+Trace and Span ids are not secrets but they can be used to join information
+across
 systems. Treat them as internal identifiers.
 
 ## Schema endpoint security
@@ -113,11 +118,9 @@ diagnostic endpoints:
 - If an endpoint includes topology identifiers (pipelines, nodes, channels),
   treat it as sensitive.
 
-## Access controls and retention
+## Data retention
 
-- Access to telemetry backends SHOULD be restricted to operators and trusted
-  systems.
-- Retention SHOULD be appropriate for the sensitivity of the data.
+- Data retention SHOULD be appropriate for the sensitivity of the data.
 - If telemetry can include customer-adjacent signals, apply stricter retention
   and access constraints.
 

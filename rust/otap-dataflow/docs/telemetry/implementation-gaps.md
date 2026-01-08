@@ -21,12 +21,12 @@ Goal:
 
 ### Signals and data model
 
-| Area                 | Gap                                                     | Impact                                                  | 
-|----------------------|---------------------------------------------------------|---------------------------------------------------------|
-| Metrics              | Histograms not supported yet                            | Limits latency and size distributions                   |
+| Area                 | Gap                                                     | Impact                                                   | 
+|----------------------|---------------------------------------------------------|----------------------------------------------------------|
+| Metrics              | Histograms not supported yet                            | Limits latency and size distributions                    |
 | Metrics              | Bounded signal-specific metric attributes not supported | Limits modeling of small enum dimensions on core metrics |
-| Multivariate metrics | OTLP and OTAP lack first-class multivariate metric sets | Limits protocol efficiency; some semantics may be lossy |
-| Tracing              | Traces not implemented (draft only)                     | Limits end-to-end causality and latency debugging       |
+| Multivariate metrics | OTLP and OTAP lack first-class multivariate metric sets | Limits protocol efficiency; some semantics may be lossy  |
+| Tracing              | Traces not implemented (draft only)                     | Limits end-to-end causality and latency debugging        |
 
 ### Resource identity and entity attributes
 
@@ -42,12 +42,12 @@ Goal:
 
 ### Tooling and process
 
-| Area           | Gap                                                    | Impact                                          |
-|----------------|--------------------------------------------------------|-------------------------------------------------|
-| Validation     | Registry compliance checks and live checks not covered | Drift between schema and emitted telemetry      |
-| Stability      | Stability level not declared for all signals           | Hard to apply compatibility discipline          |
-| Deprecation    | Migration windows and dual emission not implemented    | Breaking changes may slip into stable telemetry |
-| SDK generation | Automated client SDK generation not implemented yet    | Manual duplication between schema and code      |
+| Area           | Gap                                                                                                                                                                                                                                                                                              | Impact                                                        |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------|
+| Validation     | Registry compliance checks and live checks not covered                                                                                                                                                                                                                                           | Drift between schema and emitted telemetry                    |
+| Stability      | Stability level not declared for all signals                                                                                                                                                                                                                                                     | Hard to apply compatibility discipline                        |
+| Deprecation    | Migration windows and dual emission not implemented                                                                                                                                                                                                                                              | Breaking changes may slip into stable telemetry               |
+| SDK generation | Automated client SDK generation not implemented yet                                                                                                                                                                                                                                              | Manual duplication between schema and code                    |
 | Registry files | Semantic convention registry is not yet available as files; definitions live in macros. A set of files will be created and an optimized client SDK will be generated to mimic the current macro-based SDK, giving us time to refine the optimized SDK code before generating it from a registry. | Limited tooling and visibility until the registry files exist |
 
 ### Open questions

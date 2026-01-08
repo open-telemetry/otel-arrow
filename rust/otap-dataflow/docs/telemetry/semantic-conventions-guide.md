@@ -9,9 +9,9 @@ opinionated reference tailored to this project.
 
 **Important**
 All rules and conventions described here are **derived directly from the
-official OpenTelemetry Semantic Conventions**.
-The OpenTelemetry specifications are the **ultimate source of truth**, and this
-document must never be considered authoritative on its own.
+official OpenTelemetry Semantic Conventions Guides**. These guides (see links
+below) are the **ultimate source of truth**, and this document must never be
+considered authoritative on its own.
 
 Primary references:
 
@@ -213,6 +213,9 @@ connection.close
 * Use arrays for multiple values when appropriate.
 * Avoid duplicating information already present in metric streams unless
   required.
+* For a given event name, removing an attribute or renaming an existing
+  attribute is considered a breaking change and must be handled with appropriate
+  versioning or migration strategy.
 
 Source:
 [https://opentelemetry.io/docs/specs/semconv/general/naming/](https://opentelemetry.io/docs/specs/semconv/general/naming/)
@@ -264,9 +267,9 @@ Error conventions (cross-signal)
 * Use `error.type` as a low-cardinality classifier for failures when applicable.
 * Successful operations SHOULD NOT set `error.type`.
 * For exceptions:
-  - logs use `exception.type` and/or `exception.message`, and may include
-    `exception.stacktrace` in context where security allows.
-  - span exception events MUST be named `exception`
+    - logs use `exception.type` and/or `exception.message`, and may include
+      `exception.stacktrace` in context where security allows.
+    - span exception events MUST be named `exception`
 
 When in doubt, **refer to the upstream OpenTelemetry Semantic Conventions**,
 which remain the authoritative source.

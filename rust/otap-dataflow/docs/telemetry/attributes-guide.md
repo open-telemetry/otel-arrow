@@ -110,6 +110,11 @@ normalized:
 - raw SQL, raw error messages, unbounded file paths
 - unbounded plugin configuration values
 
+Important node: This restriction may be relaxed in the future through an
+explicit opt-in mechanism, for example to allow controlled propagation of
+selected attributes from baggage into metrics or logs under well-defined
+processing rules.
+
 ### Normalization patterns
 
 When context is useful but high cardinality, normalize:

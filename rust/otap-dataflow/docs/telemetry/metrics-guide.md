@@ -1,7 +1,8 @@
 # System metrics guide
 
 This guide defines how to add and evolve system metrics for the OTAP dataflow
-engine. It complements the [semantic conventions guide](semantic-conventions-guide.md)
+engine. It complements
+the [semantic conventions guide](semantic-conventions-guide.md)
 and the [entity model](entity-model.md).
 
 System metrics are intended to describe the behavior of stable entities over
@@ -16,7 +17,8 @@ analytics or business telemetry.
 ## Related guides
 
 - Attribute policy: [attributes-guide.md](attributes-guide.md)
-- Stability rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
+- Stability
+  rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
 - Implementation status: [implementation-gaps.md](implementation-gaps.md)
 
 ## Entity-centric modeling
@@ -26,6 +28,7 @@ single entity type (pipeline, node, channel sender, channel receiver, runtime
 thread, and so on). Metric identity should remain stable while values evolve.
 
 Examples of stable entities:
+
 - CPU core, NUMA node, runtime thread
 - Pipeline, node, channel endpoint (sender or receiver)
 - Queue, buffer, connection pool
@@ -33,6 +36,7 @@ Examples of stable entities:
 ### Entity vs event vs request
 
 Metrics are for entity behavior, not request identity.
+
 - Events such as reloads, errors, or state changes are better captured as
   events and can be counted with metrics only when attributes stay stable.
 - Requests and transactions are high-cardinality and short-lived. Use traces,
@@ -45,6 +49,7 @@ Metrics are for entity behavior, not request identity.
 
 *Metrics* in this project use the instrument types supported by our internal
 telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
+
 - Counter: monotonic counts of events or outcomes, recorded as deltas.
 - UpDownCounter: signed deltas that can increase or decrease over time.
 - ObserveCounter: monotonic counts recorded as observed cumulative values.
@@ -56,12 +61,12 @@ Histogram support status is tracked in
 [Implementation Gaps](implementation-gaps.md).
 
 ObserveUpDownCounter and Gauge both report values that can rise or fall, but
-they aggregate differently. 
+they aggregate differently.
 
 - A Gauge uses last-value aggregation,
 - An ObserveUpDownCounter is a sampled cumulative value that aggregates by
   summing deltas over time.
- 
+
 In this project, ObserveUpDownCounter is used for observed totals like
 `otelcol.pipeline.metrics.memory_usage` and
 `otelcol.tokio.runtime.task_active_count`, while Gauge is used for instantaneous
@@ -69,6 +74,7 @@ values like `otelcol.pipeline.metrics.cpu_utilization` and
 `channel.receiver.capacity`.
 
 Guideline:
+
 - Use Gauge for point-in-time levels (queue depth, active tasks, memory in use).
 - Use (Observe)Counter for counts (items processed, drops).
 - Use ObserveUpDownCounter only when you have a strong reason to preserve the
@@ -83,6 +89,7 @@ this project, core metrics prioritize entity identity. However, bounded
 signal-specific attributes MAY be used when they are necessary to interpret the
 measurement (for example, a small enum such as a "state" dimension). When used,
 signal-specific attributes MUST be:
+
 - bounded and documented as a closed set
 - meaningful under aggregation
 - preferably namespaced under the metric namespace as recommended by OTel naming
@@ -100,16 +107,17 @@ section below for details.
 Metric set naming should follow the pattern `otelcol.<entity>` or
 `otelcol.<entity>.<subentity>` when applicable. Examples of metric sets in this
 project:
+
 - For generic entities:
-  - `otelcol.pipeline`, `otelcol.node`
-  - `otelcol.channel.sender`, `otelcol.channel.receiver`
-  - ...
+    - `otelcol.pipeline`, `otelcol.node`
+    - `otelcol.channel.sender`, `otelcol.channel.receiver`
+    - ...
 - For specific node types:
-  - `otelcol.node.retry`
-  - `otelcol.node.batch`
-  - `otelcol.node.otlp_receiver`
-  - `otelcol.node.otlp_exporter`
-  - ...
+    - `otelcol.node.retry`
+    - `otelcol.node.batch`
+    - `otelcol.node.otlp_receiver`
+    - `otelcol.node.otlp_exporter`
+    - ...
 
 ## Attributes and entity context
 
@@ -128,20 +136,22 @@ Units must be specified for every metric as part of its metadata. They must
 follow UCUM conventions and use braces notation only for annotation units.
 
 The most common units in this project are:
+
 - Named units:
-  - `By`: bytes
-  - `s`: seconds (preferred over `ms` for time durations)
+    - `By`: bytes
+    - `s`: seconds (preferred over `ms` for time durations)
 - Annotation units:
-  - `{batch}`: batches of telemetry signals
-  - `{signal}`: individual telemetry signals (metrics, logs, traces)
-  - `{metric}`: individual metric data points
-  - `{log}`: individual log records
-  - `{event}`: individual event records (log with an event name)
-  - `{span}`: individual trace spans
+    - `{batch}`: batches of telemetry signals
+    - `{signal}`: individual telemetry signals (metrics, logs, traces)
+    - `{metric}`: individual metric data points
+    - `{log}`: individual log records
+    - `{event}`: individual event records (log with an event name)
+    - `{span}`: individual trace spans
 
 ## Performance considerations
 
 Metric sets are optimized for low overhead:
+
 - The same attribute set is shared across all metrics in a metric set.
 - A metric set instance registers its attributes once during setup, and the
   collection phase reports only scalar values.

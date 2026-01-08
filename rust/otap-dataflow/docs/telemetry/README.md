@@ -68,7 +68,7 @@ Telemetry MUST NOT compromise:
 
 ## Core principles
 
-The principles below define how internal telemetry is designed, implemented, 
+The principles below define how internal telemetry is designed, implemented,
 validated, and evolved in this project. They are intentionally opinionated and
 serve as a shared contract between contributors, tooling, and runtime behavior.
 
@@ -136,7 +136,9 @@ Specifically:
   optionally via debug events.
 
 The telemetry system MUST NOT introduce deadlocks, unbounded memory growth, or
-process termination.
+process termination. Similar principles have been established in the official
+OpenTelemetry documentation
+for [error handling](https://opentelemetry.io/docs/specs/otel/error-handling/#basic-error-handling-principles).
 
 ### 5. Alignment with OpenTelemetry semantic conventions
 
@@ -162,8 +164,7 @@ This enables:
 
 * efficient sharing of attribute tuples,
 * coherent modeling of related measurements,
-* reduced duplication and cardinality explosion compared to naive univariate
-  metrics.
+* reduced duplication explosion compared to naive univariate metrics.
 
 Multivariate metrics are treated as a fundamental modeling capability rather
 than a post-processing optimization.
@@ -199,7 +200,9 @@ Registry compliance checks and live checks are not yet enforced in CI. See
 ### 8. Automated client SDK generation (longer term)
 
 In the longer term, the custom semantic convention registry will be used to
-generate **type-safe Rust client SDKs** via Weaver.
+generate **schema-driven, type-safe, and optimized Rust client SDKs** via
+Weaver. Meanwhile, we built a type-safe Rust instrumentation API on top of the
+standard client SDK.
 
 The objective is to:
 
@@ -214,7 +217,6 @@ This is considered a strategic investment and will be introduced incrementally.
 
 Telemetry is treated as a **stable interface of the system**.
 Refer to [Stability and Compatibility Guide](stability-compatibility-guide.md).
-
 
 ## Instrumentation guides
 

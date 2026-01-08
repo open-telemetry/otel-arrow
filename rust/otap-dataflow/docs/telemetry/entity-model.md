@@ -13,7 +13,7 @@ entities that exist for a given project. A single signal can involve multiple
 entities.
 
 | Concept    | Role                                          |
-| ---------- | --------------------------------------------- |
+|------------|-----------------------------------------------|
 | Entity     | The observed thing                            |
 | Signal     | The observation                               |
 | Attributes | Properties describing the entity or the event |
@@ -25,7 +25,8 @@ project.
 ## Related guides
 
 - Attribute policy: [attributes-guide.md](attributes-guide.md)
-- Stability rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
+- Stability
+  rules: [stability-compatibility-guide.md](stability-compatibility-guide.md)
 - Implementation status: [implementation-gaps.md](implementation-gaps.md)
 
 ## Attribute ownership
