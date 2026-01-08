@@ -345,17 +345,13 @@ mod test {
                 // Allow the collector to pull from the channel
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-                let mut msgs_consumed = 0;
-                let mut msgs_forwarded = 0;
                 let mut msgs_transformed = 0;
                 let mut msgs_transform_failed = 0;
                 registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "transform.processor.metrics" {
+                    if desc.name == "transform.processor" {
                         for (field, v) in iter {
                             let val = v.to_u64_lossy();
                             match field.name {
-                                "msgs.consumed" => msgs_consumed += val,
-                                "msgs.forwarded" => msgs_forwarded += val,
                                 "msgs.transformed" => msgs_transformed += val,
                                 "msgs.transform.failed" => msgs_transform_failed += val,
                                 _ => {}
@@ -364,8 +360,6 @@ mod test {
                     }
                 });
 
-                assert_eq!(msgs_consumed, 1);
-                assert_eq!(msgs_forwarded, 1);
                 assert_eq!(msgs_transformed, 1);
                 assert_eq!(msgs_transform_failed, 0)
             });
