@@ -81,13 +81,13 @@ path.
 
 - Definition: Captures a node's processing of a PData flow.
 - Attributes:
-    - otelcol.component.id: the node id.
-    - otelcol.component.kind: receiver, processor, or exporter.
-    - otelcol.signal: logs, metrics, events, or traces.
-    - otelcol.signal.output: logs, metrics, events, or traces.
-    - otelcol.pipeline.id: the pipeline id.
-    - pdata.batch.size, out.port
-    - stateful, error
+  - otelcol.component.id: the node id.
+  - otelcol.component.kind: receiver, processor, or exporter.
+  - otelcol.signal: logs, metrics, events, or traces.
+  - otelcol.signal.output: logs, metrics, events, or traces.
+  - otelcol.pipeline.id: the pipeline id.
+  - pdata.batch.size, out.port
+  - stateful, error
 - Purpose: Provides detailed, per-node insight into processing time, routing,
   state, and errors.
 
@@ -95,9 +95,9 @@ path.
 
 - Definition: Record significant in-node occurrences.
 - Examples:
-    - Control message handling (ack, time_tick, shutdown)
-    - State transitions (batch full/flush/drop)
-    - Output port selection, backpressure, errors
+  - Control message handling (ack, time_tick, shutdown)
+  - State transitions (batch full/flush/drop)
+  - Output port selection, backpressure, errors
 
 ### Span links
 
@@ -114,10 +114,10 @@ path.
 
 - Utilization Metrics (either maintained as direct metrics or derived from span,
   events/attributes):
-    - Queue depth at receive/send
-    - Time spent in input/output channels
-    - Rate of message arrival/departure per channel
-    - Backpressure events (as span events/attributes)
+  - Queue depth at receive/send
+  - Time spent in input/output channels
+  - Rate of message arrival/departure per channel
+  - Backpressure events (as span events/attributes)
 - Purpose: Highlights overloaded or underutilized channels, informs
   concurrency and buffer size tuning.
 

@@ -159,6 +159,7 @@ When deprecating stable telemetry, follow this process:
 2) Introduce the replacement signal first.
 3) Emit both old and new during a migration window.
 4) Provide migration guidance:
+
   - mapping table (old -> new)
   - example queries and dashboard update notes
 5) Remove the deprecated signal only after the migration window ends.

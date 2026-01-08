@@ -1,6 +1,6 @@
 # Telemetry SDK (schema-first, multivariate, NUMA-aware)
 
-Status: draft, under active development.
+Status: draft under active development.
 
 A low-overhead, NUMA-aware telemetry SDK that turns a declarative schema into a
 type-safe Rust API for emitting richly structured, multivariate metrics. It is
