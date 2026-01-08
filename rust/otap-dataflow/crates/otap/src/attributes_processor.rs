@@ -182,6 +182,7 @@ impl AttributesProcessor {
             } else {
                 Some(DeleteTransform::new(deletes))
             },
+            insert: None,
         };
 
         transform
