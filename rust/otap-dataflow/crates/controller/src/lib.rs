@@ -36,6 +36,7 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
+use otap_df_telemetry::logs::{LogsCollector, LogsReporter, install_thread_log_buffer, uninstall_thread_log_buffer};
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
@@ -115,6 +116,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
+        // Create the logs collection channel and start the collector thread
+        let (logs_collector, logs_reporter) = LogsCollector::new(
+            telemetry_config.reporting_channel_size,
+        );
+        // TODO: Store handle for graceful shutdown
+        let _logs_collector_handle =
+            spawn_thread_local_task("logs-collector", move |_cancellation_token| {
+                logs_collector.run()
+            })?;
+
         // Start one thread per requested core
         // Get available CPU cores for pinning
         let requested_cores = Self::select_cores_for_quota(
@@ -148,6 +159,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 thread_id,
             );
             let metrics_reporter = metrics_reporter.clone();
+            let logs_reporter = logs_reporter.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
             let obs_evt_reporter = obs_evt_reporter.clone();
@@ -162,6 +174,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_handle,
                         obs_evt_reporter,
                         metrics_reporter,
+                        logs_reporter,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
                     )
@@ -379,9 +392,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        logs_reporter: LogsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
+        // Install thread-local log buffer for this pipeline thread
+        // Buffer capacity: 1024 entries (TODO: make configurable)
+        install_thread_log_buffer(1024);
+
         // Create a tracing span for this pipeline thread
         // so that all logs within this scope include pipeline context.
         let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
@@ -415,18 +433,24 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         ));
 
         // Start the pipeline (this will use the current thread's Tokio runtime)
-        runtime_pipeline
+        let result = runtime_pipeline
             .run_forever(
                 pipeline_key,
                 pipeline_context,
                 obs_evt_reporter,
                 metrics_reporter,
+                logs_reporter,
                 pipeline_ctrl_msg_tx,
                 pipeline_ctrl_msg_rx,
             )
             .map_err(|e| Error::PipelineRuntimeError {
                 source: Box::new(e),
-            })
+            });
+
+        // Cleanup: uninstall thread-local log buffer
+        uninstall_thread_log_buffer();
+
+        result
     }
 }
 

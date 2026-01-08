@@ -20,6 +20,10 @@ pub enum Error {
     #[error("Metrics channel was closed")]
     MetricsChannelClosed,
 
+    /// The logs channel was closed unexpectedly.
+    #[error("Logs channel was closed")]
+    LogsChannelClosed,
+
     /// Error during shutdown of a component.
     #[error("Shutdown error: {0}")]
     ShutdownError(String),

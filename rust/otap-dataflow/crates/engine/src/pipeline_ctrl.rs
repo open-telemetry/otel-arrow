@@ -21,6 +21,7 @@ use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::logs::{LogsReporter, flush_thread_log_buffer};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
@@ -182,6 +183,8 @@ pub struct PipelineCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
+    /// Global logs reporter for internal log collection.
+    logs_reporter: LogsReporter,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
@@ -199,6 +202,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
+        logs_reporter: LogsReporter,
         internal_telemetry: TelemetrySettings,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
@@ -212,6 +216,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
+            logs_reporter,
             channel_metrics,
             telemetry: internal_telemetry,
         }
@@ -346,6 +351,13 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             if let Err(err) = metrics.report(&mut self.metrics_reporter) {
                                 otel_warn!("channel.metrics.reporting.fail", error = err.to_string());
                             }
+                        }
+                    }
+
+                    // Flush internal logs from the thread-local buffer
+                    if let Some(batch) = flush_thread_log_buffer() {
+                        if let Err(err) = self.logs_reporter.try_report(batch) {
+                            otel_warn!("logs.reporting.fail", error = err.to_string());
                         }
                     }
 

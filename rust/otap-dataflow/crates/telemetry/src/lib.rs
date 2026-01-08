@@ -36,6 +36,8 @@ pub mod error;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+/// Internal logs collection and transport.
+pub mod logs;
 pub mod metrics;
 pub mod opentelemetry_client;
 pub mod registry;
@@ -58,6 +60,12 @@ pub use tracing::error_span as otel_error_span;
 pub use tracing::info_span as otel_info_span;
 pub use tracing::trace_span as otel_trace_span;
 pub use tracing::warn_span as otel_warn_span;
+
+// Re-export commonly used logs types for convenience.
+pub use logs::{
+    BufferWriterLayer, LogsCollector, LogsReporter, ProducerKeyGuard, current_producer_key,
+    flush_thread_log_buffer, install_thread_log_buffer, uninstall_thread_log_buffer,
+};
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
