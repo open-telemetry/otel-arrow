@@ -1,0 +1,121 @@
+queries:
+  - name: Calculate observation window for this test
+    sql: |
+      CREATE TABLE observation_window AS WITH event_times AS (
+        SELECT
+          "attributes.test.name" AS test_name,
+          name AS event_name,
+          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp
+        FROM events
+        WHERE name IN ('observation_start', 'observation_stop')
+      ),
+      observation_windows AS (
+        SELECT
+          start.test_name,
+          start.timestamp AS start_ts,
+          stop.timestamp AS stop_ts
+        FROM
+          event_times start
+          JOIN event_times stop ON start.test_name = stop.test_name
+        WHERE
+          start.event_name = 'observation_start'
+          AND stop.event_name = 'observation_stop'
+          AND start.timestamp < stop.timestamp
+      )
+      SELECT w.*
+      FROM metadata_row
+      JOIN observation_windows w ON metadata_row."test.name" = w.test_name
+
+  - name: Create component resource metrics
+    sql: |
+      CREATE TABLE component_resource_metrics AS
+        WITH metrics_filtered AS (
+          SELECT *,
+          "metric_attributes.component_name" AS component_name
+          FROM metrics
+          WHERE metric_name IN ('container.cpu.usage', 'container.memory.usage')
+        ),
+        observation_only AS (
+          SELECT *
+          FROM observation_window
+        )
+        SELECT
+          m.component_name,
+          metric_name,
+          MIN(m.value) AS min_value,
+          AVG(m.value) AS avg_value,
+          MAX(m.value) AS max_value
+        FROM
+          observation_only AS ow
+        JOIN
+          metrics_filtered AS m
+          ON m.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY
+          m.component_name, m.metric_name
+        ORDER BY
+          m.component_name DESC;
+
+  - name: Idle State Summary
+    sql: |
+      CREATE TABLE idle_state_summary AS
+      SELECT
+        component_name,
+        ROUND(AVG(CASE WHEN metric_name = 'container.cpu.usage' THEN avg_value END), 2) AS avg_cpu_percent,
+        ROUND(MAX(CASE WHEN metric_name = 'container.cpu.usage' THEN max_value END), 2) AS max_cpu_percent,
+        ROUND(AVG(CASE WHEN metric_name = 'container.memory.usage' THEN avg_value / 1024.0 / 1024.0 END), 2) AS avg_memory_mb,
+        ROUND(MAX(CASE WHEN metric_name = 'container.memory.usage' THEN max_value / 1024.0 / 1024.0 END), 2) AS max_memory_mb
+      FROM component_resource_metrics
+      GROUP BY component_name
+
+  - name: Create Final Github Actions Format table
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+          SELECT 'idle_cpu_percentage_avg' AS name, '%' AS unit,
+                (crm.avg_value) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle CPU % (Avg)' AS extra
+          FROM component_resource_metrics crm
+          CROSS JOIN metadata_row
+          WHERE crm.component_name = 'df-engine' AND crm.metric_name = 'container.cpu.usage'
+
+          UNION ALL
+
+          SELECT 'idle_cpu_percentage_max' AS name, '%' AS unit,
+                (crm.max_value) * 100 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle CPU % (Max)' AS extra
+          FROM component_resource_metrics crm
+          CROSS JOIN metadata_row
+          WHERE crm.component_name = 'df-engine' AND crm.metric_name = 'container.cpu.usage'
+
+          UNION ALL
+
+          SELECT 'idle_ram_mib_avg' AS name, 'MiB' AS unit, avg_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle RAM (MiB) (Avg)' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name = 'df-engine' AND metric_name = 'container.memory.usage'
+
+          UNION ALL
+
+          SELECT 'idle_ram_mib_max' AS name, 'MiB' AS unit, max_value / 1024 / 1024 AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle RAM (MiB) (Max)' AS extra
+          FROM component_resource_metrics
+          CROSS JOIN metadata_row
+          WHERE component_name = 'df-engine' AND metric_name = 'container.memory.usage'
+
+          UNION ALL
+
+          SELECT 'idle_test_duration' AS name, 'seconds' AS unit,
+                EXTRACT(EPOCH FROM (stop_ts - start_ts)) AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - Idle Test Duration' AS extra
+          FROM observation_window
+          CROSS JOIN metadata_row;
+
+result_tables:
+  - name: observation_window
+    description: The observation window for idle state measurement
+  - name: component_resource_metrics
+    description: CPU and Memory metrics during idle state
+  - name: idle_state_summary
+    description: Summary of idle state performance metrics
+  - name: gh_actions_benchmark
+    description: The final metrics used with gh_actions_benchmark.
