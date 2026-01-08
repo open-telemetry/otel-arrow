@@ -1156,8 +1156,6 @@ mod telemetry_tests {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 // Inspect current metrics; fields with non-zero values should be present
-                let mut found_consumed = false;
-                let mut found_forwarded = false;
                 let mut found_renamed_entries = false;
                 let mut found_deleted_entries = false;
                 let mut found_domain_signal = false;
