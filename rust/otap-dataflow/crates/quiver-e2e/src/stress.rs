@@ -329,9 +329,10 @@ pub struct SteadyStateStats {
     pub total_segments_written: u64,
     /// Final cleanup duration in milliseconds
     pub cleanup_duration_ms: u64,
-    /// Current backlog (ingested - consumed/subscribers)
+    /// Current backlog (ingested - consumed/subscribers_per_engine)
     pub backlog: u64,
-    /// Number of subscribers
+    /// Number of subscribers per engine (used for backlog calculation)
+    /// Each subscriber only consumes from its own engine's bundles.
     pub subscribers: usize,
     /// Rows per bundle (for calculating rows/sec)
     pub rows_per_bundle: usize,

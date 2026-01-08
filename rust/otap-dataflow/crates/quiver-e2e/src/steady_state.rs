@@ -154,8 +154,10 @@ pub fn run(
     ));
 
     // Create stats tracker
+    // Note: We pass subscribers per engine (not total) because each subscriber only
+    // consumes bundles from its own engine, not from a shared pool.
     let mut stats = SteadyStateStats::new(
-        config.subscribers * config.engines,
+        config.subscribers,
         config.rows_per_bundle,
         bundle_size_bytes,
     );
