@@ -105,7 +105,7 @@ pub fn consume_with_registry(
     subscriber_name: &str,
     simulate_failures: bool,
     failure_probability: f64,
-    flush_interval: usize,
+    progress_flush_interval: usize,
     delay: SubscriberDelay,
 ) -> Result<ConsumptionResult, Box<dyn std::error::Error>> {
     let file = File::create(output_path)?;
@@ -204,7 +204,7 @@ pub fn consume_with_registry(
                 bundles_since_flush += 1;
 
                 // Periodic flush (simulating the embedding layer's flush interval)
-                if bundles_since_flush >= flush_interval {
+                if bundles_since_flush >= progress_flush_interval {
                     let flushed = registry.flush_progress()?;
                     if flushed > 0 {
                         total_flushes += 1;

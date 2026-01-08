@@ -103,7 +103,7 @@ struct Args {
 
     /// How often to flush progress files (in bundles consumed)
     #[arg(long, default_value = "100")]
-    flush_interval: usize,
+    progress_flush_interval: usize,
 
     /// Keep temp directory after test (for inspection)
     #[arg(long)]
@@ -278,7 +278,7 @@ fn run_steady_state_mode(
         string_size: args.string_size,
         subscribers: args.subscribers,
         subscriber_delay_ms: args.subscriber_delay_ms,
-        flush_interval: args.flush_interval,
+        progress_flush_interval: args.progress_flush_interval,
         segment_size_mb: args.segment_size_mb,
         read_mode,
         leak_threshold_mb: args.leak_threshold_mb,
@@ -362,7 +362,7 @@ fn run_iteration_for_stress(
             &sub_name,
             args.simulate_failures,
             args.failure_probability,
-            args.flush_interval,
+            args.progress_flush_interval,
             SubscriberDelay::new(args.subscriber_delay_ms),
         )?;
         total_consumed += result.consumed;
@@ -457,7 +457,7 @@ fn print_config(args: &Args) {
         args.failure_probability * 100.0
     );
     info!("  Read mode: {:?}", args.read_mode);
-    info!("  Flush interval: {} bundles", args.flush_interval);
+    info!("  Flush interval: {} bundles", args.progress_flush_interval);
     info!("");
 }
 
@@ -597,7 +597,7 @@ fn run_single_iteration(
                 &sub_name,
                 args.simulate_failures,
                 args.failure_probability,
-                args.flush_interval,
+                args.progress_flush_interval,
                 SubscriberDelay::new(args.subscriber_delay_ms),
             )?;
 

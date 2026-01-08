@@ -91,7 +91,7 @@ pub struct SteadyStateTestConfig {
     pub string_size: usize,
     pub subscribers: usize,
     pub subscriber_delay_ms: u64,
-    pub flush_interval: usize,
+    pub progress_flush_interval: usize,
     pub segment_size_mb: u64,
     pub read_mode: SegmentReadMode,
     pub leak_threshold_mb: f64,
@@ -304,7 +304,7 @@ pub fn run(
         let sub_running = running.clone();
         let sub_consumed = total_consumed.clone();
         let delay_ms = config.subscriber_delay_ms;
-        let flush_interval = config.flush_interval;
+        let flush_interval = config.progress_flush_interval;
         let sub_id_clone = sub_id.clone();
 
         let handle = thread::spawn(move || {
