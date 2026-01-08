@@ -1,27 +1,52 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Quiver is an Arrow-native persistence layer.
+//! Quiver is an Arrow-native persistence layer for durable buffering of
+//! telemetry data.
 //!
-//! The current implementation only provides configuration scaffolding and
-//! placeholder APIs so downstream crates can start integrating without pulling
-//! in incomplete storage logic. Future phases will replace the placeholder
-//! implementations with real WAL + segment handling.
+//! The crate provides:
+//!
+//! - **Durability**: Write-ahead log (WAL) for crash recovery
+//! - **Segment Storage**: Immutable Arrow IPC-based Quiver segment files with zero-copy reads
+//! - **Subscription**: Multi-subscriber consumption with progress tracking
+//! - **Maintenance**: Automatic cleanup of completed segments
+//!
+//! # Architecture
+//!
+//! The [`QuiverEngine`] is the primary entry point. It coordinates:
+//!
+//! 1. **Ingestion**: Bundles are appended to the WAL, then accumulated in memory
+//! 2. **Finalization**: When thresholds are exceeded, segments are written to disk
+//! 3. **Subscription**: Subscribers consume bundles with at-least-once delivery
+//! 4. **Cleanup**: Completed segments are deleted after all subscribers finish
 //!
 //! # Example
+//!
 //! ```
-//! use quiver::{engine::QuiverEngine, config::QuiverConfig};
-//! use tempfile::tempdir;
+//! use quiver::{QuiverEngine, QuiverConfig};
+//! use std::path::PathBuf;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let tmp = tempdir()?;
-//! let cfg = QuiverConfig::default().with_data_dir(tmp.path());
+//! # let data_dir = tempfile::tempdir()?; // Use real path in production!
+//! # let path = data_dir.path();
+//! // Use a durable filesystem path, not /tmp (which may be tmpfs)
+//! // let path = PathBuf::from("/var/lib/quiver/data");
+//! let cfg = QuiverConfig::default().with_data_dir(path);
 //! let engine = QuiverEngine::new(cfg)?;
-//! assert_eq!(engine.config().data_dir, tmp.path());
-//! assert_eq!(engine.config().segment.target_size_bytes.get(), 32 * 1024 * 1024);
+//!
+//! // Ingest bundles via engine.ingest(bundle)
+//! // Register subscribers via engine.register_subscriber(id)
+//! // Consume bundles via engine.next_bundle(id)
+//! // Periodic maintenance via engine.maintain()
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Features
+//!
+//! - `mmap` (default): Enable memory-mapped segment reads for zero-copy access
+//! - `serde`: Enable serialization for configuration types
+//! - `otap-dataflow-integrations`: Enable integration with otap-dataflow types
 
 pub mod config;
 pub mod engine;

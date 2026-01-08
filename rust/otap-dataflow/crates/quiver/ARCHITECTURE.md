@@ -8,12 +8,11 @@ without data loss.
 
 ## Proposed Solution: Quiver
 
-We propose building Quiver: a standalone, embeddable Arrow-based segment store
-packaged as a reusable Rust crate. Quiver *is not fully implemented yet*; this document
-defines its initial design, scope, and open questions. While it will be
-developed first for `otap-dataflow`, we intend to keep it decoupled so it can
-integrate into other telemetry pipelines or streaming systems that need durable
-buffering around Apache Arrow.
+Quiver is a standalone, embeddable Arrow-based segment store packaged as a
+reusable Rust crate. This document defines its design, scope, and implementation
+details. While Quiver is being developed first for `otap-dataflow`, it is designed to be
+decoupled so it can integrate into other telemetry pipelines or streaming
+systems that need durable buffering around Apache Arrow.
 
 Throughout the proposal we use **RecordBundle** to describe the logical unit
 Quiver persists. In OTAP terms this corresponds to an `OtapArrowRecords`
