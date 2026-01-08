@@ -1,4 +1,4 @@
-// Copyright The OpenTelemetry Authors
+// Copyright OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
@@ -42,14 +42,14 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
             .extend_from_slice(&record.timestamp_ns.to_le_bytes());
 
         // Encode severity_number (field 2, varint)
-        let severity = level_to_severity_number(callsite.level);
+        let severity = level_to_severity_number(callsite.level());
         self.buf
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
 
         // Encode severity_text (field 3, string)
         self.buf
-            .encode_string(LOG_RECORD_SEVERITY_TEXT, callsite.level.as_str());
+            .encode_string(LOG_RECORD_SEVERITY_TEXT, callsite.level().as_str());
 
         // Encode event_name (field 12, string) - format: "target::name (file:line)"
         encode_event_name(self.buf, callsite);
@@ -66,10 +66,10 @@ fn encode_event_name(buf: &mut ProtoBuffer, callsite: &SavedCallsite) {
     proto_encode_len_delimited_unknown_size!(
         LOG_RECORD_EVENT_NAME,
         {
-            buf.extend_from_slice(callsite.target.as_bytes());
+            buf.extend_from_slice(callsite.target().as_bytes());
             buf.extend_from_slice(b"::");
-            buf.extend_from_slice(callsite.name.as_bytes());
-            if let (Some(file), Some(line)) = (callsite.file, callsite.line) {
+            buf.extend_from_slice(callsite.name().as_bytes());
+            if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
                 let _ = write!(ProtoWriter(buf), " ({}:{})", file, line);
             }
         },

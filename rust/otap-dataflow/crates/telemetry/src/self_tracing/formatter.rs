@@ -137,7 +137,7 @@ impl ConsoleWriter {
         Self::write_timestamp(&mut w, record.timestamp_ns);
         cm.write_ansi(&mut w, AnsiCode::Reset);
         let _ = w.write_all(b"  ");
-        cm.write_level(&mut w, callsite.level);
+        cm.write_level(&mut w, callsite.level());
         cm.write_ansi(&mut w, AnsiCode::Bold);
         Self::write_event_name(&mut w, callsite);
         cm.write_ansi(&mut w, AnsiCode::Reset);
@@ -151,10 +151,10 @@ impl ConsoleWriter {
     /// Write callsite details as event_name to buffer.
     #[inline]
     fn write_event_name(w: &mut BufWriter<'_>, callsite: &SavedCallsite) {
-        let _ = w.write_all(callsite.target.as_bytes());
+        let _ = w.write_all(callsite.target().as_bytes());
         let _ = w.write_all(b"::");
-        let _ = w.write_all(callsite.name.as_bytes());
-        if let (Some(file), Some(line)) = (callsite.file, callsite.line) {
+        let _ = w.write_all(callsite.name().as_bytes());
+        if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
             let _ = write!(w, " ({}:{})", file, line);
         }
     }
@@ -330,8 +330,16 @@ where
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let len = self.writer.write_log_record(&mut buf, &record, &callsite);
-        self.writer.write_line(callsite.level, &buf[..len]);
+        self.writer.write_line(callsite.level(), &buf[..len]);
     }
+
+    // Note! This tracing layer does not implement Span-related features
+    // available through LookupSpan. This is important future work and will
+    // require introducing a notion of context. Presently, the Tokio tracing
+    // Context does not pass through the OTAP dataflow engine.
+    //
+    // We are likely to issue span events as events, meaning not to build
+    // Span objects at runtime.
 }
 
 #[cfg(test)]

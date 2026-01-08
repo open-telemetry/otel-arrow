@@ -14,9 +14,8 @@ use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::Event;
 use tracing::callsite::Identifier;
-use tracing::{Level, Metadata};
+use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
 pub use formatter::{ConsoleWriter, RawLoggingLayer};
@@ -39,33 +38,45 @@ pub struct LogRecord {
 /// for building a map by Identifier.
 #[derive(Debug, Clone)]
 pub struct SavedCallsite {
-    /// Target (e.g., module path)
-    pub target: &'static str,
-
-    /// Event name
-    pub name: &'static str,
-
-    /// Source file
-    pub file: Option<&'static str>,
-
-    /// Source line
-    pub line: Option<u32>,
-
-    /// Severity level
-    pub level: &'static Level,
+    /// Tracing metadata.
+    metadata: &'static Metadata<'static>,
 }
 
 impl SavedCallsite {
     /// Construct saved callsite information from tracing Metadata.
     #[must_use]
     pub fn new(metadata: &'static Metadata<'static>) -> Self {
-        Self {
-            level: metadata.level(),
-            target: metadata.target(),
-            name: metadata.name(),
-            file: metadata.file(),
-            line: metadata.line(),
-        }
+        Self { metadata }
+    }
+
+    /// The level.
+    #[must_use]
+    pub fn level(&self) -> &Level {
+        self.metadata.level()
+    }
+
+    /// The filename.
+    #[must_use]
+    pub fn file(&self) -> Option<&'static str> {
+        self.metadata.file()
+    }
+
+    /// The line number.
+    #[must_use]
+    pub fn line(&self) -> Option<u32> {
+        self.metadata.line()
+    }
+
+    /// The target (e.g., module).
+    #[must_use]
+    pub fn target(&self) -> &'static str {
+        self.metadata.target()
+    }
+
+    /// The event name.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        self.metadata.name()
     }
 }
 
