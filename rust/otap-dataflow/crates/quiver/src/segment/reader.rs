@@ -41,6 +41,8 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
+
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
@@ -310,7 +312,6 @@ impl StreamDecoder {
 /// Provides zero-copy access to stream data when using memory-mapped I/O.
 /// The primary API is [`read_bundle`](Self::read_bundle) which reconstructs
 /// a [`ReconstructedBundle`] from its manifest entry.
-#[derive(Debug)]
 pub struct SegmentReader {
     /// The backing buffer (may be mmap or heap allocation).
     buffer: Arc<Buffer>,
@@ -322,6 +323,22 @@ pub struct SegmentReader {
     stream_by_id: HashMap<StreamId, usize>,
     /// Batch manifest (parsed on open).
     manifest: Vec<ManifestEntry>,
+    /// Cached stream decoders for efficient repeated reads.
+    /// Lazily populated on first access to each stream.
+    stream_decoders: Mutex<HashMap<StreamId, StreamDecoder>>,
+}
+
+impl std::fmt::Debug for SegmentReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SegmentReader")
+            .field("buffer_len", &self.buffer.len())
+            .field("footer", &self.footer)
+            .field("streams", &self.streams)
+            .field("stream_by_id", &self.stream_by_id)
+            .field("manifest", &self.manifest)
+            .field("cached_decoders", &self.stream_decoders.lock().len())
+            .finish()
+    }
 }
 
 impl SegmentReader {
@@ -357,7 +374,7 @@ impl SegmentReader {
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
         let buffer = Buffer::from(data);
-        Self::from_buffer_with_path(buffer, Some(path.to_path_buf()))
+        Self::from_buffer(buffer, Some(path.to_path_buf()))
     }
 
     /// Opens a segment file with memory mapping for zero-copy access.
@@ -400,11 +417,11 @@ impl SegmentReader {
         let bytes = bytes::Bytes::from_owner(mmap);
         let buffer = Buffer::from(bytes);
 
-        Self::from_buffer_with_path(buffer, Some(path.to_path_buf()))
+        Self::from_buffer(buffer, Some(path.to_path_buf()))
     }
 
     /// Creates a reader from a pre-loaded buffer with an optional path for error messages.
-    fn from_buffer_with_path(
+    fn from_buffer(
         buffer: Buffer,
         path: Option<std::path::PathBuf>,
     ) -> Result<Self, SegmentError> {
@@ -483,6 +500,7 @@ impl SegmentReader {
             streams,
             stream_by_id,
             manifest,
+            stream_decoders: Mutex::new(HashMap::new()),
         })
     }
 
@@ -548,41 +566,10 @@ impl SegmentReader {
     /// Returns [`SegmentError::StreamNotFound`] if a referenced stream doesn't exist.
     /// Returns [`SegmentError::Arrow`] if IPC decoding fails.
     pub fn read_bundle(&self, entry: &ManifestEntry) -> Result<ReconstructedBundle, SegmentError> {
-        let mut payloads = HashMap::new();
+        let mut payloads = HashMap::with_capacity(entry.slot_count());
 
         for (slot_id, chunk_ref) in entry.slots() {
-            let stream_meta =
-                self.stream(chunk_ref.stream_id)
-                    .ok_or_else(|| SegmentError::StreamNotFound {
-                        stream_id: chunk_ref.stream_id,
-                    })?;
-
-            // Validate stream region before slicing
-            Self::validate_region(
-                self.buffer.len(),
-                stream_meta.byte_offset,
-                stream_meta.byte_length,
-                "stream data",
-            )?;
-
-            // Get the stream's buffer slice
-            let stream_buffer = self.buffer.slice_with_length(
-                stream_meta.byte_offset as usize,
-                stream_meta.byte_length as usize,
-            );
-
-            // Decode the specific batch
-            let decoder = StreamDecoder::new(stream_buffer)?;
-            let batch = decoder
-                .get_batch(chunk_ref.chunk_index.raw() as usize)?
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!(
-                        "chunk {} in stream {:?} returned None",
-                        chunk_ref.chunk_index.raw(),
-                        chunk_ref.stream_id
-                    ),
-                })?;
-
+            let batch = self.read_chunk_cached(chunk_ref.stream_id, chunk_ref.chunk_index)?;
             let _ = payloads.insert(slot_id, batch);
         }
 
@@ -639,6 +626,58 @@ impl SegmentReader {
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Reads a chunk using cached stream decoders for efficiency.
+    ///
+    /// On first access to a stream, the decoder is created and cached.
+    /// Subsequent reads from the same stream reuse the cached decoder,
+    /// avoiding repeated IPC footer parsing and dictionary loading.
+    fn read_chunk_cached(
+        &self,
+        stream_id: StreamId,
+        chunk_index: ChunkIndex,
+    ) -> Result<RecordBatch, SegmentError> {
+        use std::collections::hash_map::Entry;
+
+        let mut cache = self.stream_decoders.lock();
+
+        // Use entry API for efficient check-and-insert
+        if let Entry::Vacant(entry) = cache.entry(stream_id) {
+            let stream_meta =
+                self.stream(stream_id)
+                    .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
+
+            // Validate stream region before slicing
+            Self::validate_region(
+                self.buffer.len(),
+                stream_meta.byte_offset,
+                stream_meta.byte_length,
+                "stream data",
+            )?;
+
+            // Get the stream's buffer slice
+            let stream_buffer = self.buffer.slice_with_length(
+                stream_meta.byte_offset as usize,
+                stream_meta.byte_length as usize,
+            );
+
+            // Create and cache the decoder
+            let decoder = StreamDecoder::new(stream_buffer)?;
+            let _ = entry.insert(decoder);
+        }
+
+        // Now retrieve from cache (guaranteed to exist)
+        let decoder = cache.get(&stream_id).expect("decoder was just inserted");
+        decoder
+            .get_batch(chunk_index.raw() as usize)?
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "chunk {} in stream {:?} returned None",
+                    chunk_index.raw(),
+                    stream_id
+                ),
+            })
+    }
 
     /// Validates that a region (offset, length) fits within the buffer.
     fn validate_region(
