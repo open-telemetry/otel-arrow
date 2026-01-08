@@ -37,7 +37,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::time::Duration;
 
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
@@ -111,6 +112,10 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
     /// Segment data provider.
     segment_provider: Arc<P>,
+    /// Condvar for notifying waiting subscribers when new segments arrive.
+    /// The Mutex<bool> tracks whether there's pending data (set true on segment
+    /// finalization, reset to false when checked).
+    bundle_available: (Mutex<bool>, Condvar),
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -169,6 +174,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             subscribers: RwLock::new(subscribers),
             dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
+            bundle_available: (Mutex::new(false), Condvar::new()),
         });
 
         Ok(registry)
@@ -304,6 +310,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 state.add_segment(segment_seq, bundle_count);
             }
         }
+
+        // Notify waiting subscribers that new bundles are available
+        let (lock, cvar) = &self.bundle_available;
+        let mut available = lock.lock().expect("bundle_available lock poisoned");
+        *available = true;
+        cvar.notify_all();
     }
 
     /// Returns the next pending bundle for a subscriber.
@@ -357,6 +369,79 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             data,
             callback,
         )))
+    }
+
+    /// Returns the next pending bundle, blocking until one is available.
+    ///
+    /// This is more efficient than polling `next_bundle` in a loop with sleeps,
+    /// as it uses a condvar to wait for new segment notifications.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subscriber ID
+    /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    /// * `should_stop` - A function called periodically to check if waiting should stop
+    ///   (e.g., for shutdown). If it returns `true`, returns `Ok(None)`.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(handle))` - A bundle is available
+    /// * `Ok(None)` - Timeout expired or `should_stop` returned true
+    /// * `Err(_)` - Subscriber not found or not active
+    pub fn next_bundle_blocking<F>(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        timeout: Option<Duration>,
+        should_stop: F,
+    ) -> Result<Option<BundleHandle<RegistryCallback<P>>>>
+    where
+        F: Fn() -> bool,
+    {
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+
+        loop {
+            // Check for shutdown
+            if should_stop() {
+                return Ok(None);
+            }
+
+            // Try to get a bundle
+            match self.next_bundle(id)? {
+                Some(handle) => return Ok(Some(handle)),
+                None => {
+                    // No bundle available, wait for notification
+                    let (lock, cvar) = &self.bundle_available;
+                    let mut available = lock.lock().expect("bundle_available lock poisoned");
+
+                    // Check if data became available while acquiring lock
+                    if *available {
+                        *available = false;
+                        continue;
+                    }
+
+                    // Calculate remaining timeout
+                    let wait_timeout = if let Some(deadline) = deadline {
+                        let now = std::time::Instant::now();
+                        if now >= deadline {
+                            return Ok(None);
+                        }
+                        // Wait for at most 100ms to allow periodic shutdown checks
+                        (deadline - now).min(Duration::from_millis(100))
+                    } else {
+                        // No timeout, but still check shutdown periodically
+                        Duration::from_millis(100)
+                    };
+
+                    let result = cvar
+                        .wait_timeout(available, wait_timeout)
+                        .expect("condvar wait failed");
+                    available = result.0;
+
+                    // Reset the flag since we're about to check
+                    *available = false;
+                }
+            }
+        }
     }
 
     /// Claims a specific bundle for a subscriber.
@@ -1110,5 +1195,118 @@ mod tests {
             registry.oldest_incomplete_segment(),
             Some(SegmentSeq::new(2))
         );
+    }
+
+    #[test]
+    fn next_bundle_blocking_returns_immediately_when_available() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Should return immediately since bundle is available
+        let start = std::time::Instant::now();
+        let handle = registry
+            .next_bundle_blocking(&id, Some(Duration::from_secs(5)), || false)
+            .unwrap()
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(elapsed < Duration::from_millis(100), "Should return immediately");
+        assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
+        handle.ack();
+    }
+
+    #[test]
+    fn next_bundle_blocking_respects_timeout() {
+        let (registry, _dir) = setup_registry();
+        // No segments added - no bundles available
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Should timeout after ~200ms
+        let start = std::time::Instant::now();
+        let result = registry
+            .next_bundle_blocking(&id, Some(Duration::from_millis(200)), || false)
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_none(), "Should return None on timeout");
+        assert!(elapsed >= Duration::from_millis(200), "Should wait for timeout");
+        assert!(elapsed < Duration::from_millis(500), "Should not wait too long");
+    }
+
+    #[test]
+    fn next_bundle_blocking_respects_stop_condition() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (registry, _dir) = setup_registry();
+        // No segments added - no bundles available
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = should_stop.clone();
+
+        // Spawn a thread that will set should_stop after a short delay
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            stop_flag.store(true, Ordering::Relaxed);
+        });
+
+        // Should stop when the flag is set (checked every 100ms)
+        let start = std::time::Instant::now();
+        let result = registry
+            .next_bundle_blocking(&id, None, || should_stop.load(Ordering::Relaxed))
+            .unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(result.is_none(), "Should return None when stopped");
+        assert!(elapsed >= Duration::from_millis(100), "Should wait at least one cycle");
+        assert!(elapsed < Duration::from_millis(500), "Should stop reasonably quickly");
+    }
+
+    #[test]
+    fn next_bundle_blocking_wakes_on_segment_finalized() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        // Start with no segments
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        let got_bundle = Arc::new(AtomicBool::new(false));
+        let got_bundle_clone = got_bundle.clone();
+        let registry_clone = registry.clone();
+        let id_clone = id.clone();
+
+        // Spawn consumer thread that will block waiting for a bundle
+        let consumer = std::thread::spawn(move || {
+            let result = registry_clone
+                .next_bundle_blocking(&id_clone, Some(Duration::from_secs(5)), || false)
+                .unwrap();
+            if result.is_some() {
+                got_bundle_clone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Wait a bit, then add a segment
+        std::thread::sleep(Duration::from_millis(100));
+        provider.add_segment(1, 1);
+        registry.on_segment_finalized(SegmentSeq::new(1), 1);
+
+        // Consumer should wake up and get the bundle
+        consumer.join().unwrap();
+        assert!(got_bundle.load(Ordering::Relaxed), "Consumer should have received bundle");
     }
 }

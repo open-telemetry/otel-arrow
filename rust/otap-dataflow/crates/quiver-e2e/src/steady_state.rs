@@ -524,15 +524,20 @@ fn spawn_subscriber_threads(
             let mut bundles_since_flush = 0;
 
             while sub_running.load(Ordering::Relaxed) {
-                let bundle_handle = match sub_registry.next_bundle(&sub_id) {
+                // Use blocking API instead of polling with sleeps
+                let bundle_handle = match sub_registry.next_bundle_blocking(
+                    &sub_id,
+                    None, // No timeout
+                    || !sub_running.load(Ordering::Relaxed), // Stop on shutdown
+                ) {
                     Ok(Some(h)) => h,
                     Ok(None) => {
-                        thread::sleep(Duration::from_millis(50));
+                        // Shutdown requested or timeout
                         continue;
                     }
                     Err(_) => {
-                        thread::sleep(Duration::from_millis(100));
-                        continue;
+                        // Subscriber error, exit thread
+                        break;
                     }
                 };
 
