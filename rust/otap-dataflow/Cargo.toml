@@ -175,7 +175,11 @@ zip = "=4.2.0"
 byte-unit = "5.2.0"
 cpu-time = "1.0.0"
 
-# Azure Monnitor Exporter
+# Recordset KQL OTLP query_engine Processor
+data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engine-recordset-otlp-bridge" }
+data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
+
+# Azure Monitor Exporter
 azure_core = {version = "0.30.1", default-features = false }
 azure_identity = {version = "0.30.0", default-features = false }
 flate2 = "1.1.5"
@@ -203,6 +207,7 @@ azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
 # Experimental processors (opt-in)
 experimental-processors = ["otap-df-otap/experimental-processors"]
 condense-attributes-processor = ["otap-df-otap/condense-attributes-processor"]
+recordset-kql-processor = ["otap-df-otap/recordset-kql-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints
