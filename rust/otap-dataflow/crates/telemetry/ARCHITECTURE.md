@@ -2,15 +2,15 @@
 
 ## Architecture
 
-OTAP-Dataflow uses a configurable internal telemetry data plane.  We
-support alternatives to enable a range of observability requirements.
 The internal telemetry SDK is designed for the engine to safely
 consume its own telemetry, and we intend for the self-hosted telemetry
-pipeline to be the standard configuration.
+pipeline to be the standard configuration for all OpenTelemetry
+signals.
 
-Consuming self-generated ("telemetry presents a potential a kind of
+Consuming self-generated telemetry presents a potential a kind of
 feedback loop, situations where a telemetry pipeline creates pressure
-on itself and must not explode. 
+on itself. We have designed for the OTAP dataflow engine to remain
+reliable even with this kind of dependency on itself.
 
 ## Internal telemetry receiver
 
@@ -28,10 +28,10 @@ in this exchange.
 
 The internal telemetry receiver is the SDK's counterpart, making it
 second party as it is responsible for routing internal telemetry. The
-ITR cannot use the internal telemetry SDK itself, an invisible member
-of the pipeline. The ITR can be instrumented using third-party
-instrumentation (e.g., `tracing`, `log` crates) provided it can
-guarantee there is no potential for feedback (e.g., a single
+ITR cannot use the internal telemetry SDK itself, making it an
+invisible member of the pipeline. The ITR can be instrumented using
+third-party instrumentation (e.g., `tracing`, `log` crates) provided
+it can guarantee there is no potential for feedback (e.g., a single
 `tracing::info()` statement at startup).
 
 ## Pitfall avoidance
@@ -49,15 +49,17 @@ telemetry pitfalls, as follows:
   telemetry processes that use third-party instrumentation.
 - A thread-local variable is used to redirect third-party
   instrumentation in dedicated internal telemetry threads. Internal
-  telemetry threads automatically configure a safe configuration.
+  telemetry threads automatically configure a safe configuration
+  that drop third-party instrumentation instead of creating feedback.
 - Components under observation (non-ITR components) have internal
-  telemetry events routed queues in the OTAP-Dataflow pipeline on the
-  same core, this avoids blocking the engine. First-party
+  telemetry events routed to queues in the OTAP-Dataflow pipeline on
+  the same core, this avoids blocking the engine. First-party
   instrumentation will be handled on the CPU core that produced the
   telemetry under normal circumstances. This isolates cores that are
   able to process their own internal telemetry.
-- Option to fall back to no-op, a non-blocking global provider, and/or
-  raw logging.
+- Option to configure internal telemetry multiple ways, including the
+  no-op implementation, multi-threaded subscriber, routing to the
+  same-core ITR, and/or raw logging.
 
 ## OTLP-bytes first
 
@@ -70,15 +72,24 @@ Event][TOKIOEVENT] handler to produce OTLP bytes before dispatching to
 an internal pipeline, used (in different configurations) for first and
 third-party instrumentation.
 
+We use an intermediate representation in which the dynamic elements of
+the `tracing` event are encoded while primtive fields and metadata
+remain in structured form. These are encoded to the OTLP `LogRecord`
+protocol.
+
 [TOKIOEVENT]: https://docs.rs/tracing/latest/tracing/struct.Event.html
 
 ## Raw logging
 
 We support formatting events for direct printing to the console from
-OTLP bytes, based on `otap_df_pdata::views::logs::LogsDataView` and
-associated types, a zero-copy approach. We refer to this most-basic
-form of printing to the console as raw logging because it is a safe
-configuration early in the lifetime of a process.
+OTLP bytes. For the dynamic encoding, these are consumed using
+`otap_df_pdata::views::logs::LogsDataView` (which is forbidden from
+using Tokio `tracing`), our zero-copy accessor. We refer to this
+most-basic form of printing to the console as raw logging because it
+is a safe configuration early in the lifetime of a process.
+
+This configuration is meant for development purposes, it is likely to
+introduce contention over the console.
 
 ## Routing
 
@@ -100,47 +111,24 @@ The two internal logs data paths are:
 Each of the items below is relatively small, estimated at 300-500
 lines of new code plus new tests.
 
-### TracingLogRecord: Tokio tracing Event and Metadata to LogRecordView
+### LogRecord: Tokio tracing Event and Metadata to LogRecordView
 
 When we receive a Tokio tracing event whether through a
 `tracing::info!` macro (or similar) or through a dedicated
 `EffectHandler`-based API, the same happens:
 
-Create a `TracingLogRecord`, a struct derived from `tracing::Event`
-and `tracing::Metadata`, containing raw LogRecord fields extracted
-from the tracing macro layer. The `otap_df_pdata::views::logs::LogRecordView` is
-implemented for `TracingLogRecord` making it the `TracingLogRecord` something
-we can transcode into OTel-Arrow batches.
+Create a `LogRecord`, a struct derived from `tracing::Event` and
+`tracing::Metadata`, containing raw LogRecord fields extracted from
+the tracing macro layer plus a fresh timestamp. Log record attributes
+and the log event body are encoded as the "attributes and body bytes"
+field of `LogRecord`, the other fields are copied.
 
-The `otap_df_pdata` crate currently has no OTLP bytes encoder for
-directly accepting `otap_df_pdata::views::*` inputs (note the
-OTAP-records-to-OTLP-bytes function bypasses the views and encodes
-bytes directly). Therefore, this project implies we extend or refactor
-`otap_df_ptdata` with an OTLP bytes encoder for its views interfaces.
+With this record, we can defer formatting or encoding the entire
+record until later. We can:
 
-Then, `TracingLogRecord` implements the log record view, we will encode
-the reocrd as OTLP bytes by encoding the view.
-
-### Stateful OTLP bytes encoder for repeated LogRecordViews
-
-We can avoid sending a log record through a channel every time an event
-happens by buffering log records. We will buffer them as OTLP bytes. Each 
-receiver of events from `TracingLogRecord` OTLP bytes will use one stateful
-encoder that is:
-
-- Preconfigured with the process-level OpenTelemetry `Resource` value
-- Remembers the OpenTelemetry `InstrumentationScope.Name` that was previously used
-- Remembers the starting position of the current `ResourceLogs` and `ScopeLogs` of a 
-  single OTLP bytes payload.
-  
-Whether a global logging collector thread or an effect handler thread
-processing internal telemetry, we will enter the stateful encoder and
-append a `LogRecordView` with its effective
-`InstrumentationScope`. The stateful encoder will append the log
-record correctly, recognizing change of scope and a limited buffer
-size.  This re-uses the `ProtoBuf` object from the existing
-OTAP-records-to-OTLP-bytes code path for easy protobuf generation
-(1-pass encoder with length placeholders).
+- For raw logging, format directly for the console
+- Finish the full OTLP bytes encoding for the `LogRecord`
+- Sort and filter before combining into a `LogsData`.
 
 ### OTLP-bytes console logging handler
 
@@ -152,7 +140,7 @@ format human-readable text for the console directly from OTLP bytes.
 This OTLP-bytes-to-human-readable logic will be used to implement raw
 logging.
 
-### Global logs collection thread 
+### Global logs collection thread
 
 An OTAP-Dataflow engine will run at least one global logs collection
 thread. These threads receive encoded (OTLP bytes) log events from
@@ -195,16 +183,16 @@ service:
       level: info
       internal_collection:
         enabled: true
-        
+
         # Per-thread buffer
         buffer_size_bytes: 65536
-        
+
         # Individual record size limit
         max_record_bytes: 16384
-        
+
         # Bounded channel capacity
         max_record_count: 10
-        
+
         # Timer-based flush interval
         flush_interval: "1s"
 ```
