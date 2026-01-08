@@ -33,7 +33,7 @@ pub(crate) fn parse_pipeline_stage(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
-            Rule::operator_call => parse_operator_call(rule)?,
+            Rule::operator_call => parse_operator_call(rule, state)?,
             _ => {
                 todo!("handle invalid rule in pipeline_stage {rule:?}")
             }

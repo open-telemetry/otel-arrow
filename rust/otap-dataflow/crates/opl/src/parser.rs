@@ -83,7 +83,7 @@ mod test {
     // a better test name
     #[test]
     fn smoke_test_parser() {
-        let result = OplParser::parse("logs | where true");
+        let result = OplParser::parse("logs | where true or false");
         println!("{:#?}", result.unwrap().pipeline)
     }
 }
