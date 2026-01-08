@@ -111,7 +111,7 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -372,6 +372,10 @@ struct WalCoordinator {
     /// Used by `ensure_entry_boundary()` to avoid re-scanning from the file start.
     /// Reset to `active_header_size` on rotation since the new file has no entries yet.
     active_file_validated_entry_boundary: u64,
+    /// In-memory index of entry end positions (file offsets) in the active WAL file.
+    /// Populated during append; used by `ensure_entry_boundary()` to validate cursors
+    /// without reading from disk. Cleared on rotation.
+    entry_boundaries: Vec<u64>,
     /// Sequence number associated with the last committed consumer cursor.
     last_cursor_sequence: Option<u64>,
     /// Count of WAL file rotations performed during this writer's lifetime.
@@ -535,11 +539,13 @@ impl WalWriter {
 
         self.next_sequence = self.next_sequence.wrapping_add(1);
 
+        let entry_end_offset = entry_start.saturating_add(entry_total_bytes);
         self.active_file.current_len = self
             .active_file
             .current_len
             .saturating_add(entry_total_bytes);
-        self.coordinator.record_append(entry_total_bytes);
+        self.coordinator
+            .record_append(entry_end_offset, entry_total_bytes);
         self.active_file
             .maybe_flush(&self.coordinator.options().flush_policy, entry_total_bytes)?;
 
@@ -832,6 +838,7 @@ impl WalCoordinator {
             next_rotation_id: 1,
             active_header_size,
             active_file_validated_entry_boundary: active_header_size,
+            entry_boundaries: Vec::new(),
             last_cursor_sequence: None,
             rotation_count: 0,
             purge_count: 0,
@@ -914,11 +921,13 @@ impl WalCoordinator {
             self.to_file_offset(self.cursor_state.wal_position, active_len);
     }
 
-    fn record_append(&mut self, entry_total_bytes: u64) {
+    fn record_append(&mut self, entry_end_offset: u64, entry_total_bytes: u64) {
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(entry_total_bytes);
         self.cumulative_bytes_written = self
             .cumulative_bytes_written
             .saturating_add(entry_total_bytes);
+        // Record the entry end position for in-memory cursor validation
+        self.entry_boundaries.push(entry_end_offset);
     }
 
     fn preflight_append(
@@ -1005,46 +1014,40 @@ impl WalCoordinator {
         Ok(())
     }
 
+    /// Validates that `target` is a valid entry boundary in the active WAL file.
+    ///
+    /// Uses the in-memory `entry_boundaries` index for O(log n) validation without
+    /// reading from disk. The index is populated during append operations.
     fn ensure_entry_boundary(
         &mut self,
-        active_file: &mut ActiveWalFile,
+        _active_file: &mut ActiveWalFile,
         target: u64,
     ) -> WalResult<()> {
+        // Fast path: target matches the last validated boundary
         if target == self.active_file_validated_entry_boundary {
             return Ok(());
         }
+
+        // Regression check
         if target < self.active_file_validated_entry_boundary {
             return Err(WalError::InvalidConsumerCursor(
                 "safe offset regressed (file offset)",
             ));
         }
 
-        let original_pos = active_file.file_mut().stream_position()?;
-        let mut cursor = self.active_file_validated_entry_boundary;
-        let _ = active_file.file_mut().seek(SeekFrom::Start(cursor))?;
-        while cursor < target {
-            let mut len_buf = [0u8; 4];
-            active_file.file_mut().read_exact(&mut len_buf)?;
-            let entry_len = u32::from_le_bytes(len_buf) as u64;
-            let entry_total = 4u64
-                .checked_add(entry_len)
-                .and_then(|val| val.checked_add(4))
-                .ok_or(WalError::InvalidConsumerCursor("entry length overflow"))?;
-            cursor = cursor
-                .checked_add(entry_total)
-                .ok_or(WalError::InvalidConsumerCursor("safe offset overflow"))?;
-            if cursor > target {
-                let _ = active_file.file_mut().seek(SeekFrom::Start(original_pos))?;
-                return Err(WalError::InvalidConsumerCursor(
-                    "safe offset splits entry boundary",
-                ));
-            }
-            let _ = active_file
-                .file_mut()
-                .seek(SeekFrom::Current(entry_len as i64 + 4))?;
+        // Target must be at header (start of entries) or at an entry boundary
+        if target == self.active_header_size {
+            return Ok(());
         }
-        let _ = active_file.file_mut().seek(SeekFrom::Start(original_pos))?;
-        Ok(())
+
+        // Binary search for target in the entry boundaries index
+        // entry_boundaries contains the end offset of each entry
+        match self.entry_boundaries.binary_search(&target) {
+            Ok(_) => Ok(()), // Exact match - target is a valid entry boundary
+            Err(_) => Err(WalError::InvalidConsumerCursor(
+                "safe offset splits entry boundary",
+            )),
+        }
     }
 
     fn write_cursor_sidecar(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
@@ -1059,9 +1062,19 @@ impl WalCoordinator {
             let data_within_active = wal_pos.saturating_sub(active_start);
             let file_offset = self.active_header_size.saturating_add(data_within_active);
             self.active_file_validated_entry_boundary = file_offset;
+
+            // Prune entry boundaries that are now behind the cursor.
+            // Since boundaries are sorted, find the first one >= file_offset and drain before it.
+            let keep_from = self
+                .entry_boundaries
+                .partition_point(|&offset| offset < file_offset);
+            if keep_from > 0 {
+                let _ = self.entry_boundaries.drain(..keep_from);
+            }
         } else if wal_pos == active_start {
             // Cursor is exactly at the start of active file
             self.active_file_validated_entry_boundary = self.active_header_size;
+            // All boundaries in the active file are still relevant
         }
         // If wal_pos < active_start, the cursor is in a rotated file,
         // so we don't update active_file_validated_entry_boundary
@@ -1153,6 +1166,8 @@ impl WalCoordinator {
         active_file.replace_file(file, new_header_size);
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(active_file.len());
         self.active_file_validated_entry_boundary = new_header_size;
+        // Clear entry boundaries index - new file has no entries yet
+        self.entry_boundaries.clear();
         self.rotation_count = self.rotation_count.saturating_add(1);
 
         CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state)?;
