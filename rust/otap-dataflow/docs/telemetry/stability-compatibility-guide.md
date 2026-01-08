@@ -26,15 +26,15 @@ Every schema element that is intended for reuse by operators or downstream
 tooling MUST declare a stability level:
 
 - **experimental**
-    - may change without backward compatibility guarantees
-    - intended for iteration and proving utility
+  - may change without backward compatibility guarantees
+  - intended for iteration and proving utility
 - **stable**
-    - only backward compatible evolution is allowed
-    - breaking changes require versioning and a migration plan
+  - only backward compatible evolution is allowed
+  - breaking changes require versioning and a migration plan
 - **deprecated**
-    - still emitted for a migration window
-    - has a documented replacement
-    - has a planned removal milestone
+  - still emitted for a migration window
+  - has a documented replacement
+  - has a planned removal milestone
 
 ### What must carry stability
 
@@ -106,8 +106,8 @@ Stable metrics MUST follow these rules:
 - Unit MUST NOT change. If a unit correction is required, add a new metric and
   deprecate the old one.
 - Attribute keys for a stable metric MUST remain compatible:
-    - You MAY add a new optional bounded attribute.
-    - You MUST NOT remove an attribute or repurpose it.
+  - You MAY add a new optional bounded attribute.
+  - You MUST NOT remove an attribute or repurpose it.
 - Enum-like attributes MUST be documented as closed sets. Adding values is
   allowed if aggregation meaning remains safe.
 
@@ -134,10 +134,10 @@ For stable events:
 - removing or renaming attributes is breaking
 - adding new optional bounded attributes is allowed
 - event body shape SHOULD remain compatible:
-    - avoid changing body from string to object (or vice versa) for stable
-      events
-    - if richer payload is required, prefer introducing a new event name and
-      deprecating the old one
+  - avoid changing body from string to object (or vice versa) for stable
+    events
+  - if richer payload is required, prefer introducing a new event name and
+    deprecating the old one
 
 ### Traces
 
@@ -159,8 +159,8 @@ When deprecating stable telemetry, follow this process:
 2) Introduce the replacement signal first.
 3) Emit both old and new during a migration window.
 4) Provide migration guidance:
-    - mapping table (old -> new)
-    - example queries and dashboard update notes
+  - mapping table (old -> new)
+  - example queries and dashboard update notes
 5) Remove the deprecated signal only after the migration window ends.
 
 ### Recommended migration window
@@ -177,9 +177,9 @@ The semantic convention registry MUST be versioned.
 Recommended approach:
 
 - Use SemVer for the registry version:
-    - MAJOR for breaking changes to stable telemetry
-    - MINOR for backward compatible additions
-    - PATCH for documentation corrections or strictly non-semantic fixes
+  - MAJOR for breaking changes to stable telemetry
+  - MINOR for backward compatible additions
+  - PATCH for documentation corrections or strictly non-semantic fixes
 
 A release that includes a breaking change to stable telemetry MUST:
 
@@ -192,11 +192,11 @@ A release that includes a breaking change to stable telemetry MUST:
 Prefer these patterns:
 
 - **dual emission**
-    - emit old and new signals together temporarily
+  - emit old and new signals together temporarily
 - **alias and translate at export**
-    - if exporter can map old key to new key without losing meaning
+  - if exporter can map old key to new key without losing meaning
 - **side-by-side dashboards**
-    - validate new telemetry before switching alerts
+  - validate new telemetry before switching alerts
 
 Avoid:
 
