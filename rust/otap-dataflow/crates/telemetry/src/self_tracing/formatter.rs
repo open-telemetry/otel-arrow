@@ -15,6 +15,9 @@ use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 
 /// Default buffer size for log formatting.
+///
+/// TODO: Append a note to the log message when truncation occurs, otherwise
+/// today the log record is silently truncated.
 pub const LOG_BUFFER_SIZE: usize = 4096;
 
 /// ANSI codes a.k.a. "Select Graphic Rendition" codes.
@@ -122,8 +125,6 @@ impl ConsoleWriter {
     }
 
     /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
-    ///
-    /// This is the efficient path - no heap allocation, writes directly to the buffer.
     pub fn write_log_record(
         &self,
         buf: &mut [u8],
