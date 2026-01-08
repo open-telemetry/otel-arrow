@@ -21,7 +21,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph, Sparkline},
 };
-use sysinfo::System;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::memory::MemoryTracker;
 use crate::stress::{SteadyStateStats, StressStats, calculate_disk_usage};
@@ -154,6 +154,8 @@ pub struct Dashboard {
     backlog_history: Vec<u64>,
     /// System info for CPU monitoring
     system: System,
+    /// Our process ID for CPU tracking
+    pid: Pid,
     /// Last iteration time for throughput calculation
     last_iteration_time: Instant,
     last_iteration_bundles: u64,
@@ -209,6 +211,7 @@ impl Dashboard {
             majflt_history: Vec::with_capacity(max_history_len),
             backlog_history: Vec::with_capacity(max_history_len),
             system: System::new(),
+            pid: Pid::from_u32(std::process::id()),
             last_iteration_time: Instant::now(),
             last_iteration_bundles: 0,
             last_segment_bytes: initial_seg_bytes,
@@ -362,9 +365,18 @@ impl Dashboard {
                 let _ = self.memory_history.remove(0);
             }
 
-            // CPU history (refresh and get overall CPU usage)
-            self.system.refresh_cpu_usage();
-            let cpu_usage = self.system.global_cpu_usage();
+            // CPU history (refresh and get process-specific CPU usage)
+            // We use process CPU rather than global_cpu_usage() to show this process's usage
+            let _ = self.system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[self.pid]),
+                true, // refresh all process info
+                ProcessRefreshKind::nothing().with_cpu(),
+            );
+            let cpu_usage = self
+                .system
+                .process(self.pid)
+                .map(|p| p.cpu_usage())
+                .unwrap_or(0.0);
             self.cpu_history.push((cpu_usage * 10.0) as u64); // Store as % * 10
             if self.cpu_history.len() > self.max_history_len {
                 let _ = self.cpu_history.remove(0);
