@@ -1,6 +1,6 @@
 # Internal telemetry documentation and policy
 
-Status: **Draft** – under active development.
+Status: **Draft** under active development.
 
 ## Scope
 

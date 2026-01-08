@@ -155,14 +155,13 @@ For stable spans:
 
 When deprecating stable telemetry, follow this process:
 
-1) Mark the signal as **deprecated** in the registry.
-2) Introduce the replacement signal first.
-3) Emit both old and new during a migration window.
-4) Provide migration guidance:
-
+- Mark the signal as **deprecated** in the registry.
+- Introduce the replacement signal first.
+- Emit both old and new during a migration window.
+- Provide migration guidance:
   - mapping table (old -> new)
   - example queries and dashboard update notes
-5) Remove the deprecated signal only after the migration window ends.
+- Remove the deprecated signal only after the migration window ends.
 
 ### Recommended migration window
 
