@@ -1,0 +1,124 @@
+// Grammar for Observability Programming Language (OPL)
+
+WHITESPACE = _{ " " | NEWLINE | "\t" }
+
+ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+single_quote_string_char = _{
+    !("'" | "\\") ~ ANY
+    | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+
+string_literal = {
+    ("\"" ~ double_quote_string_char* ~ "\"")
+    | ("'" ~ single_quote_string_char* ~ "'")
+}
+
+identifier_expression = {
+    ident
+}
+
+primitive_expression = {
+    identifier_expression
+    | string_literal
+    | "true"
+    | "false"
+    | "null"
+    // TODO there are more of these
+}
+
+member_expression = {
+    // TODO there are more of these
+    primitive_expression
+}
+
+number_literal = {
+    "1"
+}
+
+unary_expression = {
+    number_literal
+    | "-" ~ number_literal
+    | "-" ~ unary_expression
+    | "not" ~ unary_expression
+    | member_expression
+}
+
+multiplicative_op = {
+    "*" | "/" | "%"
+}
+
+multiplicative_expression = {
+    unary_expression ~ (multiplicative_op ~ multiplicative_expression)*
+}
+
+additive_op = {
+    "+" | "-"
+}
+
+additive_expression = {
+    multiplicative_expression ~ (additive_op ~ additive_expression)*
+}
+
+rel_op = {
+    "==" | "!="
+}
+
+rel_expression = {
+    additive_expression ~ (rel_op ~ rel_expression)*
+}
+
+bitwise_and_expression = {
+    rel_expression ~ ("&" ~ bitwise_and_expression)*
+}
+
+bitwise_xor_expression = {
+    bitwise_and_expression ~ ("&" ~ bitwise_xor_expression)*
+}
+
+bitwise_or_expression = {
+    bitwise_xor_expression ~ ("^" ~ bitwise_or_expression)*
+}
+
+and_expression = {
+    bitwise_or_expression ~ ("and" ~ and_expression)*
+}
+
+or_expression = {
+    and_expression ~ ("or" ~ or_expression)*
+}
+
+expression = {
+    or_expression
+}
+
+// TODO add other sources
+source = {
+    "logs"
+}
+
+where_operator_call = {
+    "where" ~ expression
+}
+
+operator_call = {
+    where_operator_call
+}
+
+pipeline_stage = {
+    operator_call
+}
+
+pipeline = {
+    source ~ ("|" ~ pipeline_stage)+
+}
+
+program = {
+    SOI ~ pipeline ~ EOI
+}
