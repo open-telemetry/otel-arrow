@@ -13,7 +13,7 @@ use tracing::{info, warn};
 
 use crate::dashboard::{Dashboard, DashboardConfig};
 use crate::memory::MemoryTracker;
-use crate::stress::{calculate_disk_usage, StressStats};
+use crate::stress::{StressStats, calculate_disk_usage};
 
 /// Output mode for the stress runner.
 pub enum OutputMode {
@@ -102,7 +102,10 @@ where
         info!("");
         info!("Stress Configuration:");
         info!("  Duration: {:?}", config.duration);
-        info!("  Report interval: {} seconds", config.report_interval.as_secs());
+        info!(
+            "  Report interval: {} seconds",
+            config.report_interval.as_secs()
+        );
         info!("  Leak threshold: {:.1} MB", config.leak_threshold_mb);
         info!("");
     }
@@ -178,7 +181,8 @@ where
 
     // Print final summary
     if output.is_tui() {
-        stress_stats.print_final_summary_stdout(config.leak_threshold_mb, &data_dir.display().to_string());
+        stress_stats
+            .print_final_summary_stdout(config.leak_threshold_mb, &data_dir.display().to_string());
     } else {
         stress_stats.print_final_summary(config.leak_threshold_mb);
     }

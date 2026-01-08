@@ -179,9 +179,7 @@ impl ProgressHeader {
         if (header_size as usize) < HEADER_MIN_SIZE {
             return Err(SubscriberError::progress_corrupted(
                 path,
-                format!(
-                    "invalid header_size: {header_size}, minimum is {HEADER_MIN_SIZE}"
-                ),
+                format!("invalid header_size: {header_size}, minimum is {HEADER_MIN_SIZE}"),
             ));
         }
 
@@ -197,16 +195,13 @@ impl ProgressHeader {
         ));
 
         // Read entry count
-        let entry_count = u32::from_le_bytes(
-            data[22..26].try_into().expect("slice length validated"),
-        );
+        let entry_count =
+            u32::from_le_bytes(data[22..26].try_into().expect("slice length validated"));
 
         if entry_count > MAX_ENTRY_COUNT {
             return Err(SubscriberError::progress_corrupted(
                 path,
-                format!(
-                    "entry count too large: {entry_count}, maximum is {MAX_ENTRY_COUNT}"
-                ),
+                format!("entry count too large: {entry_count}, maximum is {MAX_ENTRY_COUNT}"),
             ));
         }
 
@@ -295,10 +290,7 @@ impl SegmentProgressEntry {
     /// Returns the count of acknowledged bundles.
     #[must_use]
     pub fn acked_count(&self) -> u32 {
-        self.acked_bitmap
-            .iter()
-            .map(|w| w.count_ones())
-            .sum()
+        self.acked_bitmap.iter().map(|w| w.count_ones()).sum()
     }
 
     /// Returns true if all bundles are acknowledged.
@@ -351,20 +343,14 @@ impl SegmentProgressEntry {
         let seg_seq = SegmentSeq::new(u64::from_le_bytes(
             fixed[0..8].try_into().expect("slice length is 8"),
         ));
-        let bundle_count = u32::from_le_bytes(
-            fixed[8..12].try_into().expect("slice length is 4"),
-        );
-        let bitmap_words = u16::from_le_bytes(
-            fixed[12..14].try_into().expect("slice length is 2"),
-        );
+        let bundle_count = u32::from_le_bytes(fixed[8..12].try_into().expect("slice length is 4"));
+        let bitmap_words = u16::from_le_bytes(fixed[12..14].try_into().expect("slice length is 2"));
 
         // Validate bitmap_words
         if bitmap_words > MAX_BITMAP_WORDS {
             return Err(SubscriberError::progress_corrupted(
                 path,
-                format!(
-                    "bitmap_words too large: {bitmap_words}, maximum is {MAX_BITMAP_WORDS}"
-                ),
+                format!("bitmap_words too large: {bitmap_words}, maximum is {MAX_BITMAP_WORDS}"),
             ));
         }
 
@@ -498,9 +484,7 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
 
     // Validate CRC (covers everything except the CRC itself)
     let crc_offset = data.len() - FOOTER_SIZE;
-    let stored_crc = u32::from_le_bytes(
-        data[crc_offset..].try_into().expect("slice length is 4"),
-    );
+    let stored_crc = u32::from_le_bytes(data[crc_offset..].try_into().expect("slice length is 4"));
 
     let mut hasher = Crc32Hasher::new();
     hasher.update(&data[..crc_offset]);
@@ -509,9 +493,7 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
     if stored_crc != computed_crc {
         return Err(SubscriberError::progress_corrupted(
             path,
-            format!(
-                "CRC mismatch: stored {stored_crc:#010x}, computed {computed_crc:#010x}"
-            ),
+            format!("CRC mismatch: stored {stored_crc:#010x}, computed {computed_crc:#010x}"),
         ));
     }
 
@@ -599,7 +581,8 @@ pub fn write_progress_file(
     }
 
     // Atomic rename
-    fs::rename(&temp_path, &final_path).map_err(|e| SubscriberError::progress_io(&final_path, e))?;
+    fs::rename(&temp_path, &final_path)
+        .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
 
     // Sync parent directory to ensure rename is durable
     if let Some(parent) = final_path.parent() {
@@ -809,13 +792,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(
-            dir.path(),
-            &sub_id,
-            SegmentSeq::new(0),
-            &[],
-        )
-        .unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, entries) = read_progress_file(&path).unwrap();
@@ -840,13 +817,7 @@ mod tests {
 
         let entries = vec![entry1.clone(), entry2.clone()];
 
-        write_progress_file(
-            dir.path(),
-            &sub_id,
-            SegmentSeq::new(10),
-            &entries,
-        )
-        .unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(10), &entries).unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, read_entries) = read_progress_file(&path).unwrap();
@@ -862,13 +833,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(
-            dir.path(),
-            &sub_id,
-            SegmentSeq::new(5),
-            &[],
-        )
-        .unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(5), &[]).unwrap();
 
         // Corrupt a byte in the header
         let path = progress_file_path(dir.path(), &sub_id);
@@ -888,13 +853,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(
-            dir.path(),
-            &sub_id,
-            SegmentSeq::new(0),
-            &[],
-        )
-        .unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         // Truncate the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -913,13 +872,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(
-            dir.path(),
-            &sub_id,
-            SegmentSeq::new(0),
-            &[],
-        )
-        .unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         assert!(path.exists());

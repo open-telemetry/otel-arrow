@@ -105,11 +105,7 @@ impl StressStats {
 
     /// Returns memory growth since start (current - initial).
     pub fn memory_growth_mb(&self) -> f64 {
-        self.memory_history
-            .last()
-            .map(|(_, mb)| *mb)
-            .unwrap_or(0.0)
-            - self.initial_memory_mb
+        self.memory_history.last().map(|(_, mb)| *mb).unwrap_or(0.0) - self.initial_memory_mb
     }
 
     /// Detects if there's a concerning memory growth trend.
@@ -121,7 +117,13 @@ impl StressStats {
         }
 
         // Compare average of last 5 vs first 5 measurements
-        let first_avg: f64 = self.memory_history.iter().take(5).map(|(_, m)| m).sum::<f64>() / 5.0;
+        let first_avg: f64 = self
+            .memory_history
+            .iter()
+            .take(5)
+            .map(|(_, m)| m)
+            .sum::<f64>()
+            / 5.0;
         let last_avg: f64 = self
             .memory_history
             .iter()
@@ -205,7 +207,10 @@ impl StressStats {
         info!("");
         info!("Memory Analysis:");
         info!("  Initial: {:.2} MB", self.initial_memory_mb);
-        info!("  Final:   {:.2} MB", self.memory_growth_mb() + self.initial_memory_mb);
+        info!(
+            "  Final:   {:.2} MB",
+            self.memory_growth_mb() + self.initial_memory_mb
+        );
         info!("  Growth:  {:.2} MB", self.memory_growth_mb());
         info!("  Peak:    {:.2} MB", self.peak_memory_mb);
 
@@ -217,7 +222,10 @@ impl StressStats {
                 leak_threshold_mb
             );
         } else {
-            info!("✓ No memory leak detected (threshold: {:.0} MB)", leak_threshold_mb);
+            info!(
+                "✓ No memory leak detected (threshold: {:.0} MB)",
+                leak_threshold_mb
+            );
         }
 
         // Disk trend
@@ -252,7 +260,10 @@ impl StressStats {
         println!();
         println!("Memory Analysis:");
         println!("  Initial: {:.2} MB", self.initial_memory_mb);
-        println!("  Final:   {:.2} MB", self.memory_growth_mb() + self.initial_memory_mb);
+        println!(
+            "  Final:   {:.2} MB",
+            self.memory_growth_mb() + self.initial_memory_mb
+        );
         println!("  Growth:  {:.2} MB", self.memory_growth_mb());
         println!("  Peak:    {:.2} MB", self.peak_memory_mb);
 
@@ -264,7 +275,10 @@ impl StressStats {
                 leak_threshold_mb
             );
         } else {
-            println!("✓ No memory leak detected (threshold: {:.0} MB)", leak_threshold_mb);
+            println!(
+                "✓ No memory leak detected (threshold: {:.0} MB)",
+                leak_threshold_mb
+            );
         }
 
         // Disk trend
@@ -381,7 +395,13 @@ impl SteadyStateStats {
     }
 
     /// Updates counters.
-    pub fn update_counters(&mut self, ingested: u64, consumed: u64, cleaned: u64, segments_written: u64) {
+    pub fn update_counters(
+        &mut self,
+        ingested: u64,
+        consumed: u64,
+        cleaned: u64,
+        segments_written: u64,
+    ) {
         self.total_ingested = ingested;
         self.total_consumed = consumed;
         self.total_cleaned = cleaned;
@@ -457,10 +477,18 @@ impl SteadyStateStats {
         println!("Final cleanup time: {} ms", self.cleanup_duration_ms);
         println!();
         println!("Throughput:");
-        println!("  Ingest:  {:.0} bundles/s, {:.0} rows/s, {:.1} MB/s",
-            self.ingest_rate(), self.ingest_rows_rate(), self.ingest_mb_rate());
-        println!("  Consume: {:.0} bundles/s, {:.0} rows/s, {:.1} MB/s",
-            self.consume_rate(), self.consume_rows_rate(), self.consume_mb_rate());
+        println!(
+            "  Ingest:  {:.0} bundles/s, {:.0} rows/s, {:.1} MB/s",
+            self.ingest_rate(),
+            self.ingest_rows_rate(),
+            self.ingest_mb_rate()
+        );
+        println!(
+            "  Consume: {:.0} bundles/s, {:.0} rows/s, {:.1} MB/s",
+            self.consume_rate(),
+            self.consume_rows_rate(),
+            self.consume_mb_rate()
+        );
         println!();
         println!("Memory Analysis:");
         println!("  Initial: {:.2} MB", self.initial_memory_mb);
@@ -469,15 +497,27 @@ impl SteadyStateStats {
         println!("  Growth:  {:.2} MB", self.memory_growth_mb());
         println!();
         println!("Disk Analysis:");
-        println!("  Initial: {:.2} MB", self.initial_disk_bytes as f64 / 1024.0 / 1024.0);
-        println!("  Final:   {:.2} MB", self.current_disk_bytes as f64 / 1024.0 / 1024.0);
-        println!("  Peak:    {:.2} MB", self.peak_disk_bytes as f64 / 1024.0 / 1024.0);
+        println!(
+            "  Initial: {:.2} MB",
+            self.initial_disk_bytes as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  Final:   {:.2} MB",
+            self.current_disk_bytes as f64 / 1024.0 / 1024.0
+        );
+        println!(
+            "  Peak:    {:.2} MB",
+            self.peak_disk_bytes as f64 / 1024.0 / 1024.0
+        );
 
         // Check for memory leak
         let growth = self.memory_growth_mb();
         if growth > leak_threshold_mb {
             println!();
-            println!("⚠️  Memory growth ({:.2} MB) exceeds threshold ({:.0} MB)", growth, leak_threshold_mb);
+            println!(
+                "⚠️  Memory growth ({:.2} MB) exceeds threshold ({:.0} MB)",
+                growth, leak_threshold_mb
+            );
         } else {
             println!();
             println!("✓ Memory growth within threshold");

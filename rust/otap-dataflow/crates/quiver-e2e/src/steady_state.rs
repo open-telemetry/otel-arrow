@@ -9,8 +9,8 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -23,8 +23,8 @@ use tracing::{info, warn};
 use crate::bundle;
 use crate::dashboard::{Dashboard, SteadyStateConfig};
 use crate::memory::MemoryTracker;
-use crate::stress::{calculate_disk_usage, SteadyStateStats};
-use crate::subscriber::{cleanup_completed_segments, SharedStoreProvider, SubscriberDelay};
+use crate::stress::{SteadyStateStats, calculate_disk_usage};
+use crate::subscriber::{SharedStoreProvider, SubscriberDelay, cleanup_completed_segments};
 
 /// Output mode for the steady-state runner.
 pub enum OutputMode {
@@ -119,7 +119,10 @@ pub fn run(
         output.log(&format!("Duration: {:?}", config.duration));
         output.log(&format!("Bundles per batch: {}", config.bundles));
         output.log(&format!("Subscribers: {}", config.subscribers));
-        output.log(&format!("Subscriber delay: {} ms", config.subscriber_delay_ms));
+        output.log(&format!(
+            "Subscriber delay: {} ms",
+            config.subscriber_delay_ms
+        ));
         output.log("");
         output.log(&format!("Data directory: {}", data_dir.display()));
     }
@@ -134,10 +137,17 @@ pub fn run(
         config.rows_per_bundle,
         config.string_size,
     ));
-    output.log(&format!("Test bundles ready ({} bundles)", test_bundles.len()));
+    output.log(&format!(
+        "Test bundles ready ({} bundles)",
+        test_bundles.len()
+    ));
 
     // Create stats tracker
-    let mut stats = SteadyStateStats::new(config.subscribers, config.rows_per_bundle, bundle_size_bytes);
+    let mut stats = SteadyStateStats::new(
+        config.subscribers,
+        config.rows_per_bundle,
+        bundle_size_bytes,
+    );
 
     // Initial metrics (measured AFTER bundle generation so they're not counted)
     let initial_mem = MemoryTracker::current_allocated_mb();
@@ -146,7 +156,10 @@ pub fn run(
 
     if !output.is_tui() {
         output.log(&format!("Initial memory: {:.2} MB", initial_mem));
-        output.log(&format!("Initial disk: {:.2} MB", initial_disk as f64 / 1024.0 / 1024.0));
+        output.log(&format!(
+            "Initial disk: {:.2} MB",
+            initial_disk as f64 / 1024.0 / 1024.0
+        ));
         output.log("");
     }
 
@@ -160,7 +173,12 @@ pub fn run(
     };
 
     // Create a single QuiverEngine that will run for the entire duration
-    let engine_config = create_engine_config(&data_dir, config.segment_size_mb, config.wal_flush_interval_ms, config.no_wal);
+    let engine_config = create_engine_config(
+        &data_dir,
+        config.segment_size_mb,
+        config.wal_flush_interval_ms,
+        config.no_wal,
+    );
     let engine = Arc::new(QuiverEngine::new(engine_config)?);
 
     // Create SHARED segment store and registry for all subscribers
@@ -300,7 +318,10 @@ pub fn run(
     // 4. Drain remaining bundles
     let pre_drain_consumed = total_consumed.load(Ordering::Relaxed);
     let remaining_bundles = final_ingested.saturating_sub(pre_drain_consumed);
-    output.log(&format!("Draining {} remaining bundles...", remaining_bundles));
+    output.log(&format!(
+        "Draining {} remaining bundles...",
+        remaining_bundles
+    ));
 
     let drain_start = Instant::now();
     let drain_timeout = Duration::from_secs(5);
@@ -314,7 +335,11 @@ pub fn run(
 
     let post_drain_consumed = total_consumed.load(Ordering::Relaxed);
     let drained = post_drain_consumed.saturating_sub(pre_drain_consumed);
-    output.log(&format!("Drain complete: consumed {} bundles in {:?}", drained, drain_start.elapsed()));
+    output.log(&format!(
+        "Drain complete: consumed {} bundles in {:?}",
+        drained,
+        drain_start.elapsed()
+    ));
 
     // 5. Stop subscribers and scanner
     running.store(false, Ordering::SeqCst);
@@ -337,7 +362,10 @@ pub fn run(
         }
     }
     let cleanup_duration = cleanup_start.elapsed();
-    output.log(&format!("Final cleanup: {} segments deleted in {:?}", final_cleanup_count, cleanup_duration));
+    output.log(&format!(
+        "Final cleanup: {} segments deleted in {:?}",
+        final_cleanup_count, cleanup_duration
+    ));
 
     // Calculate totals
     let total_segments_cleaned = total_cleaned.load(Ordering::Relaxed) + final_cleanup_count;
@@ -345,7 +373,12 @@ pub fn run(
     let total_segments = segments_discovered.max(total_segments_cleaned);
 
     // Update stats with final values
-    stats.update_counters(final_ingested, post_drain_consumed, total_segments_cleaned, total_segments);
+    stats.update_counters(
+        final_ingested,
+        post_drain_consumed,
+        total_segments_cleaned,
+        total_segments,
+    );
     stats.cleanup_duration_ms = cleanup_duration.as_millis() as u64;
 
     let final_mem = MemoryTracker::current_allocated_mb();
@@ -370,10 +403,17 @@ pub fn run(
         output.log(&format!("Segments written: {}", total_segments));
         output.log(&format!("Segments cleaned: {}", total_segments_cleaned));
         output.log(&format!("Throughput: {:.0} bundles/sec", bundle_rate));
-        output.log(&format!("Memory: {:.2} MB initial -> {:.2} MB final (growth: {:.2} MB)",
-            initial_mem, final_mem, final_mem - initial_mem));
-        output.log(&format!("Disk: {:.2} MB initial -> {:.2} MB final",
-            initial_disk as f64 / 1024.0 / 1024.0, final_disk as f64 / 1024.0 / 1024.0));
+        output.log(&format!(
+            "Memory: {:.2} MB initial -> {:.2} MB final (growth: {:.2} MB)",
+            initial_mem,
+            final_mem,
+            final_mem - initial_mem
+        ));
+        output.log(&format!(
+            "Disk: {:.2} MB initial -> {:.2} MB final",
+            initial_disk as f64 / 1024.0 / 1024.0,
+            final_disk as f64 / 1024.0 / 1024.0
+        ));
     }
 
     // Handle temp directory
@@ -390,7 +430,8 @@ pub fn run(
         Err(format!(
             "Memory growth ({:.2} MB) exceeds threshold ({:.0} MB)",
             mem_growth, config.leak_threshold_mb
-        ).into())
+        )
+        .into())
     } else if quit_requested {
         output.log("Steady-state test stopped by user");
         Ok(())
@@ -515,9 +556,14 @@ fn spawn_subscriber_threads(
     handles
 }
 
-fn create_engine_config(data_dir: &std::path::Path, segment_size_mb: u64, wal_flush_interval_ms: u64, no_wal: bool) -> QuiverConfig {
+fn create_engine_config(
+    data_dir: &std::path::Path,
+    segment_size_mb: u64,
+    wal_flush_interval_ms: u64,
+    no_wal: bool,
+) -> QuiverConfig {
     use quiver::DurabilityMode;
-    
+
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
 
     // Set durability mode

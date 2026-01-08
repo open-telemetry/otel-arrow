@@ -512,7 +512,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .iter()
             .map(|(id, state_lock)| {
                 let state = state_lock.read().expect("subscriber lock poisoned");
-                (id.as_str().to_string(), state.segment_count(), state.is_active())
+                (
+                    id.as_str().to_string(),
+                    state.segment_count(),
+                    state.is_active(),
+                )
             })
             .collect()
     }
@@ -581,9 +585,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
             dirty
                 .into_iter()
-                .filter_map(|sub_id| {
-                    subscribers.get(&sub_id).map(|s| (sub_id, s.clone()))
-                })
+                .filter_map(|sub_id| subscribers.get(&sub_id).map(|s| (sub_id, s.clone())))
                 .collect()
         };
 
@@ -600,19 +602,13 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 (entries, oldest)
             };
 
-            match write_progress_file(
-                &self.config.data_dir,
-                &sub_id,
-                oldest_incomplete,
-                &entries,
-            ) {
+            match write_progress_file(&self.config.data_dir, &sub_id, oldest_incomplete, &entries) {
                 Ok(()) => {
                     flushed += 1;
                 }
                 Err(e) => {
                     // Re-add to dirty set and return error
-                    let mut dirty_set =
-                        self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                    let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
                     let _ = dirty_set.insert(sub_id.clone());
                     return Err(e);
                 }

@@ -77,10 +77,7 @@ impl SegmentProvider for StoreProvider {
     ) -> quiver::subscriber::Result<quiver::segment::ReconstructedBundle> {
         self.store.read_bundle(bundle_ref).map_err(|e| {
             quiver::subscriber::SubscriberError::segment_io(
-                std::path::PathBuf::from(format!(
-                    "seg_{:016x}.bin",
-                    bundle_ref.segment_seq.raw()
-                )),
+                std::path::PathBuf::from(format!("seg_{:016x}.bin", bundle_ref.segment_seq.raw())),
                 std::io::Error::other(e.to_string()),
             )
         })
@@ -313,7 +310,7 @@ pub fn consume_with_registry(
 }
 
 /// Wrapper around SegmentStore that implements SegmentProvider.
-/// 
+///
 /// Can be used to create a shared registry for multiple subscribers.
 #[allow(dead_code)]
 pub struct SharedStoreProvider {
@@ -369,10 +366,7 @@ impl SegmentProvider for SharedStoreProvider {
     ) -> quiver::subscriber::Result<quiver::segment::ReconstructedBundle> {
         self.store.read_bundle(bundle_ref).map_err(|e| {
             quiver::subscriber::SubscriberError::segment_io(
-                std::path::PathBuf::from(format!(
-                    "seg_{:016x}.bin",
-                    bundle_ref.segment_seq.raw()
-                )),
+                std::path::PathBuf::from(format!("seg_{:016x}.bin", bundle_ref.segment_seq.raw())),
                 std::io::Error::other(e.to_string()),
             )
         })

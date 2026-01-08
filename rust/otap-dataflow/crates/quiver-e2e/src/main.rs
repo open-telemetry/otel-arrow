@@ -33,9 +33,9 @@ use tempfile::TempDir;
 use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
+use crate::dashboard::{Dashboard, DashboardConfig};
 use crate::memory::MemoryTracker;
 use crate::stress::{StressStats, parse_duration};
-use crate::dashboard::{Dashboard, DashboardConfig};
 use crate::subscriber::SubscriberDelay;
 
 // Use jemalloc for accurate memory tracking
@@ -154,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if this is stress mode with TUI - don't initialize tracing in TUI mode
     // as it interferes with the terminal display
     let use_tui = args.duration.is_some() && !args.no_tui;
-    
+
     if !use_tui {
         // Initialize tracing only for non-TUI modes
         let tracing_sub = FmtSubscriber::builder()
@@ -167,12 +167,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref duration_str) = args.duration {
         let duration = parse_duration(duration_str)
             .map_err(|e| format!("Invalid duration '{}': {}", duration_str, e))?;
-        
+
         // Steady-state mode: single engine, concurrent ingest/consume, no external cleanup
         if args.steady_state {
             return run_steady_state_mode(&args, duration);
         }
-        
+
         return run_stress_mode(&args, duration);
     }
 
@@ -182,8 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Runs the stress test for a specified duration with periodic reporting.
 fn run_stress_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn std::error::Error>> {
-    use stress_runner::{OutputMode, StressTestConfig, IterationResult};
-    
+    use stress_runner::{IterationResult, OutputMode, StressTestConfig};
+
     // Initialize tracing for text mode (before any logging)
     if args.no_tui {
         let tracing_sub = FmtSubscriber::builder()
@@ -244,25 +244,28 @@ fn run_stress_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn std::e
 }
 
 /// Runs steady-state stress test: single long-running QuiverEngine with concurrent ingest/consume.
-/// 
+///
 /// Unlike the lifecycle stress test, this mode:
 /// - Creates ONE QuiverEngine that runs for the entire duration
 /// - Continuously ingests data while subscribers consume concurrently
 /// - Uses a shared SubscriberRegistry for all subscribers to enable coordinated cleanup
 /// - Periodically cleans up completed segments from disk
 /// - Tests whether disk/memory stabilize over time
-fn run_steady_state_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn std::error::Error>> {
+fn run_steady_state_mode(
+    args: &Args,
+    duration: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
     use steady_state::{OutputMode, SteadyStateTestConfig};
-    
+
     // Set up data directory
     let (tmp, data_dir) = setup_data_dir(args)?;
-    
+
     // Convert read mode
     let read_mode = match args.read_mode {
         ReadModeArg::Standard => SegmentReadMode::Standard,
         ReadModeArg::Mmap | ReadModeArg::Compare => SegmentReadMode::Mmap,
     };
-    
+
     // Build config
     let config = SteadyStateTestConfig {
         duration,
@@ -280,7 +283,7 @@ fn run_steady_state_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn 
         wal_flush_interval_ms: args.wal_flush_interval_ms,
         no_wal: args.no_wal,
     };
-    
+
     // Create output mode (TUI or Text)
     let output_mode = if !args.no_tui {
         let dashboard = Dashboard::new(duration, data_dir.clone())?;
@@ -293,7 +296,7 @@ fn run_steady_state_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn 
         let _ = tracing::subscriber::set_global_default(tracing_sub);
         OutputMode::Text
     };
-    
+
     // Run the unified steady-state test
     steady_state::run(config, tmp, data_dir, output_mode)
 }
@@ -315,7 +318,12 @@ fn run_iteration_for_stress(
         bundle::generate_test_bundles(args.bundles, args.rows_per_bundle, args.string_size);
 
     // Ingest
-    let config = create_config(data_dir, args.segment_size_mb, args.wal_flush_interval_ms, args.no_wal);
+    let config = create_config(
+        data_dir,
+        args.segment_size_mb,
+        args.wal_flush_interval_ms,
+        args.no_wal,
+    );
     let engine = Arc::new(QuiverEngine::new(config)?);
 
     for test_bundle in &bundles {
@@ -405,7 +413,7 @@ fn cleanup_iteration_data(data_dir: &PathBuf) -> Result<(), Box<dyn std::error::
 }
 
 /// Sets up the data directory (temp or persistent).
-/// 
+///
 /// When no data-dir is specified, creates a temp directory in ~/.quiver-e2e/
 /// rather than /tmp, since /tmp may be a tmpfs (RAM-backed) filesystem
 /// with limited capacity.
@@ -486,7 +494,12 @@ fn run_single_iteration(
     info!("");
     info!("═══ Phase 2: Ingesting data ═══");
 
-    let config = create_config(&data_dir, args.segment_size_mb, args.wal_flush_interval_ms, args.no_wal);
+    let config = create_config(
+        &data_dir,
+        args.segment_size_mb,
+        args.wal_flush_interval_ms,
+        args.no_wal,
+    );
     let engine = Arc::new(QuiverEngine::new(config)?);
     mem_tracker.checkpoint("engine_created");
 
@@ -741,9 +754,14 @@ fn run_single_iteration(
     }
 }
 
-fn create_config(data_dir: &Path, segment_size_mb: u64, wal_flush_interval_ms: u64, no_wal: bool) -> QuiverConfig {
+fn create_config(
+    data_dir: &Path,
+    segment_size_mb: u64,
+    wal_flush_interval_ms: u64,
+    no_wal: bool,
+) -> QuiverConfig {
     use quiver::DurabilityMode;
-    
+
     let mut config = QuiverConfig::default().with_data_dir(data_dir);
 
     // Set durability mode

@@ -619,9 +619,8 @@ impl WalWriter {
         let payload_start = self.active_file.payload_buffer.len();
         {
             let schema = payload.batch.schema();
-            let mut writer =
-                StreamWriter::try_new(&mut self.active_file.payload_buffer, &schema)
-                    .map_err(WalError::Arrow)?;
+            let mut writer = StreamWriter::try_new(&mut self.active_file.payload_buffer, &schema)
+                .map_err(WalError::Arrow)?;
             writer.write(payload.batch).map_err(WalError::Arrow)?;
             writer.finish().map_err(WalError::Arrow)?;
         }
@@ -708,7 +707,8 @@ impl ActiveWalFile {
         self.entry_buffer.reserve(total_size);
 
         // Build complete entry
-        self.entry_buffer.extend_from_slice(&entry_len.to_le_bytes());
+        self.entry_buffer
+            .extend_from_slice(&entry_len.to_le_bytes());
         self.entry_buffer.extend_from_slice(entry_header);
         self.entry_buffer.extend_from_slice(payload);
         self.entry_buffer.extend_from_slice(&crc.to_le_bytes());
@@ -916,7 +916,9 @@ impl WalCoordinator {
 
     fn record_append(&mut self, entry_total_bytes: u64) {
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(entry_total_bytes);
-        self.cumulative_bytes_written = self.cumulative_bytes_written.saturating_add(entry_total_bytes);
+        self.cumulative_bytes_written = self
+            .cumulative_bytes_written
+            .saturating_add(entry_total_bytes);
     }
 
     fn preflight_append(
