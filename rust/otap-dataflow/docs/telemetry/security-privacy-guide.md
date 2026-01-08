@@ -63,8 +63,8 @@ Exceptions often include sensitive data. Rules:
 - Use structured exception attributes (e.g. `exception.type`) when needed.
 - `exeption.message` MUST NOT include sensitive data or raw user input.
 - `exception.stacktrace` SHOULD be gated behind:
-    - debug severity, or
-    - an explicit configuration flag
+  - debug severity, or
+  - an explicit configuration flag
 - Stack traces MUST NOT be emitted on hot paths by default.
 
 ## Events, body size, and spill risk
