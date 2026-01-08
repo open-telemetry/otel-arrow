@@ -1,4 +1,4 @@
-# OpenTelemetry semantic conventions – contributor guide
+# OpenTelemetry semantic conventions - contributor guide
 
 This document summarizes the **core rules and guidelines contributors must
 follow in this project** when defining **metric names**, **units**,
@@ -81,7 +81,7 @@ Source:
 
 Examples:
 
-```
+```plain
 http.server.request.duration
 system.cpu.time
 process.memory.usage
@@ -103,7 +103,7 @@ Source:
 
 Example:
 
-```
+```plain
 http.server.request.duration{http.request.method="GET"}
 ```
 
@@ -147,7 +147,7 @@ Source:
 
 Example:
 
-```
+```plain
 process.cpu.time   unit: s
 ```
 
@@ -160,7 +160,7 @@ process.cpu.time   unit: s
 
 Example:
 
-```
+```plain
 system.cpu.utilization   unit: 1
 ```
 
@@ -173,7 +173,7 @@ system.cpu.utilization   unit: 1
 
 Examples:
 
-```
+```plain
 {request}
 {batch}
 {signal}
@@ -198,7 +198,7 @@ telemetry.
 
 Examples:
 
-```
+```plain
 http.request.start
 otelcol.pipeline.config.apply
 connection.close
@@ -226,7 +226,7 @@ Source:
 
 ### Good metric examples
 
-```
+```plain
 http.server.request.duration   unit: s
 system.memory.usage            unit: By
 system.cpu.utilization         unit: 1
@@ -234,7 +234,7 @@ system.cpu.utilization         unit: 1
 
 ### Good attribute examples
 
-```
+```plain
 http.method = "GET"
 http.status_code = 200
 network.transport = "tcp"
