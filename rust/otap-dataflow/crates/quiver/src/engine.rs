@@ -22,6 +22,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 
@@ -30,6 +31,10 @@ use crate::error::Result;
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
 use crate::segment_store::SegmentStore;
+use crate::subscriber::{
+    BundleHandle, BundleRef, RegistryCallback, RegistryConfig, SubscriberError, SubscriberId,
+    SubscriberRegistry,
+};
 use crate::telemetry::PersistenceMetrics;
 use crate::wal::{WalConsumerCursor, WalWriter, WalWriterOptions};
 
@@ -43,10 +48,24 @@ pub(crate) struct WalStats {
     pub purge_count: u64,
 }
 
+/// Statistics returned by maintenance operations.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MaintenanceStats {
+    /// Number of subscribers whose progress was flushed.
+    pub flushed: usize,
+    /// Number of completed segments deleted.
+    pub deleted: usize,
+}
+
 /// Primary entry point for the persistence engine.
 ///
-/// The engine coordinates the write-ahead log and segment storage to provide
-/// durable buffering with the following guarantees:
+/// The engine coordinates:
+/// - **Ingestion**: WAL + segment accumulation
+/// - **Segment Storage**: Finalized segment files
+/// - **Subscription**: Subscriber registry and bundle delivery
+/// - **Maintenance**: Progress flush and segment cleanup
+///
+/// The engine provides durable buffering with the following guarantees:
 ///
 /// - **Durability**: Data is appended to the WAL before acknowledgement.
 /// - **Immutability**: Finalized segments are read-only and never modified.
@@ -65,10 +84,10 @@ pub struct QuiverEngine {
     segment_cursor: Mutex<WalConsumerCursor>,
     /// Next segment sequence number to assign.
     next_segment_seq: AtomicU64,
-    /// Optional segment store for automatic segment registration.
-    /// When set, finalized segments are registered with the store, which
-    /// can trigger subscriber notifications.
-    segment_store: Mutex<Option<Arc<SegmentStore>>>,
+    /// Segment store for finalized segment files.
+    segment_store: Arc<SegmentStore>,
+    /// Subscriber registry for tracking consumption progress.
+    registry: Arc<SubscriberRegistry<SegmentStore>>,
 }
 
 impl std::fmt::Debug for QuiverEngine {
@@ -84,39 +103,51 @@ impl std::fmt::Debug for QuiverEngine {
 impl QuiverEngine {
     /// Creates a new persistence engine with the given configuration.
     ///
-    /// This validates the configuration, initializes the WAL writer, and
-    /// creates necessary directories.
+    /// This validates the configuration, initializes the WAL writer,
+    /// creates the segment store and subscriber registry, and wires
+    /// them together for automatic segment notifications.
     ///
     /// # Errors
     ///
     /// Returns an error if configuration validation fails or if the WAL
     /// cannot be initialized.
-    pub fn new(config: QuiverConfig) -> Result<Self> {
+    pub fn new(config: QuiverConfig) -> Result<Arc<Self>> {
         config.validate()?;
 
-        // Ensure segment directory exists
+        // Ensure directories exist
         let segment_dir = segment_dir(&config);
         fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
 
         let wal_writer = initialize_wal_writer(&config)?;
 
-        Ok(Self {
+        // Create segment store with configured read mode
+        let segment_store = Arc::new(SegmentStore::with_mode(&segment_dir, config.read_mode));
+
+        // Create subscriber registry with segment store as provider
+        let registry_config = RegistryConfig::new(&config.data_dir);
+        let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
+            .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
+
+        let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
             wal_writer: Mutex::new(wal_writer),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(0),
-            segment_store: Mutex::new(None),
-        })
-    }
+            segment_store,
+            registry: registry.clone(),
+        });
 
-    /// Sets the segment store for automatic segment registration.
-    ///
-    /// When set, finalized segments are automatically registered with the store.
-    /// This enables the store's callback to notify subscribers of new segments.
-    pub fn set_segment_store(&self, store: Arc<SegmentStore>) {
-        *self.segment_store.lock() = Some(store);
+        // Wire segment store callback to notify registry of new segments
+        let registry_for_callback = registry;
+        engine
+            .segment_store
+            .set_on_segment_registered(move |seq, bundle_count| {
+                registry_for_callback.on_segment_finalized(seq, bundle_count);
+            });
+
+        Ok(engine)
     }
 
     /// Returns the configuration backing this engine.
@@ -209,11 +240,33 @@ impl QuiverEngine {
         Ok(())
     }
 
+    /// Flushes the current open segment to disk, making all ingested data
+    /// available to subscribers.
+    ///
+    /// This is a checkpoint operation—the engine remains fully operational
+    /// and can continue accepting new bundles. Use this when you need to
+    /// ensure all ingested data is durable and visible to subscribers without
+    /// shutting down.
+    ///
+    /// Note: Normally segments are finalized automatically based on size and
+    /// time thresholds. This method is primarily useful for testing or when
+    /// you need immediate durability guarantees.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment finalization fails.
+    pub fn flush(&self) -> Result<()> {
+        self.finalize_current_segment()
+    }
+
     /// Gracefully shuts down the engine, finalizing any open segment.
     ///
-    /// This should be called before dropping the engine to ensure that any
-    /// accumulated data in the open segment is written to disk. Without calling
-    /// this, data in the open segment will only be recoverable via WAL replay.
+    /// After calling this, the engine should not be used for further ingestion.
+    /// This ensures that any accumulated data in the open segment is written
+    /// to disk. Without calling this, data in the open segment will only be
+    /// recoverable via WAL replay.
+    ///
+    /// For checkpointing without shutdown, use [`flush()`](Self::flush) instead.
     ///
     /// # Errors
     ///
@@ -256,12 +309,185 @@ impl QuiverEngine {
         }
 
         // Step 6: Register segment with store (triggers subscriber notification)
-        if let Some(store) = self.segment_store.lock().as_ref() {
-            // Ignore registration errors - the segment is already written
-            let _ = store.register_segment(seq);
-        }
+        // Ignore registration errors - the segment is already written
+        let _ = self.segment_store.register_segment(seq);
 
         Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Subscriber API
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Registers a new subscriber with the given ID.
+    ///
+    /// If a progress file exists for this subscriber, its state is loaded.
+    /// The subscriber starts in inactive state; call `activate` to begin
+    /// receiving bundles.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscriber is already registered.
+    pub fn register_subscriber(&self, id: SubscriberId) -> std::result::Result<(), SubscriberError> {
+        self.registry.register(id)
+    }
+
+    /// Activates a subscriber, enabling bundle delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscriber is not registered.
+    pub fn activate_subscriber(&self, id: &SubscriberId) -> std::result::Result<(), SubscriberError> {
+        self.registry.activate(id)
+    }
+
+    /// Returns the next available bundle for the subscriber, if any.
+    ///
+    /// Non-blocking: returns `None` if no bundles are available.
+    /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
+    /// or `defer()` before being dropped.
+    pub fn next_bundle(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+    ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
+    {
+        self.registry.next_bundle(id)
+    }
+
+    /// Waits for the next available bundle with a timeout.
+    ///
+    /// Blocking: waits up to `timeout` for a bundle to become available.
+    /// Returns `None` on timeout or if `should_stop` returns true.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subscriber ID
+    /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    /// * `should_stop` - Called periodically to check if waiting should stop (e.g., for shutdown).
+    pub fn next_bundle_blocking<F>(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        timeout: Option<Duration>,
+        should_stop: F,
+    ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
+    where
+        F: Fn() -> bool,
+    {
+        self.registry.next_bundle_blocking(id, timeout, should_stop)
+    }
+
+    /// Claims a specific bundle for a subscriber.
+    ///
+    /// Used for retry scenarios where the embedding layer needs to re-acquire
+    /// a previously deferred bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundle is not available (already resolved or claimed).
+    pub fn claim_bundle(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        bundle_ref: BundleRef,
+    ) -> std::result::Result<BundleHandle<RegistryCallback<SegmentStore>>, SubscriberError> {
+        self.registry.claim_bundle(id, bundle_ref)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Maintenance API
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Flushes dirty subscriber progress to disk.
+    ///
+    /// Returns the number of subscribers whose progress was flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any progress file cannot be written.
+    pub fn flush_progress(&self) -> std::result::Result<usize, SubscriberError> {
+        self.registry.flush_progress()
+    }
+
+    /// Deletes segment files that have been fully processed by all subscribers.
+    ///
+    /// Finds the minimum incomplete segment across all active subscribers
+    /// and deletes all segments before that threshold.
+    ///
+    /// Returns the number of segments deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment deletion fails.
+    pub fn cleanup_completed_segments(&self) -> std::result::Result<usize, SubscriberError> {
+        // Find the oldest incomplete segment across all subscribers.
+        // All segments before this are fully processed.
+        let delete_boundary = match self.registry.oldest_incomplete_segment() {
+            Some(seq) => seq, // Delete segments strictly before this
+            None => {
+                // No incomplete segments. This could mean:
+                // 1. No subscribers or no segments tracked yet - should not delete
+                // 2. All tracked segments are complete - can delete up to highest
+                match self.registry.min_highest_tracked_segment() {
+                    Some(highest) => {
+                        // All segments up through `highest` are complete.
+                        // Delete segments up to and including it.
+                        highest.next()
+                    }
+                    None => return Ok(0), // No active subscribers tracking segments
+                }
+            }
+        };
+
+        // Delete segment files before the boundary
+        let mut deleted = 0;
+        for seq in self.segment_store.segment_sequences() {
+            if seq < delete_boundary {
+                if let Err(e) = self.segment_store.delete_segment(seq) {
+                    tracing::warn!(segment = seq.raw(), error = %e, "Failed to delete segment");
+                } else {
+                    deleted += 1;
+                }
+            }
+        }
+
+        // Clean up registry internal state for deleted segments
+        self.registry.cleanup_segments_before(delete_boundary);
+
+        Ok(deleted)
+    }
+
+    /// Performs combined maintenance: flushes progress and cleans up segments.
+    ///
+    /// This is the recommended periodic maintenance call. It:
+    /// 1. Flushes dirty subscriber progress to disk
+    /// 2. Deletes fully-processed segment files
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either operation fails.
+    pub fn maintain(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
+        let flushed = self.flush_progress()?;
+        let deleted = self.cleanup_completed_segments()?;
+        Ok(MaintenanceStats { flushed, deleted })
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Accessors
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Returns a reference to the underlying segment store.
+    ///
+    /// This is useful for advanced use cases like custom segment queries.
+    #[must_use]
+    pub fn segment_store(&self) -> &Arc<SegmentStore> {
+        &self.segment_store
+    }
+
+    /// Returns a reference to the underlying subscriber registry.
+    ///
+    /// This is useful for advanced use cases like custom subscriber management.
+    #[must_use]
+    pub fn registry(&self) -> &Arc<SubscriberRegistry<SegmentStore>> {
+        &self.registry
     }
 
     /// Returns the path for a segment file with the given sequence number.
@@ -1460,7 +1686,7 @@ mod tests {
         // Use a large size threshold so size-based finalization won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: std::time::Duration::from_secs(3600),        // 1 hour
+            max_open_duration: Duration::from_secs(3600),        // 1 hour
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -1544,7 +1770,7 @@ mod tests {
         // Use large size and time thresholds so they won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: std::time::Duration::from_secs(3600),        // 1 hour
+            max_open_duration: Duration::from_secs(3600),        // 1 hour
             max_stream_count: 3, // Very small - will trigger after 3 unique streams
         };
         let config = QuiverConfig::builder()

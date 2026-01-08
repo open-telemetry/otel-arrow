@@ -16,7 +16,7 @@ name = "quiver"
 path = "src/lib.rs"
 
 [features]
-default = ["otap-dataflow-integrations"]
+default = ["otap-dataflow-integrations", "mmap"]
 otap-dataflow-integrations = []
 serde = ["dep:serde"]
 mmap = ["dep:memmap2"]

@@ -34,9 +34,12 @@ pub mod telemetry;
 pub(crate) mod wal;
 
 pub use config::{DurabilityMode, QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
-pub use engine::QuiverEngine;
+pub use engine::{MaintenanceStats, QuiverEngine};
 pub use error::{QuiverError, Result};
 pub use segment::SegmentError;
-pub use segment_store::SegmentStore;
-pub use subscriber::SubscriberError;
+pub use segment_store::{SegmentReadMode, SegmentStore};
+pub use subscriber::{
+    BundleHandle, BundleIndex, BundleRef, RegistryCallback, RegistryConfig, SegmentProvider,
+    SubscriberError, SubscriberId, SubscriberRegistry,
+};
 pub use wal::WalError;

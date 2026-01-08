@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{QuiverError, Result};
+use crate::segment_store::SegmentReadMode;
 
 /// Controls the durability/throughput tradeoff for ingested data.
 ///
@@ -50,6 +51,8 @@ pub struct QuiverConfig {
     pub segment: SegmentConfig,
     /// Retention controls for finalized data.
     pub retention: RetentionConfig,
+    /// Read mode for segment files (mmap vs standard I/O).
+    pub read_mode: SegmentReadMode,
     /// Optional override for the base data directory.
     pub data_dir: PathBuf,
 }
@@ -93,6 +96,7 @@ impl Default for QuiverConfig {
             wal: WalConfig::default(),
             segment: SegmentConfig::default(),
             retention: RetentionConfig::default(),
+            read_mode: SegmentReadMode::default(),
             data_dir: PathBuf::from("./quiver_data"),
         }
     }
@@ -106,6 +110,7 @@ pub struct QuiverConfigBuilder {
     wal: WalConfig,
     segment: SegmentConfig,
     retention: RetentionConfig,
+    read_mode: SegmentReadMode,
     data_dir: PathBuf,
 }
 
@@ -138,6 +143,13 @@ impl QuiverConfigBuilder {
         self
     }
 
+    /// Sets the segment read mode (mmap vs standard I/O).
+    #[must_use]
+    pub fn read_mode(mut self, read_mode: SegmentReadMode) -> Self {
+        self.read_mode = read_mode;
+        self
+    }
+
     /// Overrides the storage directory.
     #[must_use]
     pub fn data_dir<P: AsRef<Path>>(mut self, data_dir: P) -> Self {
@@ -152,6 +164,7 @@ impl QuiverConfigBuilder {
             wal: self.wal,
             segment: self.segment,
             retention: self.retention,
+            read_mode: self.read_mode,
             data_dir: if self.data_dir.as_os_str().is_empty() {
                 PathBuf::from("./quiver_data")
             } else {

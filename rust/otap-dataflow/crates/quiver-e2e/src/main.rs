@@ -23,12 +23,12 @@ mod stress_runner;
 mod subscriber;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
-use quiver::segment_store::SegmentReadMode;
-use quiver::{QuiverConfig, QuiverEngine, SegmentStore};
+use quiver::SegmentReadMode;
+use quiver::subscriber::SubscriberId;
+use quiver::{QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
 use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
@@ -45,10 +45,10 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 /// Results from running a single read mode.
 struct ModeResult {
     mode_name: String,
-    scan_duration: Duration,
+    ingest_duration: Duration,
     consume_duration: Duration,
-    subscriber_results: Vec<subscriber::ConsumptionResult>,
-    total_bundles: u32,
+    bundles_ingested: usize,
+    bundles_consumed: usize,
     segment_count: usize,
 }
 
@@ -316,57 +316,59 @@ struct IterationResult {
 fn run_iteration_for_stress(
     args: &Args,
     data_dir: &Path,
-    iteration: u64,
+    _iteration: u64,
 ) -> Result<IterationResult, Box<dyn std::error::Error>> {
     // Generate test data
     let bundles =
         bundle::generate_test_bundles(args.bundles, args.rows_per_bundle, args.string_size);
 
-    // Ingest
+    // Create engine with configured read mode
+    let read_mode = match args.read_mode {
+        ReadModeArg::Standard => SegmentReadMode::Standard,
+        ReadModeArg::Mmap | ReadModeArg::Compare => SegmentReadMode::Mmap,
+    };
     let config = create_config(
         data_dir,
         args.segment_size_mb,
         args.wal_flush_interval_ms,
         args.no_wal,
+        read_mode,
     );
-    let engine = Arc::new(QuiverEngine::new(config)?);
+    let engine = QuiverEngine::new(config)?;
 
+    // Register and activate subscribers before ingestion
+    let mut subscriber_ids = Vec::with_capacity(args.subscribers);
+    for sub_idx in 0..args.subscribers {
+        let sub_id = SubscriberId::new(&format!("subscriber-{}", sub_idx))?;
+        engine.register_subscriber(sub_id.clone())?;
+        engine.activate_subscriber(&sub_id)?;
+        subscriber_ids.push(sub_id);
+    }
+
+    // Ingest all bundles
     for test_bundle in &bundles {
         engine.ingest(test_bundle)?;
     }
-    engine.shutdown()?;
 
-    // Consume
-    let segment_dir = data_dir.join("segments");
-    let mode = match args.read_mode {
-        ReadModeArg::Standard => SegmentReadMode::Standard,
-        ReadModeArg::Mmap | ReadModeArg::Compare => SegmentReadMode::Mmap,
-    };
-    let segment_store = Arc::new(SegmentStore::with_mode(&segment_dir, mode));
-    let segments = segment_store.scan_existing()?;
+    // Flush to ensure all data is available to subscribers
+    engine.flush()?;
 
+    // Consume bundles via unified engine API
     let mut total_consumed = 0usize;
+    let delay = SubscriberDelay::new(args.subscriber_delay_ms);
 
-    let export_dir = data_dir.join("exports").join(format!("iter_{}", iteration));
-    std::fs::create_dir_all(&export_dir)?;
-
-    for sub_id in 0..args.subscribers {
-        let sub_name = format!("subscriber-{}", sub_id);
-        let export_path = export_dir.join(format!("{}.txt", sub_name));
-
-        let result = subscriber::consume_with_registry(
-            segment_store.clone(),
-            &segments,
-            data_dir,
-            &export_path,
-            &sub_name,
-            args.simulate_failures,
-            args.failure_probability,
-            args.progress_flush_interval,
-            SubscriberDelay::new(args.subscriber_delay_ms),
-        )?;
-        total_consumed += result.consumed;
+    for sub_id in &subscriber_ids {
+        let mut bundles_consumed = 0;
+        while let Some(handle) = engine.next_bundle(sub_id)? {
+            delay.apply();
+            handle.ack();
+            bundles_consumed += 1;
+        }
+        total_consumed += bundles_consumed;
     }
+
+    // Flush progress before cleanup
+    let _ = engine.flush_progress()?;
 
     Ok(IterationResult {
         bundles_ingested: args.bundles,
@@ -494,53 +496,9 @@ fn run_single_iteration(
     mem_tracker.checkpoint("after_bundle_generation");
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Phase 2: Ingest data into Quiver
+    // Phase 2: Run test for each read mode
     // ─────────────────────────────────────────────────────────────────────────
-    info!("");
-    info!("═══ Phase 2: Ingesting data ═══");
-
-    let config = create_config(
-        &data_dir,
-        args.segment_size_mb,
-        args.wal_flush_interval_ms,
-        args.no_wal,
-    );
-    let engine = Arc::new(QuiverEngine::new(config)?);
-    mem_tracker.checkpoint("engine_created");
-
-    let ingest_start = Instant::now();
-    for (i, test_bundle) in bundles.iter().enumerate() {
-        engine.ingest(test_bundle)?;
-        if (i + 1) % 100 == 0 {
-            mem_tracker.checkpoint_silent(&format!("ingest_{}", i + 1));
-        }
-    }
-    let ingest_duration = ingest_start.elapsed();
-
-    let total_rows = args.bundles * args.rows_per_bundle;
-    info!(
-        bundles = args.bundles,
-        rows = total_rows,
-        duration_ms = ingest_duration.as_millis(),
-        bundles_per_sec = format!("{:.0}", args.bundles as f64 / ingest_duration.as_secs_f64()),
-        rows_per_sec = format!("{:.0}", total_rows as f64 / ingest_duration.as_secs_f64()),
-        "Ingestion complete"
-    );
-    mem_tracker.checkpoint("after_ingestion");
-
-    // Finalize remaining data
-    engine.shutdown()?;
-    mem_tracker.checkpoint("after_shutdown");
-    info!("Engine shutdown complete");
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 3: Create segment store and scan segments
-    // ─────────────────────────────────────────────────────────────────────────
-    info!("");
-    info!("═══ Phase 3: Scanning segments ═══");
-
-    let segment_dir = data_dir.join("segments");
-
+    
     // Determine which modes to test
     let modes_to_test: Vec<(SegmentReadMode, &str)> = match args.read_mode {
         ReadModeArg::Standard => vec![(SegmentReadMode::Standard, "standard")],
@@ -555,138 +513,145 @@ fn run_single_iteration(
 
     for (mode, mode_name) in &modes_to_test {
         info!("");
-        info!("─── Testing {} read mode ───", mode_name);
+        info!("═══ Testing {} read mode ═══", mode_name);
 
-        let scan_start = Instant::now();
-        let segment_store = Arc::new(SegmentStore::with_mode(&segment_dir, *mode));
-        let segments = segment_store.scan_existing()?;
-        let scan_duration = scan_start.elapsed();
+        // Each mode gets its own subdirectory to avoid interference
+        let mode_data_dir = if modes_to_test.len() > 1 {
+            data_dir.join(mode_name)
+        } else {
+            data_dir.clone()
+        };
+        std::fs::create_dir_all(&mode_data_dir)?;
 
-        let total_bundles_in_segments: u32 = segments.iter().map(|(_, count)| *count).sum();
-        info!(
-            segment_count = segments.len(),
-            total_bundles = total_bundles_in_segments,
-            scan_ms = scan_duration.as_millis(),
-            "Segments loaded ({} mode)",
-            mode_name
+        // Create engine with this read mode
+        let config = create_config(
+            &mode_data_dir,
+            args.segment_size_mb,
+            args.wal_flush_interval_ms,
+            args.no_wal,
+            *mode,
         );
-        mem_tracker.checkpoint(&format!("segments_loaded_{}", mode_name));
+        let engine = QuiverEngine::new(config)?;
+        mem_tracker.checkpoint(&format!("engine_created_{}", mode_name));
 
-        // Phase 4: Multiple subscriber consumption
-        info!("");
-        info!(
-            "═══ Phase 4: Multi-subscriber consumption ({}) ═══",
-            mode_name
-        );
-
-        let export_dir = data_dir.join("exports").join(mode_name);
-        std::fs::create_dir_all(&export_dir)?;
-
-        let consume_start = Instant::now();
-        let mut subscriber_results = Vec::new();
-
-        for sub_id in 0..args.subscribers {
-            let sub_name = format!("subscriber-{}", sub_id);
-            let export_path = export_dir.join(format!("{}.txt", sub_name));
-
-            let result = subscriber::consume_with_registry(
-                segment_store.clone(),
-                &segments,
-                &data_dir,
-                &export_path,
-                &sub_name,
-                args.simulate_failures,
-                args.failure_probability,
-                args.progress_flush_interval,
-                SubscriberDelay::new(args.subscriber_delay_ms),
-            )?;
-
-            subscriber_results.push(result);
-            mem_tracker.checkpoint_silent(&format!("subscriber_{}_{}_done", mode_name, sub_id));
+        // Register and activate subscribers before ingestion
+        let mut subscriber_ids = Vec::with_capacity(args.subscribers);
+        for sub_idx in 0..args.subscribers {
+            let sub_id = SubscriberId::new(&format!("subscriber-{}", sub_idx))?;
+            engine.register_subscriber(sub_id.clone())?;
+            engine.activate_subscriber(&sub_id)?;
+            subscriber_ids.push(sub_id);
         }
 
+        // Phase 2a: Ingest
+        info!("");
+        info!("─── Ingesting data ({}) ───", mode_name);
+        let ingest_start = Instant::now();
+        for (i, test_bundle) in bundles.iter().enumerate() {
+            engine.ingest(test_bundle)?;
+            if (i + 1) % 100 == 0 {
+                mem_tracker.checkpoint_silent(&format!("ingest_{}_{}", mode_name, i + 1));
+            }
+        }
+        let ingest_duration = ingest_start.elapsed();
+
+        // Flush to ensure all data is available to subscribers
+        engine.flush()?;
+        mem_tracker.checkpoint(&format!("after_flush_{}", mode_name));
+
+        let total_rows = args.bundles * args.rows_per_bundle;
+        info!(
+            bundles = args.bundles,
+            rows = total_rows,
+            duration_ms = ingest_duration.as_millis(),
+            bundles_per_sec = format!("{:.0}", args.bundles as f64 / ingest_duration.as_secs_f64()),
+            "Ingestion complete"
+        );
+
+        // Get segment count
+        let segment_count = engine.segment_store().segment_count();
+
+        // Phase 2b: Consume
+        info!("");
+        info!("─── Consuming data ({}) ───", mode_name);
+        let consume_start = Instant::now();
+        let mut total_consumed = 0usize;
+        let delay = SubscriberDelay::new(args.subscriber_delay_ms);
+
+        for (sub_idx, sub_id) in subscriber_ids.iter().enumerate() {
+            let mut bundles_consumed = 0;
+            while let Some(handle) = engine.next_bundle(sub_id)? {
+                delay.apply();
+                handle.ack();
+                bundles_consumed += 1;
+            }
+            total_consumed += bundles_consumed;
+            mem_tracker.checkpoint_silent(&format!("subscriber_{}_{}_done", mode_name, sub_idx));
+        }
         let consume_duration = consume_start.elapsed();
+
+        // Flush progress
+        let _ = engine.flush_progress()?;
         mem_tracker.checkpoint(&format!("after_consumption_{}", mode_name));
+
+        info!(
+            consumed = total_consumed,
+            expected = args.bundles * args.subscribers,
+            duration_ms = consume_duration.as_millis(),
+            "Consumption complete"
+        );
 
         mode_results.push(ModeResult {
             mode_name: mode_name.to_string(),
-            scan_duration,
+            ingest_duration,
             consume_duration,
-            subscriber_results,
-            total_bundles: total_bundles_in_segments,
-            segment_count: segments.len(),
+            bundles_ingested: args.bundles,
+            bundles_consumed: total_consumed,
+            segment_count,
         });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Phase 5: Verify and report
+    // Phase 3: Verify and report
     // ─────────────────────────────────────────────────────────────────────────
     info!("");
-    info!("═══ Phase 5: Results ═══");
+    info!("═══ Results ═══");
 
     let mut all_verified = true;
     for mode_result in &mode_results {
         info!("");
         info!("─── {} mode results ───", mode_result.mode_name);
 
-        for (sub_id, result) in mode_result.subscriber_results.iter().enumerate() {
-            let verified = result.consumed == mode_result.total_bundles as usize;
-            if !verified {
-                warn!(
-                    subscriber = sub_id,
-                    expected = mode_result.total_bundles,
-                    actual = result.consumed,
-                    "Bundle count mismatch!"
-                );
-                all_verified = false;
-            }
-            info!(
-                subscriber = sub_id,
-                consumed = result.consumed,
-                retries = result.retries,
-                failures = result.failures,
-                flushes = result.flushes,
-                "Subscriber result"
+        let expected_consumed = mode_result.bundles_ingested * args.subscribers;
+        let verified = mode_result.bundles_consumed == expected_consumed;
+        if !verified {
+            warn!(
+                expected = expected_consumed,
+                actual = mode_result.bundles_consumed,
+                "Bundle count mismatch!"
             );
+            all_verified = false;
         }
-    }
-
-    // Memory summary
-    info!("");
-    info!("═══ Memory Analysis ═══");
-    mem_tracker.print_summary();
-
-    // Final summary
-    info!("");
-    info!("╔════════════════════════════════════════════════════════════╗");
-    info!("║                    Test Summary                            ║");
-    info!("╚════════════════════════════════════════════════════════════╝");
-    info!("Data directory: {}", data_dir.display());
-    info!("Bundles ingested: {}", args.bundles);
-    info!("Rows per bundle: {}", args.rows_per_bundle);
-    info!("Total rows: {}", args.bundles * args.rows_per_bundle);
-    info!("String value size: {} bytes", args.string_size);
-    info!("Ingestion time: {:?}", ingest_duration);
-    info!(
-        "Ingestion rate: {:.0} bundles/sec | {:.0} rows/sec",
-        args.bundles as f64 / ingest_duration.as_secs_f64(),
-        (args.bundles * args.rows_per_bundle) as f64 / ingest_duration.as_secs_f64()
-    );
-    info!("Subscribers: {}", args.subscribers);
-
-    // Per-mode summary
-    for mode_result in &mode_results {
-        info!("");
-        info!("─── {} mode ───", mode_result.mode_name);
-        info!("  Segments: {}", mode_result.segment_count);
-        info!("  Scan time: {:?}", mode_result.scan_duration);
-        info!("  Consumption time: {:?}", mode_result.consume_duration);
-        let bundles_per_sec = mode_result.total_bundles as f64 * args.subscribers as f64
-            / mode_result.consume_duration.as_secs_f64();
-        let rows_per_sec = bundles_per_sec * args.rows_per_bundle as f64;
         info!(
-            "  Consumption rate: {:.0} bundles/sec | {:.0} rows/sec (total across {} subscribers)",
-            bundles_per_sec, rows_per_sec, args.subscribers
+            "  Segments: {}",
+            mode_result.segment_count
+        );
+        info!(
+            "  Ingestion: {:?} ({:.0} bundles/sec)",
+            mode_result.ingest_duration,
+            mode_result.bundles_ingested as f64 / mode_result.ingest_duration.as_secs_f64()
+        );
+        info!(
+            "  Consumption: {:?} ({:.0} bundles/sec across {} subscribers)",
+            mode_result.consume_duration,
+            mode_result.bundles_consumed as f64 / mode_result.consume_duration.as_secs_f64(),
+            args.subscribers
+        );
+        info!(
+            "  Bundles: {} ingested, {} consumed (expected {})",
+            mode_result.bundles_ingested,
+            mode_result.bundles_consumed,
+            expected_consumed
         );
     }
 
@@ -697,45 +662,34 @@ fn run_single_iteration(
         let std_result = &mode_results[0];
         let mmap_result = &mode_results[1];
 
-        let scan_speedup =
-            std_result.scan_duration.as_secs_f64() / mmap_result.scan_duration.as_secs_f64();
+        let ingest_speedup =
+            std_result.ingest_duration.as_secs_f64() / mmap_result.ingest_duration.as_secs_f64();
         let consume_speedup =
             std_result.consume_duration.as_secs_f64() / mmap_result.consume_duration.as_secs_f64();
 
         info!(
-            "Scan time: standard {:?} vs mmap {:?} ({:.2}x {})",
-            std_result.scan_duration,
-            mmap_result.scan_duration,
-            if scan_speedup >= 1.0 {
-                scan_speedup
-            } else {
-                1.0 / scan_speedup
-            },
-            if scan_speedup >= 1.0 {
-                "faster with mmap"
-            } else {
-                "faster with standard"
-            }
+            "Ingest time: standard {:?} vs mmap {:?} ({:.2}x {})",
+            std_result.ingest_duration,
+            mmap_result.ingest_duration,
+            if ingest_speedup >= 1.0 { ingest_speedup } else { 1.0 / ingest_speedup },
+            if ingest_speedup >= 1.0 { "faster with mmap" } else { "faster with standard" }
         );
         info!(
             "Consumption time: standard {:?} vs mmap {:?} ({:.2}x {})",
             std_result.consume_duration,
             mmap_result.consume_duration,
-            if consume_speedup >= 1.0 {
-                consume_speedup
-            } else {
-                1.0 / consume_speedup
-            },
-            if consume_speedup >= 1.0 {
-                "faster with mmap"
-            } else {
-                "faster with standard"
-            }
+            if consume_speedup >= 1.0 { consume_speedup } else { 1.0 / consume_speedup },
+            if consume_speedup >= 1.0 { "faster with mmap" } else { "faster with standard" }
         );
     }
 
+    // Memory summary
     info!("");
-    info!("Peak memory (post-baseline): {} MB", mem_tracker.peak_mb());
+    info!("═══ Memory Analysis ═══");
+    mem_tracker.print_summary();
+
+    info!("");
+    info!("Peak memory (post-baseline): {:.2} MB", mem_tracker.peak_mb());
     info!(
         "All data verified: {}",
         if all_verified { "✓ YES" } else { "✗ NO" }
@@ -745,7 +699,6 @@ fn run_single_iteration(
     // Handle temp directory
     if args.keep_temp {
         if let Some(tmp) = _tmp {
-            // Prevent cleanup by keeping the tempdir
             let path = tmp.keep();
             info!(path = ?path, "Keeping temp directory for inspection");
         }
@@ -755,7 +708,7 @@ fn run_single_iteration(
         info!("🎉 Stress test completed successfully!");
         Ok(())
     } else {
-        Err("Verification failed: bundle count mismatch".into())
+        Err("Data verification failed".into())
     }
 }
 
@@ -764,6 +717,7 @@ fn create_config(
     segment_size_mb: u64,
     wal_flush_interval_ms: u64,
     no_wal: bool,
+    read_mode: SegmentReadMode,
 ) -> QuiverConfig {
     use quiver::DurabilityMode;
 
@@ -773,6 +727,9 @@ fn create_config(
     if no_wal {
         config.durability = DurabilityMode::SegmentOnly;
     }
+
+    // Set read mode
+    config.read_mode = read_mode;
 
     config.segment.target_size_bytes =
         std::num::NonZeroU64::new(segment_size_mb * 1024 * 1024).expect("segment size is non-zero");

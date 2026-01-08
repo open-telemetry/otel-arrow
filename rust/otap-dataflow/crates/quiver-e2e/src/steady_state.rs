@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use quiver::segment_store::SegmentReadMode;
-use quiver::subscriber::{RegistryConfig, SubscriberId, SubscriberRegistry};
-use quiver::{QuiverConfig, QuiverEngine, SegmentStore};
+use quiver::SegmentReadMode;
+use quiver::subscriber::SubscriberId;
+use quiver::{QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
 use tracing::{info, warn};
 
@@ -23,7 +23,7 @@ use crate::bundle;
 use crate::dashboard::{Dashboard, SteadyStateConfig};
 use crate::memory::MemoryTracker;
 use crate::stress::{SteadyStateStats, calculate_disk_usage};
-use crate::subscriber::{SharedStoreProvider, SubscriberDelay, cleanup_completed_segments};
+use crate::subscriber::SubscriberDelay;
 
 /// Output mode for the steady-state runner.
 pub enum OutputMode {
@@ -93,6 +93,7 @@ pub struct SteadyStateTestConfig {
     pub subscriber_delay_ms: u64,
     pub progress_flush_interval: usize,
     pub segment_size_mb: u64,
+    /// Read mode for segment files (mmap vs standard I/O).
     pub read_mode: SegmentReadMode,
     pub leak_threshold_mb: f64,
     pub keep_temp: bool,
@@ -190,12 +191,8 @@ pub fn run(
     let total_cleaned = Arc::new(AtomicU64::new(0));
     let segments_written = Arc::new(AtomicU64::new(0));
 
-    // Create per-engine resources
+    // Create per-engine resources (engine owns segment store and registry)
     let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(config.engines);
-    let mut segment_stores: Vec<Arc<SegmentStore>> = Vec::with_capacity(config.engines);
-    let mut registries: Vec<Arc<SubscriberRegistry<SharedStoreProvider>>> =
-        Vec::with_capacity(config.engines);
-    let mut store_providers: Vec<Arc<SharedStoreProvider>> = Vec::with_capacity(config.engines);
     let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
 
     for engine_idx in 0..config.engines {
@@ -213,6 +210,7 @@ pub fn run(
             config.segment_size_mb,
             config.wal_flush_interval_ms,
             config.no_wal,
+            config.read_mode,
             engine_idx,
             config.engines,
         );
@@ -228,40 +226,16 @@ pub fn run(
             ));
         }
 
-        let engine = Arc::new(QuiverEngine::new(engine_config)?);
+        // Engine now owns segment store and registry internally
+        let engine = QuiverEngine::new(engine_config)?;
 
-        // Create segment store and registry for this engine
-        let segment_dir = engine_dir.join("segments");
-        let segment_store = Arc::new(SegmentStore::with_mode(&segment_dir, config.read_mode));
-        let store_provider = SharedStoreProvider::new(segment_store.clone());
-        let registry_config = RegistryConfig::new(&engine_dir);
-        let registry = SubscriberRegistry::open(registry_config, store_provider.clone())?;
-
-        // Wire the notification chain for this engine
-        {
-            let store_provider_for_callback = store_provider.clone();
-            let registry_for_callback = registry.clone();
-            let segments_written_ref = segments_written.clone();
-
-            segment_store.set_on_segment_registered(move |seq, bundle_count| {
-                store_provider_for_callback.add_segment(seq, bundle_count);
-                registry_for_callback.on_segment_finalized(seq, bundle_count);
-                let _ = segments_written_ref.fetch_add(1, Ordering::Relaxed);
-            });
-
-            engine.set_segment_store(segment_store.clone());
-        }
-
-        // Register subscribers for this engine
-        let sub_ids = register_subscribers(&registry, config.subscribers)?;
+        // Register subscribers using engine's unified API
+        let sub_ids = register_subscribers_on_engine(&engine, config.subscribers)?;
         for sub_id in sub_ids {
             all_sub_ids.push((engine_idx, sub_id));
         }
 
         engines.push(engine);
-        segment_stores.push(segment_store);
-        registries.push(registry);
-        store_providers.push(store_provider);
     }
 
     output.log(&format!(
@@ -300,7 +274,7 @@ pub fn run(
     // Spawn subscriber threads (distributed across engines)
     let mut subscriber_handles = Vec::new();
     for (engine_idx, sub_id) in &all_sub_ids {
-        let registry = registries[*engine_idx].clone();
+        let engine = engines[*engine_idx].clone();
         let sub_running = running.clone();
         let sub_consumed = total_consumed.clone();
         let delay_ms = config.subscriber_delay_ms;
@@ -312,9 +286,12 @@ pub fn run(
             let mut bundles_since_flush = 0;
 
             while sub_running.load(Ordering::Relaxed) {
-                let bundle_handle = match registry.next_bundle_blocking(&sub_id_clone, None, || {
-                    !sub_running.load(Ordering::Relaxed)
-                }) {
+                // Use engine's unified subscriber API
+                let bundle_handle = match engine.next_bundle_blocking(
+                    &sub_id_clone,
+                    None,
+                    || !sub_running.load(Ordering::Relaxed),
+                ) {
                     Ok(Some(h)) => h,
                     Ok(None) => continue,
                     Err(_) => break,
@@ -326,7 +303,7 @@ pub fn run(
                 bundles_since_flush += 1;
 
                 if bundles_since_flush >= flush_interval {
-                    let _ = registry.flush_progress();
+                    let _ = engine.flush_progress();
                     bundles_since_flush = 0;
                 }
             }
@@ -346,10 +323,10 @@ pub fn run(
             break;
         }
 
-        // Periodic cleanup of completed segments (for all engines)
+        // Periodic cleanup of completed segments (all engines use their own cleanup)
         if last_cleanup.elapsed() >= cleanup_interval {
-            for (idx, registry) in registries.iter().enumerate() {
-                if let Ok(deleted) = cleanup_completed_segments(&**registry, &segment_stores[idx]) {
+            for engine in &engines {
+                if let Ok(deleted) = engine.cleanup_completed_segments() {
                     if deleted > 0 {
                         let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
                     }
@@ -417,19 +394,11 @@ pub fn run(
     }
 
     // 3. Final segment scan (all engines)
-    let mut final_segment_count = 0u64;
-    for (idx, segment_store) in segment_stores.iter().enumerate() {
-        if let Ok(final_segments) = segment_store.scan_existing() {
-            for (seq, bundle_count) in &final_segments {
-                store_providers[idx].add_segment(*seq, *bundle_count);
-                registries[idx].on_segment_finalized(*seq, *bundle_count);
-            }
-            final_segment_count += final_segments.len() as u64;
-        }
-    }
-    if final_segment_count == 0 {
-        final_segment_count = segments_written.load(Ordering::Relaxed);
-    }
+    let final_segment_count = engines
+        .iter()
+        .map(|e| e.segment_store().segment_count() as u64)
+        .sum::<u64>()
+        .max(segments_written.load(Ordering::Relaxed));
 
     // 4. Drain remaining bundles
     let pre_drain_consumed = total_consumed.load(Ordering::Relaxed);
@@ -463,17 +432,17 @@ pub fn run(
         let _ = handle.join();
     }
 
-    // Flush final progress (all registries)
-    for registry in &registries {
-        let _ = registry.flush_progress();
+    // Flush final progress (all engines)
+    for engine in &engines {
+        let _ = engine.flush_progress();
     }
 
     // 6. Final cleanup (all engines)
     let cleanup_start = Instant::now();
     let mut final_cleanup_count = 0u64;
-    for (idx, registry) in registries.iter().enumerate() {
+    for engine in &engines {
         loop {
-            match cleanup_completed_segments(&**registry, &segment_stores[idx]) {
+            match engine.cleanup_completed_segments() {
                 Ok(deleted) if deleted > 0 => {
                     final_cleanup_count += deleted as u64;
                 }
@@ -564,16 +533,16 @@ pub fn run(
 
 // === Helper functions ===
 
-fn register_subscribers(
-    registry: &SubscriberRegistry<SharedStoreProvider>,
+fn register_subscribers_on_engine(
+    engine: &Arc<QuiverEngine>,
     count: usize,
 ) -> Result<Vec<SubscriberId>, Box<dyn std::error::Error>> {
     let mut sub_ids = Vec::with_capacity(count);
     for sub_id in 0..count {
         let sub_name = format!("subscriber-{}", sub_id);
         let id = SubscriberId::new(&sub_name)?;
-        registry.register(id.clone())?;
-        registry.activate(&id)?;
+        engine.register_subscriber(id.clone())?;
+        engine.activate_subscriber(&id)?;
         sub_ids.push(id);
     }
     Ok(sub_ids)
@@ -610,6 +579,7 @@ fn create_engine_config(
     segment_size_mb: u64,
     wal_flush_interval_ms: u64,
     no_wal: bool,
+    read_mode: SegmentReadMode,
     engine_idx: usize,
     engine_count: usize,
 ) -> QuiverConfig {
@@ -621,6 +591,9 @@ fn create_engine_config(
     if no_wal {
         config.durability = DurabilityMode::SegmentOnly;
     }
+
+    // Set read mode
+    config.read_mode = read_mode;
 
     // Stagger segment sizes slightly to avoid synchronized finalization across engines.
     // Each engine gets a +/- 10% offset from the base size, distributed evenly.
