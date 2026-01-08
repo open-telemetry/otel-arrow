@@ -99,6 +99,7 @@ pub struct SteadyStateTestConfig {
     pub report_interval: Duration,
     pub wal_flush_interval_ms: u64,
     pub no_wal: bool,
+    pub engines: usize,
 }
 
 /// Run the unified steady-state stress test.
@@ -114,10 +115,20 @@ pub fn run(
         output.log("║         Quiver Steady-State Stress Test                    ║");
         output.log("╚════════════════════════════════════════════════════════════╝");
         output.log("");
-        output.log("Mode: Single long-running engine with concurrent ingest/consume");
+        if config.engines > 1 {
+            output.log(&format!(
+                "Mode: {} parallel engines with concurrent ingest/consume",
+                config.engines
+            ));
+        } else {
+            output.log("Mode: Single long-running engine with concurrent ingest/consume");
+        }
         output.log(&format!("Duration: {:?}", config.duration));
         output.log(&format!("Bundles per batch: {}", config.bundles));
-        output.log(&format!("Subscribers: {}", config.subscribers));
+        output.log(&format!(
+            "Subscribers per engine: {}",
+            config.subscribers
+        ));
         output.log(&format!(
             "Subscriber delay: {} ms",
             config.subscriber_delay_ms
@@ -130,6 +141,7 @@ pub fn run(
     let bundle_size_bytes = config.rows_per_bundle * config.string_size;
 
     // Generate test bundles UPFRONT (before measuring memory baseline)
+    // All engines share the same test bundles
     output.log(&format!("Generating {} test bundles...", config.bundles));
     let test_bundles = Arc::new(bundle::generate_test_bundles(
         config.bundles,
@@ -143,7 +155,7 @@ pub fn run(
 
     // Create stats tracker
     let mut stats = SteadyStateStats::new(
-        config.subscribers,
+        config.subscribers * config.engines,
         config.rows_per_bundle,
         bundle_size_bytes,
     );
@@ -164,30 +176,14 @@ pub fn run(
 
     // Create dashboard config for TUI
     let dashboard_config = SteadyStateConfig {
-        subscribers: config.subscribers,
+        subscribers: config.subscribers * config.engines,
         bundles_per_batch: config.bundles,
         rows_per_bundle: config.rows_per_bundle,
         subscriber_delay_ms: config.subscriber_delay_ms,
         data_dir: data_dir.display().to_string(),
     };
 
-    // Create a single QuiverEngine that will run for the entire duration
-    let engine_config = create_engine_config(
-        &data_dir,
-        config.segment_size_mb,
-        config.wal_flush_interval_ms,
-        config.no_wal,
-    );
-    let engine = Arc::new(QuiverEngine::new(engine_config)?);
-
-    // Create SHARED segment store and registry for all subscribers
-    let segment_dir = data_dir.join("segments");
-    let segment_store = Arc::new(SegmentStore::with_mode(&segment_dir, config.read_mode));
-    let store_provider = SharedStoreProvider::new(segment_store.clone());
-    let registry_config = RegistryConfig::new(&data_dir);
-    let registry = SubscriberRegistry::open(registry_config, store_provider.clone())?;
-
-    // Shared state for coordination (declare segments_written early for use in callback)
+    // Global coordination state shared across all engines
     let running = Arc::new(AtomicBool::new(true));
     let ingest_running = Arc::new(AtomicBool::new(true));
     let total_ingested = Arc::new(AtomicU64::new(0));
@@ -195,51 +191,152 @@ pub fn run(
     let total_cleaned = Arc::new(AtomicU64::new(0));
     let segments_written = Arc::new(AtomicU64::new(0));
 
-    // Wire the notification chain: engine -> store -> registry
-    // When engine finalizes a segment, it calls store.register_segment()
-    // The store callback notifies the registry which wakes waiting subscribers
-    {
-        let store_provider_for_callback = store_provider.clone();
-        let registry_for_callback = registry.clone();
-        let segments_written_ref = segments_written.clone();
+    // Create per-engine resources
+    let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(config.engines);
+    let mut segment_stores: Vec<Arc<SegmentStore>> = Vec::with_capacity(config.engines);
+    let mut registries: Vec<Arc<SubscriberRegistry<SharedStoreProvider>>> =
+        Vec::with_capacity(config.engines);
+    let mut store_providers: Vec<Arc<SharedStoreProvider>> = Vec::with_capacity(config.engines);
+    let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
 
-        segment_store.set_on_segment_registered(move |seq, bundle_count| {
-            store_provider_for_callback.add_segment(seq, bundle_count);
-            registry_for_callback.on_segment_finalized(seq, bundle_count);
-            let _ = segments_written_ref.fetch_add(1, Ordering::Relaxed);
-        });
+    for engine_idx in 0..config.engines {
+        // Each engine gets its own subdirectory
+        let engine_dir = if config.engines > 1 {
+            data_dir.join(format!("engine_{}", engine_idx))
+        } else {
+            data_dir.clone()
+        };
+        std::fs::create_dir_all(&engine_dir)?;
 
-        // Give engine a reference to the store for segment registration
-        engine.set_segment_store(segment_store.clone());
+        // Create engine with staggered timing to avoid synchronized I/O
+        let engine_config = create_engine_config(
+            &engine_dir,
+            config.segment_size_mb,
+            config.wal_flush_interval_ms,
+            config.no_wal,
+            engine_idx,
+            config.engines,
+        );
+
+        // Log staggered config for multi-engine runs
+        if config.engines > 1 && !output.is_tui() {
+            let seg_mb = engine_config.segment.target_size_bytes.get() / 1024 / 1024;
+            let flush_ms = engine_config.wal.flush_interval.as_millis();
+            let startup_delay_ms = 100 * engine_idx;
+            output.log(&format!(
+                "  Engine {}: segment={}MB, wal_flush={}ms, startup_delay={}ms",
+                engine_idx, seg_mb, flush_ms, startup_delay_ms
+            ));
+        }
+
+        let engine = Arc::new(QuiverEngine::new(engine_config)?);
+
+        // Create segment store and registry for this engine
+        let segment_dir = engine_dir.join("segments");
+        let segment_store = Arc::new(SegmentStore::with_mode(&segment_dir, config.read_mode));
+        let store_provider = SharedStoreProvider::new(segment_store.clone());
+        let registry_config = RegistryConfig::new(&engine_dir);
+        let registry = SubscriberRegistry::open(registry_config, store_provider.clone())?;
+
+        // Wire the notification chain for this engine
+        {
+            let store_provider_for_callback = store_provider.clone();
+            let registry_for_callback = registry.clone();
+            let segments_written_ref = segments_written.clone();
+
+            segment_store.set_on_segment_registered(move |seq, bundle_count| {
+                store_provider_for_callback.add_segment(seq, bundle_count);
+                registry_for_callback.on_segment_finalized(seq, bundle_count);
+                let _ = segments_written_ref.fetch_add(1, Ordering::Relaxed);
+            });
+
+            engine.set_segment_store(segment_store.clone());
+        }
+
+        // Register subscribers for this engine
+        let sub_ids = register_subscribers(&registry, config.subscribers)?;
+        for sub_id in sub_ids {
+            all_sub_ids.push((engine_idx, sub_id));
+        }
+
+        engines.push(engine);
+        segment_stores.push(segment_store);
+        registries.push(registry);
+        store_providers.push(store_provider);
     }
 
-    // Register and activate all subscribers upfront
-    let sub_ids = register_subscribers(&registry, config.subscribers)?;
-    output.log(&format!("Registered {} subscribers", config.subscribers));
+    output.log(&format!(
+        "Started {} engine(s) with {} total subscribers",
+        config.engines,
+        all_sub_ids.len()
+    ));
 
     let start = Instant::now();
     let cleanup_interval = Duration::from_secs(2);
     let mut last_cleanup = Instant::now();
     let mut last_report = Instant::now();
 
-    // Spawn worker threads
-    let ingest_handle = spawn_ingest_thread(
-        engine.clone(),
-        test_bundles,
-        ingest_running.clone(),
-        total_ingested.clone(),
-    );
+    // Spawn ingest threads (one per engine) with staggered startup delays
+    // to desynchronize segment writes across engines
+    let mut ingest_handles = Vec::with_capacity(config.engines);
+    for (engine_idx, engine) in engines.iter().enumerate() {
+        // Stagger startup: spread engines evenly across one segment write cycle
+        // Approximate time to fill a segment = segment_size_mb / ingest_rate_mb_per_sec
+        // Rough estimate: ~100ms per engine for a 4-engine setup
+        let startup_delay_ms = if config.engines > 1 {
+            (100 * engine_idx) as u64
+        } else {
+            0
+        };
+        let handle = spawn_ingest_thread(
+            engine.clone(),
+            test_bundles.clone(),
+            ingest_running.clone(),
+            total_ingested.clone(),
+            startup_delay_ms,
+        );
+        ingest_handles.push(handle);
+    }
 
-    // No scanner thread needed - engine notifies store directly via callback
+    // Spawn subscriber threads (distributed across engines)
+    let mut subscriber_handles = Vec::new();
+    for (engine_idx, sub_id) in &all_sub_ids {
+        let registry = registries[*engine_idx].clone();
+        let sub_running = running.clone();
+        let sub_consumed = total_consumed.clone();
+        let delay_ms = config.subscriber_delay_ms;
+        let flush_interval = config.flush_interval;
+        let sub_id_clone = sub_id.clone();
 
-    let subscriber_handles = spawn_subscriber_threads(
-        sub_ids.clone(),
-        registry.clone(),
-        running.clone(),
-        total_consumed.clone(),
-        config.subscriber_delay_ms,
-        config.flush_interval,
-    );
+        let handle = thread::spawn(move || {
+            let delay = SubscriberDelay::new(delay_ms);
+            let mut bundles_since_flush = 0;
+
+            while sub_running.load(Ordering::Relaxed) {
+                let bundle_handle = match registry.next_bundle_blocking(
+                    &sub_id_clone,
+                    None,
+                    || !sub_running.load(Ordering::Relaxed),
+                ) {
+                    Ok(Some(h)) => h,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                };
+
+                delay.apply();
+                bundle_handle.ack();
+                let _ = sub_consumed.fetch_add(1, Ordering::Relaxed);
+                bundles_since_flush += 1;
+
+                if bundles_since_flush >= flush_interval {
+                    let _ = registry.flush_progress();
+                    bundles_since_flush = 0;
+                }
+            }
+        });
+
+        subscriber_handles.push(handle);
+    }
 
     // Main monitoring loop
     let mut quit_requested = false;
@@ -252,11 +349,13 @@ pub fn run(
             break;
         }
 
-        // Periodic cleanup of completed segments
+        // Periodic cleanup of completed segments (for all engines)
         if last_cleanup.elapsed() >= cleanup_interval {
-            if let Ok(deleted) = cleanup_completed_segments(&*registry, &segment_store) {
-                if deleted > 0 {
-                    let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
+            for (idx, registry) in registries.iter().enumerate() {
+                if let Ok(deleted) = cleanup_completed_segments(&**registry, &segment_stores[idx]) {
+                    if deleted > 0 {
+                        let _ = total_cleaned.fetch_add(deleted as u64, Ordering::Relaxed);
+                    }
                 }
             }
             last_cleanup = Instant::now();
@@ -277,7 +376,8 @@ pub fn run(
         // Output mode-specific updates
         match &mut output {
             OutputMode::Tui(Some(dashboard)) => {
-                let wal_bytes = engine.wal_bytes_written();
+                // Sum WAL bytes across all engines
+                let wal_bytes: u64 = engines.iter().map(|e| e.wal_bytes_written()).sum();
                 dashboard.update_steady_state(&stats, &dashboard_config, wal_bytes)?;
             }
             OutputMode::Tui(None) => {}
@@ -306,25 +406,33 @@ pub fn run(
 
     // 1. Stop ingestion first
     ingest_running.store(false, Ordering::SeqCst);
-    let _ = ingest_handle.join();
+    for handle in ingest_handles {
+        let _ = handle.join();
+    }
 
     let final_ingested = total_ingested.load(Ordering::Relaxed);
 
-    // 2. Finalize any remaining open segment
-    if let Err(e) = engine.shutdown() {
-        output.log_warn(&format!("Engine shutdown error: {}", e));
+    // 2. Finalize any remaining open segments (all engines)
+    for engine in &engines {
+        if let Err(e) = engine.shutdown() {
+            output.log_warn(&format!("Engine shutdown error: {}", e));
+        }
     }
 
-    // 3. Final segment scan
-    let final_segment_count = if let Ok(final_segments) = segment_store.scan_existing() {
-        for (seq, bundle_count) in &final_segments {
-            store_provider.add_segment(*seq, *bundle_count);
-            registry.on_segment_finalized(*seq, *bundle_count);
+    // 3. Final segment scan (all engines)
+    let mut final_segment_count = 0u64;
+    for (idx, segment_store) in segment_stores.iter().enumerate() {
+        if let Ok(final_segments) = segment_store.scan_existing() {
+            for (seq, bundle_count) in &final_segments {
+                store_providers[idx].add_segment(*seq, *bundle_count);
+                registries[idx].on_segment_finalized(*seq, *bundle_count);
+            }
+            final_segment_count += final_segments.len() as u64;
         }
-        final_segments.len() as u64
-    } else {
-        segments_written.load(Ordering::Relaxed)
-    };
+    }
+    if final_segment_count == 0 {
+        final_segment_count = segments_written.load(Ordering::Relaxed);
+    }
 
     // 4. Drain remaining bundles
     let pre_drain_consumed = total_consumed.load(Ordering::Relaxed);
@@ -358,17 +466,22 @@ pub fn run(
         let _ = handle.join();
     }
 
-    // Flush final progress
-    let _ = registry.flush_progress();
+    // Flush final progress (all registries)
+    for registry in &registries {
+        let _ = registry.flush_progress();
+    }
 
-    // 6. Final cleanup
+    // 6. Final cleanup (all engines)
     let cleanup_start = Instant::now();
     let mut final_cleanup_count = 0u64;
-    while let Ok(deleted) = cleanup_completed_segments(&*registry, &segment_store) {
-        if deleted > 0 {
-            final_cleanup_count += deleted as u64;
-        } else {
-            break;
+    for (idx, registry) in registries.iter().enumerate() {
+        loop {
+            match cleanup_completed_segments(&**registry, &segment_stores[idx]) {
+                Ok(deleted) if deleted > 0 => {
+                    final_cleanup_count += deleted as u64;
+                }
+                _ => break,
+            }
         }
     }
     let cleanup_duration = cleanup_start.elapsed();
@@ -408,6 +521,7 @@ pub fn run(
         output.log("");
         output.log("═══ Final Summary ═══");
         output.log(&format!("Duration: {:?}", elapsed));
+        output.log(&format!("Engines: {}", config.engines));
         output.log(&format!("Bundles ingested: {}", final_ingested));
         output.log(&format!("Bundles consumed: {}", post_drain_consumed));
         output.log(&format!("Segments written: {}", total_segments));
@@ -473,8 +587,13 @@ fn spawn_ingest_thread(
     test_bundles: Arc<Vec<bundle::TestBundle>>,
     ingest_running: Arc<AtomicBool>,
     total_ingested: Arc<AtomicU64>,
+    startup_delay_ms: u64,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        // Staggered startup to desynchronize segment writes
+        if startup_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(startup_delay_ms));
+        }
         while ingest_running.load(Ordering::Relaxed) {
             for test_bundle in test_bundles.iter() {
                 if !ingest_running.load(Ordering::Relaxed) {
@@ -489,68 +608,13 @@ fn spawn_ingest_thread(
     })
 }
 
-fn spawn_subscriber_threads(
-    sub_ids: Vec<SubscriberId>,
-    registry: Arc<SubscriberRegistry<SharedStoreProvider>>,
-    running: Arc<AtomicBool>,
-    total_consumed: Arc<AtomicU64>,
-    delay_ms: u64,
-    flush_interval: usize,
-) -> Vec<JoinHandle<()>> {
-    let mut handles = Vec::with_capacity(sub_ids.len());
-
-    for sub_id in sub_ids {
-        let sub_running = running.clone();
-        let sub_consumed = total_consumed.clone();
-        let sub_registry = registry.clone();
-
-        let handle = thread::spawn(move || {
-            let delay = SubscriberDelay::new(delay_ms);
-            let mut bundles_since_flush = 0;
-
-            while sub_running.load(Ordering::Relaxed) {
-                // Use blocking API instead of polling with sleeps
-                let bundle_handle = match sub_registry.next_bundle_blocking(
-                    &sub_id,
-                    None, // No timeout
-                    || !sub_running.load(Ordering::Relaxed), // Stop on shutdown
-                ) {
-                    Ok(Some(h)) => h,
-                    Ok(None) => {
-                        // Shutdown requested or timeout
-                        continue;
-                    }
-                    Err(_) => {
-                        // Subscriber error, exit thread
-                        break;
-                    }
-                };
-
-                // Bundle data is already loaded in bundle_handle.data()
-                // No need to read again from sub_store
-                delay.apply();
-                bundle_handle.ack();
-                let _ = sub_consumed.fetch_add(1, Ordering::Relaxed);
-                bundles_since_flush += 1;
-
-                if bundles_since_flush >= flush_interval {
-                    let _ = sub_registry.flush_progress();
-                    bundles_since_flush = 0;
-                }
-            }
-        });
-
-        handles.push(handle);
-    }
-
-    handles
-}
-
 fn create_engine_config(
     data_dir: &std::path::Path,
     segment_size_mb: u64,
     wal_flush_interval_ms: u64,
     no_wal: bool,
+    engine_idx: usize,
+    engine_count: usize,
 ) -> QuiverConfig {
     use quiver::DurabilityMode;
 
@@ -561,15 +625,37 @@ fn create_engine_config(
         config.durability = DurabilityMode::SegmentOnly;
     }
 
-    config.segment.target_size_bytes =
-        std::num::NonZeroU64::new(segment_size_mb * 1024 * 1024).expect("segment size is non-zero");
+    // Stagger segment sizes slightly to avoid synchronized finalization across engines.
+    // Each engine gets a +/- 10% offset from the base size, distributed evenly.
+    let stagger_factor = if engine_count > 1 {
+        // Range from -0.1 to +0.1 across engines
+        let position = engine_idx as f64 / (engine_count - 1) as f64; // 0.0 to 1.0
+        0.9 + (position * 0.2) // 0.9 to 1.1
+    } else {
+        1.0
+    };
+    let staggered_segment_size = ((segment_size_mb as f64 * stagger_factor) as u64).max(1);
+
+    config.segment.target_size_bytes = std::num::NonZeroU64::new(staggered_segment_size * 1024 * 1024)
+        .expect("segment size is non-zero");
     config.segment.max_open_duration = Duration::from_secs(30);
 
     config.wal.max_size_bytes =
         std::num::NonZeroU64::new(256 * 1024 * 1024).expect("256MB is non-zero");
     config.wal.rotation_target_bytes =
         std::num::NonZeroU64::new(32 * 1024 * 1024).expect("32MB is non-zero");
-    config.wal.flush_interval = Duration::from_millis(wal_flush_interval_ms);
+
+    // Stagger WAL flush intervals similarly to avoid synchronized flushes.
+    // Vary the interval slightly (+/- 10%) to desynchronize over time.
+    let interval_stagger = if engine_count > 1 {
+        let position = engine_idx as f64 / (engine_count - 1) as f64;
+        0.9 + (position * 0.2)
+    } else {
+        1.0
+    };
+    let staggered_flush_ms = ((wal_flush_interval_ms as f64 * interval_stagger) as u64).max(1);
+
+    config.wal.flush_interval = Duration::from_millis(staggered_flush_ms);
 
     config
 }

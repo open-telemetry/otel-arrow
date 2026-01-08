@@ -146,6 +146,10 @@ struct Args {
     /// Disable WAL for higher throughput (data only durable after segment finalization)
     #[arg(long)]
     no_wal: bool,
+
+    /// Number of parallel QuiverEngine instances (each with its own data directory)
+    #[arg(long, default_value = "1")]
+    engines: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -282,6 +286,7 @@ fn run_steady_state_mode(
         report_interval: Duration::from_secs(args.report_interval),
         wal_flush_interval_ms: args.wal_flush_interval_ms,
         no_wal: args.no_wal,
+        engines: args.engines,
     };
 
     // Create output mode (TUI or Text)

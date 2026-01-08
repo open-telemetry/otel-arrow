@@ -48,21 +48,71 @@ fn read_process_syscalls() -> (u64, u64) {
     (syscr, syscw)
 }
 
-/// Calculates total size of segment files in data_dir/segments/.
+/// Reads page fault counts from /proc/self/stat.
+/// Returns (minflt, majflt) where:
+/// - minflt: minor page faults (page in memory, just needed mapping)
+/// - majflt: major page faults (page read from disk - relevant for mmap I/O)
+fn read_process_page_faults() -> (u64, u64) {
+    let content = match fs::read_to_string("/proc/self/stat") {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+
+    // /proc/self/stat format: pid (comm) state ... fields
+    // Fields after (comm): minflt is field 10, majflt is field 12 (1-indexed)
+    // We need to skip past (comm) which may contain spaces
+    let start = match content.find(')') {
+        Some(pos) => pos + 2, // skip ") "
+        None => return (0, 0),
+    };
+
+    let fields: Vec<&str> = content[start..].split_whitespace().collect();
+    // After (comm), fields are 0-indexed:
+    // 0=state, 1=ppid, 2=pgrp, 3=session, 4=tty_nr, 5=tpgid,
+    // 6=flags, 7=minflt, 8=cminflt, 9=majflt, 10=cmajflt, ...
+    let minflt = fields.get(7).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let majflt = fields.get(9).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    (minflt, majflt)
+}
+
+/// Calculates total size of segment files in data_dir/segments/ and any engine_*/segments/ subdirs.
 /// Returns total bytes of .qseg files.
 fn calculate_segment_size(data_dir: &std::path::Path) -> u64 {
-    let segment_dir = data_dir.join("segments");
     let mut qseg_bytes = 0u64;
 
-    if let Ok(entries) = fs::read_dir(&segment_dir) {
+    // Helper to sum .qseg file sizes in a segment directory
+    let scan_segment_dir = |segment_dir: &std::path::Path| -> u64 {
+        let mut bytes = 0u64;
+        if let Ok(entries) = fs::read_dir(segment_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if name.ends_with(".qseg") {
+                        if let Ok(meta) = entry.metadata() {
+                            bytes += meta.len();
+                        }
+                    }
+                }
+            }
+        }
+        bytes
+    };
+
+    // Check data_dir/segments/ (single engine case)
+    let segment_dir = data_dir.join("segments");
+    qseg_bytes += scan_segment_dir(&segment_dir);
+
+    // Check data_dir/engine_*/segments/ (multi-engine case)
+    if let Ok(entries) = fs::read_dir(data_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() {
+            if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.ends_with(".qseg") {
-                    if let Ok(meta) = entry.metadata() {
-                        qseg_bytes += meta.len();
-                    }
+                if name.starts_with("engine_") {
+                    let engine_segment_dir = path.join("segments");
+                    qseg_bytes += scan_segment_dir(&engine_segment_dir);
                 }
             }
         }
@@ -96,6 +146,10 @@ pub struct Dashboard {
     read_iops_history: Vec<u64>,
     /// Recent write IOPS samples for sparkline (ops/s from syscw)
     write_iops_history: Vec<u64>,
+    /// Recent minor page fault samples for sparkline (soft faults - page in cache)
+    minflt_history: Vec<u64>,
+    /// Recent major page fault samples for sparkline (hard faults - disk read)
+    majflt_history: Vec<u64>,
     /// Recent backlog samples for sparkline (bundles)
     backlog_history: Vec<u64>,
     /// System info for CPU monitoring
@@ -111,6 +165,10 @@ pub struct Dashboard {
     last_syscr: u64,
     /// Last write syscall count for IOPS calculation
     last_syscw: u64,
+    /// Last minor page fault count
+    last_minflt: u64,
+    /// Last major page fault count
+    last_majflt: u64,
 }
 
 impl Dashboard {
@@ -131,6 +189,7 @@ impl Dashboard {
         // Note: WAL bytes are tracked via cumulative engine counter, starting at 0
         let initial_seg_bytes = calculate_segment_size(&data_dir);
         let (initial_syscr, initial_syscw) = read_process_syscalls();
+        let (initial_minflt, initial_majflt) = read_process_page_faults();
 
         Ok(Self {
             terminal,
@@ -146,6 +205,8 @@ impl Dashboard {
             wal_write_history: Vec::with_capacity(max_history_len),
             read_iops_history: Vec::with_capacity(max_history_len),
             write_iops_history: Vec::with_capacity(max_history_len),
+            minflt_history: Vec::with_capacity(max_history_len),
+            majflt_history: Vec::with_capacity(max_history_len),
             backlog_history: Vec::with_capacity(max_history_len),
             system: System::new(),
             last_iteration_time: Instant::now(),
@@ -154,6 +215,8 @@ impl Dashboard {
             last_wal_bytes: 0, // Cumulative from engine, starts at 0
             last_syscr: initial_syscr,
             last_syscw: initial_syscw,
+            last_minflt: initial_minflt,
+            last_majflt: initial_majflt,
         })
     }
 
@@ -248,6 +311,8 @@ impl Dashboard {
         trim_vec(&mut self.wal_write_history, self.max_history_len);
         trim_vec(&mut self.read_iops_history, self.max_history_len);
         trim_vec(&mut self.write_iops_history, self.max_history_len);
+        trim_vec(&mut self.minflt_history, self.max_history_len);
+        trim_vec(&mut self.majflt_history, self.max_history_len);
         trim_vec(&mut self.backlog_history, self.max_history_len);
     }
 
@@ -351,6 +416,27 @@ impl Dashboard {
             self.last_syscr = current_syscr;
             self.last_syscw = current_syscw;
 
+            // Page faults from /proc/self/stat
+            let (current_minflt, current_majflt) = read_process_page_faults();
+
+            // Minor page faults (soft) - pages resolved from memory/cache
+            let minflt_delta = current_minflt.saturating_sub(self.last_minflt);
+            let minflt_rate = (minflt_delta as f64 / iteration_elapsed.as_secs_f64()) as u64;
+            self.minflt_history.push(minflt_rate);
+            if self.minflt_history.len() > self.max_history_len {
+                let _ = self.minflt_history.remove(0);
+            }
+            self.last_minflt = current_minflt;
+
+            // Major page faults (hard) - pages read from disk
+            let majflt_delta = current_majflt.saturating_sub(self.last_majflt);
+            let majflt_rate = (majflt_delta as f64 / iteration_elapsed.as_secs_f64()) as u64;
+            self.majflt_history.push(majflt_rate);
+            if self.majflt_history.len() > self.max_history_len {
+                let _ = self.majflt_history.remove(0);
+            }
+            self.last_majflt = current_majflt;
+
             // Backlog history
             self.backlog_history.push(stats.backlog);
             if self.backlog_history.len() > self.max_history_len {
@@ -380,6 +466,8 @@ impl Dashboard {
                 &self.wal_write_history,
                 &self.read_iops_history,
                 &self.write_iops_history,
+                &self.minflt_history,
+                &self.majflt_history,
                 &self.backlog_history,
                 config,
             );
@@ -753,6 +841,56 @@ fn render_write_iops_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64
     frame.render_widget(sparkline, area);
 }
 
+/// Render minor (soft) page faults - pages resolved from memory/cache, not disk.
+fn render_minor_faults_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
+    let current = history.last().copied().unwrap_or(0);
+    let max_val = history.iter().max().copied().unwrap_or(1).max(1);
+
+    // Display in K if >= 1000
+    let title = if current >= 1000 {
+        format!(
+            " Minor Faults (soft) │ current: {:.1}K/s ",
+            current as f64 / 1000.0
+        )
+    } else {
+        format!(" Minor Faults (soft) │ current: {}/s ", current)
+    };
+
+    let sparkline = Sparkline::default()
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .data(history)
+        .max(max_val)
+        .style(Style::default().fg(Color::Magenta))
+        .bar_set(symbols::bar::NINE_LEVELS);
+
+    frame.render_widget(sparkline, area);
+}
+
+/// Render major (hard) page faults - pages that had to be read from disk.
+fn render_major_faults_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
+    let current = history.last().copied().unwrap_or(0);
+    let max_val = history.iter().max().copied().unwrap_or(1).max(1);
+
+    // Display in K if >= 1000
+    let title = if current >= 1000 {
+        format!(
+            " Major Faults (hard) │ current: {:.1}K/s ",
+            current as f64 / 1000.0
+        )
+    } else {
+        format!(" Major Faults (hard) │ current: {}/s ", current)
+    };
+
+    let sparkline = Sparkline::default()
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .data(history)
+        .max(max_val)
+        .style(Style::default().fg(Color::Red))
+        .bar_set(symbols::bar::NINE_LEVELS);
+
+    frame.render_widget(sparkline, area);
+}
+
 fn render_wal_write_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
     let current = history.last().copied().unwrap_or(0);
     let max_val = history.iter().max().copied().unwrap_or(1).max(1);
@@ -847,63 +985,82 @@ fn render_steady_state_dashboard(
     wal_write_history: &[u64],
     read_iops_history: &[u64],
     write_iops_history: &[u64],
+    minflt_history: &[u64],
+    majflt_history: &[u64],
     backlog_history: &[u64],
     config: &SteadyStateConfig,
 ) {
-    let chunks = Layout::default()
+    // Main vertical layout: header, stats, sparklines (two columns), config
+    let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3), // Title + progress
-            Constraint::Length(8), // Stats
-            Constraint::Length(4), // Throughput sparkline
-            Constraint::Length(4), // Memory sparkline
-            Constraint::Length(4), // CPU sparkline
-            Constraint::Length(4), // Disk sparkline
-            Constraint::Length(4), // Segment writes sparkline
-            Constraint::Length(4), // WAL writes sparkline
-            Constraint::Length(4), // Read IOPS sparkline
-            Constraint::Length(4), // Write IOPS sparkline
-            Constraint::Length(4), // Backlog sparkline
-            Constraint::Min(3),    // Status/config
+            Constraint::Length(3),  // Title + progress
+            Constraint::Length(8),  // Stats panels
+            Constraint::Min(24),    // Sparklines area (two columns) - increased for 6 sparklines
+            Constraint::Length(3),  // Status/config
         ])
         .split(frame.area());
 
     // Title and progress bar
-    render_steady_state_header(frame, chunks[0], elapsed, target_duration, progress_pct);
+    render_steady_state_header(frame, main_chunks[0], elapsed, target_duration, progress_pct);
 
     // Stats panels
-    render_steady_state_stats(frame, chunks[1], stats, elapsed);
+    render_steady_state_stats(frame, main_chunks[1], stats, elapsed);
 
-    // Throughput sparkline
-    render_throughput_sparkline(frame, chunks[2], throughput_history);
+    // Split sparklines area into two columns
+    let sparkline_columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50), // Left column: System metrics
+            Constraint::Percentage(50), // Right column: I/O metrics
+        ])
+        .split(main_chunks[2]);
 
-    // Memory sparkline
-    render_memory_sparkline(frame, chunks[3], memory_history, stats.current_memory_mb);
+    // Left column: System/resource metrics (5 sparklines)
+    let left_sparklines = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4), // Throughput
+            Constraint::Length(4), // Memory
+            Constraint::Length(4), // CPU
+            Constraint::Length(4), // Disk
+            Constraint::Length(4), // Backlog
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(sparkline_columns[0]);
 
-    // CPU sparkline
-    render_cpu_sparkline(frame, chunks[4], cpu_history);
+    // Right column: I/O metrics (6 sparklines)
+    let right_sparklines = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4), // Segment writes
+            Constraint::Length(4), // WAL writes
+            Constraint::Length(4), // Read IOPS
+            Constraint::Length(4), // Write IOPS
+            Constraint::Length(4), // Minor page faults
+            Constraint::Length(4), // Major page faults
+            Constraint::Min(0),    // Spacer
+        ])
+        .split(sparkline_columns[1]);
 
-    // Disk sparkline
-    render_disk_sparkline(frame, chunks[5], disk_history);
+    // Left column sparklines
+    render_throughput_sparkline(frame, left_sparklines[0], throughput_history);
+    render_memory_sparkline(frame, left_sparklines[1], memory_history, stats.current_memory_mb);
+    render_cpu_sparkline(frame, left_sparklines[2], cpu_history);
+    render_disk_sparkline(frame, left_sparklines[3], disk_history);
+    render_backlog_sparkline(frame, left_sparklines[4], backlog_history);
 
-    // Segment writes sparkline
-    render_segment_write_sparkline(frame, chunks[6], segment_write_history);
-
-    // WAL writes sparkline
-    render_wal_write_sparkline(frame, chunks[7], wal_write_history);
-
-    // Read IOPS sparkline
-    render_read_iops_sparkline(frame, chunks[8], read_iops_history);
-
-    // Write IOPS sparkline
-    render_write_iops_sparkline(frame, chunks[9], write_iops_history);
-
-    // Backlog sparkline
-    render_backlog_sparkline(frame, chunks[10], backlog_history);
+    // Right column sparklines
+    render_segment_write_sparkline(frame, right_sparklines[0], segment_write_history);
+    render_wal_write_sparkline(frame, right_sparklines[1], wal_write_history);
+    render_read_iops_sparkline(frame, right_sparklines[2], read_iops_history);
+    render_write_iops_sparkline(frame, right_sparklines[3], write_iops_history);
+    render_minor_faults_sparkline(frame, right_sparklines[4], minflt_history);
+    render_major_faults_sparkline(frame, right_sparklines[5], majflt_history);
 
     // Configuration/status
-    render_steady_state_config(frame, chunks[11], config);
+    render_steady_state_config(frame, main_chunks[3], config);
 }
 
 fn render_steady_state_header(
