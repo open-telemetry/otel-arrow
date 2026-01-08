@@ -15,6 +15,38 @@ const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
 static EXPRESSIONS: LazyLock<RwLock<Vec<(ParserOptions, PipelineExpression)>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
+static LOG_RECORD_SCHEMA: LazyLock<ParserMapSchema> = LazyLock::new(|| {
+    ParserMapSchema::new()
+        .set_default_map_key("Attributes")
+        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
+        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
+        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+        .with_key_definition("Body", ParserMapKeySchema::Any)
+        .with_key_definition("TraceId", ParserMapKeySchema::Array)
+        .with_key_definition("SpanId", ParserMapKeySchema::Array)
+        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
+        .with_key_definition("EventName", ParserMapKeySchema::String)
+        .with_key_aliases([
+            ("attributes", "Attributes"),
+            ("time_unix_nano", "Timestamp"),
+            ("observed_time_unix_nano", "ObservedTimestamp"),
+            ("severity_number", "SeverityNumber"),
+            ("severity_text", "SeverityText"),
+            ("body", "Body"),
+            ("trace_id", "TraceId"),
+            ("span_id", "SpanId"),
+            ("flags", "TraceFlags"),
+            ("event_name", "EventName"),
+        ])
+});
+
+/// Get the static schema for LogRecord fields and their aliases
+pub fn get_log_record_schema() -> &'static ParserMapSchema {
+    &LOG_RECORD_SCHEMA
+}
+
+
 pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
@@ -337,27 +369,7 @@ fn build_parser_options(options: Option<BridgeOptions>) -> Result<ParserOptions,
 fn build_log_record_schema(
     attributes_schema: Option<ParserMapSchema>,
 ) -> Result<(ParserMapSchema, Option<ParserMapSchema>), ParserError> {
-    let mut log_record_schema = ParserMapSchema::new()
-        .set_default_map_key("Attributes")
-        .with_alias("attributes", "Attributes")
-        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
-        .with_alias("time_unix_nano", "Timestamp")
-        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
-        .with_alias("observed_time_unix_nano", "ObservedTimestamp")
-        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
-        .with_alias("severity_number", "SeverityNumber")
-        .with_key_definition("SeverityText", ParserMapKeySchema::String)
-        .with_alias("severity_text", "SeverityText")
-        .with_key_definition("Body", ParserMapKeySchema::Any)
-        .with_alias("body", "Body")
-        .with_key_definition("TraceId", ParserMapKeySchema::Array)
-        .with_alias("trace_id", "TraceId")
-        .with_key_definition("SpanId", ParserMapKeySchema::Array)
-        .with_alias("span_id", "SpanId")
-        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-        .with_alias("flags", "TraceFlags")
-        .with_key_definition("EventName", ParserMapKeySchema::String)
-        .with_alias("event_name", "EventName");
+    let mut log_record_schema = LOG_RECORD_SCHEMA.clone();
 
     if let Some(mut attributes_schema) = attributes_schema {
         let schema = attributes_schema.get_schema_mut();
