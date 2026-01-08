@@ -45,7 +45,7 @@ tests:
                   url: http://localhost:8086/telemetry/metrics?reset=false
                   method: GET
                   expected_status_code: 200
-      
+
       - name: Wait for Startup Stabilization
         action:
           wait:
@@ -58,13 +58,13 @@ tests:
             post:
               - record_event:
                   name: stabilization_complete
-      
+
       - name: Monitor Engine
         action:
           component_action:
             phase: start_monitoring
             target: df-engine
-      
+
       - name: Observe Idle State
         action:
           wait:
@@ -77,19 +77,19 @@ tests:
             post:
               - record_event:
                   name: observation_stop
-      
+
       - name: Stop Monitoring
         action:
           component_action:
             phase: stop_monitoring
             target: df-engine
-      
+
       - name: Destroy Engine
         action:
           component_action:
             phase: destroy
             target: df-engine
-      
+
       - name: Run Report
         action:
           wait:
