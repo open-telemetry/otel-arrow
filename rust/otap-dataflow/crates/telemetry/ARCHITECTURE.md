@@ -74,8 +74,8 @@ third-party instrumentation.
 
 We use an intermediate representation in which the dynamic elements of
 the `tracing` event are encoded while primtive fields and metadata
-remain in structured form. These are encoded to the OTLP `LogRecord`
-protocol.
+remain in structured form. These are encoded using the OTLP
+`opentelemetry.proto.logs.v1.LogRecord` protocol.
 
 [TOKIOEVENT]: https://docs.rs/tracing/latest/tracing/struct.Event.html
 
@@ -83,10 +83,10 @@ protocol.
 
 We support formatting events for direct printing to the console from
 OTLP bytes. For the dynamic encoding, these are consumed using
-`otap_df_pdata::views::logs::LogsDataView` (which is forbidden from
-using Tokio `tracing`), our zero-copy accessor. We refer to this
-most-basic form of printing to the console as raw logging because it
-is a safe configuration early in the lifetime of a process.
+`otap_df_pdata::views::logs::LogsDataView`, our zero-copy accessor. We
+refer to this most-basic form of printing to the console as raw
+logging because it is a safe configuration early in the lifetime of a
+process. Note that the views implementation 
 
 This configuration is meant for development purposes, it is likely to
 introduce contention over the console.
