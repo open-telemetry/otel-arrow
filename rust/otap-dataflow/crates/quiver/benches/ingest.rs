@@ -7,11 +7,15 @@
 //! - WAL append
 //! - Open segment accumulation
 //! - Segment finalization (when thresholds are exceeded)
+//!
+//! Benchmark directories are created in `~/.quiver-benchmarks/` to avoid
+//! `/tmp` which may be tmpfs (RAM-backed) and would not reflect real disk I/O.
 
 #![allow(missing_docs)]
 #![allow(unused_results)]
 
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -22,7 +26,20 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use quiver::config::{QuiverConfig, SegmentConfig, WalConfig};
 use quiver::engine::QuiverEngine;
 use quiver::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId};
-use tempfile::tempdir;
+use tempfile::TempDir;
+
+/// Creates a temp directory in ~/.quiver-benchmarks/ to avoid tmpfs.
+fn bench_tempdir() -> TempDir {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let base_dir = home.join(".quiver-benchmarks");
+    std::fs::create_dir_all(&base_dir).expect("create benchmark base dir");
+    tempfile::Builder::new()
+        .prefix("bench-")
+        .tempdir_in(&base_dir)
+        .expect("create benchmark temp dir")
+}
 
 /// Realistic test bundle with configurable size.
 struct BenchBundle {
@@ -125,12 +142,12 @@ fn ingest_single(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("rows", num_rows), &bundle, |b, bundle| {
             b.iter_batched(
                 || {
-                    let temp_dir = tempdir().expect("tempdir");
+                    let temp_dir = bench_tempdir();
                     let config = bench_config(temp_dir.path(), 100); // Large segment to avoid finalization
                     let engine = QuiverEngine::new(config).expect("engine");
                     (engine, temp_dir)
                 },
-                |(engine, _temp_dir)| {
+                |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
                     engine.ingest(bundle).expect("ingest succeeds");
                 },
                 criterion::BatchSize::SmallInput,
@@ -161,12 +178,12 @@ fn ingest_sustained(c: &mut Criterion) {
         b.iter_batched(
             || {
                 // Create fresh temp dir per iteration to avoid read-only segment conflicts
-                let temp_dir = tempdir().expect("tempdir");
+                let temp_dir = bench_tempdir();
                 let config = bench_config(temp_dir.path(), 1); // 1 MB segments
                 let engine = QuiverEngine::new(config).expect("engine");
                 (engine, temp_dir) // Keep temp_dir alive
             },
-            |(engine, _temp_dir)| {
+            |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
                 for _ in 0..num_bundles {
                     engine.ingest(&bundle).expect("ingest succeeds");
                 }
@@ -193,7 +210,7 @@ fn ingest_with_frequent_writes(c: &mut Criterion) {
         b.iter_batched(
             || {
                 // Create fresh temp dir per iteration to avoid read-only segment conflicts
-                let temp_dir = tempdir().expect("tempdir");
+                let temp_dir = bench_tempdir();
                 // Tiny segment to force frequent finalization
                 let config = QuiverConfig::builder()
                     .data_dir(temp_dir.path())
@@ -214,7 +231,7 @@ fn ingest_with_frequent_writes(c: &mut Criterion) {
                 let engine = QuiverEngine::new(config).expect("engine");
                 (engine, temp_dir) // Keep temp_dir alive
             },
-            |(engine, _temp_dir)| {
+            |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
                 for _ in 0..20 {
                     engine.ingest(&bundle).expect("ingest succeeds");
                 }
