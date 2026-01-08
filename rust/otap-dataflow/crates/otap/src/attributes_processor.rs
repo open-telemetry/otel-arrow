@@ -345,11 +345,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     }
                 }
 
-                let res = effect_handler
+                effect_handler
                     .send_message(OtapPdata::new(context, records.into()))
                     .await
-                    .map_err(|e| e.into());
-                res
+                    .map_err(|e| e.into())
             }
         }
     }
