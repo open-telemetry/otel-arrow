@@ -106,15 +106,15 @@ best reflects the significance of the event.
 The following stages are recommended for event names:
 
 - `pipeline`:
-    - `build`: Pipeline construction phase.
-    - `run`: Pipeline execution phase.
-    - `report`: Pipeline metrics reporting phase.
+  - `build`: Pipeline construction phase.
+  - `run`: Pipeline execution phase.
+  - `report`: Pipeline metrics reporting phase.
 - `node`:
-    - `build`: Node construction phase.
-    - `run`: Node execution phase.
+  - `build`: Node construction phase.
+  - `run`: Node execution phase.
 - `channel`:
-    - `send`: Channel send phase.
-    - `recv`: Channel receive phase.
+  - `send`: Channel send phase.
+  - `recv`: Channel receive phase.
 
 This list is not exhaustive. Choose stages that best describe the context while
 maintaining clarity and consistency.

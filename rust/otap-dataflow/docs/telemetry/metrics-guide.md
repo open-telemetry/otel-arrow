@@ -109,15 +109,15 @@ Metric set naming should follow the pattern `otelcol.<entity>` or
 project:
 
 - For generic entities:
-    - `otelcol.pipeline`, `otelcol.node`
-    - `otelcol.channel.sender`, `otelcol.channel.receiver`
-    - ...
+  - `otelcol.pipeline`, `otelcol.node`
+  - `otelcol.channel.sender`, `otelcol.channel.receiver`
+  - ...
 - For specific node types:
-    - `otelcol.node.retry`
-    - `otelcol.node.batch`
-    - `otelcol.node.otlp_receiver`
-    - `otelcol.node.otlp_exporter`
-    - ...
+  - `otelcol.node.retry`
+  - `otelcol.node.batch`
+  - `otelcol.node.otlp_receiver`
+  - `otelcol.node.otlp_exporter`
+  - ...
 
 ## Attributes and entity context
 
@@ -138,15 +138,15 @@ follow UCUM conventions and use braces notation only for annotation units.
 The most common units in this project are:
 
 - Named units:
-    - `By`: bytes
-    - `s`: seconds (preferred over `ms` for time durations)
+  - `By`: bytes
+  - `s`: seconds (preferred over `ms` for time durations)
 - Annotation units:
-    - `{batch}`: batches of telemetry signals
-    - `{signal}`: individual telemetry signals (metrics, logs, traces)
-    - `{metric}`: individual metric data points
-    - `{log}`: individual log records
-    - `{event}`: individual event records (log with an event name)
-    - `{span}`: individual trace spans
+  - `{batch}`: batches of telemetry signals
+  - `{signal}`: individual telemetry signals (metrics, logs, traces)
+  - `{metric}`: individual metric data points
+  - `{log}`: individual log records
+  - `{event}`: individual event records (log with an event name)
+  - `{span}`: individual trace spans
 
 ## Performance considerations
 

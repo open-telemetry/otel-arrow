@@ -81,10 +81,10 @@ their implementation.
 Schemas are treated as versioned artifacts and as the primary source of truth
 for:
 
-* instrumentation requirements,
-* validation rules,
-* documentation generation,
-* and client SDK generation.
+- instrumentation requirements,
+- validation rules,
+- documentation generation,
+- and client SDK generation.
 
 Ad hoc or implicit telemetry definitions are discouraged, as they undermine
 consistency, tooling, and long-term maintainability.
@@ -97,10 +97,10 @@ one or more entities at a given point in time.
 
 This project favors:
 
-* clear separation between **entity attributes** (stable context) and
+- clear separation between **entity attributes** (stable context) and
   **signal-specific attributes** (dynamic context),
-* bounded and well-justified attribute cardinality,
-* stable identifiers to support correlation across signals, restarts, and
+- bounded and well-justified attribute cardinality,
+- stable identifiers to support correlation across signals, restarts, and
   system boundaries.
 
 Entity modeling is a prerequisite for producing telemetry that is interpretable,
@@ -112,10 +112,10 @@ The telemetry SDK is **type-safe by construction** and **performance-aware**.
 
 Instrumentation APIs should:
 
-* prevent invalid or non-compliant telemetry at compile time whenever possible,
-* minimize overhead on hot paths,
-* avoid unnecessary allocations and dynamic behavior,
-* make the cost of instrumentation explicit and predictable.
+- prevent invalid or non-compliant telemetry at compile time whenever possible,
+- minimize overhead on hot paths,
+- avoid unnecessary allocations and dynamic behavior,
+- make the cost of instrumentation explicit and predictable.
 
 Correctness, efficiency, and safety take precedence over convenience.
 
@@ -151,9 +151,9 @@ convention registry**, aligned with OpenTelemetry principles and formats.
 
 This registry formally describes:
 
-* the entities relevant to the project,
-* the signals emitted by the system,
-* the allowed attributes, types, units, and stability guarantees.
+- the entities relevant to the project,
+- the signals emitted by the system,
+- the allowed attributes, types, units, and stability guarantees.
 
 ### 6. First-class support for multivariate metrics
 
@@ -162,9 +162,9 @@ sets**.
 
 This enables:
 
-* efficient sharing of attribute tuples,
-* coherent modeling of related measurements,
-* reduced duplication explosion compared to naive univariate metrics.
+- efficient sharing of attribute tuples,
+- coherent modeling of related measurements,
+- reduced duplication explosion compared to naive univariate metrics.
 
 Multivariate metrics are treated as a fundamental modeling capability rather
 than a post-processing optimization.
@@ -182,11 +182,11 @@ convention alone**.
 
 This project plans to integrate with **Weaver** to:
 
-* validate emitted telemetry against the versioned semantic convention registry,
-* perform registry compliance checks in CI,
-* execute live checks during tests to ensure that expected signals are actually
+- validate emitted telemetry against the versioned semantic convention registry,
+- perform registry compliance checks in CI,
+- execute live checks during tests to ensure that expected signals are actually
   produced,
-* generate authoritative documentation in Markdown or HTML from the registry.
+- generate authoritative documentation in Markdown or HTML from the registry.
 
 An administrative endpoint exposes the live, resolved schema at runtime to
 support inspection, debugging, and tooling integration.
@@ -206,9 +206,9 @@ standard client SDK.
 
 The objective is to:
 
-* eliminate manual duplication between schema and code,
-* ensure strict alignment between instrumentation and specification,
-* provide contributors with safe, ergonomic APIs that encode observability
+- eliminate manual duplication between schema and code,
+- ensure strict alignment between instrumentation and specification,
+- provide contributors with safe, ergonomic APIs that encode observability
   rules directly in types.
 
 This is considered a strategic investment and will be introduced incrementally.

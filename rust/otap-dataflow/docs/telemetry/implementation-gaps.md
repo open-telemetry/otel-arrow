@@ -21,7 +21,7 @@ Goal:
 
 ### Signals and data model
 
-| Area                 | Gap                                                     | Impact                                                   | 
+| Area                 | Gap                                                     | Impact                                                   |
 |----------------------|---------------------------------------------------------|----------------------------------------------------------|
 | Metrics              | Histograms not supported yet                            | Limits latency and size distributions                    |
 | Metrics              | Bounded signal-specific metric attributes not supported | Limits modeling of small enum dimensions on core metrics |
@@ -30,7 +30,7 @@ Goal:
 
 ### Resource identity and entity attributes
 
-| Area             | Gap                                                               | 
+| Area             | Gap                                                               |
 |------------------|-------------------------------------------------------------------|
 | Service identity | `service.name` not set everywhere                                 |
 | Service identity | `process.instance.id` used instead of `service.instance.id`       |
