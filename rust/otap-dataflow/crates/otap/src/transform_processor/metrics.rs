@@ -10,19 +10,19 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "transform.processor.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
-    /// PData messages consumed by this processor.
-    #[metric(unit = "{msg}")]
-    pub msgs_consumed: Counter<u64>,
+    /// Telemetry items (log records, spans, or metrics) received by this processor.
+    #[metric(unit = "{item}")]
+    pub items_received: Counter<u64>,
 
-    /// PData messages forwarded by this processor.
-    #[metric(unit = "{msg}")]
-    pub msgs_forwarded: Counter<u64>,
+    /// Telemetry items sent to the next processor in the pipeline.
+    #[metric(unit = "{item}")]
+    pub items_sent: Counter<u64>,
 
-    /// Number of messages successfully transformed.
-    #[metric(unit = "{msg}")]
-    pub msgs_transformed: Counter<u64>,
+    /// Telemetry items successfully transformed.
+    #[metric(unit = "{item}")]
+    pub items_transformed: Counter<u64>,
 
-    /// Number of failed transform attempts.
-    #[metric(unit = "{msg}")]
-    pub msgs_transform_failed: Counter<u64>,
+    /// Telemetry items that failed during transformation.
+    #[metric(unit = "{item}")]
+    pub items_failed: Counter<u64>,
 }
