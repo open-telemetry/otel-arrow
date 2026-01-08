@@ -421,10 +421,7 @@ impl SegmentReader {
     }
 
     /// Creates a reader from a pre-loaded buffer with an optional path for error messages.
-    fn from_buffer(
-        buffer: Buffer,
-        path: Option<std::path::PathBuf>,
-    ) -> Result<Self, SegmentError> {
+    fn from_buffer(buffer: Buffer, path: Option<std::path::PathBuf>) -> Result<Self, SegmentError> {
         let file_size = buffer.len();
 
         // Need at least trailer size
@@ -643,9 +640,9 @@ impl SegmentReader {
 
         // Use entry API for efficient check-and-insert
         if let Entry::Vacant(entry) = cache.entry(stream_id) {
-            let stream_meta =
-                self.stream(stream_id)
-                    .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
+            let stream_meta = self
+                .stream(stream_id)
+                .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
 
             // Validate stream region before slicing
             Self::validate_region(

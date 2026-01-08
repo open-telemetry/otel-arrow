@@ -125,10 +125,7 @@ pub fn run(
         }
         output.log(&format!("Duration: {:?}", config.duration));
         output.log(&format!("Bundles per batch: {}", config.bundles));
-        output.log(&format!(
-            "Subscribers per engine: {}",
-            config.subscribers
-        ));
+        output.log(&format!("Subscribers per engine: {}", config.subscribers));
         output.log(&format!(
             "Subscriber delay: {} ms",
             config.subscriber_delay_ms
@@ -315,11 +312,9 @@ pub fn run(
             let mut bundles_since_flush = 0;
 
             while sub_running.load(Ordering::Relaxed) {
-                let bundle_handle = match registry.next_bundle_blocking(
-                    &sub_id_clone,
-                    None,
-                    || !sub_running.load(Ordering::Relaxed),
-                ) {
+                let bundle_handle = match registry.next_bundle_blocking(&sub_id_clone, None, || {
+                    !sub_running.load(Ordering::Relaxed)
+                }) {
                     Ok(Some(h)) => h,
                     Ok(None) => continue,
                     Err(_) => break,
@@ -638,8 +633,9 @@ fn create_engine_config(
     };
     let staggered_segment_size = ((segment_size_mb as f64 * stagger_factor) as u64).max(1);
 
-    config.segment.target_size_bytes = std::num::NonZeroU64::new(staggered_segment_size * 1024 * 1024)
-        .expect("segment size is non-zero");
+    config.segment.target_size_bytes =
+        std::num::NonZeroU64::new(staggered_segment_size * 1024 * 1024)
+            .expect("segment size is non-zero");
     config.segment.max_open_duration = Duration::from_secs(30);
 
     config.wal.max_size_bytes =

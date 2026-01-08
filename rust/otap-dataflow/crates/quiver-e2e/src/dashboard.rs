@@ -1065,15 +1065,21 @@ fn render_steady_state_dashboard(
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3),  // Title + progress
-            Constraint::Length(8),  // Stats panels
-            Constraint::Min(24),    // Sparklines area (two columns) - increased for 6 sparklines
-            Constraint::Length(3),  // Status/config
+            Constraint::Length(3), // Title + progress
+            Constraint::Length(8), // Stats panels
+            Constraint::Min(24),   // Sparklines area (two columns) - increased for 6 sparklines
+            Constraint::Length(3), // Status/config
         ])
         .split(frame.area());
 
     // Title and progress bar
-    render_steady_state_header(frame, main_chunks[0], elapsed, target_duration, progress_pct);
+    render_steady_state_header(
+        frame,
+        main_chunks[0],
+        elapsed,
+        target_duration,
+        progress_pct,
+    );
 
     // Stats panels
     render_steady_state_stats(frame, main_chunks[1], stats, elapsed);
@@ -1117,7 +1123,12 @@ fn render_steady_state_dashboard(
 
     // Left column sparklines
     render_throughput_sparkline(frame, left_sparklines[0], throughput_history);
-    render_memory_sparkline(frame, left_sparklines[1], memory_history, stats.current_memory_mb);
+    render_memory_sparkline(
+        frame,
+        left_sparklines[1],
+        memory_history,
+        stats.current_memory_mb,
+    );
     render_rss_sparkline(frame, left_sparklines[2], rss_history);
     render_cpu_sparkline(frame, left_sparklines[3], cpu_history);
     render_disk_sparkline(frame, left_sparklines[4], disk_history);

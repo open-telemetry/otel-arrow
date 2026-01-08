@@ -1215,7 +1215,10 @@ mod tests {
             .unwrap();
         let elapsed = start.elapsed();
 
-        assert!(elapsed < Duration::from_millis(100), "Should return immediately");
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "Should return immediately"
+        );
         assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
         handle.ack();
     }
@@ -1237,8 +1240,14 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_none(), "Should return None on timeout");
-        assert!(elapsed >= Duration::from_millis(200), "Should wait for timeout");
-        assert!(elapsed < Duration::from_millis(500), "Should not wait too long");
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "Should wait for timeout"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "Should not wait too long"
+        );
     }
 
     #[test]
@@ -1269,8 +1278,14 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_none(), "Should return None when stopped");
-        assert!(elapsed >= Duration::from_millis(100), "Should wait at least one cycle");
-        assert!(elapsed < Duration::from_millis(500), "Should stop reasonably quickly");
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "Should wait at least one cycle"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "Should stop reasonably quickly"
+        );
     }
 
     #[test]
@@ -1307,6 +1322,9 @@ mod tests {
 
         // Consumer should wake up and get the bundle
         consumer.join().unwrap();
-        assert!(got_bundle.load(Ordering::Relaxed), "Consumer should have received bundle");
+        assert!(
+            got_bundle.load(Ordering::Relaxed),
+            "Consumer should have received bundle"
+        );
     }
 }
