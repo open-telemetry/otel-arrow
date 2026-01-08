@@ -287,11 +287,9 @@ pub fn run(
 
             while sub_running.load(Ordering::Relaxed) {
                 // Use engine's unified subscriber API
-                let bundle_handle = match engine.next_bundle_blocking(
-                    &sub_id_clone,
-                    None,
-                    || !sub_running.load(Ordering::Relaxed),
-                ) {
+                let bundle_handle = match engine.next_bundle_blocking(&sub_id_clone, None, || {
+                    !sub_running.load(Ordering::Relaxed)
+                }) {
                     Ok(Some(h)) => h,
                     Ok(None) => continue,
                     Err(_) => break,

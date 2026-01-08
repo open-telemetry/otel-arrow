@@ -328,7 +328,10 @@ impl QuiverEngine {
     /// # Errors
     ///
     /// Returns an error if the subscriber is already registered.
-    pub fn register_subscriber(&self, id: SubscriberId) -> std::result::Result<(), SubscriberError> {
+    pub fn register_subscriber(
+        &self,
+        id: SubscriberId,
+    ) -> std::result::Result<(), SubscriberError> {
         self.registry.register(id)
     }
 
@@ -337,7 +340,10 @@ impl QuiverEngine {
     /// # Errors
     ///
     /// Returns an error if the subscriber is not registered.
-    pub fn activate_subscriber(&self, id: &SubscriberId) -> std::result::Result<(), SubscriberError> {
+    pub fn activate_subscriber(
+        &self,
+        id: &SubscriberId,
+    ) -> std::result::Result<(), SubscriberError> {
         self.registry.activate(id)
     }
 
@@ -1686,7 +1692,7 @@ mod tests {
         // Use a large size threshold so size-based finalization won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: Duration::from_secs(3600),        // 1 hour
+            max_open_duration: Duration::from_secs(3600),                   // 1 hour
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -1770,7 +1776,7 @@ mod tests {
         // Use large size and time thresholds so they won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: Duration::from_secs(3600),        // 1 hour
+            max_open_duration: Duration::from_secs(3600),                   // 1 hour
             max_stream_count: 3, // Very small - will trigger after 3 unique streams
         };
         let config = QuiverConfig::builder()

@@ -339,7 +339,7 @@ fn run_iteration_for_stress(
     // Register and activate subscribers before ingestion
     let mut subscriber_ids = Vec::with_capacity(args.subscribers);
     for sub_idx in 0..args.subscribers {
-        let sub_id = SubscriberId::new(&format!("subscriber-{}", sub_idx))?;
+        let sub_id = SubscriberId::new(format!("subscriber-{}", sub_idx))?;
         engine.register_subscriber(sub_id.clone())?;
         engine.activate_subscriber(&sub_id)?;
         subscriber_ids.push(sub_id);
@@ -498,7 +498,7 @@ fn run_single_iteration(
     // ─────────────────────────────────────────────────────────────────────────
     // Phase 2: Run test for each read mode
     // ─────────────────────────────────────────────────────────────────────────
-    
+
     // Determine which modes to test
     let modes_to_test: Vec<(SegmentReadMode, &str)> = match args.read_mode {
         ReadModeArg::Standard => vec![(SegmentReadMode::Standard, "standard")],
@@ -537,7 +537,7 @@ fn run_single_iteration(
         // Register and activate subscribers before ingestion
         let mut subscriber_ids = Vec::with_capacity(args.subscribers);
         for sub_idx in 0..args.subscribers {
-            let sub_id = SubscriberId::new(&format!("subscriber-{}", sub_idx))?;
+            let sub_id = SubscriberId::new(format!("subscriber-{}", sub_idx))?;
             engine.register_subscriber(sub_id.clone())?;
             engine.activate_subscriber(&sub_id)?;
             subscriber_ids.push(sub_id);
@@ -632,10 +632,7 @@ fn run_single_iteration(
             );
             all_verified = false;
         }
-        info!(
-            "  Segments: {}",
-            mode_result.segment_count
-        );
+        info!("  Segments: {}", mode_result.segment_count);
         info!(
             "  Ingestion: {:?} ({:.0} bundles/sec)",
             mode_result.ingest_duration,
@@ -649,9 +646,7 @@ fn run_single_iteration(
         );
         info!(
             "  Bundles: {} ingested, {} consumed (expected {})",
-            mode_result.bundles_ingested,
-            mode_result.bundles_consumed,
-            expected_consumed
+            mode_result.bundles_ingested, mode_result.bundles_consumed, expected_consumed
         );
     }
 
@@ -671,15 +666,31 @@ fn run_single_iteration(
             "Ingest time: standard {:?} vs mmap {:?} ({:.2}x {})",
             std_result.ingest_duration,
             mmap_result.ingest_duration,
-            if ingest_speedup >= 1.0 { ingest_speedup } else { 1.0 / ingest_speedup },
-            if ingest_speedup >= 1.0 { "faster with mmap" } else { "faster with standard" }
+            if ingest_speedup >= 1.0 {
+                ingest_speedup
+            } else {
+                1.0 / ingest_speedup
+            },
+            if ingest_speedup >= 1.0 {
+                "faster with mmap"
+            } else {
+                "faster with standard"
+            }
         );
         info!(
             "Consumption time: standard {:?} vs mmap {:?} ({:.2}x {})",
             std_result.consume_duration,
             mmap_result.consume_duration,
-            if consume_speedup >= 1.0 { consume_speedup } else { 1.0 / consume_speedup },
-            if consume_speedup >= 1.0 { "faster with mmap" } else { "faster with standard" }
+            if consume_speedup >= 1.0 {
+                consume_speedup
+            } else {
+                1.0 / consume_speedup
+            },
+            if consume_speedup >= 1.0 {
+                "faster with mmap"
+            } else {
+                "faster with standard"
+            }
         );
     }
 
@@ -689,7 +700,10 @@ fn run_single_iteration(
     mem_tracker.print_summary();
 
     info!("");
-    info!("Peak memory (post-baseline): {:.2} MB", mem_tracker.peak_mb());
+    info!(
+        "Peak memory (post-baseline): {:.2} MB",
+        mem_tracker.peak_mb()
+    );
     info!(
         "All data verified: {}",
         if all_verified { "✓ YES" } else { "✗ NO" }

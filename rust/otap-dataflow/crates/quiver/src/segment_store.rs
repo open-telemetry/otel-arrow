@@ -21,6 +21,7 @@ type Result<T> = std::result::Result<T, SubscriberError>;
 
 /// Read mode for segment files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SegmentReadMode {
     /// Standard file I/O (reads entire file into memory)
     #[cfg_attr(not(feature = "mmap"), default)]
