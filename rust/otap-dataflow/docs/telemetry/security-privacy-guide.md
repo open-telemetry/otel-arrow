@@ -84,7 +84,7 @@ When exporting events as logs and trace context exists:
 - include trace correlation (trace id and span id) so operators can pivot
 - do not copy trace ids into custom attributes unless required by tooling
 
-Trace ids are not secrets but they can be used to join information across
+Trace and Span ids are not secrets but they can be used to join information across
 systems. Treat them as internal identifiers.
 
 ## Schema endpoint security
