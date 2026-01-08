@@ -7,7 +7,6 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -188,17 +187,35 @@ pub fn run(
     let registry_config = RegistryConfig::new(&data_dir);
     let registry = SubscriberRegistry::open(registry_config, store_provider.clone())?;
 
-    // Register and activate all subscribers upfront
-    let sub_ids = register_subscribers(&registry, config.subscribers)?;
-    output.log(&format!("Registered {} subscribers", config.subscribers));
-
-    // Shared state for coordination
+    // Shared state for coordination (declare segments_written early for use in callback)
     let running = Arc::new(AtomicBool::new(true));
     let ingest_running = Arc::new(AtomicBool::new(true));
     let total_ingested = Arc::new(AtomicU64::new(0));
     let total_consumed = Arc::new(AtomicU64::new(0));
     let total_cleaned = Arc::new(AtomicU64::new(0));
     let segments_written = Arc::new(AtomicU64::new(0));
+
+    // Wire the notification chain: engine -> store -> registry
+    // When engine finalizes a segment, it calls store.register_segment()
+    // The store callback notifies the registry which wakes waiting subscribers
+    {
+        let store_provider_for_callback = store_provider.clone();
+        let registry_for_callback = registry.clone();
+        let segments_written_ref = segments_written.clone();
+
+        segment_store.set_on_segment_registered(move |seq, bundle_count| {
+            store_provider_for_callback.add_segment(seq, bundle_count);
+            registry_for_callback.on_segment_finalized(seq, bundle_count);
+            let _ = segments_written_ref.fetch_add(1, Ordering::Relaxed);
+        });
+
+        // Give engine a reference to the store for segment registration
+        engine.set_segment_store(segment_store.clone());
+    }
+
+    // Register and activate all subscribers upfront
+    let sub_ids = register_subscribers(&registry, config.subscribers)?;
+    output.log(&format!("Registered {} subscribers", config.subscribers));
 
     let start = Instant::now();
     let cleanup_interval = Duration::from_secs(2);
@@ -213,13 +230,7 @@ pub fn run(
         total_ingested.clone(),
     );
 
-    let scanner_handle = spawn_scanner_thread(
-        segment_store.clone(),
-        store_provider.clone(),
-        registry.clone(),
-        running.clone(),
-        segments_written.clone(),
-    );
+    // No scanner thread needed - engine notifies store directly via callback
 
     let subscriber_handles = spawn_subscriber_threads(
         sub_ids.clone(),
@@ -341,9 +352,8 @@ pub fn run(
         drain_start.elapsed()
     ));
 
-    // 5. Stop subscribers and scanner
+    // 5. Stop subscribers
     running.store(false, Ordering::SeqCst);
-    let _ = scanner_handle.join();
     for handle in subscriber_handles {
         let _ = handle.join();
     }
@@ -475,31 +485,6 @@ fn spawn_ingest_thread(
                 }
                 let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
             }
-        }
-    })
-}
-
-fn spawn_scanner_thread(
-    segment_store: Arc<SegmentStore>,
-    store_provider: Arc<SharedStoreProvider>,
-    registry: Arc<SubscriberRegistry<SharedStoreProvider>>,
-    running: Arc<AtomicBool>,
-    segments_written: Arc<AtomicU64>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        let mut known_segments: HashSet<u64> = HashSet::new();
-
-        while running.load(Ordering::Relaxed) {
-            if let Ok(segments) = segment_store.scan_existing() {
-                for (seq, bundle_count) in segments {
-                    if known_segments.insert(seq.raw()) {
-                        store_provider.add_segment(seq, bundle_count);
-                        registry.on_segment_finalized(seq, bundle_count);
-                        let _ = segments_written.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }
-            thread::sleep(Duration::from_millis(100));
         }
     })
 }

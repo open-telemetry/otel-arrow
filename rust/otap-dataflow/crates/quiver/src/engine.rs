@@ -21,6 +21,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 
@@ -28,6 +29,7 @@ use crate::config::{DurabilityMode, QuiverConfig};
 use crate::error::Result;
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
+use crate::segment_store::SegmentStore;
 use crate::telemetry::PersistenceMetrics;
 use crate::wal::{WalConsumerCursor, WalWriter, WalWriterOptions};
 
@@ -63,6 +65,10 @@ pub struct QuiverEngine {
     segment_cursor: Mutex<WalConsumerCursor>,
     /// Next segment sequence number to assign.
     next_segment_seq: AtomicU64,
+    /// Optional segment store for automatic segment registration.
+    /// When set, finalized segments are registered with the store, which
+    /// can trigger subscriber notifications.
+    segment_store: Mutex<Option<Arc<SegmentStore>>>,
 }
 
 impl std::fmt::Debug for QuiverEngine {
@@ -101,7 +107,16 @@ impl QuiverEngine {
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(0),
+            segment_store: Mutex::new(None),
         })
+    }
+
+    /// Sets the segment store for automatic segment registration.
+    ///
+    /// When set, finalized segments are automatically registered with the store.
+    /// This enables the store's callback to notify subscribers of new segments.
+    pub fn set_segment_store(&self, store: Arc<SegmentStore>) {
+        *self.segment_store.lock() = Some(store);
     }
 
     /// Returns the configuration backing this engine.
@@ -238,6 +253,12 @@ impl QuiverEngine {
         {
             let mut wal_writer = self.wal_writer.lock();
             wal_writer.persist_cursor(&cursor)?;
+        }
+
+        // Step 6: Register segment with store (triggers subscriber notification)
+        if let Some(store) = self.segment_store.lock().as_ref() {
+            // Ignore registration errors - the segment is already written
+            let _ = store.register_segment(seq);
         }
 
         Ok(())

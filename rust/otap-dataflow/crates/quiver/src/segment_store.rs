@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
@@ -107,6 +107,9 @@ impl SegmentHandle {
 // SegmentStore
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Callback type for segment finalization notifications.
+pub type SegmentCallback = Box<dyn Fn(SegmentSeq, u32) + Send + Sync>;
+
 /// Store for finalized segments.
 ///
 /// Tracks segment files and provides read access. Thread-safe for concurrent
@@ -118,6 +121,8 @@ pub struct SegmentStore {
     read_mode: SegmentReadMode,
     /// Loaded segments, keyed by sequence number.
     segments: RwLock<BTreeMap<SegmentSeq, Arc<SegmentHandle>>>,
+    /// Optional callback invoked when a segment is registered.
+    on_segment_registered: Mutex<Option<SegmentCallback>>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -145,7 +150,21 @@ impl SegmentStore {
             segment_dir: segment_dir.into(),
             read_mode,
             segments: RwLock::new(BTreeMap::new()),
+            on_segment_registered: Mutex::new(None),
         }
+    }
+
+    /// Sets a callback to be invoked when a segment is registered.
+    ///
+    /// The callback receives the segment sequence number and bundle count.
+    /// This is typically used to notify a [`SubscriberRegistry`] of new segments.
+    ///
+    /// [`SubscriberRegistry`]: crate::subscriber::SubscriberRegistry
+    pub fn set_on_segment_registered<F>(&self, callback: F)
+    where
+        F: Fn(SegmentSeq, u32) + Send + Sync + 'static,
+    {
+        *self.on_segment_registered.lock() = Some(Box::new(callback));
     }
 
     /// Returns the read mode being used.
@@ -156,7 +175,9 @@ impl SegmentStore {
 
     /// Registers a newly finalized segment.
     ///
-    /// Called by the engine after writing a segment file.
+    /// Called by the engine after writing a segment file. If a callback was
+    /// set via [`set_on_segment_registered`](Self::set_on_segment_registered),
+    /// it will be invoked with the segment sequence and bundle count.
     ///
     /// # Errors
     ///
@@ -166,8 +187,15 @@ impl SegmentStore {
         let handle = SegmentHandle::open(seq, path, self.read_mode)?;
         let bundle_count = handle.bundle_count;
 
-        let mut segments = self.segments.write();
-        let _ = segments.insert(seq, Arc::new(handle));
+        {
+            let mut segments = self.segments.write();
+            let _ = segments.insert(seq, Arc::new(handle));
+        }
+
+        // Notify callback (outside of segments lock)
+        if let Some(callback) = self.on_segment_registered.lock().as_ref() {
+            callback(seq, bundle_count);
+        }
 
         Ok(bundle_count)
     }
