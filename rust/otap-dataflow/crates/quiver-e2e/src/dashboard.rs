@@ -183,9 +183,11 @@ impl Dashboard {
         let terminal = Terminal::new(backend)?;
 
         // Calculate max history based on terminal width
-        // Account for: 2 margin + 2 border chars = 4 chars overhead
+        // Account for: 2 margin + 2 border chars = 4 chars overhead per column
+        // With two-column layout, each sparkline gets half the width
         let term_width = terminal.size()?.width as usize;
-        let max_history_len = term_width.saturating_sub(4).max(1);
+        let column_width = term_width / 2;
+        let max_history_len = column_width.saturating_sub(4).max(1);
 
         // Get initial segment size and syscall counts
         // Note: WAL bytes are tracked via cumulative engine counter, starting at 0
@@ -332,8 +334,10 @@ impl Dashboard {
 
         // Update max_history_len based on current terminal width BEFORE sampling
         // This ensures we use the new width when deciding whether to trim
+        // With two-column layout, each sparkline gets half the width
         if let Ok(size) = self.terminal.size() {
-            let new_max = (size.width as usize).saturating_sub(4).max(1);
+            let column_width = size.width as usize / 2;
+            let new_max = column_width.saturating_sub(4).max(1);
             if new_max < self.max_history_len {
                 // Terminal shrank - trim histories
                 self.max_history_len = new_max;
