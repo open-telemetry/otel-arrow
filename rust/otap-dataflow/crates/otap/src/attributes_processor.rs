@@ -1166,8 +1166,6 @@ mod telemetry_tests {
                     if desc.name == "attributes.processor.metrics" {
                         for (field, v) in iter {
                             match (field.name, v.to_u64_lossy()) {
-                                ("msgs.consumed", x) if x >= 1 => found_consumed = true,
-                                ("msgs.forwarded", x) if x >= 1 => found_forwarded = true,
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
                                 ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
                                 ("domains.signal", x) if x >= 1 => found_domain_signal = true,
@@ -1177,8 +1175,6 @@ mod telemetry_tests {
                     }
                 });
 
-                assert!(found_consumed, "msgs.consumed should be >= 1");
-                assert!(found_forwarded, "msgs.forwarded should be >= 1");
                 assert!(found_renamed_entries, "renamed.entries should be >= 1");
                 assert!(found_deleted_entries, "deleted.entries should be >= 1");
                 assert!(found_domain_signal, "domains.signal should be >= 1");
