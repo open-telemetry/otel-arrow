@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -114,6 +114,58 @@ impl Config {
             return Err("Invalid configuration: dcr must be non-empty".to_string());
         }
 
+        self.validate_schema_unique_columns()?;
+
+        Ok(())
+    }
+
+    fn validate_schema_unique_columns(&self) -> Result<(), String> {
+        let mut seen = HashSet::new();
+        let mut duplicates = HashSet::new();
+
+        for (_, value) in &self.api.schema.resource_mapping {
+            if !seen.insert(value.clone()) {
+                _ = duplicates.insert(value.clone());
+            }
+        }
+
+        for (_, value) in &self.api.schema.scope_mapping {
+            if !seen.insert(value.clone()) {
+                _ = duplicates.insert(value.clone());
+            }
+        }
+
+        for (key, value) in &self.api.schema.log_record_mapping {
+            match value {
+                Value::String(s) => {
+                    if !seen.insert(s.clone()) {
+                        _ = duplicates.insert(s.clone());
+                    }
+                }
+                Value::Object(map) => {
+                    if key != "attributes" {
+                        Err("Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed")?;
+                    }
+
+                    for (_, v) in map {
+                        if let Value::String(s) = v {
+                            if !seen.insert(s.clone()) {
+                                _ = duplicates.insert(s.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !duplicates.is_empty() {
+            return Err(format!(
+                "Duplicate columns found: {:?}",
+                duplicates.into_iter().collect::<Vec<String>>()
+            ));
+        }
+
         Ok(())
     }
 }
@@ -121,6 +173,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_valid_config() {
@@ -158,5 +211,121 @@ mod tests {
             config.validate().unwrap_err(),
             "Invalid configuration: dcr_endpoint must be non-empty"
         );
+    }
+
+    #[test]
+    fn test_schema_no_duplicate_columns() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([
+                        ("service.name".into(), "ServiceName".into()),
+                        ("service.version".into(), "ServiceVersion".into()),
+                    ]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        ("severity_text".into(), json!("Severity")),
+                        (
+                            "attributes".into(),
+                            json!({"user.id": "UserId", "request.path": "RequestPath"}),
+                        ),
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_schema_duplicate_columns() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([
+                        ("service.name".into(), "Name".into()), // "Name" - first occurrence
+                    ]),
+                    scope_mapping: HashMap::from([
+                        ("scope.name".into(), "Name".into()), // "Name" - duplicate!
+                    ]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        ("severity_text".into(), json!("Body")), // "Body" - duplicate!
+                        ("attributes".into(), json!({"user.name": "Name"})), // "Name" - another duplicate!
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Duplicate columns found"));
+    }
+
+    #[test]
+    fn test_schema_duplicate_columns_in_nested_log_record_mapping() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([("service.name".into(), "ServiceName".into())]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        (
+                            "attributes".into(),
+                            json!({
+                                "user.id": "UserId",
+                                "user.name": "UserName",
+                                "request.user": "UserName"  // "UserName" - duplicate within nested!
+                            }),
+                        ),
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Duplicate columns found"));
+        assert!(err.contains("UserName"));
+    }
+
+    #[test]
+    fn test_schema_nested_object_only_allowed_for_attributes() {
+        let config = Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!({"nested": "NotAllowed"})), // object for non-attributes key
+                    ]),
+                },
+            },
+            auth: AuthConfig::default(),
+        };
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("only 'attributes' is allowed"));
     }
 }
