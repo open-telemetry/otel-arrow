@@ -76,6 +76,28 @@ fn read_process_page_faults() -> (u64, u64) {
     (minflt, majflt)
 }
 
+/// Reads RSS (Resident Set Size) from /proc/self/status.
+/// Returns RSS in bytes. This includes all resident memory: heap, stack, and mmap'd pages.
+fn read_process_rss_bytes() -> u64 {
+    let content = match fs::read_to_string("/proc/self/status") {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+
+    for line in content.lines() {
+        if let Some(val) = line.strip_prefix("VmRSS:") {
+            // VmRSS is in kB, e.g., "VmRSS:    12345 kB"
+            let val = val.trim();
+            if let Some(kb_str) = val.strip_suffix(" kB") {
+                if let Ok(kb) = kb_str.trim().parse::<u64>() {
+                    return kb * 1024; // Convert to bytes
+                }
+            }
+        }
+    }
+    0
+}
+
 /// Calculates total size of segment files in data_dir/segments/ and any engine_*/segments/ subdirs.
 /// Returns total bytes of .qseg files.
 fn calculate_segment_size(data_dir: &std::path::Path) -> u64 {
@@ -132,8 +154,10 @@ pub struct Dashboard {
     max_history_len: usize,
     /// Recent throughput samples for sparkline (bundles/sec)
     throughput_history: Vec<u64>,
-    /// Recent memory samples for sparkline (MB * 10 for precision)
+    /// Recent heap memory samples for sparkline (MB * 10 for precision) - jemalloc allocated
     memory_history: Vec<u64>,
+    /// Recent RSS samples for sparkline (MB) - includes mmap'd pages
+    rss_history: Vec<u64>,
     /// Recent CPU samples for sparkline (percentage * 10 for precision)
     cpu_history: Vec<u64>,
     /// Recent disk usage samples for sparkline (MB)
@@ -203,6 +227,7 @@ impl Dashboard {
             max_history_len,
             throughput_history: Vec::with_capacity(max_history_len),
             memory_history: Vec::with_capacity(max_history_len),
+            rss_history: Vec::with_capacity(max_history_len),
             cpu_history: Vec::with_capacity(max_history_len),
             disk_history: Vec::with_capacity(max_history_len),
             segment_write_history: Vec::with_capacity(max_history_len),
@@ -310,6 +335,7 @@ impl Dashboard {
         }
         trim_vec(&mut self.throughput_history, self.max_history_len);
         trim_vec(&mut self.memory_history, self.max_history_len);
+        trim_vec(&mut self.rss_history, self.max_history_len);
         trim_vec(&mut self.cpu_history, self.max_history_len);
         trim_vec(&mut self.disk_history, self.max_history_len);
         trim_vec(&mut self.segment_write_history, self.max_history_len);
@@ -363,10 +389,18 @@ impl Dashboard {
             }
 
             // Memory history (store as MB * 10 for better sparkline resolution)
+            // This is heap-only memory from jemalloc
             self.memory_history
                 .push((stats.current_memory_mb * 10.0) as u64);
             if self.memory_history.len() > self.max_history_len {
                 let _ = self.memory_history.remove(0);
+            }
+
+            // RSS history (store as MB) - includes mmap'd pages
+            let rss_mb = read_process_rss_bytes() / 1024 / 1024;
+            self.rss_history.push(rss_mb);
+            if self.rss_history.len() > self.max_history_len {
+                let _ = self.rss_history.remove(0);
             }
 
             // CPU history (refresh and get process-specific CPU usage)
@@ -476,6 +510,7 @@ impl Dashboard {
                 progress_pct,
                 &self.throughput_history,
                 &self.memory_history,
+                &self.rss_history,
                 &self.cpu_history,
                 &self.disk_history,
                 &self.segment_write_history,
@@ -753,12 +788,30 @@ fn render_memory_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64], c
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Memory (MB) │ current: {:.1} ", current))
+                .title(format!(" Heap (MB) │ current: {:.1} ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
         .max(max_val)
         .style(Style::default().fg(Color::Magenta))
+        .bar_set(symbols::bar::NINE_LEVELS);
+
+    frame.render_widget(sparkline, area);
+}
+
+fn render_rss_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
+    let current = history.last().copied().unwrap_or(0);
+    let max_val = history.iter().max().copied().unwrap_or(1);
+
+    let sparkline = Sparkline::default()
+        .block(
+            Block::default()
+                .title(format!(" RSS (MB) │ current: {} ", current))
+                .borders(Borders::ALL),
+        )
+        .data(history)
+        .max(max_val)
+        .style(Style::default().fg(Color::LightMagenta))
         .bar_set(symbols::bar::NINE_LEVELS);
 
     frame.render_widget(sparkline, area);
@@ -995,6 +1048,7 @@ fn render_steady_state_dashboard(
     progress_pct: f64,
     throughput_history: &[u64],
     memory_history: &[u64],
+    rss_history: &[u64],
     cpu_history: &[u64],
     disk_history: &[u64],
     segment_write_history: &[u64],
@@ -1033,12 +1087,13 @@ fn render_steady_state_dashboard(
         ])
         .split(main_chunks[2]);
 
-    // Left column: System/resource metrics (5 sparklines)
+    // Left column: System/resource metrics (6 sparklines)
     let left_sparklines = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4), // Throughput
-            Constraint::Length(4), // Memory
+            Constraint::Length(4), // Memory (heap)
+            Constraint::Length(4), // RSS (total)
             Constraint::Length(4), // CPU
             Constraint::Length(4), // Disk
             Constraint::Length(4), // Backlog
@@ -1063,9 +1118,10 @@ fn render_steady_state_dashboard(
     // Left column sparklines
     render_throughput_sparkline(frame, left_sparklines[0], throughput_history);
     render_memory_sparkline(frame, left_sparklines[1], memory_history, stats.current_memory_mb);
-    render_cpu_sparkline(frame, left_sparklines[2], cpu_history);
-    render_disk_sparkline(frame, left_sparklines[3], disk_history);
-    render_backlog_sparkline(frame, left_sparklines[4], backlog_history);
+    render_rss_sparkline(frame, left_sparklines[2], rss_history);
+    render_cpu_sparkline(frame, left_sparklines[3], cpu_history);
+    render_disk_sparkline(frame, left_sparklines[4], disk_history);
+    render_backlog_sparkline(frame, left_sparklines[5], backlog_history);
 
     // Right column sparklines
     render_segment_write_sparkline(frame, right_sparklines[0], segment_write_history);
