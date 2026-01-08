@@ -123,13 +123,13 @@ impl Config {
         let mut seen = HashSet::new();
         let mut duplicates = HashSet::new();
 
-        for (_, value) in &self.api.schema.resource_mapping {
+        for value in self.api.schema.resource_mapping.values() {
             if !seen.insert(value.clone()) {
                 _ = duplicates.insert(value.clone());
             }
         }
 
-        for (_, value) in &self.api.schema.scope_mapping {
+        for value in self.api.schema.scope_mapping.values() {
             if !seen.insert(value.clone()) {
                 _ = duplicates.insert(value.clone());
             }
@@ -144,7 +144,9 @@ impl Config {
                 }
                 Value::Object(map) => {
                     if key != "attributes" {
-                        Err("Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed")?;
+                        Err(
+                            "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed",
+                        )?;
                     }
 
                     for (_, v) in map {
@@ -280,7 +282,10 @@ mod tests {
                 stream_name: "mystream".to_string(),
                 dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
-                    resource_mapping: HashMap::from([("service.name".into(), "ServiceName".into())]),
+                    resource_mapping: HashMap::from([(
+                        "service.name".into(),
+                        "ServiceName".into(),
+                    )]),
                     scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
                     log_record_mapping: HashMap::from([
                         ("body".into(), json!("Body")),
