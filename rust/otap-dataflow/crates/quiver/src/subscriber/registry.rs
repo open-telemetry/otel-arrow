@@ -113,7 +113,7 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     /// Segment data provider.
     segment_provider: Arc<P>,
     /// Condvar for notifying waiting subscribers when new segments arrive.
-    /// The Mutex<bool> tracks whether there's pending data (set true on segment
+    /// The `Mutex<bool>` tracks whether there's pending data (set true on segment
     /// finalization, reset to false when checked).
     bundle_available: (Mutex<bool>, Condvar),
 }

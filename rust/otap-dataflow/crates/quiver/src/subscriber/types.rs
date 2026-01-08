@@ -29,7 +29,7 @@ pub const MAX_SUBSCRIBER_ID_LEN: usize = 64;
 ///
 /// Valid subscriber IDs:
 /// - Are non-empty
-/// - Are at most [`MAX_SUBSCRIBER_ID_LEN`] bytes
+/// - Are at most `MAX_SUBSCRIBER_ID_LEN` (64) bytes
 /// - Contain only ASCII alphanumeric characters, hyphens, and underscores
 ///
 /// Use [`SubscriberId::new`] to validate and create instances.
