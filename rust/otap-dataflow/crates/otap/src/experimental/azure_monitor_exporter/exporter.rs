@@ -55,7 +55,9 @@ impl AzureMonitorExporter {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig { error: e.to_string() })?;
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            })?;
 
         // Create log transformer
         let transformer = Transformer::new(&config);

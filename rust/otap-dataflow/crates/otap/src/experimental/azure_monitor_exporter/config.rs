@@ -1,10 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::Error;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use super::Error;
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -219,7 +219,9 @@ mod tests {
         assert!(config.validate().is_err());
         assert_eq!(
             config.validate().unwrap_err(),
-            Error::ConfigurationError("Invalid configuration: dcr_endpoint must be non-empty".to_string())
+            Error::ConfigurationError(
+                "Invalid configuration: dcr_endpoint must be non-empty".to_string()
+            )
         );
     }
 
@@ -280,9 +282,14 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ConfigurationDuplicateColumnsError { columns } => {
-                assert!(columns.contains(&"Name".to_string()) && columns.contains(&"Body".to_string()));
+                assert!(
+                    columns.contains(&"Name".to_string()) && columns.contains(&"Body".to_string())
+                );
             }
-            other => panic!("Expected ConfigurationDuplicateColumnsError, got {:?}", other),
+            other => panic!(
+                "Expected ConfigurationDuplicateColumnsError, got {:?}",
+                other
+            ),
         }
     }
 
@@ -318,7 +325,9 @@ mod tests {
         let result = config.validate();
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, Error::ConfigurationDuplicateColumnsError { columns } if columns.contains(&"UserName".to_string())));
+        assert!(
+            matches!(err, Error::ConfigurationDuplicateColumnsError { columns } if columns.contains(&"UserName".to_string()))
+        );
     }
 
     #[test]
@@ -342,6 +351,8 @@ mod tests {
         let result = config.validate();
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, Error::ConfigurationError(msg) if msg == "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed"));
+        assert!(
+            matches!(err, Error::ConfigurationError(msg) if msg == "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed")
+        );
     }
 }

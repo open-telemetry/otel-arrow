@@ -21,20 +21,20 @@ use crate::pdata::OtapPdata;
 mod auth;
 mod client;
 mod config;
+mod error;
 mod exporter;
 mod gzip_batcher;
 mod in_flight_exports;
 mod state;
 mod stats;
 mod transformer;
-mod error;
 
 pub use client::LogsIngestionClient;
 pub use config::Config;
+pub use error::Error;
 pub use exporter::AzureMonitorExporter;
 pub use stats::AzureMonitorExporterStats;
 pub use transformer::Transformer;
-pub use error::Error;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
 pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:otel:azuremonitor:exporter";
