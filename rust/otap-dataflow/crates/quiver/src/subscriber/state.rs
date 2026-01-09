@@ -362,6 +362,19 @@ impl SubscriberState {
     /// Used by DropOldest policy to forcibly drop pending segments.
     /// This releases any claimed bundles and marks all bundles as resolved.
     ///
+    /// # Safety Implications
+    ///
+    /// **This method causes data loss.** Any bundles in this segment that were
+    /// pending or in-flight will be marked as resolved (acked) without actually
+    /// being processed. The embedding layer should:
+    ///
+    /// 1. Only call this when the `DropOldest` retention policy is in effect
+    /// 2. Track the number of dropped bundles via metrics
+    /// 3. Ensure no subscriber is actively reading from this segment
+    ///
+    /// Subscribers will not see these bundles again. If the segment file is
+    /// subsequently deleted, the data is permanently lost.
+    ///
     /// Returns `true` if the segment was found and completed, `false` if not tracked.
     pub fn force_complete_segment(&mut self, segment_seq: SegmentSeq) -> bool {
         // Release any claimed bundles in this segment
