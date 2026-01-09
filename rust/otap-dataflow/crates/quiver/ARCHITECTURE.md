@@ -596,11 +596,17 @@ the embedding layer to monitor progress.
 **Recovery from Offline Period**: When a node recovers after extended downtime,
 the most recent data is typically highest priority. Quiver supports this via:
 
-- `pending_bundles_in_range(subscriber, segment_range)`: Fetch pending bundles
-  within a specific segment range, allowing the embedding layer to prioritize
-  recent segments over older ones.
 - Per-segment completion tracking: Bundles can be acked in any order; segment
   deletion is based on completion, not delivery order.
+- `segment_store().segment_sequences()`: Lists available segments for custom
+  ordering.
+- `claim_bundle(BundleRef)`: Claims specific bundles by segment/index, enabling
+  the embedding layer to implement priority policies.
+
+*Future work (if needed)*: A convenience API like
+`pending_bundles_in_range(subscriber, segment_range)` could be added to fetch
+pending bundles within a specific segment range, but the existing primitives
+are sufficient for most priority delivery scenarios.
 
 The embedding layer implements the priority policy (e.g., newest first with
 interleaved backfill) while Quiver tracks completion accurately.
