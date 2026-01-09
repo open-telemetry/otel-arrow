@@ -300,21 +300,12 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 _ => Ok(()),
             },
             Message::PData(pdata) => {
-                if let Some(m) = self.metrics.as_mut() {
-                    m.msgs_consumed.inc();
-                }
-
                 // Fast path: no actions to apply
                 if self.is_noop() {
                     let res = effect_handler
                         .send_message(pdata)
                         .await
                         .map_err(|e| e.into());
-                    if res.is_ok() {
-                        if let Some(m) = self.metrics.as_mut() {
-                            m.msgs_forwarded.inc();
-                        }
-                    }
                     return res;
                 }
 
@@ -355,16 +346,10 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                     }
                 }
 
-                let res = effect_handler
+                effect_handler
                     .send_message(OtapPdata::new(context, records.into()))
                     .await
-                    .map_err(|e| e.into());
-                if res.is_ok() {
-                    if let Some(m) = self.metrics.as_mut() {
-                        m.msgs_forwarded.inc();
-                    }
-                }
-                res
+                    .map_err(|e| e.into())
             }
         }
     }
@@ -1172,8 +1157,6 @@ mod telemetry_tests {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 // Inspect current metrics; fields with non-zero values should be present
-                let mut found_consumed = false;
-                let mut found_forwarded = false;
                 let mut found_renamed_entries = false;
                 let mut found_deleted_entries = false;
                 let mut found_domain_signal = false;
@@ -1182,8 +1165,6 @@ mod telemetry_tests {
                     if desc.name == "attributes.processor.metrics" {
                         for (field, v) in iter {
                             match (field.name, v.to_u64_lossy()) {
-                                ("msgs.consumed", x) if x >= 1 => found_consumed = true,
-                                ("msgs.forwarded", x) if x >= 1 => found_forwarded = true,
                                 ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
                                 ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
                                 ("domains.signal", x) if x >= 1 => found_domain_signal = true,
@@ -1193,8 +1174,6 @@ mod telemetry_tests {
                     }
                 });
 
-                assert!(found_consumed, "msgs.consumed should be >= 1");
-                assert!(found_forwarded, "msgs.forwarded should be >= 1");
                 assert!(found_renamed_entries, "renamed.entries should be >= 1");
                 assert!(found_deleted_entries, "deleted.entries should be >= 1");
                 assert!(found_domain_signal, "domains.signal should be >= 1");

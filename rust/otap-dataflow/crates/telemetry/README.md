@@ -1,5 +1,7 @@
 # Telemetry SDK (schema-first, multivariate, NUMA-aware)
 
+Status: draft under active development.
+
 A low-overhead, NUMA-aware telemetry SDK that turns a declarative schema into a
 type-safe Rust API for emitting richly structured, multivariate metrics. It is
 designed for engines that run a thread-per-core and require predictable latency
@@ -62,3 +64,6 @@ See the [telemetry-macros crate](../telemetry-macros) for details.
 - NUMA-aware aggregation.
 
 ![Architecture Phase 2](assets/Metrics%20Phase%202.svg)
+
+Note: The recent telemetry guidelines defined in `/docs/telemetry` are
+still being implemented in this SDK. Expect changes and improvements over time.
