@@ -15,42 +15,29 @@ pub struct LogsConfig {
     #[serde(default)]
     pub level: LogLevel,
 
-    /// Internal log configuration options
-    #[serde(default = "default_internal")]
-    pub internal: LogsInternalConfig,
-
     /// The list of log processors to configure.
     #[serde(default)]
     pub processors: Vec<processors::LogProcessorConfig>,
 }
 
-fn default_internal() -> LogsInternalConfig {
-    LogsInternalConfig { enabled: true }
-}
-
 /// Log level for internal engine logs.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+///
+/// TODO: Change default to `Info` once per-thread subscriber is implemented
+/// to avoid contention from the global tracing subscriber.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// Logging is completely disabled.
+    #[default]
     Off,
     /// Debug level logging.
     Debug,
     /// Info level logging.
-    #[default]
     Info,
     /// Warn level logging.
     Warn,
     /// Error level logging.
     Error,
-}
-
-/// Log internal configuration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub struct LogsInternalConfig {
-    /// Is internal logging in use?
-    pub enabled: bool,
 }
 
 #[cfg(test)]
@@ -84,7 +71,7 @@ mod tests {
     fn test_logs_config_default_deserialize() -> Result<(), serde_yaml::Error> {
         let yaml_str = r#""#;
         let config: LogsConfig = serde_yaml::from_str(yaml_str)?;
-        assert_eq!(config.level, LogLevel::Info);
+        assert_eq!(config.level, LogLevel::Off);
         assert!(config.processors.is_empty());
         Ok(())
     }

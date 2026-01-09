@@ -350,10 +350,10 @@ mod tests {
     use crate::self_tracing::encoder::level_to_severity_number;
     use bytes::Bytes;
     use otap_df_pdata::otlp::ProtoBuffer;
-    use otap_df_pdata::prost::Message;
     use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
+    use prost::Message;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::prelude::*;
 

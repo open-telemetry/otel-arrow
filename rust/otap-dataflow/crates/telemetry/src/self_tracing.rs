@@ -29,7 +29,10 @@ pub struct LogRecord {
     /// Timestamp in UNIX epoch nanoseconds.
     pub timestamp_ns: u64,
 
-    /// Pre-encoded body and attributes in OTLP bytes.
+    /// Pre-encoded body and attributes in OTLP bytes.  These bytes
+    /// can be interrpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
+    /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
+    /// message object for testing.
     pub body_attrs_bytes: Bytes,
 }
 

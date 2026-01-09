@@ -154,8 +154,9 @@ pub struct RawLogRecord<'a> {
 }
 
 impl<'a> RawLogRecord<'a> {
-    /// Create a new instance of `RawLogRecord` from a byte slice containing
-    /// a serialized LogRecord message (or partial message with just body/attributes).
+    /// Create a new instance of `RawLogRecord`. This is exposed
+    /// specifically for interpreting internally generated log records
+    /// which encode body and attributes as OTLP bytes.
     #[must_use]
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
@@ -285,11 +286,7 @@ impl<'a> Iterator for LogRecordsIter<'a> {
     type Item = RawLogRecord<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let slice = self.byte_parser.next()?;
-
-        Some(RawLogRecord {
-            bytes_parser: ProtoBytesParser::new(slice),
-        })
+        Some(RawLogRecord::new(self.byte_parser.next()?))
     }
 }
 
