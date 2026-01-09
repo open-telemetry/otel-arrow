@@ -928,6 +928,22 @@ impl WalCoordinator {
             .saturating_add(entry_total_bytes);
         // Record the entry end position for in-memory cursor validation
         self.entry_boundaries.push(entry_end_offset);
+
+        // Warn if entry_boundaries is growing large relative to expected WAL capacity.
+        // This vector is cleared on rotation and pruned on cursor advancement.
+        // Under normal operation with 64MB rotation target and ~1KB bundles, we'd expect
+        // at most ~65,000 entries per active file. A threshold of 100,000 indicates either:
+        // - Very small bundles with a large rotation target, or
+        // - The consumer cursor is not advancing (entries aren't being pruned)
+        // Memory impact: 100,000 entries × 8 bytes = 800KB (modest but worth monitoring)
+        const ENTRY_BOUNDARIES_WARNING_THRESHOLD: usize = 100_000;
+        if self.entry_boundaries.len() == ENTRY_BOUNDARIES_WARNING_THRESHOLD {
+            tracing::warn!(
+                entry_count = self.entry_boundaries.len(),
+                rotation_target_bytes = self.options.rotation_target_bytes,
+                "entry_boundaries vector is large; consumer cursor may be stale or not advancing"
+            );
+        }
     }
 
     fn preflight_append(
