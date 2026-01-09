@@ -55,7 +55,6 @@ nodes:
             "attributes": "Properties"
             "trace_id": "TraceId"
             "span_id": "SpanId"
-          disable_schema_mapping: false
 
       # Authentication configuration for AKS
       auth:
