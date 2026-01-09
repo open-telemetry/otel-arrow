@@ -452,7 +452,8 @@ mod tests {
             level_to_severity_number(&expected_level) as i32,
             "severity_number mismatch"
         );
-        assert_eq!(decoded.severity_text, sev_text, "severity_text mismatch");
+        // Severity text not coded in OTLP bytes form.
+        assert!(decoded.severity_text.is_empty());
         assert_eq!(
             decoded.body,
             Some(AnyValue::new_string(expected_body)),
@@ -536,6 +537,8 @@ mod tests {
         let writer = ConsoleWriter::no_color();
         let output = writer.format_log_record(&record, &test_callsite());
 
+        // Note that the severity text is formatted using the Metadata::Level
+        // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
             "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123): \n"
@@ -558,7 +561,7 @@ mod tests {
 
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
-        assert_eq!(decoded.severity_text, "INFO");
+        assert_eq!(decoded.severity_text, ""); // Not coded
         assert_eq!(
             decoded.event_name,
             "test_module::submodule::test_event (src/test.rs:123)"
