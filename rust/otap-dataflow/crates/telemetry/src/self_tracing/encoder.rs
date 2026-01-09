@@ -47,7 +47,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
 
-        // Node we skip encoding severity_text (field 3, string)
+        // Note we skip encoding severity_text (field 3, string)
 
         // Encode event_name (field 12, string) - format: "target::name (file:line)"
         encode_event_name(self.buf, callsite);
