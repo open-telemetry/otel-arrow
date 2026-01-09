@@ -2609,4 +2609,102 @@ mod tests {
         let bundle = engine.next_bundle(&sub_id).expect("next_bundle");
         assert!(bundle.is_none(), "should have no bundles");
     }
+
+    /// Integration test for crash recovery with progress files.
+    ///
+    /// This test simulates a crash-recovery scenario:
+    /// 1. Ingest bundles and consume some (partially)
+    /// 2. Drop the engine (simulating crash before flush)
+    /// 3. Manually flush progress to simulate graceful shutdown
+    /// 4. Recreate engine and verify progress is restored
+    #[test]
+    fn crash_recovery_with_progress_files() {
+        let temp_dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("recovery-sub").expect("valid id");
+
+        // Small segment size to force finalization
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        // Phase 1: Create engine, ingest bundles, consume some
+        let bundles_acked;
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(temp_dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("valid config");
+
+            let engine = QuiverEngine::new(config, test_budget()).expect("engine created");
+
+            // Register subscriber before ingesting
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Ingest bundles to create multiple segments
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).expect("ingest");
+            }
+            engine.flush().expect("flush segments");
+
+            // Consume and ack some bundles (but not all)
+            let mut acked = 0;
+            for _ in 0..3 {
+                if let Some(handle) = engine.next_bundle(&sub_id).expect("next_bundle") {
+                    handle.ack();
+                    acked += 1;
+                }
+            }
+            bundles_acked = acked;
+
+            // Flush progress to disk (simulating graceful shutdown)
+            let flushed = engine.flush_progress().expect("flush progress");
+            assert!(flushed > 0, "should have flushed progress");
+
+            // Engine dropped here (simulating crash/shutdown)
+        }
+
+        // Phase 2: Recreate engine and verify recovery
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(temp_dir.path())
+                .segment(segment_config)
+                .build()
+                .expect("valid config");
+
+            let engine = QuiverEngine::new(config, test_budget()).expect("engine recreated");
+
+            // Scan existing segments from previous run
+            let found = engine
+                .segment_store
+                .scan_existing()
+                .expect("scan existing");
+            assert!(!found.is_empty(), "should find segments from previous run");
+
+            // Re-register the subscriber (should load from progress file)
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("re-register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Count remaining bundles to consume
+            let mut remaining = 0;
+            while let Some(handle) = engine.next_bundle(&sub_id).expect("next_bundle") {
+                handle.ack();
+                remaining += 1;
+            }
+
+            // Should only see the bundles we didn't ack before
+            assert_eq!(
+                remaining,
+                5 - bundles_acked,
+                "should only see unacked bundles from previous run"
+            );
+        }
+    }
 }
