@@ -19,22 +19,24 @@ ingestion → WAL → segment finalization → subscriber consumption → cleanu
 ## Usage
 
 ```bash
-# Basic steady-state test (10 seconds, TUI disabled)
-cargo run -p otap-df-quiver-e2e --release -- --steady-state --duration 10s --no-tui
+# Basic test (10 seconds default, TUI enabled)
+cargo run -p otap-df-quiver-e2e --release
 
-# With TUI dashboard
-cargo run -p otap-df-quiver-e2e --release -- --steady-state --duration 60s
+# With text output (no TUI)
+cargo run -p otap-df-quiver-e2e --release -- --duration 10s --no-tui
+
+# Longer test with TUI dashboard
+cargo run -p otap-df-quiver-e2e --release -- --duration 60s
 
 # High-throughput mode (no WAL)
-cargo run -p otap-df-quiver-e2e --release -- --steady-state --duration 30s --no-wal --no-tui
+cargo run -p otap-df-quiver-e2e --release -- --duration 30s --no-wal --no-tui
 
 # Custom configuration
 cargo run -p otap-df-quiver-e2e --release -- \
-    --steady-state \
     --duration 5m \
     --bundles 100 \
     --rows-per-bundle 1000 \
-    --string-size 256 \
+    --string-size 1000 \
     --segment-size-mb 32
 ```
 
@@ -42,12 +44,11 @@ cargo run -p otap-df-quiver-e2e --release -- \
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--steady-state` | Run steady-state mode | false |
-| `--duration` | Test duration (e.g., 10s, 5m, 1h) | 60s |
+| `--duration` | Test duration (e.g., 10s, 5m, 1h) | 10s |
 | `--bundles` | Bundles per iteration | 50 |
 | `--rows-per-bundle` | Rows per bundle | 100 |
-| `--string-size` | Size of string fields in bytes | 64 |
-| `--segment-size-mb` | Target segment size | 16 |
+| `--string-size` | Size of string fields in bytes | 1000 |
+| `--segment-size-mb` | Target segment size | 32 |
 | `--no-wal` | Disable WAL for higher throughput | false |
 | `--no-tui` | Disable TUI dashboard | false |
 | `--keep-temp` | Keep temp directory after test | false |

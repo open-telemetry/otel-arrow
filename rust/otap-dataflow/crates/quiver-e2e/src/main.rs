@@ -7,16 +7,13 @@
 //! - Configurable data volume and bundle sizes
 //! - Memory consumption tracking (via jemalloc)
 //! - Multiple concurrent subscribers
-//! - Memory-mapped segment reading with comparison mode
-//!
-//! Two modes of operation:
-//! - **Single-run mode** (default): Ingests bundles, consumes them, and exits
-//! - **Duration mode** (`--duration`): Runs a steady-state stress test for a specified duration
+//! - Configurable segment read mode (standard or mmap)
+//! - Concurrent ingest and consume for production-like testing
 //!
 //! Usage:
 //!   cargo run -p quiver-e2e -- --help
-//!   cargo run -p quiver-e2e -- --bundles 1000 --subscribers 3
 //!   cargo run -p quiver-e2e -- --duration 1h --no-tui
+//!   cargo run -p quiver-e2e -- --duration 10s --no-tui --bundles 100
 
 mod bundle;
 mod dashboard;
@@ -25,38 +22,22 @@ mod stats;
 mod steady_state;
 mod subscriber;
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
-use quiver::budget::DiskBudget;
 use quiver::config::RetentionPolicy;
 use quiver::SegmentReadMode;
-use quiver::subscriber::SubscriberId;
-use quiver::{QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
-use tracing::{Level, info, warn};
+use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::dashboard::Dashboard;
-use crate::memory::MemoryTracker;
 use crate::stats::parse_duration;
-use crate::subscriber::SubscriberDelay;
 
 // Use jemalloc for accurate memory tracking
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-/// Results from running a single read mode.
-struct ModeResult {
-    mode_name: String,
-    ingest_duration: Duration,
-    consume_duration: Duration,
-    bundles_ingested: usize,
-    bundles_consumed: usize,
-    segment_count: usize,
-}
 
 /// Read mode for segment files
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -66,8 +47,6 @@ enum ReadModeArg {
     /// Memory-mapped I/O
     #[default]
     Mmap,
-    /// Run both modes and compare
-    Compare,
 }
 
 /// Quiver stress test configuration
@@ -95,15 +74,7 @@ struct Args {
     #[arg(short = 't', long, default_value = "32")]
     segment_size_mb: u64,
 
-    /// Simulate network failures (subscriber goes offline mid-stream)
-    #[arg(long, default_value = "false")]
-    simulate_failures: bool,
-
-    /// Probability of simulated failure (0.0-1.0)
-    #[arg(long, default_value = "0.1")]
-    failure_probability: f64,
-
-    /// Segment read mode (standard, mmap, or compare)
+    /// Segment read mode (standard or mmap)
     #[arg(long, default_value = "mmap")]
     read_mode: ReadModeArg,
 
@@ -115,12 +86,11 @@ struct Args {
     #[arg(long)]
     keep_temp: bool,
 
-    /// Run stress test for a duration (e.g., "10m", "1h", "24h")
-    /// When set, runs multiple iterations until duration expires.
-    #[arg(long)]
-    duration: Option<String>,
+    /// Test duration (e.g., "10s", "10m", "1h", "24h")
+    #[arg(long, default_value = "10s")]
+    duration: String,
 
-    /// Report interval in seconds for stress mode (memory, disk, throughput)
+    /// Report interval in seconds (memory, disk, throughput)
     #[arg(long, default_value = "10")]
     report_interval: u64,
 
@@ -164,9 +134,13 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Check if this is duration mode with TUI - don't initialize tracing in TUI mode
+    // Parse duration
+    let duration = parse_duration(&args.duration)
+        .map_err(|e| format!("Invalid duration '{}': {}", args.duration, e))?;
+
+    // Check if using TUI - don't initialize tracing in TUI mode
     // as it interferes with the terminal display
-    let use_tui = args.duration.is_some() && !args.no_tui;
+    let use_tui = !args.no_tui;
 
     if !use_tui {
         // Initialize tracing only for non-TUI modes
@@ -176,16 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tracing::subscriber::set_global_default(tracing_sub);
     }
 
-    // Check if duration mode is requested
-    if let Some(ref duration_str) = args.duration {
-        let duration = parse_duration(duration_str)
-            .map_err(|e| format!("Invalid duration '{}': {}", duration_str, e))?;
-
-        return run_steady_state_mode(&args, duration);
-    }
-
-    // Single-run mode
-    run_single_iteration(&args)
+    run_steady_state_mode(&args, duration)
 }
 
 /// Runs steady-state stress test: single long-running QuiverEngine with concurrent ingest/consume.
@@ -208,7 +173,7 @@ fn run_steady_state_mode(
     // Convert read mode
     let read_mode = match args.read_mode {
         ReadModeArg::Standard => SegmentReadMode::Standard,
-        ReadModeArg::Mmap | ReadModeArg::Compare => SegmentReadMode::Mmap,
+        ReadModeArg::Mmap => SegmentReadMode::Mmap,
     };
 
     // Build config
@@ -273,331 +238,6 @@ fn setup_data_dir(args: &Args) -> Result<(Option<TempDir>, PathBuf), Box<dyn std
         info!(path = %path.display(), "Created temp directory (in ~/.quiver-e2e to avoid tmpfs)");
         Ok((Some(tmp), path))
     }
-}
-
-/// Prints common configuration.
-fn print_config(args: &Args) {
-    info!("Configuration:");
-    info!("  Bundles per iteration: {}", args.bundles);
-    info!("  Rows per bundle: {}", args.rows_per_bundle);
-    info!("  String value size: {} bytes", args.string_size);
-    info!("  Subscribers: {}", args.subscribers);
-    info!("  Target segment size: {} MB", args.segment_size_mb);
-    info!("  Simulate failures: {}", args.simulate_failures);
-    info!(
-        "  Failure probability: {:.1}%",
-        args.failure_probability * 100.0
-    );
-    info!("  Read mode: {:?}", args.read_mode);
-    info!("  Maintain interval: {}ms", args.maintain_interval_ms);
-    info!("");
-}
-
-/// Runs a single test iteration (original behavior).
-fn run_single_iteration(
-    args: &Args,
-) -> Result<(), Box<dyn std::error::Error>> {
-    info!("╔════════════════════════════════════════════════════════════╗");
-    info!("║           Quiver Stress Test Harness                       ║");
-    info!("╚════════════════════════════════════════════════════════════╝");
-    info!("");
-    print_config(args);
-
-    // Initialize memory tracking
-    let mut mem_tracker = MemoryTracker::new();
-    mem_tracker.checkpoint("startup");
-
-    // Create temp directory for test data
-    let (_tmp, data_dir) = setup_data_dir(args)?;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 1: Generate test data (not counted in memory tracking)
-    // ─────────────────────────────────────────────────────────────────────────
-    info!("");
-    info!("═══ Phase 1: Generating test data ═══");
-
-    let bundles =
-        bundle::generate_test_bundles(args.bundles, args.rows_per_bundle, args.string_size);
-    info!(count = bundles.len(), "Generated test bundles");
-
-    // Reset memory baseline after bundle creation
-    mem_tracker.reset_baseline();
-    mem_tracker.checkpoint("after_bundle_generation");
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 2: Run test for each read mode
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // Determine which modes to test
-    let modes_to_test: Vec<(SegmentReadMode, &str)> = match args.read_mode {
-        ReadModeArg::Standard => vec![(SegmentReadMode::Standard, "standard")],
-        ReadModeArg::Mmap => vec![(SegmentReadMode::Mmap, "mmap")],
-        ReadModeArg::Compare => vec![
-            (SegmentReadMode::Standard, "standard"),
-            (SegmentReadMode::Mmap, "mmap"),
-        ],
-    };
-
-    let mut mode_results: Vec<ModeResult> = Vec::new();
-
-    for (mode, mode_name) in &modes_to_test {
-        info!("");
-        info!("═══ Testing {} read mode ═══", mode_name);
-
-        // Each mode gets its own subdirectory to avoid interference
-        let mode_data_dir = if modes_to_test.len() > 1 {
-            data_dir.join(mode_name)
-        } else {
-            data_dir.clone()
-        };
-        std::fs::create_dir_all(&mode_data_dir)?;
-
-        // Create engine with this read mode
-        let config = create_config(
-            &mode_data_dir,
-            args.segment_size_mb,
-            args.wal_flush_interval_ms,
-            args.no_wal,
-            *mode,
-        );
-        let budget = create_budget(args.disk_budget_mb, args.retention_policy);
-        let engine = QuiverEngine::new(config, budget)?;
-        mem_tracker.checkpoint(&format!("engine_created_{}", mode_name));
-
-        // Register and activate subscribers before ingestion
-        let mut subscriber_ids = Vec::with_capacity(args.subscribers);
-        for sub_idx in 0..args.subscribers {
-            let sub_id = SubscriberId::new(format!("subscriber-{}", sub_idx))?;
-            engine.register_subscriber(sub_id.clone())?;
-            engine.activate_subscriber(&sub_id)?;
-            subscriber_ids.push(sub_id);
-        }
-
-        // Phase 2a: Ingest
-        info!("");
-        info!("─── Ingesting data ({}) ───", mode_name);
-        let ingest_start = Instant::now();
-        for (i, test_bundle) in bundles.iter().enumerate() {
-            engine.ingest(test_bundle)?;
-            if (i + 1) % 100 == 0 {
-                mem_tracker.checkpoint_silent(&format!("ingest_{}_{}", mode_name, i + 1));
-            }
-        }
-        let ingest_duration = ingest_start.elapsed();
-
-        // Flush to ensure all data is available to subscribers
-        engine.flush()?;
-        mem_tracker.checkpoint(&format!("after_flush_{}", mode_name));
-
-        let total_rows = args.bundles * args.rows_per_bundle;
-        info!(
-            bundles = args.bundles,
-            rows = total_rows,
-            duration_ms = ingest_duration.as_millis(),
-            bundles_per_sec = format!("{:.0}", args.bundles as f64 / ingest_duration.as_secs_f64()),
-            "Ingestion complete"
-        );
-
-        // Get segment count
-        let segment_count = engine.segment_store().segment_count();
-
-        // Phase 2b: Consume
-        info!("");
-        info!("─── Consuming data ({}) ───", mode_name);
-        let consume_start = Instant::now();
-        let mut total_consumed = 0usize;
-        let delay = SubscriberDelay::new(args.subscriber_delay_ms);
-
-        for (sub_idx, sub_id) in subscriber_ids.iter().enumerate() {
-            let mut bundles_consumed = 0;
-            while let Some(handle) = engine.next_bundle(sub_id)? {
-                delay.apply();
-                handle.ack();
-                bundles_consumed += 1;
-            }
-            total_consumed += bundles_consumed;
-            mem_tracker.checkpoint_silent(&format!("subscriber_{}_{}_done", mode_name, sub_idx));
-        }
-        let consume_duration = consume_start.elapsed();
-
-        // Flush progress
-        let _ = engine.flush_progress()?;
-        mem_tracker.checkpoint(&format!("after_consumption_{}", mode_name));
-
-        info!(
-            consumed = total_consumed,
-            expected = args.bundles * args.subscribers,
-            duration_ms = consume_duration.as_millis(),
-            "Consumption complete"
-        );
-
-        mode_results.push(ModeResult {
-            mode_name: mode_name.to_string(),
-            ingest_duration,
-            consume_duration,
-            bundles_ingested: args.bundles,
-            bundles_consumed: total_consumed,
-            segment_count,
-        });
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 3: Verify and report
-    // ─────────────────────────────────────────────────────────────────────────
-    info!("");
-    info!("═══ Results ═══");
-
-    let mut all_verified = true;
-    for mode_result in &mode_results {
-        info!("");
-        info!("─── {} mode results ───", mode_result.mode_name);
-
-        let expected_consumed = mode_result.bundles_ingested * args.subscribers;
-        let verified = mode_result.bundles_consumed == expected_consumed;
-        if !verified {
-            warn!(
-                expected = expected_consumed,
-                actual = mode_result.bundles_consumed,
-                "Bundle count mismatch!"
-            );
-            all_verified = false;
-        }
-        info!("  Segments: {}", mode_result.segment_count);
-        info!(
-            "  Ingestion: {:?} ({:.0} bundles/sec)",
-            mode_result.ingest_duration,
-            mode_result.bundles_ingested as f64 / mode_result.ingest_duration.as_secs_f64()
-        );
-        info!(
-            "  Consumption: {:?} ({:.0} bundles/sec across {} subscribers)",
-            mode_result.consume_duration,
-            mode_result.bundles_consumed as f64 / mode_result.consume_duration.as_secs_f64(),
-            args.subscribers
-        );
-        info!(
-            "  Bundles: {} ingested, {} consumed (expected {})",
-            mode_result.bundles_ingested, mode_result.bundles_consumed, expected_consumed
-        );
-    }
-
-    // Compare modes if both were run
-    if mode_results.len() == 2 {
-        info!("");
-        info!("═══ Mode Comparison ═══");
-        let std_result = &mode_results[0];
-        let mmap_result = &mode_results[1];
-
-        let ingest_speedup =
-            std_result.ingest_duration.as_secs_f64() / mmap_result.ingest_duration.as_secs_f64();
-        let consume_speedup =
-            std_result.consume_duration.as_secs_f64() / mmap_result.consume_duration.as_secs_f64();
-
-        info!(
-            "Ingest time: standard {:?} vs mmap {:?} ({:.2}x {})",
-            std_result.ingest_duration,
-            mmap_result.ingest_duration,
-            if ingest_speedup >= 1.0 {
-                ingest_speedup
-            } else {
-                1.0 / ingest_speedup
-            },
-            if ingest_speedup >= 1.0 {
-                "faster with mmap"
-            } else {
-                "faster with standard"
-            }
-        );
-        info!(
-            "Consumption time: standard {:?} vs mmap {:?} ({:.2}x {})",
-            std_result.consume_duration,
-            mmap_result.consume_duration,
-            if consume_speedup >= 1.0 {
-                consume_speedup
-            } else {
-                1.0 / consume_speedup
-            },
-            if consume_speedup >= 1.0 {
-                "faster with mmap"
-            } else {
-                "faster with standard"
-            }
-        );
-    }
-
-    // Memory summary
-    info!("");
-    info!("═══ Memory Analysis ═══");
-    mem_tracker.print_summary();
-
-    info!("");
-    info!(
-        "Peak memory (post-baseline): {:.2} MB",
-        mem_tracker.peak_mb()
-    );
-    info!(
-        "All data verified: {}",
-        if all_verified { "✓ YES" } else { "✗ NO" }
-    );
-    info!("");
-
-    // Handle temp directory
-    if args.keep_temp {
-        if let Some(tmp) = _tmp {
-            let path = tmp.keep();
-            info!(path = ?path, "Keeping temp directory for inspection");
-        }
-    }
-
-    if all_verified {
-        info!("🎉 Stress test completed successfully!");
-        Ok(())
-    } else {
-        Err("Data verification failed".into())
-    }
-}
-
-fn create_config(
-    data_dir: &Path,
-    segment_size_mb: u64,
-    wal_flush_interval_ms: u64,
-    no_wal: bool,
-    read_mode: SegmentReadMode,
-) -> QuiverConfig {
-    use quiver::DurabilityMode;
-
-    let mut config = QuiverConfig::default().with_data_dir(data_dir);
-
-    // Set durability mode
-    if no_wal {
-        config.durability = DurabilityMode::SegmentOnly;
-    }
-
-    // Set read mode
-    config.read_mode = read_mode;
-
-    config.segment.target_size_bytes =
-        std::num::NonZeroU64::new(segment_size_mb * 1024 * 1024).expect("segment size is non-zero");
-    config.segment.max_open_duration = Duration::from_secs(30);
-
-    // WAL config - ensure rotation target <= max size (ignored if no_wal)
-    config.wal.max_size_bytes =
-        std::num::NonZeroU64::new(256 * 1024 * 1024).expect("256MB is non-zero");
-    config.wal.rotation_target_bytes =
-        std::num::NonZeroU64::new(32 * 1024 * 1024).expect("32MB is non-zero");
-    config.wal.flush_interval = Duration::from_millis(wal_flush_interval_ms);
-
-    config
-}
-
-/// Creates a disk budget from CLI args.
-/// Returns a 100 GB budget if disk_budget_mb is 0 (effectively unlimited).
-fn create_budget(disk_budget_mb: u64, policy: RetentionPolicy) -> Arc<DiskBudget> {
-    let cap_bytes = if disk_budget_mb == 0 {
-        100 * 1024 * 1024 * 1024 // 100 GB "unlimited"
-    } else {
-        disk_budget_mb * 1024 * 1024
-    };
-    Arc::new(DiskBudget::new(cap_bytes, policy))
 }
 
 /// Parses a retention policy from CLI string.
