@@ -563,7 +563,6 @@ mod tests {
                 stream_name: "stream".to_string(),
                 dcr: "dcr-id".to_string(),
                 schema: SchemaConfig {
-                    disable_schema_mapping: false,
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),

@@ -93,6 +93,11 @@ jobs:
               python orchestrator/run_orchestrator.py --config "$config"
             done
 
+        - name: Run idle state performance test
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/idle-state-docker.yaml
+
         - name: Upload benchmark results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
@@ -104,6 +109,12 @@ jobs:
           with:
             name: benchmark-results-saturation
             path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
+
+        - name: Upload benchmark results for processing (Idle State)
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: benchmark-results-idle-state
+            path: tools/pipeline_perf_test/results/idle_state/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
@@ -135,6 +146,13 @@ jobs:
               merge-multiple: true
               path: results-saturation
 
+          - name: Download benchmark artifacts (Idle State)
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: benchmark-results-idle-state*
+              merge-multiple: true
+              path: results-idle-state
+
           - name: Consolidate pipeline benchmark data
             run: |
               bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
@@ -142,6 +160,10 @@ jobs:
           - name: Consolidate saturation benchmark data
             run: |
               bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-saturation output-saturation.json
+
+          - name: Consolidate idle state benchmark data
+            run: |
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-idle-state output-idle-state.json
 
           - name: Update pipeline benchmark data and deploy to GitHub Pages
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
@@ -167,8 +189,21 @@ jobs:
               auto-push: true
               save-data-file: true
 
+          - name: Update idle state benchmark data and deploy to GitHub Pages
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: output-idle-state.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/continuous-idle-state"
+              auto-push: true
+              save-data-file: true
+
           - name: Add benchmark link to job summary
             run: |
               echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
               echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
               echo "[View the saturation benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-saturation/)" >> $GITHUB_STEP_SUMMARY
+              echo "[View the idle state benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/)" >> $GITHUB_STEP_SUMMARY
