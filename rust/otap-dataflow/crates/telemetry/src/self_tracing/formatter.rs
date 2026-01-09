@@ -124,18 +124,8 @@ impl ConsoleWriter {
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
-    /// Write a LogRecord to stdout or stderr (based on level).
-    ///
-    /// ERROR and WARN go to stderr, others go to stdout.
-    /// This is the same routing logic used by RawLoggingLayer.
-    pub fn raw_print(&self, record: &LogRecord, callsite: &SavedCallsite) {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.write_log_record(&mut buf, record, callsite);
-        self.write_line(callsite.level(), &buf[..len]);
-    }
-
     /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
-    pub(crate) fn write_log_record(
+    pub fn write_log_record(
         &self,
         buf: &mut [u8],
         record: &LogRecord,
@@ -316,7 +306,7 @@ impl ConsoleWriter {
     }
 
     /// Write a log line to stdout or stderr.
-    pub(crate) fn write_line(&self, level: &Level, data: &[u8]) {
+    fn write_line(&self, level: &Level, data: &[u8]) {
         let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
         let _ = if use_stderr {
             std::io::stderr().write_all(data)
@@ -330,15 +320,18 @@ impl<S> TracingLayer<S> for RawLoggingLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
+    // Allocates a buffer on the stack, formats the event to a LogRecord
+    // with partial OTLP bytes.
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         // TODO: there are allocations implied here that we would prefer
         // to avoid, it will be an extensive change in the ProtoBuffer to
         // stack-allocate this temporary.
-        // RawLoggingLayer is used before the logs infrastructure is set up,
-        // so no producer_key context is available.
-        let record = LogRecord::new(event, None);
+        let record = LogRecord::new(event);
         let callsite = SavedCallsite::new(event.metadata());
-        self.writer.raw_print(&record, &callsite);
+
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = self.writer.write_log_record(&mut buf, &record, &callsite);
+        self.writer.write_line(callsite.level(), &buf[..len]);
     }
 
     // Note! This tracing layer does not implement Span-related features
@@ -357,10 +350,10 @@ mod tests {
     use crate::self_tracing::encoder::level_to_severity_number;
     use bytes::Bytes;
     use otap_df_pdata::otlp::ProtoBuffer;
-    use otap_df_pdata::prost::Message;
     use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
+    use prost::Message;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::prelude::*;
 
@@ -374,7 +367,7 @@ mod tests {
         S: Subscriber + for<'a> LookupSpan<'a>,
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            let record = LogRecord::new(event, None);
+            let record = LogRecord::new(event);
             let callsite = SavedCallsite::new(event.metadata());
 
             // Capture formatted output
@@ -459,7 +452,8 @@ mod tests {
             level_to_severity_number(&expected_level) as i32,
             "severity_number mismatch"
         );
-        assert_eq!(decoded.severity_text, sev_text, "severity_text mismatch");
+        // Severity text not coded in OTLP bytes form.
+        assert!(decoded.severity_text.is_empty());
         assert_eq!(
             decoded.body,
             Some(AnyValue::new_string(expected_body)),
@@ -538,12 +532,13 @@ mod tests {
             // 2024-01-15T12:30:45.678Z
             timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::new(),
-            producer_key: None,
         };
 
         let writer = ConsoleWriter::no_color();
         let output = writer.format_log_record(&record, &test_callsite());
 
+        // Note that the severity text is formatted using the Metadata::Level
+        // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
             "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123): \n"
@@ -566,7 +561,7 @@ mod tests {
 
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
-        assert_eq!(decoded.severity_text, "INFO");
+        assert!(decoded.severity_text.is_empty()); // Not coded
         assert_eq!(
             decoded.event_name,
             "test_module::submodule::test_event (src/test.rs:123)"
@@ -596,7 +591,6 @@ mod tests {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::from(encoded),
-            producer_key: None,
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
