@@ -37,6 +37,9 @@ pub(crate) fn parse_where_operator_call(
             Rule::expression => {
                 let rule_query_location = to_query_location(&rule);
                 let predicate = parse_expression(rule)?;
+
+                println!("predicate is {:#?}", predicate);
+
                 let discard_expr = DiscardDataExpression::new(operator_call_query_location)
                     .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                         rule_query_location,

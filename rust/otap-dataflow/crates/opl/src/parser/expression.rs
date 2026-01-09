@@ -2,13 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    AndLogicalExpression, BinaryMathematicalScalarExpression, EqualToLogicalExpression,
-    IntegerScalarExpression, LogicalExpression, MathScalarExpression, NotLogicalExpression,
-    OrLogicalExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
-    StringScalarExpression,
+    AndLogicalExpression, BinaryMathematicalScalarExpression, DoubleScalarExpression, DoubleValue,
+    EqualToLogicalExpression, Expression, IntegerScalarExpression, IntegerValue, LogicalExpression,
+    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
+    QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
+    StringScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
-    ParserError, parse_standard_double_literal, parse_standard_integer_literal, to_query_location,
+    ParserError, parse_standard_bool_literal, parse_standard_double_literal,
+    parse_standard_integer_literal, parse_standard_string_literal, to_query_location,
 };
 use pest::iterators::{Pair, Pairs};
 
@@ -93,13 +95,9 @@ pub(crate) fn parse_or_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpress
 pub(crate) fn parse_and_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpression, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
-    let parsed_left =
-        parse_next_child_rule(&mut inner_rules, Rule::rel_expression, parse_rel_expression)?;
+    let left_expr =
+        parse_next_child_rule(&mut inner_rules, Rule::rel_expression, parse_rel_expression)?.into();
 
-    let left_expr = match parsed_left {
-        ParsedRelExpression::Logical(l) => l,
-        ParsedRelExpression::Scalar(s) => LogicalExpression::Scalar(s),
-    };
     let maybe_right =
         parse_maybe_right(&mut inner_rules, Rule::and_expression, parse_and_expression)
             .transpose()?;
@@ -114,28 +112,60 @@ pub(crate) fn parse_and_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpres
     })
 }
 
-pub(crate) enum ParsedRelExpression {
+// TODO comment on what this is about
+pub(crate) enum LogicalOrScalarExpr {
     Logical(LogicalExpression),
     Scalar(ScalarExpression),
 }
 
+impl From<LogicalExpression> for LogicalOrScalarExpr {
+    fn from(expr: LogicalExpression) -> Self {
+        Self::Logical(expr)
+    }
+}
+
+impl From<ScalarExpression> for LogicalOrScalarExpr {
+    fn from(expr: ScalarExpression) -> Self {
+        Self::Scalar(expr)
+    }
+}
+
+impl From<LogicalOrScalarExpr> for LogicalExpression {
+    fn from(value: LogicalOrScalarExpr) -> Self {
+        match value {
+            LogicalOrScalarExpr::Logical(l) => l,
+            LogicalOrScalarExpr::Scalar(s) => LogicalExpression::Scalar(s),
+        }
+    }
+}
+
+impl From<LogicalOrScalarExpr> for ScalarExpression {
+    fn from(value: LogicalOrScalarExpr) -> Self {
+        match value {
+            LogicalOrScalarExpr::Logical(l) => Self::Logical(Box::new(l)),
+            LogicalOrScalarExpr::Scalar(s) => s,
+        }
+    }
+}
+
 pub(crate) fn parse_rel_expression(
     rule: Pair<'_, Rule>,
-) -> Result<ParsedRelExpression, ParserError> {
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
         Rule::additive_expression,
         parse_additive_expression,
-    )?;
+    )?
+    .into();
 
     if let Some(op_rule) = inner_rules.next() {
         let parsed_right =
             parse_expected_right(&mut inner_rules, Rule::rel_expression, parse_rel_expression)?;
         let right_expr = match parsed_right {
-            ParsedRelExpression::Scalar(s) => s,
-            ParsedRelExpression::Logical(l) => ScalarExpression::Logical(Box::new(l)),
+            LogicalOrScalarExpr::Scalar(s) => s,
+            LogicalOrScalarExpr::Logical(l) => ScalarExpression::Logical(Box::new(l)),
         };
         let expr = match op_rule.as_rule() {
             Rule::rel_op_eq => LogicalExpression::EqualTo(EqualToLogicalExpression::new(
@@ -154,33 +184,35 @@ pub(crate) fn parse_rel_expression(
                 )),
             )),
             _ => {
-                todo!("invalid rel expr op")
+                todo!("invalid rel expr op {op_rule:?}")
             }
         };
 
-        Ok(ParsedRelExpression::Logical(expr))
+        Ok(expr.into())
     } else {
-        Ok(ParsedRelExpression::Scalar(left_expr))
+        Ok(left_expr.into())
     }
 }
 
 pub(crate) fn parse_additive_expression(
     rule: Pair<'_, Rule>,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
         Rule::multiplicative_expression,
         parse_multiplicative_expression,
-    )?;
+    )?
+    .into();
 
     if let Some(op_rule) = inner_rules.next() {
         let right_expr = parse_expected_right(
             &mut inner_rules,
             Rule::additive_expression,
             parse_additive_expression,
-        )?;
+        )?
+        .into();
 
         let math_expr =
             BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
@@ -191,29 +223,32 @@ pub(crate) fn parse_additive_expression(
             _ => {
                 todo!("invalid add expr op")
             }
-        }))
+        })
+        .into())
     } else {
-        Ok(left_expr)
+        Ok(left_expr.into())
     }
 }
 
 pub(crate) fn parse_multiplicative_expression(
     rule: Pair<'_, Rule>,
-) -> Result<ScalarExpression, ParserError> {
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
         Rule::unary_expression,
         parse_unary_expression,
-    )?;
+    )?
+    .into();
 
     if let Some(op_rule) = inner_rules.next() {
         let right_expr = parse_expected_right(
             &mut inner_rules,
             Rule::multiplicative_expression,
             parse_multiplicative_expression,
-        )?;
+        )?
+        .into();
 
         let math_expr =
             BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
@@ -225,35 +260,58 @@ pub(crate) fn parse_multiplicative_expression(
             _ => {
                 todo!("invalid add expr op")
             }
-        }))
+        })
+        .into())
     } else {
-        Ok(left_expr)
+        Ok(left_expr.into())
     }
 }
 
-fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<ScalarExpression, ParserError> {
-    let query_location = to_query_location(&rule);
+fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+    let query_location = QueryLocation::new_fake();
     let mut inner_rules = rule.into_inner();
-
     if inner_rules.len() == 1 {
         // safety: we've checked the length of the iterator above
         let rule = inner_rules.next().expect("one rule");
         match rule.as_rule() {
-            Rule::number_literal => Ok(ScalarExpression::Static(parse_number_literal(rule)?)),
+            Rule::number_literal => {
+                Ok(ScalarExpression::Static(parse_number_literal(rule)?).into())
+            }
             Rule::member_expression => parse_member_expression(rule),
             _ => {
                 todo!("invalid rule in no mod unary")
             }
         }
+    } else if inner_rules.len() == 2 {
+        // safety: we've checked that the Pairs iter has len 2, so w can call next.expect twice
+        let modifier_rule = inner_rules.next().expect("two rules");
+        let value_rule = inner_rules.next().expect("two rules");
+
+        match (modifier_rule.as_rule(), value_rule.as_rule()) {
+            (Rule::negate_token, Rule::number_literal) => {
+                let number_expr = parse_number_literal(value_rule)?;
+                let expr = ScalarExpression::Static(negate_number_literal(number_expr)?);
+                Ok(expr.into())
+            }
+            (Rule::not_token, Rule::unary_expression) => {
+                let value_expr = parse_unary_expression(value_rule)?;
+                Ok(LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location,
+                    value_expr.into(),
+                ))
+                .into())
+            }
+            _ => {
+                todo!("invalid rules for scalar")
+            }
+        }
     } else {
-        todo!()
+        todo!("invalid number of rules in unary expression")
     }
 }
 
 fn parse_number_literal(rule: Pair<'_, Rule>) -> Result<StaticScalarExpression, ParserError> {
-    let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
-
     if let Some(rule) = inner_rules.next() {
         match rule.as_rule() {
             Rule::integer_literal => parse_standard_integer_literal(rule),
@@ -268,11 +326,78 @@ fn parse_number_literal(rule: Pair<'_, Rule>) -> Result<StaticScalarExpression, 
 }
 
 fn negate_number_literal(
-    scalar_expr: StaticScalarExpression,
+    static_scalar_expr: StaticScalarExpression,
 ) -> Result<StaticScalarExpression, ParserError> {
-    todo!()
+    Ok(match static_scalar_expr {
+        StaticScalarExpression::Integer(int_expr) => {
+            StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                int_expr.get_query_location().clone(),
+                int_expr.get_value(),
+            ))
+        }
+        StaticScalarExpression::Double(float_expr) => {
+            StaticScalarExpression::Double(DoubleScalarExpression::new(
+                float_expr.get_query_location().clone(),
+                float_expr.get_value(),
+            ))
+        }
+        _ => {
+            todo!("invalid negated float")
+        }
+    })
 }
 
-fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<ScalarExpression, ParserError> {
-    todo!()
+fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+    let mut inner_rules = rule.into_inner();
+    if let Some(rule) = inner_rules.next() {
+        match rule.as_rule() {
+            Rule::primitive_expression => parse_primitive_expression(rule),
+            _ => {
+                todo!("invalid rule in member expression")
+            }
+        }
+    } else {
+        todo!("no inner rule in member expression")
+    }
+}
+
+fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+    println!("primitive rule {rule:#?}");
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+    if let Some(rule) = inner_rules.next() {
+        match rule.as_rule() {
+            Rule::identifier_expression => {
+                let query_location = to_query_location(&rule);
+                let value_accessor =
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            query_location.clone(),
+                            rule.as_str(),
+                        )),
+                    )]);
+
+                Ok(ScalarExpression::Source(SourceScalarExpression::new(
+                    query_location,
+                    value_accessor,
+                ))
+                .into())
+            }
+            Rule::string_literal => {
+                Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
+            }
+            Rule::bool_true_token | Rule::bool_false_token => {
+                Ok(ScalarExpression::Static(parse_standard_bool_literal(rule)).into())
+            }
+            Rule::null_token => Ok(ScalarExpression::Static(StaticScalarExpression::Null(
+                NullScalarExpression::new(query_location),
+            ))
+            .into()),
+            _ => {
+                todo!("invalid token")
+            }
+        }
+    } else {
+        todo!("no inner rule in member expression")
+    }
 }
