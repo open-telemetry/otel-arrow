@@ -1,15 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Raw logging macros that bypass the tracing subscriber.
-//!
-//! These macros are used for logging when the subscriber infrastructure is not
-//! available or may be in an inconsistent state (e.g., during shutdown, when
-//! the channel is closed, or during early initialization).
-//!
-//! The macros temporarily install a dedicated subscriber that writes directly
-//! to the console, then use standard tracing macros. This reuses the normal
-//! tracing event creation and encoding path.
+//! Raw logging macros that bypass the tracing subscriber and write to
+//! the console. A single `raw_error!(...)` API is provided.
 
 use super::formatter::RawLoggingLayer;
 use tracing_subscriber::prelude::*;
@@ -30,7 +23,10 @@ where
 
 /// Log an error message directly to stderr, bypassing the tracing subscriber.
 ///
-/// For reporting errors in the rrr rsr rs rsr rsr rs sr sr rs rs rs sr rs rs
+/// This should be used sparingly, only emergencies! This is a good
+/// configuration for diagnosing internal other logging facilities,
+/// because it is unbuffered and uses a dedicated
+///
 ///
 /// # Example
 ///
