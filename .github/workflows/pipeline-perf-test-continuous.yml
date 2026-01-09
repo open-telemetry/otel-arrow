@@ -93,10 +93,11 @@ jobs:
               python orchestrator/run_orchestrator.py --config "$config"
             done
 
-        - name: Run idle state performance test
+        - name: Run idle state performance tests
           run: |
             cd tools/pipeline_perf_test
             python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/idle-state-docker.yaml
+            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/idle-state-allcores-docker.yaml
 
         - name: Upload benchmark results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -114,7 +115,7 @@ jobs:
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
             name: benchmark-results-idle-state
-            path: tools/pipeline_perf_test/results/idle_state/gh-actions-benchmark/*.json
+            path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
 
         - name: Add benchmark link to job summary
           run: |
