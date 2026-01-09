@@ -166,8 +166,8 @@ impl LogsCollector {
                 Ok(batch) => {
                     self.write_batch(batch);
                 }
-                Err(_) => {
-                    // TODO: raw log.
+                Err(err) => {
+                    crate::raw_error!("log collector error: {err}");
                     return Ok(());
                 }
             }
@@ -237,8 +237,8 @@ where
 
         match self.reporter.try_report(batch) {
             Ok(()) => {}
-            Err(_err) => {
-                // TODO: raw log
+            Err(err) => {
+                crate::raw_error!("failed to send log batch: {}", err);
             }
         }
     }
