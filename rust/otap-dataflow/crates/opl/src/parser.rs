@@ -9,9 +9,9 @@ use data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState,
 };
 
+mod expression;
 mod operator;
 mod pipeline;
-mod expression;
 
 #[allow(missing_docs)]
 mod pest {

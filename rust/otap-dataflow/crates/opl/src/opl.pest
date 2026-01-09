@@ -38,20 +38,38 @@ member_expression = {
     primitive_expression
 }
 
-number_literal = {
-    "1"
+integer_literal = @{
+    ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
 }
+
+exponent_literal = { ^"e" ~ ("+" | "-")? ~ integer_literal }
+float_literal = @{
+    (integer_literal ~ "." ~ integer_literal ~ exponent_literal?)
+    | (integer_literal ~ exponent_literal)
+}
+
+number_literal = {
+    integer_literal | float_literal
+}
+
+negate_token = @{ "-" }
+not_token = @{ "not" }
 
 unary_expression = {
     number_literal
     | "-" ~ number_literal
-    | "-" ~ unary_expression
+    // TODO negative unary?
+    // | "-" ~ unary_expression
     | "not" ~ unary_expression
     | member_expression
 }
 
+
+multiplicative_op_mul = @{ "*" }
+multiplicative_op_div = @{ "/" }
+multiplicative_op_mod = @{ "%" }
 multiplicative_op = {
-    "*" | "/" | "%"
+    multiplicative_op_mod | multiplicative_op_div | multiplicative_op_mod
 }
 
 multiplicative_expression = {

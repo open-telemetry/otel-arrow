@@ -23,7 +23,7 @@ pub(crate) fn parse_operator_call(
             }
         };
     }
-    
+
     Ok(())
 }
 

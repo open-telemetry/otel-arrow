@@ -1,15 +1,18 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::parser::Rule;
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, EqualToLogicalExpression,
     IntegerScalarExpression, LogicalExpression, MathScalarExpression, NotLogicalExpression,
     OrLogicalExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
     StringScalarExpression,
 };
-use data_engine_parser_abstractions::{ParserError, to_query_location};
+use data_engine_parser_abstractions::{
+    ParserError, parse_standard_double_literal, parse_standard_integer_literal, to_query_location,
+};
 use pest::iterators::{Pair, Pairs};
+
+use crate::parser::Rule;
 
 fn parse_next_child_rule<F, E>(
     rules: &mut Pairs<'_, Rule>,
@@ -197,8 +200,79 @@ pub(crate) fn parse_additive_expression(
 pub(crate) fn parse_multiplicative_expression(
     rule: Pair<'_, Rule>,
 ) -> Result<ScalarExpression, ParserError> {
-    // TODO
-    Ok(ScalarExpression::Static(StaticScalarExpression::Integer(
-        IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
-    )))
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+    let left_expr = parse_next_child_rule(
+        &mut inner_rules,
+        Rule::unary_expression,
+        parse_unary_expression,
+    )?;
+
+    if let Some(op_rule) = inner_rules.next() {
+        let right_expr = parse_expected_right(
+            &mut inner_rules,
+            Rule::multiplicative_expression,
+            parse_multiplicative_expression,
+        )?;
+
+        let math_expr =
+            BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
+
+        Ok(ScalarExpression::Math(match op_rule.as_rule() {
+            Rule::multiplicative_op_mul => MathScalarExpression::Multiply(math_expr),
+            Rule::multiplicative_op_div => MathScalarExpression::Divide(math_expr),
+            Rule::multiplicative_op_mod => MathScalarExpression::Modulus(math_expr),
+            _ => {
+                todo!("invalid add expr op")
+            }
+        }))
+    } else {
+        Ok(left_expr)
+    }
+}
+
+fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<ScalarExpression, ParserError> {
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+
+    if inner_rules.len() == 1 {
+        // safety: we've checked the length of the iterator above
+        let rule = inner_rules.next().expect("one rule");
+        match rule.as_rule() {
+            Rule::number_literal => Ok(ScalarExpression::Static(parse_number_literal(rule)?)),
+            Rule::member_expression => parse_member_expression(rule),
+            _ => {
+                todo!("invalid rule in no mod unary")
+            }
+        }
+    } else {
+        todo!()
+    }
+}
+
+fn parse_number_literal(rule: Pair<'_, Rule>) -> Result<StaticScalarExpression, ParserError> {
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+
+    if let Some(rule) = inner_rules.next() {
+        match rule.as_rule() {
+            Rule::integer_literal => parse_standard_integer_literal(rule),
+            Rule::float_literal => parse_standard_double_literal(rule, None),
+            _ => {
+                todo!("invalid rule in number literal")
+            }
+        }
+    } else {
+        todo!("no rule inside number literal")
+    }
+}
+
+fn negate_number_literal(
+    scalar_expr: StaticScalarExpression,
+) -> Result<StaticScalarExpression, ParserError> {
+    todo!()
+}
+
+fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<ScalarExpression, ParserError> {
+    todo!()
 }
