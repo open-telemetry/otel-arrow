@@ -401,3 +401,28 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
         todo!("no inner rule in member expression")
     }
 }
+
+#[cfg(test)]
+mod test {
+    use data_engine_expressions::{
+        LogicalExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
+        StringScalarExpression,
+    };
+    use pest::Parser;
+
+    use crate::parser::{Rule, pest::OplPestParser};
+
+    use super::parse_expression;
+
+    #[test]
+    fn test_parse_primitive() {
+        let mut rules = OplPestParser::parse(Rule::expression, "\"hello\"").unwrap();
+        assert_eq!(rules.len(), 1);
+        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let expected =
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
+            )));
+        assert_eq!(result, expected)
+    }
+}
