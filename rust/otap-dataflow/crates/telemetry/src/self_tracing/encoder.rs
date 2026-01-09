@@ -47,7 +47,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
 
-        // Encode severity_text (field 3, string)
+        // Encode severity_text (field 3, string) UPDATE ME
         self.buf
             .encode_string(LOG_RECORD_SEVERITY_TEXT, callsite.level().as_str());
 

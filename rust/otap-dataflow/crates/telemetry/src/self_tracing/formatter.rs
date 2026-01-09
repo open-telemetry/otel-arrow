@@ -128,44 +128,14 @@ impl ConsoleWriter {
     ///
     /// ERROR and WARN go to stderr, others go to stdout.
     /// This is the same routing logic used by RawLoggingLayer.
-    pub fn print_log_record(&self, record: &LogRecord, callsite: &SavedCallsite) {
+    pub fn raw_print(&self, record: &LogRecord, callsite: &SavedCallsite) {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let len = self.write_log_record(&mut buf, record, callsite);
         self.write_line(callsite.level(), &buf[..len]);
     }
 
-    /// Print a warning about dropped log records.
-    ///
-    /// Formatted to look like a regular log record at WARN level.
-    pub fn print_dropped_warning(&self, dropped_count: u64) {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        
-        let timestamp_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = Cursor::new(&mut buf[..]);
-        let cm = self.color_mode;
-
-        cm.write_ansi(&mut w, AnsiCode::Dim);
-        Self::write_timestamp(&mut w, timestamp_ns);
-        cm.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b"  ");
-        cm.write_level(&mut w, &Level::WARN);
-        cm.write_ansi(&mut w, AnsiCode::Bold);
-        let _ = w.write_all(b"otap_df_telemetry::logs::buffer_overflow");
-        cm.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = write!(w, ": dropped {} log records (buffer full)\n", dropped_count);
-
-        let len = w.position() as usize;
-        // WARN goes to stderr
-        let _ = std::io::stderr().write_all(&buf[..len]);
-    }
-
     /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
-    pub fn write_log_record(
+    pub(crate) fn write_log_record(
         &self,
         buf: &mut [u8],
         record: &LogRecord,
@@ -346,7 +316,7 @@ impl ConsoleWriter {
     }
 
     /// Write a log line to stdout or stderr.
-    fn write_line(&self, level: &Level, data: &[u8]) {
+    pub(crate) fn write_line(&self, level: &Level, data: &[u8]) {
         let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
         let _ = if use_stderr {
             std::io::stderr().write_all(data)
@@ -368,7 +338,7 @@ where
         // so no producer_key context is available.
         let record = LogRecord::new(event, None);
         let callsite = SavedCallsite::new(event.metadata());
-        self.writer.print_log_record(&record, &callsite);
+        self.writer.raw_print(&record, &callsite);
     }
 
     // Note! This tracing layer does not implement Span-related features

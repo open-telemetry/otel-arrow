@@ -64,7 +64,7 @@ pub use tracing::warn_span as otel_warn_span;
 // Re-export commonly used logs types for convenience.
 pub use logs::{
     BufferWriterLayer, DirectChannelLayer, LogsCollector, LogsReporter, ProducerKeyGuard,
-    current_producer_key, flush_thread_log_buffer, install_thread_log_buffer,
+    current_producer_key, drain_thread_log_buffer, install_thread_log_buffer,
     uninstall_thread_log_buffer, with_engine_thread_subscriber,
 };
 

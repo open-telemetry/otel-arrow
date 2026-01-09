@@ -21,7 +21,7 @@ pub use encoder::DirectLogRecordEncoder;
 pub use formatter::{ConsoleWriter, RawLoggingLayer};
 
 /// Optional key identifying the producing component.
-/// Re-exported from the registry module for use by downstream code.
+/// TODO: This is re-exported, instead rename the underlying type.
 pub type ProducerKey = crate::registry::MetricsKey;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
@@ -117,4 +117,12 @@ impl LogRecord {
             .unwrap_or_default()
             .as_nanos() as u64
     }
+}
+
+/// Write a LogRecord to stdout or stderr (based on level).
+///
+/// ERROR and WARN go to stderr, others go to stdout.
+/// This is the same routing logic used by RawLoggingLayer.
+pub fn raw_print(record: &LogRecord, callsite: &SavedCallsite) {
+    ConsoleWriter::no_color().raw_print(record, callsite)
 }
