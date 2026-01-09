@@ -1,0 +1,8 @@
+# Idle State Performance Test - All Cores
+# Measures baseline resource consumption with no active telemetry traffic using all available cores
+from_template:
+  path: test_suites/integration/continuous/idle-state-template.yaml.j2
+  variables:
+    core_label: "All Cores"
+    port: 8087
+    result_subdir: "allcores"

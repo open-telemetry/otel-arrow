@@ -1,0 +1,120 @@
+# Template for idle state performance test
+# This template is used to generate both single-core and full-cores tests
+name: Continuous - Idle State Performance - {{core_label}}
+components:
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "{{port}}:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+{% if core_range is defined %}
+          - "--core-id-range"
+          - "{{core_range}}"
+{% endif %}
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+{% if allocated_cores is defined %}
+      docker_component:
+        allocated_cores: {{allocated_cores}}
+{% else %}
+      docker_component: {}
+{% endif %}
+      prometheus:
+        endpoint: http://localhost:{{port}}/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: Idle State Baseline - {{core_label}}
+    steps:
+      - name: Deploy Dataflow Engine
+        action:
+          component_action:
+            phase: deploy
+            target: df-engine
+        hooks:
+          run:
+            pre:
+              - render_template:
+                  template_path: 'test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml'
+                  output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
+                  variables:
+                    backend_hostname: localhost
+            post:
+              - ready_check_http:
+                  url: http://localhost:{{port}}/telemetry/metrics?reset=false
+                  method: GET
+                  expected_status_code: 200
+
+      - name: Wait for Startup Stabilization
+        action:
+          wait:
+            delay_seconds: 5
+        hooks:
+          run:
+            pre:
+              - record_event:
+                  name: stabilization_start
+            post:
+              - record_event:
+                  name: stabilization_complete
+
+      - name: Monitor Engine
+        action:
+          component_action:
+            phase: start_monitoring
+            target: df-engine
+
+      - name: Observe Idle State
+        action:
+          wait:
+            delay_seconds: 15
+        hooks:
+          run:
+            pre:
+              - record_event:
+                  name: observation_start
+            post:
+              - record_event:
+                  name: observation_stop
+
+      - name: Stop Monitoring
+        action:
+          component_action:
+            phase: stop_monitoring
+            target: df-engine
+
+      - name: Destroy Engine
+        action:
+          component_action:
+            phase: destroy
+            target: df-engine
+
+      - name: Run Report
+        action:
+          wait:
+            delay_seconds: 0
+        hooks:
+          run:
+            post:
+              - print_container_logs: {}
+              - sql_report:
+                  name: Idle State Performance Report - {{core_label}}
+                  report_config_file: ./test_suites/integration/configs/idle_state_report.yaml
+                  output:
+                    - format:
+                        template: {}
+                      destination:
+                        console: {}
+                    - format:
+                        template:
+                          path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                      destination:
+                        file:
+                          directory: results/idle_state_{{result_subdir}}/gh-actions-benchmark
