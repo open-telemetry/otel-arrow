@@ -37,8 +37,10 @@ pub struct RawKeyValue<'a> {
 }
 
 impl<'a> RawKeyValue<'a> {
+    /// Create a new RawKeyValue parser from a byte slice containing a KeyValue message.
     #[inline]
-    fn new(buf: &'a [u8]) -> Self {
+    #[must_use]
+    pub fn new(buf: &'a [u8]) -> Self {
         Self {
             buf,
             pos: Cell::new(0),
