@@ -650,7 +650,7 @@ impl SegmentReader {
             }
         }
 
-        // Slow path: need to create decoder with write lock
+        // Slow path: need to create decoder
         // Create decoder outside the lock to minimize lock time
         let stream_meta = self
             .stream(stream_id)
@@ -668,16 +668,31 @@ impl SegmentReader {
             stream_meta.byte_length as usize,
         );
 
-        let decoder = StreamDecoder::new(stream_buffer)?;
+        let new_decoder = StreamDecoder::new(stream_buffer)?;
 
-        // Insert with write lock, then read the batch
-        let mut cache = self.stream_decoders.write();
-        // Double-check another thread didn't insert while we were creating
-        use std::collections::hash_map::Entry;
-        let decoder = match cache.entry(stream_id) {
-            Entry::Occupied(e) => e.into_mut(),
-            Entry::Vacant(e) => e.insert(decoder),
-        };
+        // Insert with write lock, but release lock before reading the batch
+        // to minimize contention on concurrent reads
+        {
+            let mut cache = self.stream_decoders.write();
+            // Double-check another thread didn't insert while we were creating
+            use std::collections::hash_map::Entry;
+            match cache.entry(stream_id) {
+                Entry::Occupied(_) => {
+                    // Another thread beat us; drop our decoder and use theirs
+                    // (will be read in the next block)
+                }
+                Entry::Vacant(e) => {
+                    let _ = e.insert(new_decoder);
+                }
+            }
+            // Write lock released here
+        }
+
+        // Now read with read lock (either our decoder or the one another thread inserted)
+        let cache = self.stream_decoders.read();
+        let decoder = cache.get(&stream_id).ok_or_else(|| SegmentError::InvalidFormat {
+            message: format!("decoder for stream {:?} disappeared unexpectedly", stream_id),
+        })?;
 
         decoder
             .get_batch(chunk_index.raw() as usize)?
