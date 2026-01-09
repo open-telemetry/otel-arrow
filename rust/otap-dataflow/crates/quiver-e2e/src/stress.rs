@@ -327,11 +327,17 @@ pub struct SteadyStateStats {
     pub total_cleaned: u64,
     /// Total segments written
     pub total_segments_written: u64,
+    /// Total backpressure events (StorageAtCapacity errors)
+    pub backpressure_count: u64,
+    /// Total segments force-dropped (DropOldest policy)
+    pub force_dropped_segments: u64,
+    /// Total bundles lost due to force-dropped segments
+    pub force_dropped_bundles: u64,
     /// Final cleanup duration in milliseconds
     pub cleanup_duration_ms: u64,
-    /// Current backlog (ingested - consumed/subscribers_per_engine)
-    pub backlog: u64,
-    /// Number of subscribers per engine (used for backlog calculation)
+    /// Current buffered bundles (ingested - consumed - dropped)
+    pub buffered: u64,
+    /// Number of subscribers per engine (used for buffered calculation)
     /// Each subscriber only consumes from its own engine's bundles.
     pub subscribers: usize,
     /// Rows per bundle (for calculating rows/sec)
@@ -402,14 +408,25 @@ impl SteadyStateStats {
         consumed: u64,
         cleaned: u64,
         segments_written: u64,
+        backpressure: u64,
+        force_dropped_segments: u64,
+        force_dropped_bundles: u64,
     ) {
         self.total_ingested = ingested;
         self.total_consumed = consumed;
         self.total_cleaned = cleaned;
         self.total_segments_written = segments_written;
-        // Backlog is ingested - (consumed / subscribers)
+        self.backpressure_count = backpressure;
+        self.force_dropped_segments = force_dropped_segments;
+        self.force_dropped_bundles = force_dropped_bundles;
+        // Buffered = bundles sitting in Quiver's buffer
+        // = ingested - consumed - dropped
+        // (dropped bundles can never be consumed, so they don't count as buffered)
         if self.subscribers > 0 {
-            self.backlog = ingested.saturating_sub(consumed / self.subscribers as u64);
+            let effective_consumed = consumed / self.subscribers as u64;
+            self.buffered = ingested
+                .saturating_sub(effective_consumed)
+                .saturating_sub(force_dropped_bundles);
         }
     }
 
@@ -475,6 +492,10 @@ impl SteadyStateStats {
         println!("Total bundles consumed: {}", self.total_consumed);
         println!("Total segments written: {}", self.total_segments_written);
         println!("Total segments cleaned: {}", self.total_cleaned);
+        println!(
+            "Dropped: {} segments / {} bundles (DropOldest policy)",
+            self.force_dropped_segments, self.force_dropped_bundles
+        );
         println!("Final cleanup time: {} ms", self.cleanup_duration_ms);
         println!();
         println!("Throughput:");

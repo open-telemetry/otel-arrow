@@ -152,8 +152,8 @@ pub struct Dashboard {
     data_dir: std::path::PathBuf,
     /// Maximum history length based on terminal width
     max_history_len: usize,
-    /// Recent throughput samples for sparkline (bundles/sec)
-    throughput_history: Vec<u64>,
+    /// Recent consumed throughput samples for sparkline (bundles/sec)
+    consumed_throughput_history: Vec<u64>,
     /// Recent heap memory samples for sparkline (MB * 10 for precision) - jemalloc allocated
     memory_history: Vec<u64>,
     /// Recent RSS samples for sparkline (MB) - includes mmap'd pages
@@ -174,15 +174,15 @@ pub struct Dashboard {
     minflt_history: Vec<u64>,
     /// Recent major page fault samples for sparkline (hard faults - disk read)
     majflt_history: Vec<u64>,
-    /// Recent backlog samples for sparkline (bundles)
-    backlog_history: Vec<u64>,
+    /// Recent buffered samples for sparkline (bundles)
+    buffered_history: Vec<u64>,
     /// System info for CPU monitoring
     system: System,
     /// Our process ID for CPU tracking
     pid: Pid,
     /// Last iteration time for throughput calculation
     last_iteration_time: Instant,
-    last_iteration_bundles: u64,
+    last_iteration_consumed: u64,
     /// Last segment file size for write rate calculation
     last_segment_bytes: u64,
     /// Last WAL file size for write rate calculation
@@ -225,7 +225,7 @@ impl Dashboard {
             target_duration,
             data_dir,
             max_history_len,
-            throughput_history: Vec::with_capacity(max_history_len),
+            consumed_throughput_history: Vec::with_capacity(max_history_len),
             memory_history: Vec::with_capacity(max_history_len),
             rss_history: Vec::with_capacity(max_history_len),
             cpu_history: Vec::with_capacity(max_history_len),
@@ -236,11 +236,11 @@ impl Dashboard {
             write_iops_history: Vec::with_capacity(max_history_len),
             minflt_history: Vec::with_capacity(max_history_len),
             majflt_history: Vec::with_capacity(max_history_len),
-            backlog_history: Vec::with_capacity(max_history_len),
+            buffered_history: Vec::with_capacity(max_history_len),
             system: System::new(),
             pid: Pid::from_u32(std::process::id()),
             last_iteration_time: Instant::now(),
-            last_iteration_bundles: 0,
+            last_iteration_consumed: 0,
             last_segment_bytes: initial_seg_bytes,
             last_wal_bytes: 0, // Cumulative from engine, starts at 0
             last_syscr: initial_syscr,
@@ -273,18 +273,18 @@ impl Dashboard {
         let current_memory = MemoryTracker::current_allocated_mb();
         let disk_bytes = calculate_disk_usage(data_dir).unwrap_or(0);
 
-        // Calculate current throughput
+        // Calculate current consumed throughput
         let now = Instant::now();
         let iteration_elapsed = now.duration_since(self.last_iteration_time);
-        let bundles_this_period = stats
-            .total_bundles_ingested
-            .saturating_sub(self.last_iteration_bundles);
+        let consumed_this_period = stats
+            .total_bundles_consumed
+            .saturating_sub(self.last_iteration_consumed);
 
         if iteration_elapsed >= Duration::from_secs(1) {
-            let throughput = (bundles_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
-            self.throughput_history.push(throughput);
-            if self.throughput_history.len() > 60 {
-                let _ = self.throughput_history.remove(0);
+            let consumed_throughput = (consumed_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
+            self.consumed_throughput_history.push(consumed_throughput);
+            if self.consumed_throughput_history.len() > 60 {
+                let _ = self.consumed_throughput_history.remove(0);
             }
 
             // Memory history (store as MB * 10 for better sparkline resolution)
@@ -294,7 +294,7 @@ impl Dashboard {
             }
 
             self.last_iteration_time = now;
-            self.last_iteration_bundles = stats.total_bundles_ingested;
+            self.last_iteration_consumed = stats.total_bundles_consumed;
         }
 
         let progress = elapsed.as_secs_f64() / self.target_duration.as_secs_f64();
@@ -309,7 +309,7 @@ impl Dashboard {
                 progress_pct,
                 current_memory,
                 disk_bytes,
-                &self.throughput_history,
+                &self.consumed_throughput_history,
                 &self.memory_history,
                 config,
             );
@@ -333,7 +333,7 @@ impl Dashboard {
                 let _ = v.remove(0);
             }
         }
-        trim_vec(&mut self.throughput_history, self.max_history_len);
+        trim_vec(&mut self.consumed_throughput_history, self.max_history_len);
         trim_vec(&mut self.memory_history, self.max_history_len);
         trim_vec(&mut self.rss_history, self.max_history_len);
         trim_vec(&mut self.cpu_history, self.max_history_len);
@@ -344,7 +344,7 @@ impl Dashboard {
         trim_vec(&mut self.write_iops_history, self.max_history_len);
         trim_vec(&mut self.minflt_history, self.max_history_len);
         trim_vec(&mut self.majflt_history, self.max_history_len);
-        trim_vec(&mut self.backlog_history, self.max_history_len);
+        trim_vec(&mut self.buffered_history, self.max_history_len);
     }
 
     /// Updates and renders the dashboard for steady-state mode.
@@ -374,18 +374,18 @@ impl Dashboard {
             }
         }
 
-        // Calculate current throughput
+        // Calculate current consumed throughput
         let now = Instant::now();
         let iteration_elapsed = now.duration_since(self.last_iteration_time);
-        let bundles_this_period = stats
-            .total_ingested
-            .saturating_sub(self.last_iteration_bundles);
+        let consumed_this_period = stats
+            .total_consumed
+            .saturating_sub(self.last_iteration_consumed);
 
         if iteration_elapsed >= Duration::from_secs(1) {
-            let throughput = (bundles_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
-            self.throughput_history.push(throughput);
-            if self.throughput_history.len() > self.max_history_len {
-                let _ = self.throughput_history.remove(0);
+            let consumed_throughput = (consumed_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
+            self.consumed_throughput_history.push(consumed_throughput);
+            if self.consumed_throughput_history.len() > self.max_history_len {
+                let _ = self.consumed_throughput_history.remove(0);
             }
 
             // Memory history (store as MB * 10 for better sparkline resolution)
@@ -487,14 +487,14 @@ impl Dashboard {
             }
             self.last_majflt = current_majflt;
 
-            // Backlog history
-            self.backlog_history.push(stats.backlog);
-            if self.backlog_history.len() > self.max_history_len {
-                let _ = self.backlog_history.remove(0);
+            // Buffered history
+            self.buffered_history.push(stats.buffered);
+            if self.buffered_history.len() > self.max_history_len {
+                let _ = self.buffered_history.remove(0);
             }
 
             self.last_iteration_time = now;
-            self.last_iteration_bundles = stats.total_ingested;
+            self.last_iteration_consumed = stats.total_consumed;
         }
 
         let progress = elapsed.as_secs_f64() / self.target_duration.as_secs_f64();
@@ -508,7 +508,7 @@ impl Dashboard {
                 elapsed,
                 self.target_duration,
                 progress_pct,
-                &self.throughput_history,
+                &self.consumed_throughput_history,
                 &self.memory_history,
                 &self.rss_history,
                 &self.cpu_history,
@@ -519,7 +519,7 @@ impl Dashboard {
                 &self.write_iops_history,
                 &self.minflt_history,
                 &self.majflt_history,
-                &self.backlog_history,
+                &self.buffered_history,
                 config,
             );
         });
@@ -557,7 +557,7 @@ fn render_dashboard(
     progress_pct: f64,
     current_memory: f64,
     disk_bytes: u64,
-    throughput_history: &[u64],
+    consumed_throughput_history: &[u64],
     memory_history: &[u64],
     config: &DashboardConfig,
 ) {
@@ -567,7 +567,7 @@ fn render_dashboard(
         .constraints([
             Constraint::Length(3), // Title + progress
             Constraint::Length(8), // Stats
-            Constraint::Length(6), // Throughput sparkline
+            Constraint::Length(6), // Consumed throughput sparkline
             Constraint::Length(6), // Memory sparkline
             Constraint::Min(3),    // Status/config
         ])
@@ -579,8 +579,8 @@ fn render_dashboard(
     // Stats panels
     render_stats(frame, chunks[1], stats, current_memory, disk_bytes, elapsed);
 
-    // Throughput sparkline
-    render_throughput_sparkline(frame, chunks[2], throughput_history);
+    // Consumed throughput sparkline
+    render_throughput_sparkline(frame, chunks[2], consumed_throughput_history);
 
     // Memory sparkline
     render_memory_sparkline(frame, chunks[3], memory_history, current_memory);
@@ -638,7 +638,7 @@ fn render_stats(
 
     // Iterations & bundles
     let avg_throughput = if elapsed.as_secs() > 0 {
-        stats.total_bundles_ingested as f64 / elapsed.as_secs_f64()
+        stats.total_bundles_consumed as f64 / elapsed.as_secs_f64()
     } else {
         0.0
     };
@@ -771,7 +771,7 @@ fn render_throughput_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Throughput (bundles/sec) │ max: {} ", max_val))
+                .title(format!(" Consumed Throughput (bundles/sec) │ max: {} ", max_val))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -984,14 +984,14 @@ fn render_wal_write_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]
     frame.render_widget(sparkline, area);
 }
 
-fn render_backlog_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
+fn render_buffered_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
     let current = history.last().copied().unwrap_or(0);
     let max_val = history.iter().max().copied().unwrap_or(1).max(1);
 
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Backlog │ current: {} bundles ", current))
+                .title(format!(" Buffered │ current: {} bundles ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -1046,7 +1046,7 @@ fn render_steady_state_dashboard(
     elapsed: Duration,
     target_duration: Duration,
     progress_pct: f64,
-    throughput_history: &[u64],
+    consumed_throughput_history: &[u64],
     memory_history: &[u64],
     rss_history: &[u64],
     cpu_history: &[u64],
@@ -1057,7 +1057,7 @@ fn render_steady_state_dashboard(
     write_iops_history: &[u64],
     minflt_history: &[u64],
     majflt_history: &[u64],
-    backlog_history: &[u64],
+    buffered_history: &[u64],
     config: &SteadyStateConfig,
 ) {
     // Main vertical layout: header, stats, sparklines (two columns), config
@@ -1065,10 +1065,10 @@ fn render_steady_state_dashboard(
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(3), // Title + progress
-            Constraint::Length(8), // Stats panels
-            Constraint::Min(24),   // Sparklines area (two columns) - increased for 6 sparklines
-            Constraint::Length(3), // Status/config
+            Constraint::Length(3),  // Title + progress
+            Constraint::Length(10), // Stats panels (extra lines for backpressure + dropped)
+            Constraint::Min(24),    // Sparklines area (two columns) - increased for 6 sparklines
+            Constraint::Length(3),  // Status/config
         ])
         .split(frame.area());
 
@@ -1122,7 +1122,7 @@ fn render_steady_state_dashboard(
         .split(sparkline_columns[1]);
 
     // Left column sparklines
-    render_throughput_sparkline(frame, left_sparklines[0], throughput_history);
+    render_throughput_sparkline(frame, left_sparklines[0], consumed_throughput_history);
     render_memory_sparkline(
         frame,
         left_sparklines[1],
@@ -1132,7 +1132,7 @@ fn render_steady_state_dashboard(
     render_rss_sparkline(frame, left_sparklines[2], rss_history);
     render_cpu_sparkline(frame, left_sparklines[3], cpu_history);
     render_disk_sparkline(frame, left_sparklines[4], disk_history);
-    render_backlog_sparkline(frame, left_sparklines[5], backlog_history);
+    render_buffered_sparkline(frame, left_sparklines[5], buffered_history);
 
     // Right column sparklines
     render_segment_write_sparkline(frame, right_sparklines[0], segment_write_history);
@@ -1215,10 +1215,10 @@ fn render_steady_state_stats(
             ),
         ]),
         Line::from(vec![
-            Span::styled("Backlog:  ", Style::default().fg(Color::Gray)),
+            Span::styled("Buffered: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format!("{}", stats.backlog),
-                Style::default().fg(if stats.backlog > 1000 {
+                format!("{}", stats.buffered),
+                Style::default().fg(if stats.buffered > 1000 {
                     Color::Yellow
                 } else {
                     Color::White
@@ -1232,6 +1232,20 @@ fn render_steady_state_stats(
     frame.render_widget(bundles_block, chunks[0]);
 
     // Segments panel
+    let backpressure_color = if stats.backpressure_count > 100 {
+        Color::Red
+    } else if stats.backpressure_count > 0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    let force_dropped_color = if stats.force_dropped_segments > 0 {
+        Color::Red
+    } else {
+        Color::Green
+    };
+
     let segments_text = vec![
         Line::from(vec![
             Span::styled("Written:  ", Style::default().fg(Color::Gray)),
@@ -1257,6 +1271,20 @@ fn render_steady_state_stats(
                         .saturating_sub(stats.total_cleaned)
                 ),
                 Style::default().fg(Color::Yellow),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Backpres: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", stats.backpressure_count),
+                Style::default().fg(backpressure_color),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Dropped:  ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", stats.force_dropped_segments),
+                Style::default().fg(force_dropped_color),
             ),
         ]),
     ];

@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use quiver::budget::DiskBudget;
+use quiver::config::RetentionPolicy;
 use quiver::SegmentReadMode;
 use quiver::subscriber::SubscriberId;
 use quiver::{QuiverConfig, QuiverEngine};
@@ -83,6 +85,17 @@ impl OutputMode {
     }
 }
 
+/// Creates a disk budget from config.
+/// Returns a 100 GB budget if disk_budget_mb is 0 (effectively unlimited).
+fn create_budget(disk_budget_mb: u64, policy: RetentionPolicy) -> Arc<DiskBudget> {
+    let cap_bytes = if disk_budget_mb == 0 {
+        100 * 1024 * 1024 * 1024 // 100 GB "unlimited"
+    } else {
+        disk_budget_mb * 1024 * 1024
+    };
+    Arc::new(DiskBudget::new(cap_bytes, policy))
+}
+
 /// Configuration for steady-state test.
 pub struct SteadyStateTestConfig {
     pub duration: Duration,
@@ -91,7 +104,8 @@ pub struct SteadyStateTestConfig {
     pub string_size: usize,
     pub subscribers: usize,
     pub subscriber_delay_ms: u64,
-    pub progress_flush_interval: usize,
+    /// How often to call maintain() (in milliseconds, 0 = never)
+    pub maintain_interval_ms: u64,
     pub segment_size_mb: u64,
     /// Read mode for segment files (mmap vs standard I/O).
     pub read_mode: SegmentReadMode,
@@ -101,6 +115,10 @@ pub struct SteadyStateTestConfig {
     pub wal_flush_interval_ms: u64,
     pub no_wal: bool,
     pub engines: usize,
+    /// Disk budget cap in MB (0 = effectively unlimited).
+    pub disk_budget_mb: u64,
+    /// Retention policy when disk budget is exceeded.
+    pub retention_policy: RetentionPolicy,
 }
 
 /// Run the unified steady-state stress test.
@@ -189,7 +207,7 @@ pub fn run(
     let total_ingested = Arc::new(AtomicU64::new(0));
     let total_consumed = Arc::new(AtomicU64::new(0));
     let total_cleaned = Arc::new(AtomicU64::new(0));
-    let segments_written = Arc::new(AtomicU64::new(0));
+    let backpressure_count = Arc::new(AtomicU64::new(0));
 
     // Create per-engine resources (engine owns segment store and registry)
     let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(config.engines);
@@ -226,8 +244,11 @@ pub fn run(
             ));
         }
 
+        // Create disk budget (shared by all engines in multi-engine mode)
+        let budget = create_budget(config.disk_budget_mb, config.retention_policy);
+
         // Engine now owns segment store and registry internally
-        let engine = QuiverEngine::new(engine_config)?;
+        let engine = QuiverEngine::new(engine_config, budget)?;
 
         // Register subscribers using engine's unified API
         let sub_ids = register_subscribers_on_engine(&engine, config.subscribers)?;
@@ -266,6 +287,7 @@ pub fn run(
             test_bundles.clone(),
             ingest_running.clone(),
             total_ingested.clone(),
+            backpressure_count.clone(),
             startup_delay_ms,
         );
         ingest_handles.push(handle);
@@ -278,12 +300,13 @@ pub fn run(
         let sub_running = running.clone();
         let sub_consumed = total_consumed.clone();
         let delay_ms = config.subscriber_delay_ms;
-        let flush_interval = config.progress_flush_interval;
+        let maintain_interval_ms = config.maintain_interval_ms;
         let sub_id_clone = sub_id.clone();
 
         let handle = thread::spawn(move || {
             let delay = SubscriberDelay::new(delay_ms);
-            let mut bundles_since_flush = 0;
+            let maintain_interval = Duration::from_millis(maintain_interval_ms);
+            let mut last_maintain = Instant::now();
 
             while sub_running.load(Ordering::Relaxed) {
                 // Use engine's unified subscriber API
@@ -298,11 +321,11 @@ pub fn run(
                 delay.apply();
                 bundle_handle.ack();
                 let _ = sub_consumed.fetch_add(1, Ordering::Relaxed);
-                bundles_since_flush += 1;
 
-                if bundles_since_flush >= flush_interval {
-                    let _ = engine.flush_progress();
-                    bundles_since_flush = 0;
+                // Time-based maintenance: flush progress + cleanup (0 = disabled)
+                if maintain_interval_ms > 0 && last_maintain.elapsed() >= maintain_interval {
+                    let _ = engine.maintain();
+                    last_maintain = Instant::now();
                 }
             }
         });
@@ -336,13 +359,26 @@ pub fn run(
         // Update stats
         let current_mem = MemoryTracker::current_allocated_mb();
         let current_disk = calculate_disk_usage(&data_dir).unwrap_or(0);
+        // Get total segments written across all engines (monotonically increasing)
+        let total_segments_written: u64 = engines
+            .iter()
+            .map(|e| e.total_segments_written())
+            .sum();
+        // Get total force-dropped segments and bundles (DropOldest policy)
+        let force_dropped_segments: u64 =
+            engines.iter().map(|e| e.force_dropped_segments()).sum();
+        let force_dropped_bundles: u64 =
+            engines.iter().map(|e| e.force_dropped_bundles()).sum();
         stats.update_memory(current_mem);
         stats.update_disk(current_disk);
         stats.update_counters(
             total_ingested.load(Ordering::Relaxed),
             total_consumed.load(Ordering::Relaxed),
             total_cleaned.load(Ordering::Relaxed),
-            segments_written.load(Ordering::Relaxed),
+            total_segments_written,
+            backpressure_count.load(Ordering::Relaxed),
+            force_dropped_segments,
+            force_dropped_bundles,
         );
 
         // Output mode-specific updates
@@ -358,13 +394,15 @@ pub fn run(
                     let ingested = total_ingested.load(Ordering::Relaxed);
                     let consumed = total_consumed.load(Ordering::Relaxed);
                     let cleaned = total_cleaned.load(Ordering::Relaxed);
+                    let backpressure = backpressure_count.load(Ordering::Relaxed);
                     let elapsed = start.elapsed().as_secs_f64();
                     let ingest_rate = ingested as f64 / elapsed;
                     let consume_rate = consumed as f64 / elapsed;
 
                     output.log(&format!(
-                        "[{:.0}s] Ingested: {} ({:.0}/s) | Consumed: {} ({:.0}/s) | Cleaned: {} | Mem: {:.1}MB | Disk: {:.1}MB",
-                        elapsed, ingested, ingest_rate, consumed, consume_rate, cleaned,
+                        "[{:.0}s] Ingested: {} ({:.0}/s) | Consumed: {} ({:.0}/s) | Cleaned: {} | BP: {} | Dropped: {} segs/{} bundles | Mem: {:.1}MB | Disk: {:.1}MB",
+                        elapsed, ingested, ingest_rate, consumed, consume_rate, cleaned, backpressure,
+                        force_dropped_segments, force_dropped_bundles,
                         current_mem, current_disk as f64 / 1024.0 / 1024.0
                     ));
                     last_report = Instant::now();
@@ -391,12 +429,17 @@ pub fn run(
         }
     }
 
-    // 3. Final segment scan (all engines)
-    let final_segment_count = engines
+    // 3. Final segment count (total written, monotonically increasing)
+    let final_total_segments_written: u64 = engines
         .iter()
-        .map(|e| e.segment_store().segment_count() as u64)
-        .sum::<u64>()
-        .max(segments_written.load(Ordering::Relaxed));
+        .map(|e| e.total_segments_written())
+        .sum();
+
+    // Get final force-dropped count (DropOldest policy)
+    let final_force_dropped_segments: u64 =
+        engines.iter().map(|e| e.force_dropped_segments()).sum();
+    let final_force_dropped_bundles: u64 =
+        engines.iter().map(|e| e.force_dropped_bundles()).sum();
 
     // 4. Drain remaining bundles
     let pre_drain_consumed = total_consumed.load(Ordering::Relaxed);
@@ -456,15 +499,16 @@ pub fn run(
 
     // Calculate totals
     let total_segments_cleaned = total_cleaned.load(Ordering::Relaxed) + final_cleanup_count;
-    let segments_discovered = final_segment_count.max(segments_written.load(Ordering::Relaxed));
-    let total_segments = segments_discovered.max(total_segments_cleaned);
 
     // Update stats with final values
     stats.update_counters(
         final_ingested,
         post_drain_consumed,
         total_segments_cleaned,
-        total_segments,
+        final_total_segments_written,
+        backpressure_count.load(Ordering::Relaxed),
+        final_force_dropped_segments,
+        final_force_dropped_bundles,
     );
     stats.cleanup_duration_ms = cleanup_duration.as_millis() as u64;
 
@@ -488,9 +532,13 @@ pub fn run(
         output.log(&format!("Engines: {}", config.engines));
         output.log(&format!("Bundles ingested: {}", final_ingested));
         output.log(&format!("Bundles consumed: {}", post_drain_consumed));
-        output.log(&format!("Segments written: {}", total_segments));
+        output.log(&format!("Segments written: {}", final_total_segments_written));
         output.log(&format!("Segments cleaned: {}", total_segments_cleaned));
-        output.log(&format!("Throughput: {:.0} bundles/sec", bundle_rate));
+        output.log(&format!(
+            "Dropped: {} segments / {} bundles (DropOldest policy)",
+            final_force_dropped_segments, final_force_dropped_bundles
+        ));
+        output.log(&format!("Consumed throughput: {:.0} bundles/sec", bundle_rate));
         output.log(&format!(
             "Memory: {:.2} MB initial -> {:.2} MB final (growth: {:.2} MB)",
             initial_mem,
@@ -551,6 +599,7 @@ fn spawn_ingest_thread(
     test_bundles: Arc<Vec<bundle::TestBundle>>,
     ingest_running: Arc<AtomicBool>,
     total_ingested: Arc<AtomicU64>,
+    backpressure_count: Arc<AtomicU64>,
     startup_delay_ms: u64,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -563,10 +612,30 @@ fn spawn_ingest_thread(
                 if !ingest_running.load(Ordering::Relaxed) {
                     break;
                 }
-                if engine.ingest(test_bundle).is_err() {
-                    break;
+                // Retry loop for backpressure handling
+                loop {
+                    match engine.ingest(test_bundle) {
+                        Ok(()) => {
+                            let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
+                            break; // Success, move to next bundle
+                        }
+                        Err(e) if e.is_at_capacity() => {
+                            // Backpressure: wait for consumers to catch up
+                            let _ = backpressure_count.fetch_add(1, Ordering::Relaxed);
+                            thread::sleep(Duration::from_millis(10));
+                            // Check if we should stop
+                            if !ingest_running.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            // Retry this bundle
+                            continue;
+                        }
+                        Err(_) => {
+                            // Other error: stop ingestion
+                            return;
+                        }
+                    }
                 }
-                let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
             }
         }
     })

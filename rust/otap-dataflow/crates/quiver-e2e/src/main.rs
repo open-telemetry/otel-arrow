@@ -23,9 +23,12 @@ mod stress_runner;
 mod subscriber;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
+use quiver::budget::DiskBudget;
+use quiver::config::RetentionPolicy;
 use quiver::SegmentReadMode;
 use quiver::subscriber::SubscriberId;
 use quiver::{QuiverConfig, QuiverEngine};
@@ -101,9 +104,9 @@ struct Args {
     #[arg(long, default_value = "mmap")]
     read_mode: ReadModeArg,
 
-    /// How often to flush progress files (in bundles consumed)
-    #[arg(long, default_value = "100")]
-    progress_flush_interval: usize,
+    /// How often to call maintain() - flushes progress and cleans up segments (in milliseconds, 0 = never)
+    #[arg(long, default_value = "1000")]
+    maintain_interval_ms: u64,
 
     /// Keep temp directory after test (for inspection)
     #[arg(long)]
@@ -150,6 +153,14 @@ struct Args {
     /// Number of parallel QuiverEngine instances (each with its own data directory)
     #[arg(long, default_value = "1")]
     engines: usize,
+
+    /// Disk budget cap in MB (0 = unlimited, default 10 GB)
+    #[arg(long, default_value = "10240")]
+    disk_budget_mb: u64,
+
+    /// Retention policy when disk budget is exceeded (backpressure or drop-oldest)
+    #[arg(long, default_value = "backpressure", value_parser = parse_retention_policy)]
+    retention_policy: RetentionPolicy,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -278,7 +289,7 @@ fn run_steady_state_mode(
         string_size: args.string_size,
         subscribers: args.subscribers,
         subscriber_delay_ms: args.subscriber_delay_ms,
-        progress_flush_interval: args.progress_flush_interval,
+        maintain_interval_ms: args.maintain_interval_ms,
         segment_size_mb: args.segment_size_mb,
         read_mode,
         leak_threshold_mb: args.leak_threshold_mb,
@@ -287,6 +298,8 @@ fn run_steady_state_mode(
         wal_flush_interval_ms: args.wal_flush_interval_ms,
         no_wal: args.no_wal,
         engines: args.engines,
+        disk_budget_mb: args.disk_budget_mb,
+        retention_policy: args.retention_policy,
     };
 
     // Create output mode (TUI or Text)
@@ -334,7 +347,8 @@ fn run_iteration_for_stress(
         args.no_wal,
         read_mode,
     );
-    let engine = QuiverEngine::new(config)?;
+    let budget = create_budget(args.disk_budget_mb, args.retention_policy);
+    let engine = QuiverEngine::new(config, budget)?;
 
     // Register and activate subscribers before ingestion
     let mut subscriber_ids = Vec::with_capacity(args.subscribers);
@@ -459,7 +473,7 @@ fn print_config(args: &Args) {
         args.failure_probability * 100.0
     );
     info!("  Read mode: {:?}", args.read_mode);
-    info!("  Flush interval: {} bundles", args.progress_flush_interval);
+    info!("  Maintain interval: {}ms", args.maintain_interval_ms);
     info!("");
 }
 
@@ -531,7 +545,8 @@ fn run_single_iteration(
             args.no_wal,
             *mode,
         );
-        let engine = QuiverEngine::new(config)?;
+        let budget = create_budget(args.disk_budget_mb, args.retention_policy);
+        let engine = QuiverEngine::new(config, budget)?;
         mem_tracker.checkpoint(&format!("engine_created_{}", mode_name));
 
         // Register and activate subscribers before ingestion
@@ -757,4 +772,27 @@ fn create_config(
     config.wal.flush_interval = Duration::from_millis(wal_flush_interval_ms);
 
     config
+}
+
+/// Creates a disk budget from CLI args.
+/// Returns a 100 GB budget if disk_budget_mb is 0 (effectively unlimited).
+fn create_budget(disk_budget_mb: u64, policy: RetentionPolicy) -> Arc<DiskBudget> {
+    let cap_bytes = if disk_budget_mb == 0 {
+        100 * 1024 * 1024 * 1024 // 100 GB "unlimited"
+    } else {
+        disk_budget_mb * 1024 * 1024
+    };
+    Arc::new(DiskBudget::new(cap_bytes, policy))
+}
+
+/// Parses a retention policy from CLI string.
+fn parse_retention_policy(s: &str) -> Result<RetentionPolicy, String> {
+    match s.to_lowercase().as_str() {
+        "backpressure" | "bp" => Ok(RetentionPolicy::Backpressure),
+        "drop-oldest" | "dropoldest" | "drop" => Ok(RetentionPolicy::DropOldest),
+        _ => Err(format!(
+            "Invalid retention policy '{}'. Use 'backpressure' or 'drop-oldest'",
+            s
+        )),
+    }
 }
