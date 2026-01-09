@@ -29,11 +29,11 @@ bool_false_token = @{ "false" }
 null_token = @{ "null" }
 
 primitive_expression = {
-    identifier_expression
-    | string_literal
+    string_literal
     | bool_true_token
     | bool_false_token
     | null_token
+    | identifier_expression
     // TODO there are more of these
 }
 
@@ -53,7 +53,7 @@ float_literal = @{
 }
 
 number_literal = {
-    integer_literal | float_literal
+    float_literal | integer_literal
 }
 
 negate_token = @{ "-" }

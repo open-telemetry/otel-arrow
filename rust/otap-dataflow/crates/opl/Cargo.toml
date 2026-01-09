@@ -17,3 +17,6 @@ data_engine_parser_abstractions = { workspace = true }
 data_engine_expressions = { workspace = true }
 pest = { workspace = true }
 pest_derive = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }

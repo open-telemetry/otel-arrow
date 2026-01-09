@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    AndLogicalExpression, BinaryMathematicalScalarExpression, DoubleScalarExpression, DoubleValue,
-    EqualToLogicalExpression, Expression, IntegerScalarExpression, IntegerValue, LogicalExpression,
-    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
-    QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
-    StringScalarExpression, ValueAccessor,
+    AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
+    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
+    IntegerScalarExpression, IntegerValue, LogicalExpression, MathScalarExpression,
+    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+    ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+    ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_bool_literal, parse_standard_double_literal,
@@ -332,13 +333,13 @@ fn negate_number_literal(
         StaticScalarExpression::Integer(int_expr) => {
             StaticScalarExpression::Integer(IntegerScalarExpression::new(
                 int_expr.get_query_location().clone(),
-                int_expr.get_value(),
+                -1 * int_expr.get_value(),
             ))
         }
         StaticScalarExpression::Double(float_expr) => {
             StaticScalarExpression::Double(DoubleScalarExpression::new(
                 float_expr.get_query_location().clone(),
-                float_expr.get_value(),
+                -1.0 * float_expr.get_value(),
             ))
         }
         _ => {
@@ -386,8 +387,15 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             Rule::string_literal => {
                 Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
             }
-            Rule::bool_true_token | Rule::bool_false_token => {
-                Ok(ScalarExpression::Static(parse_standard_bool_literal(rule)).into())
+            Rule::bool_true_token => Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(query_location, true),
+            ))
+            .into()),
+            Rule::bool_false_token => {
+                Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                    BooleanScalarExpression::new(query_location, false),
+                ))
+                .into())
             }
             Rule::null_token => Ok(ScalarExpression::Static(StaticScalarExpression::Null(
                 NullScalarExpression::new(query_location),
@@ -404,25 +412,82 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
 
 #[cfg(test)]
 mod test {
+    use super::parse_expression;
     use data_engine_expressions::{
+        BooleanScalarExpression, DoubleScalarExpression, IntegerScalarExpression,
         LogicalExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
         StringScalarExpression,
     };
     use pest::Parser;
+    use pretty_assertions::assert_eq;
 
-    use crate::parser::{Rule, pest::OplPestParser};
-
-    use super::parse_expression;
+    use crate::parser::{Rule, expression::parse_unary_expression, pest::OplPestParser};
 
     #[test]
-    fn test_parse_primitive() {
-        let mut rules = OplPestParser::parse(Rule::expression, "\"hello\"").unwrap();
-        assert_eq!(rules.len(), 1);
-        let result = parse_expression(rules.next().unwrap()).unwrap();
-        let expected =
-            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::String(
-                StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
-            )));
-        assert_eq!(result, expected)
+    fn test_parse_unary_expression_static_primitives() {
+        let test_cases = [
+            (
+                "\"hello\"",
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "hello",
+                )),
+            ),
+            (
+                "123",
+                StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    123,
+                )),
+            ),
+            (
+                "-456",
+                StaticScalarExpression::Integer(IntegerScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    -456,
+                )),
+            ),
+            (
+                "1.23",
+                StaticScalarExpression::Double(DoubleScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    1.23,
+                )),
+            ),
+            (
+                "-4.56",
+                StaticScalarExpression::Double(DoubleScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    -4.56,
+                )),
+            ),
+            (
+                "true",
+                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    true,
+                )),
+            ),
+            (
+                "false",
+                StaticScalarExpression::Boolean(BooleanScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    false,
+                )),
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+            assert_eq!(rules.len(), 1);
+            let result: ScalarExpression = parse_unary_expression(rules.next().unwrap())
+                .unwrap()
+                .into();
+            let expected = ScalarExpression::Static(expected.clone());
+            assert_eq!(result, expected);
+        }
     }
+
+    // #[test]
+    // fn test_parse_rel_
 }
