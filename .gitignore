@@ -63,4 +63,9 @@ __pycache__/
 collector/cmd/otelarrowcol/otelarrowcol
 tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp
 
+# validation_test output
+tools/validation_test/target
+tools/validation_test/target/*
+tools/validation_test/Cargo.lock
+
 venv
