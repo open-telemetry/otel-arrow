@@ -20,6 +20,7 @@ use otap_df_engine::{
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_info;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
@@ -128,6 +129,13 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
+        otel_info!(
+            "receiver.start",
+            protocol = format!("{:?}", self.config.protocol),
+            listening_addr = self.config.listening_addr.to_string(),
+            message = "Starting Syslog/CEF Receiver"
+        );
+
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(std::time::Duration::from_secs(1))
