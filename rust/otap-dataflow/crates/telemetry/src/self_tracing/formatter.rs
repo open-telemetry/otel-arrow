@@ -134,6 +134,36 @@ impl ConsoleWriter {
         self.write_line(callsite.level(), &buf[..len]);
     }
 
+    /// Print a warning about dropped log records.
+    ///
+    /// Formatted to look like a regular log record at WARN level.
+    pub fn print_dropped_warning(&self, dropped_count: u64) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        
+        let timestamp_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut w = Cursor::new(&mut buf[..]);
+        let cm = self.color_mode;
+
+        cm.write_ansi(&mut w, AnsiCode::Dim);
+        Self::write_timestamp(&mut w, timestamp_ns);
+        cm.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+        cm.write_level(&mut w, &Level::WARN);
+        cm.write_ansi(&mut w, AnsiCode::Bold);
+        let _ = w.write_all(b"otap_df_telemetry::logs::buffer_overflow");
+        cm.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = write!(w, ": dropped {} log records (buffer full)\n", dropped_count);
+
+        let len = w.position() as usize;
+        // WARN goes to stderr
+        let _ = std::io::stderr().write_all(&buf[..len]);
+    }
+
     /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
     pub fn write_log_record(
         &self,
@@ -334,7 +364,9 @@ where
         // TODO: there are allocations implied here that we would prefer
         // to avoid, it will be an extensive change in the ProtoBuffer to
         // stack-allocate this temporary.
-        let record = LogRecord::new(event);
+        // RawLoggingLayer is used before the logs infrastructure is set up,
+        // so no producer_key context is available.
+        let record = LogRecord::new(event, None);
         let callsite = SavedCallsite::new(event.metadata());
         self.writer.print_log_record(&record, &callsite);
     }
@@ -372,7 +404,7 @@ mod tests {
         S: Subscriber + for<'a> LookupSpan<'a>,
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            let record = LogRecord::new(event);
+            let record = LogRecord::new(event, None);
             let callsite = SavedCallsite::new(event.metadata());
 
             // Capture formatted output
@@ -536,6 +568,7 @@ mod tests {
             // 2024-01-15T12:30:45.678Z
             timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::new(),
+            producer_key: None,
         };
 
         let writer = ConsoleWriter::no_color();
@@ -593,6 +626,7 @@ mod tests {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::from(encoded),
+            producer_key: None,
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];

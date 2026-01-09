@@ -8,8 +8,7 @@
 //! via a channel. Components don't need to do anything special for logging.
 
 use crate::error::Error;
-use crate::registry::MetricsKey;
-use crate::self_tracing::{ConsoleWriter, LogRecord, SavedCallsite};
+use crate::self_tracing::{ConsoleWriter, LogRecord, ProducerKey, SavedCallsite};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{Event, Subscriber};
@@ -18,30 +17,21 @@ use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry};
 
-/// A log entry with optional producer identification.
-pub struct LogEntry {
-    /// The log record (callsite, timestamp, encoded body/attrs).
-    pub record: LogRecord,
-    /// Optional key identifying the producing component (for first-party logs).
-    /// None for third-party logs from libraries.
-    pub producer_key: Option<MetricsKey>,
-}
-
-/// A batch of log entries from a pipeline thread.
+/// A batch of log records from a pipeline thread.
 pub struct LogBatch {
-    /// The log entries in this batch.
-    pub entries: Vec<LogEntry>,
+    /// The log records in this batch.
+    pub records: Vec<LogRecord>,
+    /// Number of records dropped since the last batch (buffer was full).
+    pub dropped_count: u64,
 }
 
 /// Thread-local log buffer for a pipeline thread.
 ///
 /// All components on this thread share the same buffer.
 /// The pipeline runtime flushes it periodically on a timer.
-/// If the buffer fills before flush, new events are dropped.
+/// If the buffer fills before flush, new events are dropped and counted.
 pub struct LogBuffer {
-    entries: Vec<LogEntry>,
-    capacity: usize,
-    dropped_count: u64,
+    batch: LogBatch,
 }
 
 impl LogBuffer {
@@ -49,52 +39,43 @@ impl LogBuffer {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
-            entries: Vec::with_capacity(capacity.min(256)),
-            capacity,
-            dropped_count: 0,
+            batch: LogBatch {
+                records: Vec::with_capacity(capacity),
+                dropped_count: 0,
+            },
         }
     }
 
-    /// Push a log entry. If at capacity, the new entry is dropped.
+    /// Push a log record. If at capacity, the record is dropped and counted.
     ///
-    /// Returns true if the entry was added, false if dropped.
-    pub fn push(&mut self, entry: LogEntry) -> bool {
-        if self.entries.len() >= self.capacity {
-            self.dropped_count += 1;
+    /// Returns true if the record was added, false if dropped.
+    pub fn push(&mut self, record: LogRecord) -> bool {
+        if self.batch.records.len() >= self.batch.records.capacity() {
+            self.batch.dropped_count += 1;
             false
         } else {
-            self.entries.push(entry);
+            self.batch.records.push(record);
             true
         }
     }
 
-    /// Push just a LogRecord with no producer key (for third-party events).
-    ///
-    /// Returns true if the entry was added, false if dropped.
-    pub fn push_record(&mut self, record: LogRecord) -> bool {
-        self.push(LogEntry {
-            record,
-            producer_key: None,
-        })
-    }
-
-    /// Check if the buffer has entries to flush.
+    /// Check if the buffer has records to flush.
     #[must_use]
     pub fn needs_flush(&self) -> bool {
-        !self.entries.is_empty()
+        !self.batch.records.is_empty() || self.batch.dropped_count > 0
     }
 
-    /// Drain all entries from the buffer, returning them as a batch.
+    /// Drain all records from the buffer, returning them as a batch.
+    /// Resets the dropped count for the next batch.
     pub fn drain(&mut self) -> LogBatch {
-        LogBatch {
-            entries: std::mem::take(&mut self.entries),
-        }
-    }
-
-    /// Returns the number of dropped entries since creation.
-    #[must_use]
-    pub fn dropped_count(&self) -> u64 {
-        self.dropped_count
+        let capacity = self.batch.records.capacity();
+        std::mem::replace(
+            &mut self.batch,
+            LogBatch {
+                records: Vec::with_capacity(capacity),
+                dropped_count: 0,
+            },
+        )
     }
 }
 
@@ -103,11 +84,11 @@ thread_local! {
     static CURRENT_LOG_BUFFER: RefCell<Option<LogBuffer>> = const { RefCell::new(None) };
 }
 
-// Thread-local current MetricsKey for third-party instrumentation.
+// Thread-local current ProducerKey for third-party instrumentation.
 // When a component is executing, this is set to that component's key so that
 // any tracing::info!() calls from libraries can be attributed to the component.
 thread_local! {
-    static CURRENT_PRODUCER_KEY: RefCell<Option<MetricsKey>> = const { RefCell::new(None) };
+    static CURRENT_PRODUCER_KEY: RefCell<Option<ProducerKey>> = const { RefCell::new(None) };
 }
 
 /// Guard that sets the current producer key for the duration of a scope.
@@ -115,7 +96,7 @@ thread_local! {
 /// When dropped, restores the previous key (or None).
 /// This allows nested scoping if needed.
 pub struct ProducerKeyGuard {
-    previous: Option<MetricsKey>,
+    previous: Option<ProducerKey>,
 }
 
 impl ProducerKeyGuard {
@@ -124,7 +105,7 @@ impl ProducerKeyGuard {
     /// Third-party log events will be attributed to this key until
     /// the guard is dropped.
     #[must_use]
-    pub fn enter(key: MetricsKey) -> Self {
+    pub fn enter(key: ProducerKey) -> Self {
         let previous = CURRENT_PRODUCER_KEY.with(|cell| cell.borrow_mut().replace(key));
         Self { previous }
     }
@@ -140,7 +121,7 @@ impl Drop for ProducerKeyGuard {
 
 /// Get the current producer key (if any component scope is active).
 #[must_use]
-pub fn current_producer_key() -> Option<MetricsKey> {
+pub fn current_producer_key() -> Option<ProducerKey> {
     CURRENT_PRODUCER_KEY.with(|cell| *cell.borrow())
 }
 
@@ -160,25 +141,6 @@ pub fn uninstall_thread_log_buffer() {
     CURRENT_LOG_BUFFER.with(|cell| {
         *cell.borrow_mut() = None;
     });
-}
-
-/// Push a log record to the current thread's buffer (if installed).
-///
-/// If `producer_key` is None, uses the current thread-local producer key
-/// (set via `ProducerKeyGuard::enter()`). This allows third-party instrumentation
-/// to be attributed to the currently-executing component.
-///
-/// Returns false if no buffer is installed or buffer is full (event dropped).
-pub fn push_to_thread_buffer(record: LogRecord, producer_key: Option<MetricsKey>) -> bool {
-    CURRENT_LOG_BUFFER.with(|cell| {
-        if let Some(ref mut buffer) = *cell.borrow_mut() {
-            // Use explicit key if provided, otherwise use thread-current key
-            let key = producer_key.or_else(current_producer_key);
-            buffer.push(LogEntry { record, producer_key: key })
-        } else {
-            false
-        }
-    })
 }
 
 /// Flush the current thread's log buffer, returning the batch.
@@ -255,14 +217,18 @@ impl LogsCollector {
         }
     }
 
-    /// Write a batch of log entries to console.
+    /// Write a batch of log records to console.
     fn write_batch(&self, batch: LogBatch) {
-        for entry in batch.entries {
+        // Print dropped count as a formatted warning before the batch
+        if batch.dropped_count > 0 {
+            self.writer.print_dropped_warning(batch.dropped_count);
+        }
+        for record in batch.records {
             // Identifier.0 is the &'static dyn Callsite
-            let metadata = entry.record.callsite_id.0.metadata();
+            let metadata = record.callsite_id.0.metadata();
             let saved = SavedCallsite::new(metadata);
             // Use ConsoleWriter's routing: ERROR/WARN to stderr, others to stdout
-            self.writer.print_log_record(&entry.record, &saved);
+            self.writer.print_log_record(&record, &saved);
             // TODO: include producer_key in output when present
         }
     }
@@ -317,12 +283,12 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let record = LogRecord::new(event);
         let producer_key = current_producer_key();
+        let record = LogRecord::new(event, producer_key);
 
         CURRENT_LOG_BUFFER.with(|cell| {
             if let Some(ref mut buffer) = *cell.borrow_mut() {
-                if buffer.push(LogEntry { record, producer_key }) {
+                if buffer.push(record) {
                     let _ = self.events_captured.fetch_add(1, Ordering::Relaxed);
                 } else {
                     let _ = self.events_dropped.fetch_add(1, Ordering::Relaxed);
@@ -379,13 +345,11 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let record = LogRecord::new(event);
         // Non-engine threads don't have producer_key context
+        let record = LogRecord::new(event, None);
         let batch = LogBatch {
-            entries: vec![LogEntry {
-                record,
-                producer_key: None,
-            }],
+            records: vec![record],
+            dropped_count: 0,
         };
 
         match self.reporter.sender.try_send(batch) {

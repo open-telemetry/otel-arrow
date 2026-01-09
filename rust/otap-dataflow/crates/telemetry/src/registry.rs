@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 new_key_type! {
     /// This key is used to identify a specific metrics entry in the registry (slotmap index).
+    /// TODO: Can we rename this ScopeKey? Is this the set of instrument scope variables?
     pub struct MetricsKey;
 }
 

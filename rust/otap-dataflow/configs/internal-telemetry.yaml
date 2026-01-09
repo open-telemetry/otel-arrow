@@ -39,6 +39,8 @@ service:
     logs:
       # The default level is "info".
       level: "debug"
-      internal:
-        # Internal logging is enabled by default.
-        enabled: true
+      strategies:
+        global: global
+        engine: buffered
+      output:
+        mode: raw

@@ -435,6 +435,7 @@ mod tests {
     use otap_df_config::pipeline::PipelineSettings;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
+    use otap_df_telemetry::logs::LogsCollector;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
     use tokio::task::LocalSet;
@@ -487,6 +488,9 @@ mod tests {
             thread_id,
         );
 
+        // Create a LogsReporter for testing (collector is dropped, that's ok for tests)
+        let (_collector, logs_reporter) = LogsCollector::new(10);
+
         let manager = PipelineCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -498,6 +502,7 @@ mod tests {
             control_senders,
             observed_state_store.reporter(),
             metrics_reporter,
+            logs_reporter,
             pipeline_settings.telemetry.clone(),
             Vec::new(),
         );
@@ -904,6 +909,9 @@ mod tests {
                     thread_id,
                 );
 
+                // Create a LogsReporter for testing (collector is dropped, that's ok for tests)
+                let (_collector, logs_reporter) = LogsCollector::new(10);
+
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
                     pipeline_key,
@@ -912,6 +920,7 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(),
                     metrics_reporter,
+                    logs_reporter,
                     TelemetrySettings::default(),
                     Vec::new(),
                 );
