@@ -158,20 +158,17 @@ pub(crate) fn parse_rel_expression(
         &mut inner_rules,
         Rule::multiplicative_expression,
         parse_multiplicative_expression,
-    )?
-    .into();
+    )?;
 
     if let Some(op_rule) = inner_rules.next() {
-        let parsed_right =
-            parse_expected_right(&mut inner_rules, Rule::rel_expression, parse_rel_expression)?;
-        let right_expr = match parsed_right {
-            LogicalOrScalarExpr::Scalar(s) => s,
-            LogicalOrScalarExpr::Logical(l) => ScalarExpression::Logical(Box::new(l)),
-        };
+        let right_expr =
+            parse_expected_right(&mut inner_rules, Rule::rel_expression, parse_rel_expression)?
+                .into();
+
         let expr = match op_rule.as_rule() {
             Rule::rel_op_eq => LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                 query_location,
-                left_expr,
+                left_expr.into(),
                 right_expr,
                 true,
             )),
@@ -179,7 +176,7 @@ pub(crate) fn parse_rel_expression(
                 query_location.clone(),
                 LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     query_location,
-                    left_expr,
+                    left_expr.into(),
                     right_expr,
                     true,
                 )),
@@ -204,8 +201,7 @@ pub(crate) fn parse_multiplicative_expression(
         &mut inner_rules,
         Rule::additive_expression,
         parse_additive_expression,
-    )?
-    .into();
+    )?;
 
     if let Some(op_rule) = inner_rules.next() {
         let right_expr = parse_expected_right(
@@ -215,8 +211,11 @@ pub(crate) fn parse_multiplicative_expression(
         )?
         .into();
 
-        let math_expr =
-            BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
+        let math_expr = BinaryMathematicalScalarExpression::new(
+            query_location.clone(),
+            left_expr.into(),
+            right_expr,
+        );
 
         Ok(ScalarExpression::Math(match op_rule.as_rule() {
             Rule::multiplicative_op_mul => MathScalarExpression::Multiply(math_expr),
@@ -228,7 +227,7 @@ pub(crate) fn parse_multiplicative_expression(
         })
         .into())
     } else {
-        Ok(left_expr.into())
+        Ok(left_expr)
     }
 }
 
@@ -241,8 +240,7 @@ pub(crate) fn parse_additive_expression(
         &mut inner_rules,
         Rule::unary_expression,
         parse_unary_expression,
-    )?
-    .into();
+    )?;
 
     if let Some(op_rule) = inner_rules.next() {
         let right_expr = parse_expected_right(
@@ -252,10 +250,12 @@ pub(crate) fn parse_additive_expression(
         )?
         .into();
 
-        let math_expr =
-            BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
+        let math_expr = BinaryMathematicalScalarExpression::new(
+            query_location.clone(),
+            left_expr.into(),
+            right_expr,
+        );
 
-        println!("op_rule {:?}", op_rule.as_rule());
         Ok(ScalarExpression::Math(match op_rule.as_rule() {
             Rule::additive_op_add => MathScalarExpression::Add(math_expr),
             Rule::additive_op_sub => MathScalarExpression::Subtract(math_expr),
@@ -265,15 +265,13 @@ pub(crate) fn parse_additive_expression(
         })
         .into())
     } else {
-        Ok(left_expr.into())
+        Ok(left_expr)
     }
 }
 
 fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = QueryLocation::new_fake();
     let mut inner_rules = rule.into_inner();
-
-    println!("unary inner rules: {:#?}", inner_rules.clone());
     if inner_rules.len() == 1 {
         // safety: we've checked the length of the iterator above
         let rule = inner_rules.next().expect("one rule");
@@ -355,6 +353,7 @@ fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, 
     let mut inner_rules = rule.into_inner();
     if let Some(rule) = inner_rules.next() {
         match rule.as_rule() {
+            Rule::index_expression => parse_index_expression(rule),
             Rule::primitive_expression => parse_primitive_expression(rule),
             _ => {
                 todo!("invalid rule in member expression")
@@ -365,8 +364,40 @@ fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, 
     }
 }
 
+fn parse_index_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+    if inner_rules.len() == 2 {
+        // Safety: we've checked the length of the iterator
+        let source_rule = inner_rules.next().expect("two rules");
+        let index_rule = inner_rules.next().expect("two rules");
+
+        match (source_rule.as_rule(), index_rule.as_rule()) {
+            (Rule::identifier_expression, Rule::member_expression) => {
+                let source_expr = ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(query_location.clone(), source_rule.as_str()),
+                ));
+                let index_expr = parse_member_expression(index_rule)?;
+
+                let value_accessor =
+                    ValueAccessor::new_with_selectors(vec![source_expr, index_expr.into()]);
+
+                Ok(ScalarExpression::Source(SourceScalarExpression::new(
+                    query_location,
+                    value_accessor,
+                ))
+                .into())
+            }
+            _ => {
+                todo!("invalid expressions in index expression")
+            }
+        }
+    } else {
+        todo!("wrong number of rules for index expression")
+    }
+}
+
 fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
-    println!("primitive rule {rule:#?}");
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     if let Some(rule) = inner_rules.next() {
@@ -390,6 +421,7 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             Rule::string_literal => {
                 Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
             }
+
             Rule::bool_true_token => Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
                 BooleanScalarExpression::new(query_location, true),
             ))
@@ -400,10 +432,12 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
                 ))
                 .into())
             }
+
             Rule::null_token => Ok(ScalarExpression::Static(StaticScalarExpression::Null(
                 NullScalarExpression::new(query_location),
             ))
             .into()),
+            Rule::expression => parse_expression(rule).map(|le| le.into()),
             _ => {
                 todo!("invalid token")
             }
@@ -412,7 +446,6 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
         todo!("no inner rule in member expression")
     }
 }
-
 #[cfg(test)]
 mod test {
     use data_engine_expressions::{
@@ -538,6 +571,30 @@ mod test {
                     "some_field",
                 )),
             )]),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_unary_source_index() {
+        let input = "attributes[\"key\"]";
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: ScalarExpression = parse_unary_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
+                )),
+            ]),
         ));
 
         assert_eq!(result, expected);
@@ -796,7 +853,7 @@ mod test {
     }
 
     #[test]
-    fn test_parse_expression_simple_logical() {
+    fn test_parse_expression_simple_logical_with_precedence() {
         let input = "a == 10 or b == 20 and c == 30";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
@@ -855,6 +912,80 @@ mod test {
                     true,
                 )),
             )),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_nested_logical_expression_simple() {
+        let input = "(x or y) and z";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        fn source_logical_expr(field_name: &str) -> LogicalExpression {
+            LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        field_name,
+                    )),
+                )]),
+            )))
+        }
+
+        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let expected = LogicalExpression::And(AndLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::Or(OrLogicalExpression::new(
+                QueryLocation::new_fake(),
+                source_logical_expr("x"),
+                source_logical_expr("y"),
+            )),
+            source_logical_expr("z"),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_nested_logical_expression_with_not() {
+        let input = "not (x or y) and not z or w";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        fn source_logical_expr(field_name: &str) -> LogicalExpression {
+            LogicalExpression::Scalar(ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        field_name,
+                    )),
+                )]),
+            )))
+        }
+
+        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let expected = LogicalExpression::Or(OrLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::And(AndLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::Not(NotLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    LogicalExpression::Or(OrLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        source_logical_expr("x"),
+                        source_logical_expr("y"),
+                    )),
+                )),
+                LogicalExpression::Not(NotLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    source_logical_expr("z"),
+                )),
+            )),
+            source_logical_expr("w"),
         ));
 
         assert_eq!(result, expected);
