@@ -126,7 +126,7 @@ To send test syslog messages:
 echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
 
 # Send multiple messages
-for i in {1..100}; do 
+for i in {1..100}; do
   echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message #$i" | nc -u -w1 127.0.0.1 5140
 done
 
