@@ -72,7 +72,7 @@ unary_expression = {
 multiplicative_op_mul = @{ "*" }
 multiplicative_op_div = @{ "/" }
 multiplicative_op_mod = @{ "%" }
-multiplicative_op = {
+multiplicative_op = _{
     multiplicative_op_mod | multiplicative_op_div | multiplicative_op_mod
 }
 
@@ -82,7 +82,7 @@ multiplicative_expression = {
 
 additive_op_add = @{ "+" }
 additive_op_sub = @{ "-" }
-additive_op = {
+additive_op = _{
     additive_op_add | additive_op_sub
 }
 

@@ -10,8 +10,8 @@ use data_engine_expressions::{
     ValueAccessor,
 };
 use data_engine_parser_abstractions::{
-    ParserError, parse_standard_bool_literal, parse_standard_double_literal,
-    parse_standard_integer_literal, parse_standard_string_literal, to_query_location,
+    ParserError, parse_standard_double_literal, parse_standard_integer_literal,
+    parse_standard_string_literal, to_query_location,
 };
 use pest::iterators::{Pair, Pairs};
 
@@ -70,7 +70,6 @@ where
 }
 
 pub(crate) fn parse_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpression, ParserError> {
-    println!("expression rule {:#?}", rule);
     let mut inner_rules = rule.into_inner();
     parse_next_child_rule(&mut inner_rules, Rule::or_expression, parse_or_expression)
 }
@@ -114,6 +113,7 @@ pub(crate) fn parse_and_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpres
 }
 
 // TODO comment on what this is about
+#[derive(Debug, PartialEq)]
 pub(crate) enum LogicalOrScalarExpr {
     Logical(LogicalExpression),
     Scalar(ScalarExpression),
@@ -218,6 +218,7 @@ pub(crate) fn parse_additive_expression(
         let math_expr =
             BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
 
+        println!("op_rule {:?}", op_rule.as_rule());
         Ok(ScalarExpression::Math(match op_rule.as_rule() {
             Rule::additive_op_add => MathScalarExpression::Add(math_expr),
             Rule::additive_op_sub => MathScalarExpression::Subtract(math_expr),
@@ -412,16 +413,24 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
 
 #[cfg(test)]
 mod test {
-    use super::parse_expression;
     use data_engine_expressions::{
-        BooleanScalarExpression, DoubleScalarExpression, IntegerScalarExpression,
-        LogicalExpression, QueryLocation, ScalarExpression, StaticScalarExpression,
-        StringScalarExpression,
+        AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
+        DoubleScalarExpression, EqualToLogicalExpression, IntegerScalarExpression,
+        LogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
+        OrLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
     use pest::Parser;
     use pretty_assertions::assert_eq;
 
-    use crate::parser::{Rule, expression::parse_unary_expression, pest::OplPestParser};
+    use crate::parser::{
+        Rule,
+        expression::{
+            LogicalOrScalarExpr, parse_additive_expression, parse_expression,
+            parse_unary_expression,
+        },
+        pest::OplPestParser,
+    };
 
     #[test]
     fn test_parse_unary_expression_static_primitives() {
@@ -475,6 +484,10 @@ mod test {
                     false,
                 )),
             ),
+            (
+                "null",
+                StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
+            ),
         ];
 
         for (input, expected) in test_cases {
@@ -488,6 +501,209 @@ mod test {
         }
     }
 
-    // #[test]
-    // fn test_parse_rel_
+    #[test]
+    fn test_parse_unary_source_identifier() {
+        let input = "some_field";
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: ScalarExpression = parse_unary_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "some_field",
+                )),
+            )]),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_rel_expression_equal() {
+        let input = "a == 10";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result = parse_expression(rules.next().unwrap()).unwrap();
+
+        let expected = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "a",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+            )),
+            true,
+        ))
+        .into();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_additive_expressions() {
+        let test_cases = vec![
+            (
+                "1 + 5",
+                MathScalarExpression::Add(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
+                    )),
+                )),
+            ),
+            (
+                "2 - 6",
+                MathScalarExpression::Subtract(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                    )),
+                )),
+            ),
+            (
+                "1 + 2 - 3",
+                MathScalarExpression::Add(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                    )),
+                    ScalarExpression::Math(MathScalarExpression::Subtract(
+                        BinaryMathematicalScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+                            )),
+                        ),
+                    )),
+                )),
+            ),
+        ];
+
+        for (input, math_expr) in test_cases {
+            let mut rules = OplPestParser::parse(Rule::additive_expression, input).unwrap();
+            assert_eq!(rules.len(), 1);
+            let result: LogicalOrScalarExpr = parse_additive_expression(rules.next().unwrap())
+                .unwrap()
+                .into();
+            let expected: LogicalOrScalarExpr = ScalarExpression::Math(math_expr).into();
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_req_expression_not_equal() {
+        let input = "b != 20";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result = parse_expression(rules.next().unwrap()).unwrap();
+
+        let expected = LogicalExpression::Not(NotLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "b",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
+                )),
+                true,
+            )),
+        ))
+        .into();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_expression_simple_logical() {
+        let input = "a == 10 or b == 20 and c == 30";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result = parse_expression(rules.next().unwrap()).unwrap();
+
+        let expected = LogicalExpression::Or(OrLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                )),
+                true,
+            )),
+            LogicalExpression::And(AndLogicalExpression::new(
+                QueryLocation::new_fake(),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "b",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 20),
+                    )),
+                    true,
+                )),
+                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Source(SourceScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                            StaticScalarExpression::String(StringScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                "c",
+                            )),
+                        )]),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 30),
+                    )),
+                    true,
+                )),
+            )),
+        ));
+
+        assert_eq!(result, expected);
+    }
 }
