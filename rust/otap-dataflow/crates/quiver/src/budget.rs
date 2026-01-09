@@ -30,8 +30,8 @@
 //! let engine2 = QuiverEngine::new(config2, budget.clone())?;
 //! ```
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 
@@ -250,9 +250,11 @@ impl DiskBudget {
     /// Called when WAL files are purged or segments are deleted.
     pub fn release(&self, bytes: u64) {
         // Saturating sub to avoid underflow if accounting is slightly off
-        let _ = self.used.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            Some(current.saturating_sub(bytes))
-        });
+        let _ = self
+            .used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(bytes))
+            });
     }
 }
 

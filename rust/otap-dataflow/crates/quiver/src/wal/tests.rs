@@ -2985,7 +2985,7 @@ fn wal_error_is_at_capacity_returns_true_for_capacity_errors() {
 
 #[test]
 fn wal_error_is_at_capacity_returns_false_for_other_errors() {
-    let io_error = WalError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+    let io_error = WalError::Io(std::io::Error::other("test"));
     assert!(
         !io_error.is_at_capacity(),
         "Io error should return false for is_at_capacity()"

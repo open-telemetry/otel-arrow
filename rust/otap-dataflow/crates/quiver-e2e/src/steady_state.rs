@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use quiver::SegmentReadMode;
 use quiver::budget::DiskBudget;
 use quiver::config::RetentionPolicy;
-use quiver::SegmentReadMode;
 use quiver::subscriber::SubscriberId;
 use quiver::{QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
@@ -360,15 +360,10 @@ pub fn run(
         let current_mem = MemoryTracker::current_allocated_mb();
         let current_disk = calculate_disk_usage(&data_dir).unwrap_or(0);
         // Get total segments written across all engines (monotonically increasing)
-        let total_segments_written: u64 = engines
-            .iter()
-            .map(|e| e.total_segments_written())
-            .sum();
+        let total_segments_written: u64 = engines.iter().map(|e| e.total_segments_written()).sum();
         // Get total force-dropped segments and bundles (DropOldest policy)
-        let force_dropped_segments: u64 =
-            engines.iter().map(|e| e.force_dropped_segments()).sum();
-        let force_dropped_bundles: u64 =
-            engines.iter().map(|e| e.force_dropped_bundles()).sum();
+        let force_dropped_segments: u64 = engines.iter().map(|e| e.force_dropped_segments()).sum();
+        let force_dropped_bundles: u64 = engines.iter().map(|e| e.force_dropped_bundles()).sum();
         stats.update_memory(current_mem);
         stats.update_disk(current_disk);
         stats.update_counters(
@@ -430,16 +425,13 @@ pub fn run(
     }
 
     // 3. Final segment count (total written, monotonically increasing)
-    let final_total_segments_written: u64 = engines
-        .iter()
-        .map(|e| e.total_segments_written())
-        .sum();
+    let final_total_segments_written: u64 =
+        engines.iter().map(|e| e.total_segments_written()).sum();
 
     // Get final force-dropped count (DropOldest policy)
     let final_force_dropped_segments: u64 =
         engines.iter().map(|e| e.force_dropped_segments()).sum();
-    let final_force_dropped_bundles: u64 =
-        engines.iter().map(|e| e.force_dropped_bundles()).sum();
+    let final_force_dropped_bundles: u64 = engines.iter().map(|e| e.force_dropped_bundles()).sum();
 
     // 4. Drain remaining bundles
     let pre_drain_consumed = total_consumed.load(Ordering::Relaxed);
@@ -532,13 +524,19 @@ pub fn run(
         output.log(&format!("Engines: {}", config.engines));
         output.log(&format!("Bundles ingested: {}", final_ingested));
         output.log(&format!("Bundles consumed: {}", post_drain_consumed));
-        output.log(&format!("Segments written: {}", final_total_segments_written));
+        output.log(&format!(
+            "Segments written: {}",
+            final_total_segments_written
+        ));
         output.log(&format!("Segments cleaned: {}", total_segments_cleaned));
         output.log(&format!(
             "Dropped: {} segments / {} bundles (DropOldest policy)",
             final_force_dropped_segments, final_force_dropped_bundles
         ));
-        output.log(&format!("Consumed throughput: {:.0} bundles/sec", bundle_rate));
+        output.log(&format!(
+            "Consumed throughput: {:.0} bundles/sec",
+            bundle_rate
+        ));
         output.log(&format!(
             "Memory: {:.2} MB initial -> {:.2} MB final (growth: {:.2} MB)",
             initial_mem,

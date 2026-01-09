@@ -770,8 +770,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     // Mark as dirty so progress is persisted
                     let id = state.id().clone();
                     drop(state); // Release write lock before acquiring dirty lock
-                    let mut dirty_set =
-                        self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                    let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
                     let _ = dirty_set.insert(id);
                     break; // Only need to mark dirty once per subscriber
                 }

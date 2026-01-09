@@ -325,7 +325,8 @@ impl Dashboard {
             .saturating_sub(self.last_iteration_consumed);
 
         if iteration_elapsed >= Duration::from_secs(1) {
-            let consumed_throughput = (consumed_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
+            let consumed_throughput =
+                (consumed_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
             self.consumed_throughput_history.push(consumed_throughput);
             if self.consumed_throughput_history.len() > self.max_history_len {
                 let _ = self.consumed_throughput_history.remove(0);
@@ -487,7 +488,10 @@ fn render_throughput_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Consumed Throughput (bundles/sec) │ max: {} ", max_val))
+                .title(format!(
+                    " Consumed Throughput (bundles/sec) │ max: {} ",
+                    max_val
+                ))
                 .borders(Borders::ALL),
         )
         .data(history)

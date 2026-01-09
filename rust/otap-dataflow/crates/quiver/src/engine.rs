@@ -201,9 +201,7 @@ impl QuiverEngine {
         budget.set_reclaim_callback(move |_needed_bytes| {
             if let Some(engine) = engine_weak.upgrade() {
                 // First try to clean up completed segments
-                let completed = engine
-                    .cleanup_completed_segments()
-                    .unwrap_or(0);
+                let completed = engine.cleanup_completed_segments().unwrap_or(0);
 
                 // If that didn't help, force-drop oldest pending segments
                 // that have no active readers
@@ -657,7 +655,10 @@ impl QuiverEngine {
             if let Err(e) = self.segment_store.delete_segment(*seq) {
                 tracing::warn!(segment = seq.raw(), error = %e, "Failed to delete force-dropped segment");
             } else {
-                tracing::info!(segment = seq.raw(), "Force-dropped pending segment (DropOldest policy)");
+                tracing::info!(
+                    segment = seq.raw(),
+                    "Force-dropped pending segment (DropOldest policy)"
+                );
                 deleted += 1;
             }
         }
@@ -782,7 +783,10 @@ mod tests {
 
     /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
     fn test_budget() -> Arc<DiskBudget> {
-        Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure))
+        Arc::new(DiskBudget::new(
+            1024 * 1024 * 1024,
+            RetentionPolicy::Backpressure,
+        ))
     }
     use std::sync::Arc;
     use tempfile::tempdir;
@@ -2118,7 +2122,10 @@ mod tests {
             .expect("config valid");
 
         // Create a budget with plenty of room
-        let budget = Arc::new(DiskBudget::new(100 * 1024 * 1024, RetentionPolicy::Backpressure));
+        let budget = Arc::new(DiskBudget::new(
+            100 * 1024 * 1024,
+            RetentionPolicy::Backpressure,
+        ));
         let engine = QuiverEngine::new(config, budget.clone()).expect("engine created");
 
         // Verify budget starts at 0
@@ -2134,10 +2141,7 @@ mod tests {
 
         // Verify headroom decreased
         let headroom = budget.headroom();
-        assert!(
-            headroom < 100 * 1024 * 1024,
-            "headroom should decrease"
-        );
+        assert!(headroom < 100 * 1024 * 1024, "headroom should decrease");
     }
 
     #[test]
@@ -2221,7 +2225,9 @@ mod tests {
 
         // Register a subscriber so segments can be marked as "complete"
         let sub_id = SubscriberId::new("test-sub").expect("valid id");
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Ingest bundles to create segments
@@ -2266,7 +2272,9 @@ mod tests {
 
         // Register and activate a subscriber
         let sub_id = SubscriberId::new("test-sub").expect("valid id");
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Ingest bundles to create multiple segments
@@ -2329,7 +2337,9 @@ mod tests {
 
         // Register and activate a subscriber
         let sub_id = SubscriberId::new("test-sub").expect("valid id");
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Ingest bundles to create multiple segments
@@ -2366,4 +2376,5 @@ mod tests {
 
         // Clean up
         handle.ack();
-    }}
+    }
+}

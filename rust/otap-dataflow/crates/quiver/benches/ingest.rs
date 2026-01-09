@@ -31,7 +31,10 @@ use tempfile::TempDir;
 
 /// Creates a large test budget (1 GB) for benchmarks.
 fn bench_budget() -> Arc<DiskBudget> {
-    Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure))
+    Arc::new(DiskBudget::new(
+        1024 * 1024 * 1024,
+        RetentionPolicy::Backpressure,
+    ))
 }
 
 /// Creates a temp directory in ~/.quiver-benchmarks/ to avoid tmpfs.

@@ -27,7 +27,9 @@ pub enum QuiverError {
     ///
     /// Callers should slow down or pause ingestion until space is reclaimed.
     /// This is not a fatal error—retry after cleanup or subscriber catch-up.
-    #[error("storage at capacity: requested {requested} bytes, only {available} available (cap: {cap})")]
+    #[error(
+        "storage at capacity: requested {requested} bytes, only {available} available (cap: {cap})"
+    )]
     StorageAtCapacity {
         /// Bytes requested for the operation.
         requested: u64,

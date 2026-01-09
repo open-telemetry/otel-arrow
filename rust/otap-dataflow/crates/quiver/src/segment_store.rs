@@ -65,9 +65,7 @@ impl SegmentHandle {
     /// Opens a segment file using the specified read mode.
     fn open(seq: SegmentSeq, path: PathBuf, mode: SegmentReadMode) -> Result<Self> {
         // Get file size before opening (for budget tracking)
-        let file_size_bytes = std::fs::metadata(&path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let file_size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
         let reader = match mode {
             SegmentReadMode::Standard => SegmentReader::open(&path),
