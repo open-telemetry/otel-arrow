@@ -28,13 +28,17 @@ cargo bench -p otap-df-quiver     # Criterion benchmarks
 ## Usage
 
 ```rust,ignore
-use quiver::{QuiverEngine, QuiverConfig, SubscriberId};
+use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 // Use a durable filesystem path, not /tmp (which may be tmpfs)
 let data_dir = PathBuf::from("/var/lib/quiver/data");
 let config = QuiverConfig::default().with_data_dir(&data_dir);
-let engine = QuiverEngine::new(config)?;
+
+// Configure disk budget (10 GB cap with backpressure)
+let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+let engine = QuiverEngine::new(config, budget)?;
 
 // Register a subscriber
 let sub_id = SubscriberId::new("my-exporter")?;

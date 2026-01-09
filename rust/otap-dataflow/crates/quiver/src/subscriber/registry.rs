@@ -711,6 +711,75 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             .expect("dirty lock poisoned")
             .len()
     }
+
+    /// Force-drops the oldest pending segments that have no active readers.
+    ///
+    /// This is used by the `DropOldest` retention policy to reclaim disk space
+    /// by forcibly completing segments that no subscriber is currently reading.
+    ///
+    /// A segment is considered to have "no active readers" if no subscriber
+    /// has any claimed bundles from that segment.
+    ///
+    /// Returns the list of segment sequences that were force-completed and
+    /// can be safely deleted from disk.
+    pub fn force_drop_oldest_pending_segments(&self) -> Vec<SegmentSeq> {
+        let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+
+        // Build a set of all pending (incomplete) segments across all subscribers
+        // and track which segments have claimed bundles
+        let mut pending_segments: std::collections::BTreeSet<SegmentSeq> =
+            std::collections::BTreeSet::new();
+        let mut segments_with_readers: HashSet<SegmentSeq> = HashSet::new();
+
+        for state_lock in subscribers.values() {
+            let state = state_lock.read().expect("subscriber lock poisoned");
+
+            // Collect all incomplete segments from progress entries
+            for entry in state.to_progress_entries() {
+                if !entry.is_complete() {
+                    let _ = pending_segments.insert(entry.seg_seq);
+                }
+            }
+
+            // Check which segments have active readers (claimed bundles)
+            for segment_seq in &pending_segments {
+                if state.has_claimed_in_segment(*segment_seq) {
+                    let _ = segments_with_readers.insert(*segment_seq);
+                }
+            }
+        }
+
+        // Find segments with no active readers (in oldest-first order)
+        let droppable: Vec<SegmentSeq> = pending_segments
+            .into_iter()
+            .filter(|seg| !segments_with_readers.contains(seg))
+            .collect();
+
+        if droppable.is_empty() {
+            return Vec::new();
+        }
+
+        // Take only the oldest segment to drop (be conservative)
+        let to_drop = vec![droppable[0]];
+
+        // Force-complete these segments for all subscribers
+        for state_lock in subscribers.values() {
+            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            for &segment_seq in &to_drop {
+                if state.force_complete_segment(segment_seq) {
+                    // Mark as dirty so progress is persisted
+                    let id = state.id().clone();
+                    drop(state); // Release write lock before acquiring dirty lock
+                    let mut dirty_set =
+                        self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                    let _ = dirty_set.insert(id);
+                    break; // Only need to mark dirty once per subscriber
+                }
+            }
+        }
+
+        to_drop
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

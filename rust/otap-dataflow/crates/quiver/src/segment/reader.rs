@@ -41,7 +41,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
@@ -325,7 +325,7 @@ pub struct SegmentReader {
     manifest: Vec<ManifestEntry>,
     /// Cached stream decoders for efficient repeated reads.
     /// Lazily populated on first access to each stream.
-    stream_decoders: Mutex<HashMap<StreamId, StreamDecoder>>,
+    stream_decoders: RwLock<HashMap<StreamId, StreamDecoder>>,
 }
 
 impl std::fmt::Debug for SegmentReader {
@@ -336,7 +336,7 @@ impl std::fmt::Debug for SegmentReader {
             .field("streams", &self.streams)
             .field("stream_by_id", &self.stream_by_id)
             .field("manifest", &self.manifest)
-            .field("cached_decoders", &self.stream_decoders.lock().len())
+            .field("cached_decoders", &self.stream_decoders.read().len())
             .finish()
     }
 }
@@ -497,7 +497,7 @@ impl SegmentReader {
             streams,
             stream_by_id,
             manifest,
-            stream_decoders: Mutex::new(HashMap::new()),
+            stream_decoders: RwLock::new(HashMap::new()),
         })
     }
 
@@ -634,37 +634,51 @@ impl SegmentReader {
         stream_id: StreamId,
         chunk_index: ChunkIndex,
     ) -> Result<RecordBatch, SegmentError> {
-        use std::collections::hash_map::Entry;
-
-        let mut cache = self.stream_decoders.lock();
-
-        // Use entry API for efficient check-and-insert
-        if let Entry::Vacant(entry) = cache.entry(stream_id) {
-            let stream_meta = self
-                .stream(stream_id)
-                .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
-
-            // Validate stream region before slicing
-            Self::validate_region(
-                self.buffer.len(),
-                stream_meta.byte_offset,
-                stream_meta.byte_length,
-                "stream data",
-            )?;
-
-            // Get the stream's buffer slice
-            let stream_buffer = self.buffer.slice_with_length(
-                stream_meta.byte_offset as usize,
-                stream_meta.byte_length as usize,
-            );
-
-            // Create and cache the decoder
-            let decoder = StreamDecoder::new(stream_buffer)?;
-            let _ = entry.insert(decoder);
+        // Fast path: check if decoder already exists with read lock
+        {
+            let cache = self.stream_decoders.read();
+            if let Some(decoder) = cache.get(&stream_id) {
+                return decoder
+                    .get_batch(chunk_index.raw() as usize)?
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: format!(
+                            "chunk {} in stream {:?} returned None",
+                            chunk_index.raw(),
+                            stream_id
+                        ),
+                    });
+            }
         }
 
-        // Now retrieve from cache (guaranteed to exist)
-        let decoder = cache.get(&stream_id).expect("decoder was just inserted");
+        // Slow path: need to create decoder with write lock
+        // Create decoder outside the lock to minimize lock time
+        let stream_meta = self
+            .stream(stream_id)
+            .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
+
+        Self::validate_region(
+            self.buffer.len(),
+            stream_meta.byte_offset,
+            stream_meta.byte_length,
+            "stream data",
+        )?;
+
+        let stream_buffer = self.buffer.slice_with_length(
+            stream_meta.byte_offset as usize,
+            stream_meta.byte_length as usize,
+        );
+
+        let decoder = StreamDecoder::new(stream_buffer)?;
+
+        // Insert with write lock, then read the batch
+        let mut cache = self.stream_decoders.write();
+        // Double-check another thread didn't insert while we were creating
+        use std::collections::hash_map::Entry;
+        let decoder = match cache.entry(stream_id) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(decoder),
+        };
+
         decoder
             .get_batch(chunk_index.raw() as usize)?
             .ok_or_else(|| SegmentError::InvalidFormat {

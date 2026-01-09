@@ -23,6 +23,19 @@ pub enum QuiverError {
         /// Context string identifying the missing component.
         context: &'static str,
     },
+    /// Raised when storage capacity is exhausted (backpressure signal).
+    ///
+    /// Callers should slow down or pause ingestion until space is reclaimed.
+    /// This is not a fatal error—retry after cleanup or subscriber catch-up.
+    #[error("storage at capacity: requested {requested} bytes, only {available} available (cap: {cap})")]
+    StorageAtCapacity {
+        /// Bytes requested for the operation.
+        requested: u64,
+        /// Bytes currently available before hitting the cap.
+        available: u64,
+        /// The configured storage cap.
+        cap: u64,
+    },
     /// Wrapper for WAL-specific failures.
     #[error("wal error: {source}")]
     Wal {
@@ -52,5 +65,14 @@ impl QuiverError {
     #[must_use]
     pub fn unimplemented(context: &'static str) -> Self {
         Self::Unimplemented { context }
+    }
+
+    /// Returns `true` if this is a backpressure signal (storage at capacity).
+    ///
+    /// Callers can use this to distinguish recoverable capacity errors from
+    /// fatal errors and implement appropriate backoff strategies.
+    #[must_use]
+    pub fn is_at_capacity(&self) -> bool {
+        matches!(self, Self::StorageAtCapacity { .. })
     }
 }

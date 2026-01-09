@@ -347,6 +347,39 @@ impl SubscriberState {
             .sum()
     }
 
+    /// Checks if this subscriber has any claimed bundles in the given segment.
+    ///
+    /// Used by DropOldest policy to determine if a segment has active readers.
+    #[must_use]
+    pub fn has_claimed_in_segment(&self, segment_seq: SegmentSeq) -> bool {
+        self.claimed
+            .iter()
+            .any(|bundle_ref| bundle_ref.segment_seq == segment_seq)
+    }
+
+    /// Force-completes a segment by marking all bundles as resolved.
+    ///
+    /// Used by DropOldest policy to forcibly drop pending segments.
+    /// This releases any claimed bundles and marks all bundles as resolved.
+    ///
+    /// Returns `true` if the segment was found and completed, `false` if not tracked.
+    pub fn force_complete_segment(&mut self, segment_seq: SegmentSeq) -> bool {
+        // Release any claimed bundles in this segment
+        self.claimed
+            .retain(|bundle_ref| bundle_ref.segment_seq != segment_seq);
+
+        // Mark all bundles as resolved
+        if let Some(progress) = self.segments.get_mut(&segment_seq) {
+            let bundle_count = progress.bundle_count();
+            for i in 0..bundle_count {
+                let _ = progress.mark_resolved(BundleIndex::new(i));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// Converts this subscriber's state to progress entries for persistence.
     ///
     /// Returns a vector of segment progress entries in segment order (oldest first).

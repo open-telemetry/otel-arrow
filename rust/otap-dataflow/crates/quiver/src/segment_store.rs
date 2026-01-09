@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
+use crate::budget::DiskBudget;
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
 
@@ -56,11 +57,18 @@ struct SegmentHandle {
     reader: SegmentReader,
     /// Number of bundles in this segment.
     bundle_count: u32,
+    /// Size of the segment file in bytes.
+    file_size_bytes: u64,
 }
 
 impl SegmentHandle {
     /// Opens a segment file using the specified read mode.
     fn open(seq: SegmentSeq, path: PathBuf, mode: SegmentReadMode) -> Result<Self> {
+        // Get file size before opening (for budget tracking)
+        let file_size_bytes = std::fs::metadata(&path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
         let reader = match mode {
             SegmentReadMode::Standard => SegmentReader::open(&path),
             #[cfg(feature = "mmap")]
@@ -78,6 +86,7 @@ impl SegmentHandle {
             path,
             reader,
             bundle_count,
+            file_size_bytes,
         })
     }
 
@@ -124,6 +133,8 @@ pub struct SegmentStore {
     segments: RwLock<BTreeMap<SegmentSeq, Arc<SegmentHandle>>>,
     /// Optional callback invoked when a segment is registered.
     on_segment_registered: Mutex<Option<SegmentCallback>>,
+    /// Optional disk budget for tracking segment storage usage.
+    budget: Option<Arc<DiskBudget>>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -152,6 +163,24 @@ impl SegmentStore {
             read_mode,
             segments: RwLock::new(BTreeMap::new()),
             on_segment_registered: Mutex::new(None),
+            budget: None,
+        }
+    }
+
+    /// Creates a new segment store with a specific read mode and disk budget.
+    ///
+    /// The budget will be updated when segments are registered or deleted.
+    pub fn with_budget(
+        segment_dir: impl Into<PathBuf>,
+        read_mode: SegmentReadMode,
+        budget: Arc<DiskBudget>,
+    ) -> Self {
+        Self {
+            segment_dir: segment_dir.into(),
+            read_mode,
+            segments: RwLock::new(BTreeMap::new()),
+            on_segment_registered: Mutex::new(None),
+            budget: Some(budget),
         }
     }
 
@@ -180,10 +209,47 @@ impl SegmentStore {
     /// set via [`set_on_segment_registered`](Self::set_on_segment_registered),
     /// it will be invoked with the segment sequence and bundle count.
     ///
+    /// The segment's file size is recorded to the disk budget if one was configured.
+    /// Use this for loading existing segments at startup.
+    /// For newly written segments where budget was already reserved, use
+    /// [`register_new_segment`](Self::register_new_segment) instead.
+    ///
     /// # Errors
     ///
     /// Returns an error if the segment file cannot be opened.
     pub fn register_segment(&self, seq: SegmentSeq) -> Result<u32> {
+        let path = self.segment_path(seq);
+        let handle = SegmentHandle::open(seq, path, self.read_mode)?;
+        let bundle_count = handle.bundle_count;
+        let file_size = handle.file_size_bytes;
+
+        {
+            let mut segments = self.segments.write();
+            let _ = segments.insert(seq, Arc::new(handle));
+        }
+
+        // Record file size to budget (for existing files loaded at startup)
+        if let Some(ref budget) = self.budget {
+            budget.record_existing(file_size);
+        }
+
+        // Notify callback (outside of segments lock)
+        if let Some(callback) = self.on_segment_registered.lock().as_ref() {
+            callback(seq, bundle_count);
+        }
+
+        Ok(bundle_count)
+    }
+
+    /// Registers a newly written segment without budget accounting.
+    ///
+    /// Use this when the segment was just written and budget was already reserved
+    /// via the reservation pattern. This avoids double-counting bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the segment file cannot be opened.
+    pub fn register_new_segment(&self, seq: SegmentSeq) -> Result<u32> {
         let path = self.segment_path(seq);
         let handle = SegmentHandle::open(seq, path, self.read_mode)?;
         let bundle_count = handle.bundle_count;
@@ -192,6 +258,8 @@ impl SegmentStore {
             let mut segments = self.segments.write();
             let _ = segments.insert(seq, Arc::new(handle));
         }
+
+        // Note: No budget recording - caller already committed the reservation
 
         // Notify callback (outside of segments lock)
         if let Some(callback) = self.on_segment_registered.lock().as_ref() {
@@ -216,15 +284,17 @@ impl SegmentStore {
     /// This is called when all subscribers have completed consuming a segment
     /// and it is safe to permanently delete.
     ///
+    /// The segment's file size is released from the disk budget if one was configured.
+    ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be deleted (e.g., permissions).
     pub fn delete_segment(&self, seq: SegmentSeq) -> std::io::Result<()> {
-        // First remove from in-memory map so no new readers can access it
-        {
+        // First remove from in-memory map and get file size for budget release
+        let file_size = {
             let mut segments = self.segments.write();
-            let _ = segments.remove(&seq);
-        }
+            segments.remove(&seq).map(|h| h.file_size_bytes)
+        };
 
         // Delete the file from disk
         let path = self.segment_path(seq);
@@ -237,6 +307,11 @@ impl SegmentStore {
                 let _ = std::fs::set_permissions(&path, perms);
             }
             std::fs::remove_file(&path)?;
+
+            // Release bytes from budget after successful deletion
+            if let (Some(budget), Some(size)) = (&self.budget, file_size) {
+                budget.release(size);
+            }
         }
         Ok(())
     }

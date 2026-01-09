@@ -23,7 +23,8 @@
 //! # Example
 //!
 //! ```
-//! use quiver::{QuiverEngine, QuiverConfig};
+//! use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy};
+//! use std::sync::Arc;
 //! use std::path::PathBuf;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,7 +33,10 @@
 //! // Use a durable filesystem path, not /tmp (which may be tmpfs)
 //! // let path = PathBuf::from("/var/lib/quiver/data");
 //! let cfg = QuiverConfig::default().with_data_dir(path);
-//! let engine = QuiverEngine::new(cfg)?;
+//!
+//! // Configure disk budget (10 GB cap with backpressure)
+//! let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+//! let engine = QuiverEngine::new(cfg, budget)?;
 //!
 //! // Ingest bundles via engine.ingest(bundle)
 //! // Register subscribers via engine.register_subscriber(id)
@@ -48,6 +52,7 @@
 //! - `serde`: Enable serialization for configuration types
 //! - `otap-dataflow-integrations`: Enable integration with otap-dataflow types
 
+pub mod budget;
 pub mod config;
 pub mod engine;
 pub mod error;
@@ -58,7 +63,10 @@ pub mod subscriber;
 pub mod telemetry;
 pub(crate) mod wal;
 
-pub use config::{DurabilityMode, QuiverConfig, RetentionConfig, SegmentConfig, WalConfig};
+pub use budget::{DiskBudget, PendingWrite};
+pub use config::{
+    DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
+};
 pub use engine::{MaintenanceStats, QuiverEngine};
 pub use error::{QuiverError, Result};
 pub use segment::SegmentError;
