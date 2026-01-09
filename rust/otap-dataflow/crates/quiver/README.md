@@ -58,6 +58,26 @@ while let Some(handle) = engine.next_bundle(&sub_id)? {
 engine.maintain()?;
 ```
 
+### Handling Backpressure
+
+When the disk budget is exhausted, `ingest()` returns `QuiverError::StorageAtCapacity`.
+The embedding layer should handle this by slowing ingestion:
+
+```rust,ignore
+use quiver::QuiverError;
+
+match engine.ingest(&bundle) {
+    Ok(()) => { /* success */ }
+    Err(e) if e.is_at_capacity() => {
+        // Backpressure: wait for subscribers to catch up and segments to be cleaned
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        engine.maintain()?;  // Try to clean up completed segments
+        // Retry ingestion...
+    }
+    Err(e) => return Err(e),  // Other errors are fatal
+}
+```
+
 ## Cargo Features
 
 - `mmap` (default): Memory-mapped segment reads for zero-copy access
