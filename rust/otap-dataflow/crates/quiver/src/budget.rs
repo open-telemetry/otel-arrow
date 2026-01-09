@@ -67,11 +67,13 @@ pub struct DiskBudget {
 
 impl std::fmt::Debug for DiskBudget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Note: reclaim_callback and cleanup_callback are omitted because
+        // function pointers / closures don't implement Debug
         f.debug_struct("DiskBudget")
             .field("cap", &self.cap)
             .field("used", &self.used.load(Ordering::Relaxed))
             .field("policy", &self.policy)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
