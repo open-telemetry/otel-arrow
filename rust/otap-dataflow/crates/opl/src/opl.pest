@@ -64,21 +64,12 @@ unary_expression = {
     | negate_token ~ number_literal
     // TODO negative unary?
     // | "-" ~ unary_expression
-    | "not" ~ unary_expression
+    | not_token ~ unary_expression
     | member_expression
 }
 
 
-multiplicative_op_mul = @{ "*" }
-multiplicative_op_div = @{ "/" }
-multiplicative_op_mod = @{ "%" }
-multiplicative_op = _{
-    multiplicative_op_mod | multiplicative_op_div | multiplicative_op_mod
-}
 
-multiplicative_expression = {
-    unary_expression ~ (multiplicative_op ~ multiplicative_expression)*
-}
 
 additive_op_add = @{ "+" }
 additive_op_sub = @{ "-" }
@@ -87,9 +78,19 @@ additive_op = _{
 }
 
 additive_expression = {
-    multiplicative_expression ~ (additive_op ~ additive_expression)*
+    unary_expression ~ (additive_op ~ additive_expression)*
 }
 
+multiplicative_op_mul = @{ "*" }
+multiplicative_op_div = @{ "/" }
+multiplicative_op_mod = @{ "%" }
+multiplicative_op = _{
+    multiplicative_op_mul | multiplicative_op_div | multiplicative_op_mod
+}
+
+multiplicative_expression = {
+    additive_expression ~ (multiplicative_op ~ multiplicative_expression)*
+}
 
 rel_op_eq = @{ "==" }
 rel_op_neq = @{ "!="}
@@ -98,7 +99,7 @@ rel_op = _{
 }
 
 rel_expression = {
-    additive_expression ~ (rel_op ~ rel_expression)*
+    multiplicative_expression ~ (rel_op ~ rel_expression)*
 }
 
 // TODO add bitwise expressions

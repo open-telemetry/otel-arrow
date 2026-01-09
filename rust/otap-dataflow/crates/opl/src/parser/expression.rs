@@ -156,8 +156,8 @@ pub(crate) fn parse_rel_expression(
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
-        Rule::additive_expression,
-        parse_additive_expression,
+        Rule::multiplicative_expression,
+        parse_multiplicative_expression,
     )?
     .into();
 
@@ -195,43 +195,6 @@ pub(crate) fn parse_rel_expression(
     }
 }
 
-pub(crate) fn parse_additive_expression(
-    rule: Pair<'_, Rule>,
-) -> Result<LogicalOrScalarExpr, ParserError> {
-    let query_location = to_query_location(&rule);
-    let mut inner_rules = rule.into_inner();
-    let left_expr = parse_next_child_rule(
-        &mut inner_rules,
-        Rule::multiplicative_expression,
-        parse_multiplicative_expression,
-    )?
-    .into();
-
-    if let Some(op_rule) = inner_rules.next() {
-        let right_expr = parse_expected_right(
-            &mut inner_rules,
-            Rule::additive_expression,
-            parse_additive_expression,
-        )?
-        .into();
-
-        let math_expr =
-            BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
-
-        println!("op_rule {:?}", op_rule.as_rule());
-        Ok(ScalarExpression::Math(match op_rule.as_rule() {
-            Rule::additive_op_add => MathScalarExpression::Add(math_expr),
-            Rule::additive_op_sub => MathScalarExpression::Subtract(math_expr),
-            _ => {
-                todo!("invalid add expr op")
-            }
-        })
-        .into())
-    } else {
-        Ok(left_expr.into())
-    }
-}
-
 pub(crate) fn parse_multiplicative_expression(
     rule: Pair<'_, Rule>,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
@@ -239,8 +202,8 @@ pub(crate) fn parse_multiplicative_expression(
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
-        Rule::unary_expression,
-        parse_unary_expression,
+        Rule::additive_expression,
+        parse_additive_expression,
     )?
     .into();
 
@@ -269,9 +232,48 @@ pub(crate) fn parse_multiplicative_expression(
     }
 }
 
+pub(crate) fn parse_additive_expression(
+    rule: Pair<'_, Rule>,
+) -> Result<LogicalOrScalarExpr, ParserError> {
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+    let left_expr = parse_next_child_rule(
+        &mut inner_rules,
+        Rule::unary_expression,
+        parse_unary_expression,
+    )?
+    .into();
+
+    if let Some(op_rule) = inner_rules.next() {
+        let right_expr = parse_expected_right(
+            &mut inner_rules,
+            Rule::additive_expression,
+            parse_additive_expression,
+        )?
+        .into();
+
+        let math_expr =
+            BinaryMathematicalScalarExpression::new(query_location.clone(), left_expr, right_expr);
+
+        println!("op_rule {:?}", op_rule.as_rule());
+        Ok(ScalarExpression::Math(match op_rule.as_rule() {
+            Rule::additive_op_add => MathScalarExpression::Add(math_expr),
+            Rule::additive_op_sub => MathScalarExpression::Subtract(math_expr),
+            _ => {
+                todo!("invalid add expr op")
+            }
+        })
+        .into())
+    } else {
+        Ok(left_expr.into())
+    }
+}
+
 fn parse_unary_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = QueryLocation::new_fake();
     let mut inner_rules = rule.into_inner();
+
+    println!("unary inner rules: {:#?}", inner_rules.clone());
     if inner_rules.len() == 1 {
         // safety: we've checked the length of the iterator above
         let rule = inner_rules.next().expect("one rule");
@@ -427,7 +429,7 @@ mod test {
         Rule,
         expression::{
             LogicalOrScalarExpr, parse_additive_expression, parse_expression,
-            parse_unary_expression,
+            parse_multiplicative_expression, parse_rel_expression, parse_unary_expression,
         },
         pest::OplPestParser,
     };
@@ -499,6 +501,24 @@ mod test {
             let expected = ScalarExpression::Static(expected.clone());
             assert_eq!(result, expected);
         }
+    }
+
+    #[test]
+    fn test_parse_unary_not_bool() {
+        let input = "not false";
+
+        let mut rules = OplPestParser::parse(Rule::unary_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: LogicalExpression = parse_unary_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+        let expected = LogicalExpression::Not(NotLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::Scalar(ScalarExpression::Static(StaticScalarExpression::Boolean(
+                BooleanScalarExpression::new(QueryLocation::new_fake(), false),
+            ))),
+        ));
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -609,6 +629,139 @@ mod test {
             let expected: LogicalOrScalarExpr = ScalarExpression::Math(math_expr).into();
             assert_eq!(result, expected);
         }
+    }
+
+    #[test]
+    fn test_parse_multiplicative_expressions() {
+        let test_cases = vec![
+            (
+                "4 * 2",
+                MathScalarExpression::Multiply(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    )),
+                )),
+            ),
+            (
+                "8 / 4",
+                MathScalarExpression::Divide(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 8),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
+                    )),
+                )),
+            ),
+            (
+                "9 % 2",
+                MathScalarExpression::Modulus(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 9),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                    )),
+                )),
+            ),
+            (
+                "4 * 2 / 8",
+                MathScalarExpression::Multiply(BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ScalarExpression::Static(StaticScalarExpression::Integer(
+                        IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
+                    )),
+                    ScalarExpression::Math(MathScalarExpression::Divide(
+                        BinaryMathematicalScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Integer(
+                                IntegerScalarExpression::new(QueryLocation::new_fake(), 8),
+                            )),
+                        ),
+                    )),
+                )),
+            ),
+        ];
+
+        for (input, math_expr) in test_cases {
+            let mut rules = OplPestParser::parse(Rule::multiplicative_expression, input).unwrap();
+            assert_eq!(rules.len(), 1);
+            let result: LogicalOrScalarExpr =
+                parse_multiplicative_expression(rules.next().unwrap())
+                    .unwrap()
+                    .into();
+            let expected: LogicalOrScalarExpr = ScalarExpression::Math(math_expr).into();
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_parser_math_order_precedent() {
+        let input = "1 + 2 * 3 - 4 / 5 % 6";
+        let mut rules = OplPestParser::parse(Rule::rel_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: ScalarExpression = parse_rel_expression(rules.next().unwrap()).unwrap().into();
+
+        let one_plus_two = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                )),
+            ),
+        ));
+
+        let three_minus_four = ScalarExpression::Math(MathScalarExpression::Subtract(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
+                )),
+            ),
+        ));
+
+        let five_mod_six = ScalarExpression::Math(MathScalarExpression::Modulus(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 5),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 6),
+                )),
+            ),
+        ));
+
+        let expected = ScalarExpression::Math(MathScalarExpression::Multiply(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                one_plus_two,
+                ScalarExpression::Math(MathScalarExpression::Divide(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        three_minus_four,
+                        five_mod_six,
+                    ),
+                )),
+            ),
+        ));
+
+        assert_eq!(result, expected);
     }
 
     #[test]
