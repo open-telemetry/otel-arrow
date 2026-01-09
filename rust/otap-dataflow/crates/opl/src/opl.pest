@@ -58,36 +58,31 @@ multiplicative_expression = {
     unary_expression ~ (multiplicative_op ~ multiplicative_expression)*
 }
 
+additive_op_add = @{ "+" }
+additive_op_sub = @{ "-" }
 additive_op = {
-    "+" | "-"
+    additive_op_add | additive_op_sub
 }
 
 additive_expression = {
     multiplicative_expression ~ (additive_op ~ additive_expression)*
 }
 
+
+rel_op_eq = @{ "==" }
+rel_op_neq = @{ "!="}
 rel_op = {
-    "==" | "!="
+    rel_op_eq | rel_op_neq
 }
 
 rel_expression = {
     additive_expression ~ (rel_op ~ rel_expression)*
 }
 
-bitwise_and_expression = {
-    rel_expression ~ ("&" ~ bitwise_and_expression)*
-}
-
-bitwise_xor_expression = {
-    bitwise_and_expression ~ ("&" ~ bitwise_xor_expression)*
-}
-
-bitwise_or_expression = {
-    bitwise_xor_expression ~ ("^" ~ bitwise_or_expression)*
-}
+// TODO add bitwise expressions
 
 and_expression = {
-    bitwise_or_expression ~ ("and" ~ and_expression)*
+    rel_expression ~ ("and" ~ and_expression)*
 }
 
 or_expression = {
