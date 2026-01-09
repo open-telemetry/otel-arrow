@@ -301,10 +301,7 @@ impl QuiverEngine {
         // Note: WAL bytes are NOT tracked in budget - they're temporary and purged after
         // segment finalization. Only segment bytes are budget-tracked.
         if self.config.durability == DurabilityMode::Wal {
-            let wal_offset = {
-                let mut writer = self.wal_writer.lock();
-                writer.append_bundle(bundle)?
-            };
+            let wal_offset = self.append_to_wal_with_capacity_handling(bundle)?;
 
             // Step 2: Update cursor to include this entry
             let cursor = WalConsumerCursor::from_offset(&wal_offset);
@@ -345,6 +342,39 @@ impl QuiverEngine {
         }
 
         Ok(())
+    }
+
+    /// Appends a bundle to the WAL, handling capacity errors transparently.
+    ///
+    /// If the WAL is at capacity, this method:
+    /// 1. Finalizes the current segment to advance the WAL cursor
+    /// 2. Retries the WAL append
+    ///
+    /// This allows the engine to handle large segment sizes that exceed the
+    /// WAL capacity without requiring caller intervention.
+    fn append_to_wal_with_capacity_handling<B: RecordBundle>(
+        &self,
+        bundle: &B,
+    ) -> Result<crate::wal::WalOffset> {
+        // First attempt
+        let first_result = {
+            let mut writer = self.wal_writer.lock();
+            writer.append_bundle(bundle)
+        };
+
+        match first_result {
+            Ok(offset) => Ok(offset),
+            Err(ref e) if e.is_at_capacity() => {
+                // WAL is full - finalize the current segment to advance the cursor
+                // and free WAL space, then retry the append.
+                self.finalize_current_segment()?;
+
+                // Retry the append after finalization freed space
+                let mut writer = self.wal_writer.lock();
+                writer.append_bundle(bundle).map_err(Into::into)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Flushes the current open segment to disk, making all ingested data
@@ -740,7 +770,7 @@ fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
 mod tests {
     use super::*;
     use crate::budget::DiskBudget;
-    use crate::config::{RetentionPolicy, SegmentConfig};
+    use crate::config::{RetentionPolicy, SegmentConfig, WalConfig};
     use crate::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
@@ -1071,6 +1101,76 @@ mod tests {
         assert_eq!(
             sidecar.wal_position, entry.next_offset,
             "cursor should point past the finalized entry"
+        );
+    }
+
+    /// Tests that the engine transparently handles WAL capacity by finalizing segments.
+    ///
+    /// This test verifies that when:
+    /// 1. Segment size is larger than WAL max size
+    /// 2. WAL fills up before segment finalization threshold is reached
+    ///
+    /// The engine will:
+    /// 1. Detect the WAL is at capacity
+    /// 2. Finalize the current segment to advance the WAL cursor and free space
+    /// 3. Retry the WAL append transparently
+    /// 4. Continue accepting ingestion without returning errors to the caller
+    #[test]
+    fn ingest_handles_wal_capacity_transparently() {
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Configure WAL to be smaller than segment target size.
+        // WAL max: 8KB, Segment target: 32KB
+        // This means WAL will fill up before segment size threshold is reached.
+        let wal_config = WalConfig {
+            max_size_bytes: NonZeroU64::new(8 * 1024).unwrap(),
+            rotation_target_bytes: NonZeroU64::new(4 * 1024).unwrap(),
+            max_rotated_files: 2,
+            flush_interval: Duration::ZERO,
+        };
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(32 * 1024).unwrap(),
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .wal(wal_config)
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::new(config, test_budget()).expect("engine created");
+
+        // Ingest many bundles - WAL will fill up multiple times
+        // Each bundle is ~100-200 bytes, so we need 50+ to fill the 8KB WAL
+        for i in 0..100 {
+            let bundle = DummyBundle::with_rows(5);
+            engine
+                .ingest(&bundle)
+                .unwrap_or_else(|e| panic!("ingest {} failed: {:?}", i, e));
+        }
+
+        // Verify we created multiple segments (WAL capacity forced early finalization)
+        let segment_dir = temp_dir.path().join("segments");
+        let segment_count = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .count();
+
+        // We should have multiple segments since WAL capacity forced finalization
+        // before the segment size threshold was reached
+        assert!(
+            segment_count >= 2,
+            "expected at least 2 segments due to WAL capacity (got {})",
+            segment_count
+        );
+
+        // Verify all bundles were ingested
+        assert_eq!(
+            engine.metrics().ingest_attempts(),
+            100,
+            "all ingests should succeed"
         );
     }
 

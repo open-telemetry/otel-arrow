@@ -2973,3 +2973,33 @@ fn cursor_in_rotated_file_is_valid() {
         "two rotated files should be purged"
     );
 }
+
+#[test]
+fn wal_error_is_at_capacity_returns_true_for_capacity_errors() {
+    let capacity_error = WalError::WalAtCapacity("test capacity message");
+    assert!(
+        capacity_error.is_at_capacity(),
+        "WalAtCapacity should return true for is_at_capacity()"
+    );
+}
+
+#[test]
+fn wal_error_is_at_capacity_returns_false_for_other_errors() {
+    let io_error = WalError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+    assert!(
+        !io_error.is_at_capacity(),
+        "Io error should return false for is_at_capacity()"
+    );
+
+    let invalid_config = WalError::InvalidConfig("test config");
+    assert!(
+        !invalid_config.is_at_capacity(),
+        "InvalidConfig should return false for is_at_capacity()"
+    );
+
+    let invalid_entry = WalError::InvalidEntry("test entry");
+    assert!(
+        !invalid_entry.is_at_capacity(),
+        "InvalidEntry should return false for is_at_capacity()"
+    );
+}

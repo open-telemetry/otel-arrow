@@ -71,8 +71,15 @@ impl QuiverError {
     ///
     /// Callers can use this to distinguish recoverable capacity errors from
     /// fatal errors and implement appropriate backoff strategies.
+    ///
+    /// This returns `true` for both disk budget capacity (`StorageAtCapacity`)
+    /// and WAL capacity (`WalAtCapacity`) errors.
     #[must_use]
     pub fn is_at_capacity(&self) -> bool {
-        matches!(self, Self::StorageAtCapacity { .. })
+        match self {
+            Self::StorageAtCapacity { .. } => true,
+            Self::Wal { source } => source.is_at_capacity(),
+            _ => false,
+        }
     }
 }
