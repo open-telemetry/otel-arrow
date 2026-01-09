@@ -13,8 +13,10 @@ use crate::self_tracing::{ConsoleWriter, LogRecord, SavedCallsite};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::{Context, Layer as TracingLayer};
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{EnvFilter, Registry};
 
 /// A log entry with optional producer identification.
 pub struct LogEntry {
@@ -259,37 +261,26 @@ impl LogsCollector {
             // Identifier.0 is the &'static dyn Callsite
             let metadata = entry.record.callsite_id.0.metadata();
             let saved = SavedCallsite::new(metadata);
-            let output = self.writer.format_log_record(&entry.record, &saved);
+            // Use ConsoleWriter's routing: ERROR/WARN to stderr, others to stdout
+            self.writer.print_log_record(&entry.record, &saved);
             // TODO: include producer_key in output when present
-            eprint!("{}", output);
         }
     }
 }
 
 // ============================================================================
-// BufferWriterLayer - Tracing Layer that captures events to thread-local buffer
+// BufferWriterLayer - For engine threads with thread-local buffer
 // ============================================================================
 
-/// A tracing Layer that writes events to the thread-local LogBuffer.
+/// A tracing Layer for engine threads that writes to thread-local LogBuffer.
 ///
-/// This layer should be installed in the global subscriber. It only captures
-/// events on threads that have a LogBuffer installed (via `install_thread_log_buffer`).
-/// On other threads (e.g., the admin thread), events are silently ignored by this
-/// layer (but may be handled by other layers in the subscriber stack).
-///
-/// # Drop Statistics
-///
-/// The layer tracks global drop statistics:
-/// - `events_captured`: Total events successfully pushed to buffers
-/// - `events_dropped_no_buffer`: Events on threads without a buffer installed
-/// - `events_dropped_buffer_full`: Events dropped because buffer was at capacity
+/// This layer is installed via `with_default()` on each engine thread.
+/// Events are accumulated in the thread-local buffer and flushed on a timer.
 pub struct BufferWriterLayer {
-    /// Count of events successfully captured to a buffer.
+    /// Count of events successfully captured to the buffer.
     events_captured: AtomicU64,
-    /// Count of events dropped because no buffer was installed on the thread.
-    events_dropped_no_buffer: AtomicU64,
     /// Count of events dropped because the buffer was full.
-    events_dropped_buffer_full: AtomicU64,
+    events_dropped: AtomicU64,
 }
 
 impl BufferWriterLayer {
@@ -298,8 +289,7 @@ impl BufferWriterLayer {
     pub fn new() -> Self {
         Self {
             events_captured: AtomicU64::new(0),
-            events_dropped_no_buffer: AtomicU64::new(0),
-            events_dropped_buffer_full: AtomicU64::new(0),
+            events_dropped: AtomicU64::new(0),
         }
     }
 
@@ -309,22 +299,10 @@ impl BufferWriterLayer {
         self.events_captured.load(Ordering::Relaxed)
     }
 
-    /// Get the number of events dropped because no buffer was installed.
+    /// Get the number of events dropped because buffer was full.
     #[must_use]
-    pub fn events_dropped_no_buffer(&self) -> u64 {
-        self.events_dropped_no_buffer.load(Ordering::Relaxed)
-    }
-
-    /// Get the number of events dropped because buffers were full.
-    #[must_use]
-    pub fn events_dropped_buffer_full(&self) -> u64 {
-        self.events_dropped_buffer_full.load(Ordering::Relaxed)
-    }
-
-    /// Get total events dropped (no buffer + buffer full).
-    #[must_use]
-    pub fn events_dropped_total(&self) -> u64 {
-        self.events_dropped_no_buffer() + self.events_dropped_buffer_full()
+    pub fn events_dropped(&self) -> u64 {
+        self.events_dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -339,33 +317,118 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Create the LogRecord from the event
         let record = LogRecord::new(event);
+        let producer_key = current_producer_key();
 
-        // Try to push to the thread-local buffer
-        // producer_key=None means use current_producer_key() from thread-local
         CURRENT_LOG_BUFFER.with(|cell| {
             if let Some(ref mut buffer) = *cell.borrow_mut() {
-                let key = current_producer_key();
-                if buffer.push(LogEntry {
-                    record,
-                    producer_key: key,
-                }) {
+                if buffer.push(LogEntry { record, producer_key }) {
                     let _ = self.events_captured.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    let _ = self.events_dropped_buffer_full.fetch_add(1, Ordering::Relaxed);
+                    let _ = self.events_dropped.fetch_add(1, Ordering::Relaxed);
                 }
-            } else {
-                // No buffer installed on this thread - drop the event
-                let _ = self.events_dropped_no_buffer.fetch_add(1, Ordering::Relaxed);
             }
+            // No buffer = programming error on engine thread, silently drop
         });
     }
+}
 
-    fn event_enabled(&self, _event: &Event<'_>, _ctx: Context<'_, S>) -> bool {
-        // Only process events if a buffer is installed on this thread.
-        // This allows other layers (like RawLoggingLayer) to handle events
-        // on threads without buffers (e.g., admin thread).
-        CURRENT_LOG_BUFFER.with(|cell| cell.borrow().is_some())
+// ============================================================================
+// DirectChannelLayer - Global fallback for non-engine threads
+// ============================================================================
+
+/// A tracing Layer for non-engine threads that sends directly to channel.
+///
+/// This is installed as the global subscriber. Events are sent immediately
+/// to the LogsCollector (non-blocking, dropped if channel is full).
+pub struct DirectChannelLayer {
+    /// Reporter for sending to the channel.
+    reporter: LogsReporter,
+    /// Count of events successfully sent.
+    events_captured: AtomicU64,
+    /// Count of events dropped because channel was full.
+    events_dropped: AtomicU64,
+}
+
+impl DirectChannelLayer {
+    /// Create a new DirectChannelLayer with the given reporter.
+    #[must_use]
+    pub fn new(reporter: LogsReporter) -> Self {
+        Self {
+            reporter,
+            events_captured: AtomicU64::new(0),
+            events_dropped: AtomicU64::new(0),
+        }
     }
+
+    /// Get the number of events successfully sent.
+    #[must_use]
+    pub fn events_captured(&self) -> u64 {
+        self.events_captured.load(Ordering::Relaxed)
+    }
+
+    /// Get the number of events dropped because channel was full.
+    #[must_use]
+    pub fn events_dropped(&self) -> u64 {
+        self.events_dropped.load(Ordering::Relaxed)
+    }
+}
+
+impl<S> TracingLayer<S> for DirectChannelLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let record = LogRecord::new(event);
+        // Non-engine threads don't have producer_key context
+        let batch = LogBatch {
+            entries: vec![LogEntry {
+                record,
+                producer_key: None,
+            }],
+        };
+
+        match self.reporter.sender.try_send(batch) {
+            Ok(()) => {
+                let _ = self.events_captured.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(flume::TrySendError::Full(_)) => {
+                let _ = self.events_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(flume::TrySendError::Disconnected(_)) => {
+                // Channel closed, nothing we can do
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Engine Thread Subscriber Setup
+// ============================================================================
+
+/// Create a subscriber for engine threads that uses BufferWriterLayer.
+///
+/// This subscriber captures events to the thread-local buffer instead of
+/// sending them to the channel directly.
+fn create_engine_thread_subscriber() -> impl Subscriber {
+    // Use the same filter as the global subscriber (INFO by default, RUST_LOG override)
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+    
+    Registry::default()
+        .with(filter)
+        .with(BufferWriterLayer::new())
+}
+
+/// Run a closure with the engine thread subscriber as the default.
+///
+/// This should be called at the top of each engine thread to ensure all
+/// logging on that thread goes to the thread-local buffer.
+pub fn with_engine_thread_subscriber<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let subscriber = create_engine_thread_subscriber();
+    tracing::subscriber::with_default(subscriber, f)
 }

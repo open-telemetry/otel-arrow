@@ -36,7 +36,7 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::logs::{LogsCollector, LogsReporter, install_thread_log_buffer, uninstall_thread_log_buffer};
+use otap_df_telemetry::logs::{LogsCollector, LogsReporter, install_thread_log_buffer, uninstall_thread_log_buffer, with_engine_thread_subscriber};
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
@@ -84,7 +84,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
+
+        // Create the logs collection channel before OpentelemetryClient so it can
+        // install the DirectChannelLayer for global subscriber.
+        let (logs_collector, logs_reporter) = LogsCollector::new(
+            telemetry_config.reporting_channel_size,
+        );
+        // Start the logs collector thread
+        // TODO: Store handle for graceful shutdown
+        let _logs_collector_handle =
+            spawn_thread_local_task("logs-collector", move |_cancellation_token| {
+                logs_collector.run()
+            })?;
+
+        let opentelemetry_client = OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -114,16 +127,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let obs_state_join_handle =
             spawn_thread_local_task("observed-state-store", move |cancellation_token| {
                 obs_state_store.run(cancellation_token)
-            })?;
-
-        // Create the logs collection channel and start the collector thread
-        let (logs_collector, logs_reporter) = LogsCollector::new(
-            telemetry_config.reporting_channel_size,
-        );
-        // TODO: Store handle for graceful shutdown
-        let _logs_collector_handle =
-            spawn_thread_local_task("logs-collector", move |_cancellation_token| {
-                logs_collector.run()
             })?;
 
         // Start one thread per requested core
@@ -396,61 +399,65 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
-        // Install thread-local log buffer for this pipeline thread
-        // Buffer capacity: 1024 entries (TODO: make configurable)
-        install_thread_log_buffer(1024);
+        // Run the entire pipeline thread with the engine-specific tracing subscriber.
+        // This ensures all logs go to the thread-local buffer instead of the global channel.
+        with_engine_thread_subscriber(|| {
+            // Install thread-local log buffer for this pipeline thread
+            // Buffer capacity: 1024 entries (TODO: make configurable)
+            install_thread_log_buffer(1024);
 
-        // Create a tracing span for this pipeline thread
-        // so that all logs within this scope include pipeline context.
-        let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
-        let _guard = span.enter();
+            // Create a tracing span for this pipeline thread
+            // so that all logs within this scope include pipeline context.
+            let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
+            let _guard = span.enter();
 
-        // Pin thread to specific core
-        if !core_affinity::set_for_current(core_id) {
-            // Continue execution even if pinning fails.
-            // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
-            otel_warn!(
-                "CoreAffinity.SetFailed",
-                message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
-            );
-        }
+            // Pin thread to specific core
+            if !core_affinity::set_for_current(core_id) {
+                // Continue execution even if pinning fails.
+                // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
+                otel_warn!(
+                    "CoreAffinity.SetFailed",
+                    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
+                );
+            }
 
-        obs_evt_reporter.report(ObservedEvent::admitted(
-            pipeline_key.clone(),
-            Some("Pipeline admission successful.".to_owned()),
-        ));
+            obs_evt_reporter.report(ObservedEvent::admitted(
+                pipeline_key.clone(),
+                Some("Pipeline admission successful.".to_owned()),
+            ));
 
-        // Build the runtime pipeline from the configuration
-        let runtime_pipeline = pipeline_factory
-            .build(pipeline_context.clone(), pipeline_config.clone())
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })?;
+            // Build the runtime pipeline from the configuration
+            let runtime_pipeline = pipeline_factory
+                .build(pipeline_context.clone(), pipeline_config.clone())
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })?;
 
-        obs_evt_reporter.report(ObservedEvent::ready(
-            pipeline_key.clone(),
-            Some("Pipeline initialization successful.".to_owned()),
-        ));
+            obs_evt_reporter.report(ObservedEvent::ready(
+                pipeline_key.clone(),
+                Some("Pipeline initialization successful.".to_owned()),
+            ));
 
-        // Start the pipeline (this will use the current thread's Tokio runtime)
-        let result = runtime_pipeline
-            .run_forever(
-                pipeline_key,
-                pipeline_context,
-                obs_evt_reporter,
-                metrics_reporter,
-                logs_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            });
+            // Start the pipeline (this will use the current thread's Tokio runtime)
+            let result = runtime_pipeline
+                .run_forever(
+                    pipeline_key,
+                    pipeline_context,
+                    obs_evt_reporter,
+                    metrics_reporter,
+                    logs_reporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_ctrl_msg_rx,
+                )
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                });
 
-        // Cleanup: uninstall thread-local log buffer
-        uninstall_thread_log_buffer();
+            // Cleanup: uninstall thread-local log buffer
+            uninstall_thread_log_buffer();
 
-        result
+            result
+        })
     }
 }
 

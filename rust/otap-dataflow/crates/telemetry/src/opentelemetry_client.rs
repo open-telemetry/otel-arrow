@@ -9,7 +9,8 @@ pub mod meter_provider;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
-    AttributeValue, AttributeValueArray, TelemetryConfig, logs::LogLevel,
+    AttributeValue, AttributeValueArray, TelemetryConfig,
+    logs::{LogLevel, ProducerStrategy},
 };
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -17,8 +18,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::{
     error::Error,
-    opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
-    self_tracing::{ConsoleWriter, RawLoggingLayer},
+    logs::{DirectChannelLayer, LogsReporter},
+    opentelemetry_client::meter_provider::MeterProvider,
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -85,13 +86,13 @@ impl OpentelemetryClient {
     ///
     /// TODO: Evaluate also alternatives for the contention caused by the global
     /// OpenTelemetry logger provider added as layer.
-    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+    pub fn new(config: &TelemetryConfig, logs_reporter: LogsReporter) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
 
         let (meter_provider, runtime) =
-            MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?.into_parts();
+            MeterProvider::configure(sdk_resource, &config.metrics, runtime)?.into_parts();
 
         let tracing_setup = tracing_subscriber::registry().with(get_env_filter(config.logs.level));
 
@@ -102,43 +103,41 @@ impl OpentelemetryClient {
             ));
         };
 
-        let (logger_provider, runtime) = if !config.logs.internal.enabled {
-            let (logger_provider, runtime) =
-                LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
-
-            // Tokio provides a console formatting layer, OTel
-            // provides other behaviors.
-            let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
-            let sdk_layer = opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(
-                &logger_provider,
-            );
-
-            // Try to initialize the global subscriber. In tests, this may fail if already set,
-            // which is acceptable as we're only validating the configuration works.
-            if let Err(err) = tracing_setup.with(fmt_layer).with(sdk_layer).try_init() {
-                logerr(err);
+        // Configure the global subscriber based on strategies.global.
+        // Engine threads override this with BufferWriterLayer via with_default().
+        match config.logs.strategies.global {
+            ProducerStrategy::Noop => {
+                // No-op: just install the filter, events are dropped
+                if let Err(err) = tracing_setup.try_init() {
+                    logerr(err);
+                }
             }
-            (Some(logger_provider), runtime)
-        } else {
-            let writer = if std::env::var("NO_COLOR").is_ok() {
-                ConsoleWriter::no_color()
-            } else {
-                ConsoleWriter::color()
-            };
-            // See comment above.
-            if let Err(err) = tracing_setup.with(RawLoggingLayer::new(writer)).try_init() {
-                logerr(err);
+            ProducerStrategy::Global => {
+                // Global channel: send events to admin collector thread
+                let channel_layer = DirectChannelLayer::new(logs_reporter);
+                if let Err(err) = tracing_setup.with(channel_layer).try_init() {
+                    logerr(err);
+                }
             }
+            ProducerStrategy::Buffered => {
+                // Buffered is only valid for engine threads, treat as global for global subscriber
+                // This is a misconfiguration, but we handle it gracefully
+                let channel_layer = DirectChannelLayer::new(logs_reporter);
+                if let Err(err) = tracing_setup.with(channel_layer).try_init() {
+                    logerr(err);
+                }
+            }
+        }
 
-            (None, runtime)
-        };
+        // Note: OpenTelemetry SDK forwarding is handled by the LogsCollector on the admin thread,
+        // not at the global subscriber level. The output.mode config controls that behavior.
 
         //TODO: Configure traces provider.
 
         Ok(Self {
             _runtime: runtime,
             meter_provider,
-            logger_provider,
+            logger_provider: None,
         })
     }
 
@@ -228,12 +227,14 @@ mod tests {
     };
 
     use super::*;
+    use crate::logs::LogsCollector;
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config)?;
+        let (_collector, reporter) = LogsCollector::new(10);
+        let client = OpentelemetryClient::new(&config, reporter)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -267,7 +268,8 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let client = OpentelemetryClient::new(&config)?;
+        let (_collector, reporter) = LogsCollector::new(10);
+        let client = OpentelemetryClient::new(&config, reporter)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();

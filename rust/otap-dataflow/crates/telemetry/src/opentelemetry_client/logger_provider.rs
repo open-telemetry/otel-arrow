@@ -189,7 +189,7 @@ mod tests {
     use opentelemetry_sdk::Resource;
     use otap_df_config::pipeline::service::telemetry::{
         logs::{
-            LogLevel, LogsConfig, LogsInternalConfig,
+            LogLevel, LogsConfig,
             processors::{
                 BatchLogProcessorConfig,
                 batch::{LogBatchProcessorExporterConfig, otlp::OtlpExporterConfig},
@@ -204,7 +204,6 @@ mod tests {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
             level: LogLevel::Info,
-            internal: LogsInternalConfig::default(),
             processors: vec![
                 otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig::Batch(
                     BatchLogProcessorConfig {
@@ -212,6 +211,7 @@ mod tests {
                     },
                 ),
             ],
+            ..Default::default()
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
@@ -228,7 +228,6 @@ mod tests {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
             level: LogLevel::Info,
-            internal: LogsInternalConfig::default(),
             processors: vec![
                 otap_df_config::pipeline::service::telemetry::logs::processors::LogProcessorConfig::Batch(
                     BatchLogProcessorConfig {
@@ -241,6 +240,7 @@ mod tests {
                     },
                 ),
             ],
+            ..Default::default()
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
         let (sdk_logger_provider, runtime_option) = logger_provider.into_parts();
@@ -259,8 +259,8 @@ mod tests {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
             level: LogLevel::default(),
-            internal: LogsInternalConfig::default(),
             processors: vec![],
+            ..Default::default()
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
