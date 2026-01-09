@@ -1708,6 +1708,9 @@ fn take_ranges_slice<T>(array: T, ranges: &[(usize, usize)]) -> Result<ArrayRef>
 where
     T: Array,
 {
+    if ranges.is_empty() {
+        return Ok(array.slice(0, 0));
+    }
     let slices: Vec<ArrayRef> = ranges
         .iter()
         .map(|&(start, end)| array.slice(start, end - start))
