@@ -14,7 +14,7 @@ two forms:
   an internal pipeline because it is already encoded nas bytes. This representation
   allows sorting and filtering records before encoding full OTLP messages.
 - Full: The `DirectLogRecordEncoder` type supports appending the OTLP bytes
-  representation for the complete LogRecrd (without Scope and Resource wrappers).
+  representation for the complete LogRecord (without Scope and Resource wrappers).
 
 ## Raw logging handler
 
