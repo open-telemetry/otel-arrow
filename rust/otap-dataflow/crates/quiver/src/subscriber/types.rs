@@ -141,9 +141,23 @@ impl BundleIndex {
     }
 
     /// Returns the next sequential bundle index.
+    ///
+    /// # Behavior
+    ///
+    /// Saturates at `u32::MAX` to prevent wrapping. In practice, this should
+    /// never be reached—segments typically contain thousands of bundles, not
+    /// billions. If saturation occurs, it indicates a bug in the calling code.
     #[must_use]
     pub const fn next(self) -> Self {
         Self(self.0.saturating_add(1))
+    }
+
+    /// Returns `true` if this index is at the maximum value.
+    ///
+    /// Useful for detecting saturation in debug code.
+    #[must_use]
+    pub const fn is_saturated(self) -> bool {
+        self.0 == u32::MAX
     }
 }
 
@@ -344,6 +358,14 @@ mod tests {
     fn bundle_index_saturating() {
         let idx = BundleIndex::new(u32::MAX);
         assert_eq!(idx.next(), BundleIndex::new(u32::MAX));
+        assert!(idx.is_saturated());
+    }
+
+    #[test]
+    fn bundle_index_not_saturated() {
+        let idx = BundleIndex::new(100);
+        assert!(!idx.is_saturated());
+        assert!(!idx.next().is_saturated());
     }
 
     #[test]
