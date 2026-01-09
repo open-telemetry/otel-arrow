@@ -125,7 +125,7 @@ macro_rules! emit_log {
             attr_str3 = "string3",
             attr_bool2 = false,
             attr_float2 = 5.678,
-            attr_int2 =7 100u64,
+            attr_int2 = 100u64,
             attr_str4 = "string4",
             "benchmark message"
         )
