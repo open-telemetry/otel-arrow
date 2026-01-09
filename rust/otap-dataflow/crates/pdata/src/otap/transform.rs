@@ -676,11 +676,12 @@ pub fn transform_attributes_with_stats(
     transform.validate()?;
 
     let schema = attrs_record_batch.schema();
-    let key_column_idx = schema
-        .index_of(consts::ATTRIBUTE_KEY)
-        .map_err(|_| Error::ColumnNotFound {
-            name: consts::ATTRIBUTE_KEY.into(),
-        })?;
+    let key_column_idx =
+        schema
+            .index_of(consts::ATTRIBUTE_KEY)
+            .map_err(|_| Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_KEY.into(),
+            })?;
 
     // Check if we need early materialization for insert
     // We only need to materialize if insert is present AND we have parent_id column
@@ -718,8 +719,8 @@ pub fn transform_attributes_with_stats(
             // joined deleted segments, meaning the delta encoding will change.
             // Note: if insert_needed was true, parent IDs are already materialized so this is noop.
             let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
-            let should_materialize_parent_ids =
-                (any_rows_deleted || insert_needed) && schema.column_with_name(consts::PARENT_ID).is_some();
+            let should_materialize_parent_ids = (any_rows_deleted || insert_needed)
+                && schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -806,15 +807,15 @@ pub fn transform_attributes_with_stats(
             // NOTE: If we have inserts, we might still return rows even if all existing were deleted.
             // But here we just produce the "remaining" batch. Inserts are appended later.
             let (attrs_record_batch, schema) = if keep_ranges.as_ref().map(Vec::len) == Some(0) {
-                 (RecordBatch::new_empty(schema.clone()), schema.clone())
+                (RecordBatch::new_empty(schema.clone()), schema.clone())
             } else {
                 // Possibly remove any delta-encoding on the parent ID column. If there were any
                 // deletes, it could cause issues if the parent_ids are using the transport optimized
                 // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
                 // joined deleted segments, meaning the delta encoding will change.
                 let any_rows_deleted = keep_ranges.is_some();
-                let should_materialize_parent_ids =
-                    (any_rows_deleted || insert_needed) && schema.column_with_name(consts::PARENT_ID).is_some();
+                let should_materialize_parent_ids = (any_rows_deleted || insert_needed)
+                    && schema.column_with_name(consts::PARENT_ID).is_some();
                 let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                     let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                     let schema = rb.schema();
@@ -849,22 +850,28 @@ pub fn transform_attributes_with_stats(
                 .expect("can build record batch with same schema and columns");
             (rb, stats)
         }
-        data_type => return Err(Error::InvalidListArray {
-            expect_oneof: vec![
-                DataType::Utf8,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ],
-            actual: data_type.clone(),
-        }),
+        data_type => {
+            return Err(Error::InvalidListArray {
+                expect_oneof: vec![
+                    DataType::Utf8,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                ],
+                actual: data_type.clone(),
+            });
+        }
     };
 
     // Handle inserts
     if let Some(insert) = &transform.insert {
         if let Some(parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
-            let (new_rows, count) = create_inserted_batch(parent_ids, insert, rb.schema().as_ref())?;
+            let (new_rows, count) =
+                create_inserted_batch(parent_ids, insert, rb.schema().as_ref())?;
             if count > 0 {
-                let combined = arrow::compute::concat_batches(&rb.schema(), &[rb, new_rows]).map_err(|e| Error::Format { error: e.to_string() })?;
+                let combined = arrow::compute::concat_batches(&rb.schema(), &[rb, new_rows])
+                    .map_err(|e| Error::Format {
+                        error: e.to_string(),
+                    })?;
                 stats.inserted_entries = count as u64;
                 return Ok((combined, stats));
             }
@@ -2443,7 +2450,8 @@ mod test {
         let test_cases = vec![
             (
                 // most basic transform
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "b".into(),
                         "B".into(),
@@ -2457,7 +2465,8 @@ mod test {
             ),
             (
                 // test replacements at array boundaries
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "A".into(),
@@ -2469,7 +2478,8 @@ mod test {
             ),
             (
                 // test replacements where replacements longer than target
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AAA".into(),
@@ -2484,7 +2494,8 @@ mod test {
             ),
             (
                 // test replacements where replacements shorter than target
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "aaa".into(),
                         "a".into(),
@@ -2499,7 +2510,8 @@ mod test {
             ),
             (
                 // test replacing single contiguous block of keys
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AA".into(),
@@ -2517,7 +2529,8 @@ mod test {
             ),
             (
                 // test multiple replacements
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
                         ("dd".into(), "D".into()),
@@ -2535,7 +2548,8 @@ mod test {
             ),
             (
                 // test multiple replacements interleaved
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
                         ("dd".into(), "D".into()),
@@ -2553,7 +2567,8 @@ mod test {
             ),
             (
                 // test deletion at array boundaries without replaces
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
@@ -2562,7 +2577,8 @@ mod test {
             ),
             (
                 // test delete contiguous segment
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
@@ -2574,7 +2590,8 @@ mod test {
             ),
             (
                 // test multiple deletes
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
                         "a".into(),
@@ -2589,7 +2606,8 @@ mod test {
             ),
             (
                 // test adjacent replacement and delete
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AAA".into(),
@@ -2601,7 +2619,8 @@ mod test {
             ),
             (
                 // test we handle an empty rename
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 },
@@ -2610,7 +2629,8 @@ mod test {
             ),
             (
                 // test we handle an empty delete
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AAAA".into(),
@@ -2782,7 +2802,8 @@ mod test {
 
             let result = transform_attributes(
                 &record_batch,
-                &AttributesTransform { insert: None,
+                &AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "k2".into(),
                         "K2".into(),
@@ -2939,7 +2960,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                     "b".into(),
                     "B".into(),
@@ -2975,7 +2997,8 @@ mod test {
         let test_cases = vec![
             (
                 // basic dict transform
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                         "a".into(),
                         "AA".into(),
@@ -3016,7 +3039,8 @@ mod test {
             ),
             (
                 // test with some nulls
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                         "a".into(),
                         "AA".into(),
@@ -3083,7 +3107,8 @@ mod test {
             (
                 // test if there's nulls in the dict keys. This would be unusual
                 // but technically it's possible
-                AttributesTransform { insert: None,
+                AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                         "a".into(),
                         "AA".into(),
@@ -3182,7 +3207,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "c".into(),
                     "CCCCC".into(),
@@ -3225,7 +3251,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
             },
@@ -3260,7 +3287,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
             },
@@ -3343,7 +3371,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
@@ -3420,7 +3449,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
@@ -3481,7 +3511,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "BBB".into(),
@@ -3549,7 +3580,8 @@ mod test {
 
         let result = transform_attributes(
             &input,
-            &AttributesTransform { insert: None,
+            &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "BBB".into(),
@@ -3565,28 +3597,32 @@ mod test {
     #[test]
     fn test_invalid_attributes_transforms() {
         let test_cases = vec![
-            AttributesTransform { insert: None,
+            AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "b".into(),
                 )]))),
                 delete: None,
             },
-            AttributesTransform { insert: None,
+            AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([
                     ("b".into(), "b".into()),
                     ("a".into(), "b".into()),
                 ]))),
                 delete: None,
             },
-            AttributesTransform { insert: None,
+            AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "a".into(),
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
             },
-            AttributesTransform { insert: None,
+            AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "a".into(),
@@ -3626,7 +3662,8 @@ mod test {
         )
         .unwrap();
 
-        let tx = AttributesTransform { insert: None,
+        let tx = AttributesTransform {
+            insert: None,
             rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                 String::from("a"),
                 String::from("A"),
@@ -3668,7 +3705,8 @@ mod test {
         )
         .unwrap();
 
-        let tx = AttributesTransform { insert: None,
+        let tx = AttributesTransform {
+            insert: None,
             rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                 String::from("a"),
                 String::from("A"),
@@ -3741,12 +3779,18 @@ fn create_inserted_batch(
     let new_types = Arc::new(new_types.finish()) as ArrayRef;
 
     // Build Key column
-    let key_col_idx = schema.index_of(consts::ATTRIBUTE_KEY).map_err(|_| Error::ColumnNotFound { name: consts::ATTRIBUTE_KEY.into() })?;
+    let key_col_idx =
+        schema
+            .index_of(consts::ATTRIBUTE_KEY)
+            .map_err(|_| Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_KEY.into(),
+            })?;
     let key_type = schema.field(key_col_idx).data_type();
-    
+
     let new_keys: ArrayRef = match key_type {
         DataType::Utf8 => {
-            let mut builder = arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
+            let mut builder =
+                arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
             for _parent in &unique_parents {
                 for (key, _) in &insert.entries {
                     builder.append_value(key);
@@ -3755,63 +3799,73 @@ fn create_inserted_batch(
             Arc::new(builder.finish())
         }
         DataType::Dictionary(k, _v) => {
-             // For simplicity, we can create a StringArray and cast it to Dictionary?
-             // Or build dictionary properly. building properly is better.
-             // But keys might be u8 or u16.
-             // Since we have a small set of keys repeated many times, proper dictionary encoding is good.
-             // But existing keys are not available here easily (to share dict).
-             // Merging dictionaries later (concat) handles remapping.
-             match **k {
-                 DataType::UInt8 => {
-                     // TODO: Optimize by building dictionary
-                     let mut builder = arrow::array::StringDictionaryBuilder::<UInt8Type>::new();
-                     for _parent in &unique_parents {
-                         for (key, _) in &insert.entries {
-                             builder.append_value(key);
-                         }
-                     }
-                     Arc::new(builder.finish())
-                 }
-                 DataType::UInt16 => {
-                     let mut builder = arrow::array::StringDictionaryBuilder::<UInt16Type>::new();
-                     for _parent in &unique_parents {
-                         for (key, _) in &insert.entries {
-                             builder.append_value(key);
-                         }
-                     }
-                     Arc::new(builder.finish())
-                 }
-                 _ => return Err(Error::UnsupportedDictionaryKeyType { expect_oneof: vec![DataType::UInt8, DataType::UInt16], actual: *k.clone() }),
-             }
+            // For simplicity, we can create a StringArray and cast it to Dictionary?
+            // Or build dictionary properly. building properly is better.
+            // But keys might be u8 or u16.
+            // Since we have a small set of keys repeated many times, proper dictionary encoding is good.
+            // But existing keys are not available here easily (to share dict).
+            // Merging dictionaries later (concat) handles remapping.
+            match **k {
+                DataType::UInt8 => {
+                    // TODO: Optimize by building dictionary
+                    let mut builder = arrow::array::StringDictionaryBuilder::<UInt8Type>::new();
+                    for _parent in &unique_parents {
+                        for (key, _) in &insert.entries {
+                            builder.append_value(key);
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                DataType::UInt16 => {
+                    let mut builder = arrow::array::StringDictionaryBuilder::<UInt16Type>::new();
+                    for _parent in &unique_parents {
+                        for (key, _) in &insert.entries {
+                            builder.append_value(key);
+                        }
+                    }
+                    Arc::new(builder.finish())
+                }
+                _ => {
+                    return Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: *k.clone(),
+                    });
+                }
+            }
         }
-        _ => return Err(Error::InvalidListArray { expect_oneof: vec![DataType::Utf8], actual: key_type.clone() }),
+        _ => {
+            return Err(Error::InvalidListArray {
+                expect_oneof: vec![DataType::Utf8],
+                actual: key_type.clone(),
+            });
+        }
     };
 
     // Build Value columns
     // We need to build columns for STR, INT, DOUBLE, BOOL, BYTES (if present)
     // We iterate over inputs and fill.
-    
+
     // Helper to build column
     let _build_col = |name: &str, builder_func: &dyn Fn() -> ArrayRef| -> Result<ArrayRef> {
         if schema.field_with_name(name).is_ok() {
-             Ok(builder_func())
+            Ok(builder_func())
         } else {
-             // If column missing in schema, we can't include it. 
-             // But wait, RecordBatch::try_new requires matching columns.
-             // If schema has the column, we must provide it.
-             // If schema DOES NOT have the column, but we have values for it?
-             // Then we would fail to create batch if we try to include it.
-             // But if we omit it, where does the data go?
-             // Standard OTAP schema has all columns.
-             // If some are missing (e.g. projection?), we can't insert that data.
-             // We'll proceed assuming schema has needed columns or we fill nulls.
-             Err(Error::ColumnNotFound{ name: name.into() })
+            // If column missing in schema, we can't include it.
+            // But wait, RecordBatch::try_new requires matching columns.
+            // If schema has the column, we must provide it.
+            // If schema DOES NOT have the column, but we have values for it?
+            // Then we would fail to create batch if we try to include it.
+            // But if we omit it, where does the data go?
+            // Standard OTAP schema has all columns.
+            // If some are missing (e.g. projection?), we can't insert that data.
+            // We'll proceed assuming schema has needed columns or we fill nulls.
+            Err(Error::ColumnNotFound { name: name.into() })
         }
     };
 
     // We collect columns into a map or vec matching schema order.
     let mut columns = Vec::with_capacity(schema.fields().len());
-    
+
     for field in schema.fields() {
         let name = field.name();
         let col: ArrayRef = if name == consts::PARENT_ID {
@@ -3821,7 +3875,8 @@ fn create_inserted_batch(
         } else if name == consts::ATTRIBUTE_KEY {
             new_keys.clone()
         } else if name == consts::ATTRIBUTE_STR {
-            let mut builder = arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
+            let mut builder =
+                arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
             for _parent in &unique_parents {
                 for (_, val) in &insert.entries {
                     if let LiteralValue::Str(s) = val {
@@ -3833,8 +3888,9 @@ fn create_inserted_batch(
             }
             Arc::new(builder.finish())
         } else if name == consts::ATTRIBUTE_INT {
-             let mut builder = PrimitiveBuilder::<arrow::datatypes::Int64Type>::with_capacity(total_rows);
-             for _parent in &unique_parents {
+            let mut builder =
+                PrimitiveBuilder::<arrow::datatypes::Int64Type>::with_capacity(total_rows);
+            for _parent in &unique_parents {
                 for (_, val) in &insert.entries {
                     if let LiteralValue::Int(v) = val {
                         builder.append_value(*v);
@@ -3845,8 +3901,9 @@ fn create_inserted_batch(
             }
             Arc::new(builder.finish())
         } else if name == consts::ATTRIBUTE_DOUBLE {
-             let mut builder = PrimitiveBuilder::<arrow::datatypes::Float64Type>::with_capacity(total_rows);
-             for _parent in &unique_parents {
+            let mut builder =
+                PrimitiveBuilder::<arrow::datatypes::Float64Type>::with_capacity(total_rows);
+            for _parent in &unique_parents {
                 for (_, val) in &insert.entries {
                     if let LiteralValue::Double(v) = val {
                         builder.append_value(*v);
@@ -3857,8 +3914,8 @@ fn create_inserted_batch(
             }
             Arc::new(builder.finish())
         } else if name == consts::ATTRIBUTE_BOOL {
-             let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
-             for _parent in &unique_parents {
+            let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
+            for _parent in &unique_parents {
                 for (_, val) in &insert.entries {
                     if let LiteralValue::Bool(v) = val {
                         builder.append_value(*v);
@@ -3869,22 +3926,25 @@ fn create_inserted_batch(
             }
             Arc::new(builder.finish())
         } else {
-             // Fill with nulls
-             arrow::array::new_null_array(field.data_type(), total_rows)
+            // Fill with nulls
+            arrow::array::new_null_array(field.data_type(), total_rows)
         };
         columns.push(col);
     }
 
-    Ok((RecordBatch::try_new(Arc::new(schema.clone()), columns).expect("schema check"), total_rows))
+    Ok((
+        RecordBatch::try_new(Arc::new(schema.clone()), columns).expect("schema check"),
+        total_rows,
+    ))
 }
 
 #[cfg(test)]
 mod insert_tests {
     use super::*;
-    use std::sync::Arc;
-    use arrow::datatypes::*;
-    use arrow::array::*;
     use crate::schema::consts;
+    use arrow::array::*;
+    use arrow::datatypes::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_insert_attributes_simple() {
@@ -3899,12 +3959,16 @@ mod insert_tests {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0, 1])), 
-                Arc::new(UInt8Array::from_iter_values(vec![AttributeValueType::Str as u8, AttributeValueType::Str as u8])),
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
                 Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
                 Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Transform: insert "env"="prod"
         let tx = AttributesTransform {
@@ -3916,28 +3980,39 @@ mod insert_tests {
             )])),
         };
 
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).expect("transform failed");
+        let (result, stats) =
+            transform_attributes_with_stats(&input, &tx).expect("transform failed");
 
         assert_eq!(stats.inserted_entries, 2);
-        
+
         // Expected: 4 rows
         assert_eq!(result.num_rows(), 4);
-        
-        let keys = result.column_by_name(consts::ATTRIBUTE_KEY).unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         // The original rows come first, then inserted rows.
         // Original: k1, k2. Inserted: env, env.
         let k0 = keys.value(0);
         let k1 = keys.value(1);
         let k2 = keys.value(2);
         let k3 = keys.value(3);
-        
+
         assert!(k0 == "k1" || k0 == "k2");
         assert!(k1 == "k1" || k1 == "k2");
         assert_eq!(k2, "env");
         assert_eq!(k3, "env");
 
         // Check values
-        let vals = result.column_by_name(consts::ATTRIBUTE_STR).unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         let v2 = vals.value(2);
         let v3 = vals.value(3);
         assert_eq!(v2, "prod");
@@ -3946,7 +4021,7 @@ mod insert_tests {
 
     #[test]
     fn test_insert_attributes_with_delete() {
-         // Schema
+        // Schema
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -3959,29 +4034,39 @@ mod insert_tests {
             schema.clone(),
             vec![
                 Arc::new(UInt16Array::from_iter_values(vec![0])),
-                Arc::new(UInt8Array::from_iter_values(vec![AttributeValueType::Str as u8])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
                 Arc::new(StringArray::from_iter_values(vec!["del_me"])),
                 Arc::new(StringArray::from_iter_values(vec!["val"])),
             ],
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         let tx = AttributesTransform {
             rename: None,
-            delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["del_me".into()]))),
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                "del_me".into(),
+            ]))),
             insert: Some(InsertTransform::new(vec![(
                 "new".into(),
                 LiteralValue::Str("val".into()),
             )])),
         };
-        
+
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
 
         assert_eq!(stats.deleted_entries, 1);
         assert_eq!(stats.inserted_entries, 1);
-        
+
         // Result should contain 1 row: "new"="val" for parent 0.
         assert_eq!(result.num_rows(), 1);
-        let keys = result.column_by_name(consts::ATTRIBUTE_KEY).unwrap().as_any().downcast_ref::<StringArray>().unwrap();
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(keys.value(0), "new");
     }
 }

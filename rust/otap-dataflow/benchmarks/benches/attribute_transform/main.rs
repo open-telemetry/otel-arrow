@@ -72,6 +72,7 @@ fn generate_dict_keys_attribute_batch(
 fn bench_transform_attributes(c: &mut Criterion) {
     // Pre-create AttributesTransform instances to avoid measuring their creation cost
     let single_replace_no_delete = AttributesTransform {
+        insert: None,
         rename: Some(RenameTransform::new(BTreeMap::from_iter([(
             "attr24".into(),
             "attr_24".into(),
@@ -80,6 +81,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
     };
 
     let single_replace_single_delete = AttributesTransform {
+        insert: None,
         rename: Some(RenameTransform::new(BTreeMap::from_iter([(
             "attr24".into(),
             "attr_24".into(),
@@ -88,11 +90,13 @@ fn bench_transform_attributes(c: &mut Criterion) {
     };
 
     let no_replace_single_delete = AttributesTransform {
+        insert: None,
         rename: None,
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
     };
 
     let attr3_replace_no_delete = AttributesTransform {
+        insert: None,
         rename: Some(RenameTransform::new(BTreeMap::from_iter([(
             "attr3".into(),
             "attr_3".into(),
@@ -101,11 +105,13 @@ fn bench_transform_attributes(c: &mut Criterion) {
     };
 
     let no_replace_attr9_delete = AttributesTransform {
+        insert: None,
         rename: None,
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
     };
 
     let attr3_replace_attr9_delete = AttributesTransform {
+        insert: None,
         rename: Some(RenameTransform::new(BTreeMap::from_iter([(
             "attr3".into(),
             "attr_3".into(),
