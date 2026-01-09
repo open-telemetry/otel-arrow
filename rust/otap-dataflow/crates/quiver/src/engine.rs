@@ -251,6 +251,16 @@ impl QuiverEngine {
             budget.clone(),
         ));
 
+        // Scan for existing segments from previous runs (recovery)
+        // This populates the segment store with any segments that exist on disk,
+        // enabling subscribers to resume from where they left off.
+        if let Err(e) = segment_store.scan_existing() {
+            tracing::warn!(
+                error = %e,
+                "failed to scan existing segments during startup; continuing with empty store"
+            );
+        }
+
         // Create subscriber registry with segment store as provider
         let registry_config = RegistryConfig::new(&config.data_dir);
         let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
@@ -2470,5 +2480,133 @@ mod tests {
 
         // Clean up
         handle.ack();
+    }
+
+    /// Test that existing segments from a previous engine run are loaded on startup.
+    ///
+    /// This verifies that `scan_existing()` is called during engine initialization.
+    #[test]
+    fn engine_loads_existing_segments_on_startup() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).expect("non-zero"), // Small segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config.clone())
+            .build()
+            .expect("config valid");
+
+        // First engine: create some segments
+        let segments_created = {
+            let engine = QuiverEngine::new(config.clone(), test_budget()).expect("engine created");
+
+            // Ingest enough data to create multiple segments
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).expect("ingest succeeds");
+            }
+            engine.flush().expect("flush");
+
+            let count = engine.segment_store.segment_count();
+            assert!(count >= 2, "should create multiple segments, got {count}");
+            count
+        };
+
+        // Second engine: should discover existing segments automatically
+        {
+            let engine = QuiverEngine::new(config, test_budget()).expect("engine created");
+
+            // The segment store should have loaded the existing segments
+            assert_eq!(
+                engine.segment_store.segment_count(),
+                segments_created,
+                "new engine should load existing segments"
+            );
+        }
+    }
+
+    /// Test that subscribers can consume bundles from segments that existed
+    /// before the engine was created (recovery scenario).
+    #[test]
+    fn subscriber_can_consume_from_recovered_segments() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).expect("non-zero"), // Small segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config.clone())
+            .build()
+            .expect("config valid");
+
+        // First engine: create segments with data
+        {
+            let engine = QuiverEngine::new(config.clone(), test_budget()).expect("engine created");
+
+            for _ in 0..3 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).expect("ingest succeeds");
+            }
+            engine.flush().expect("flush");
+
+            assert!(
+                engine.segment_store.segment_count() >= 1,
+                "should have at least one segment"
+            );
+        }
+
+        // Second engine: new subscriber should be able to consume the recovered data
+        {
+            let engine = QuiverEngine::new(config, test_budget()).expect("engine created");
+
+            // Register and activate a new subscriber
+            let sub_id = SubscriberId::new("recovery-sub").expect("valid id");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Should be able to consume bundles from recovered segments
+            let mut consumed = 0;
+            while let Some(handle) = engine.next_bundle(&sub_id).expect("next_bundle") {
+                handle.ack();
+                consumed += 1;
+            }
+
+            assert!(
+                consumed >= 3,
+                "should consume bundles from recovered segments, got {consumed}"
+            );
+        }
+    }
+
+    /// Test that engine handles empty segment directory gracefully.
+    #[test]
+    fn engine_handles_empty_segment_directory() {
+        let temp_dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+
+        // Create engine - should work fine with no existing segments
+        let engine = QuiverEngine::new(config, test_budget()).expect("engine created");
+
+        assert_eq!(
+            engine.segment_store.segment_count(),
+            0,
+            "should start with no segments"
+        );
+
+        // Register a subscriber - should work even with no segments
+        let sub_id = SubscriberId::new("empty-sub").expect("valid id");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // next_bundle should return None (no bundles available)
+        let bundle = engine.next_bundle(&sub_id).expect("next_bundle");
+        assert!(bundle.is_none(), "should have no bundles");
     }
 }
