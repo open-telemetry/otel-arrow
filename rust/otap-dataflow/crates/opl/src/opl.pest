@@ -34,6 +34,7 @@ primitive_expression = {
     | bool_false_token
     | null_token
     | identifier_expression
+    | "(" ~ expression ~ ")"
     // TODO there are more of these
 }
 
