@@ -561,7 +561,7 @@ mod tests {
 
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
-        assert_eq!(decoded.severity_text, ""); // Not coded
+        assert!(decoded.severity_text.is_empty()); // Not coded
         assert_eq!(
             decoded.event_name,
             "test_module::submodule::test_event (src/test.rs:123)"
