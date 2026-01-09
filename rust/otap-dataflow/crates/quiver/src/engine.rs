@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use crate::config::{DurabilityMode, QuiverConfig};
+use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
 use crate::error::{QuiverError, Result};
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
@@ -99,6 +99,78 @@ pub struct QuiverEngine {
     registry: Arc<SubscriberRegistry<SegmentStore>>,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// QuiverEngineBuilder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Builder for creating a [`QuiverEngine`] with customizable options.
+///
+/// This provides a cleaner ergonomic interface compared to `QuiverEngine::new()`,
+/// especially for tests that may want to customize specific options.
+///
+/// # Example
+///
+/// ```
+/// use quiver::{QuiverEngineBuilder, QuiverConfig, DiskBudget, RetentionPolicy};
+/// use std::sync::Arc;
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let temp_dir = tempfile::tempdir()?;
+/// let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+/// let budget = Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+///
+/// let engine = QuiverEngineBuilder::new(config)
+///     .with_budget(budget)
+///     .build()?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug)]
+pub struct QuiverEngineBuilder {
+    config: QuiverConfig,
+    budget: Option<Arc<crate::budget::DiskBudget>>,
+}
+
+impl QuiverEngineBuilder {
+    /// Creates a new builder with the given configuration.
+    ///
+    /// By default, uses an unlimited disk budget with backpressure policy.
+    #[must_use]
+    pub fn new(config: QuiverConfig) -> Self {
+        Self {
+            config,
+            budget: None,
+        }
+    }
+
+    /// Sets the disk budget for the engine.
+    ///
+    /// The budget enforces a hard cap on total disk usage across WAL, segments,
+    /// and progress files. Multiple engines can share the same budget for
+    /// coordinated capacity management.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Arc<crate::budget::DiskBudget>) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// Builds the engine, returning an `Arc<QuiverEngine>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration validation fails or if the WAL
+    /// cannot be initialized.
+    pub fn build(self) -> Result<Arc<QuiverEngine>> {
+        let budget = self.budget.unwrap_or_else(|| {
+            Arc::new(crate::budget::DiskBudget::new(
+                u64::MAX,
+                RetentionPolicy::Backpressure,
+            ))
+        });
+        QuiverEngine::new(self.config, budget)
+    }
+}
+
 impl std::fmt::Debug for QuiverEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("QuiverEngine")
@@ -110,6 +182,28 @@ impl std::fmt::Debug for QuiverEngine {
 }
 
 impl QuiverEngine {
+    /// Creates a builder for constructing a `QuiverEngine`.
+    ///
+    /// This provides a cleaner alternative to [`QuiverEngine::new()`] with
+    /// sensible defaults (e.g., unlimited budget with backpressure policy).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use quiver::{QuiverEngine, QuiverConfig};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let temp_dir = tempfile::tempdir()?;
+    /// let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+    /// let engine = QuiverEngine::builder(config).build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn builder(config: QuiverConfig) -> QuiverEngineBuilder {
+        QuiverEngineBuilder::new(config)
+    }
+
     /// Creates a new persistence engine with the given configuration and disk budget.
     ///
     /// This validates the configuration, initializes the WAL writer,

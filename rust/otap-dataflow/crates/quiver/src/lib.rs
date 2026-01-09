@@ -38,6 +38,9 @@
 //! let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
 //! let engine = QuiverEngine::new(cfg, budget)?;
 //!
+//! // Or use the builder pattern (uses unlimited budget by default):
+//! // let engine = QuiverEngine::builder(cfg).with_budget(budget).build()?;
+//!
 //! // Ingest bundles via engine.ingest(bundle)
 //! // Register subscribers via engine.register_subscriber(id)
 //! // Consume bundles via engine.next_bundle(id)
@@ -67,7 +70,7 @@ pub use budget::{DiskBudget, PendingWrite};
 pub use config::{
     DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
 };
-pub use engine::{MaintenanceStats, QuiverEngine};
+pub use engine::{MaintenanceStats, QuiverEngine, QuiverEngineBuilder};
 pub use error::{QuiverError, Result};
 pub use segment::SegmentError;
 pub use segment_store::{SegmentReadMode, SegmentStore};
