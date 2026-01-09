@@ -11,7 +11,7 @@ two forms:
 
 - Partial: The `LogRecord` type encodes the dynamic arguments from the event
   along with a timestamp, yielding a representation that can be passed into
-  an internal pipeline because it is already encoded nas bytes. This representation
+  an internal pipeline because it is already encoded as bytes. This representation
   allows sorting and filtering records before encoding full OTLP messages.
 - Full: The `DirectLogRecordEncoder` type supports appending the OTLP bytes
   representation for the complete LogRecord (without Scope and Resource wrappers).
