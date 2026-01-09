@@ -324,8 +324,9 @@ Field descriptions:
 - **Atomic updates**: Progress is written via `write temp → fsync → rename`,
   ensuring crash-safe updates without append-only log compaction.
 - **Batched I/O**: In-memory state is updated on each ack; file writes are
-  batched based on `progress_flush_interval` (default 25ms) to amortize fsync
-  cost across multiple acks.
+  batched via the `maintain()` API. The embedding layer calls `maintain()`
+  periodically (e.g., every 25-100ms) to flush dirty progress files and
+  clean up completed segments.
 - **Compact representation**: Only partially-complete segments are tracked.
   Once all bundles in a segment are acked, `oldest_incomplete_segment` advances
   and the segment entry is removed.
@@ -574,8 +575,11 @@ Two-phase initialization handles the gap between recovery and active operation:
    new subscribers from latest.
 3. **Activate phase**: Embedding layer calls `activate()`. Subscribers still in
    `PendingReregistration` become orphans.
-4. **Orphan resolution**: Embedding layer calls `drop_orphan(id)` for each,
-   which records `Dropped` for all their pending bundles.
+
+*Future work*: Explicit orphan resolution API (e.g., `drop_orphan(id)`) could
+be added to allow the embedding layer to explicitly handle orphaned subscribers,
+recording `Dropped` for all their pending bundles. Currently, orphaned
+subscribers are tracked but require manual cleanup.
 
 This design keeps Quiver agnostic to configuration sources while enabling the
 embedding layer to coordinate startup properly.
@@ -586,12 +590,14 @@ embedding layer to coordinate startup properly.
 delivered before shutdown:
 
 1. Stop accepting new data (embedding layer stops calling `ingest()`)
-2. Force-finalize any open segment via `force_finalize()`
-3. Wait for all subscribers to ack all pending bundles
+2. Force-finalize any open segment via `flush()`
+3. Wait for all subscribers to ack all pending bundles (monitor via
+   `oldest_incomplete_segment()` on the registry)
 4. Shut down cleanly
 
-Quiver provides `pending_bundle_count()` and `all_subscribers_drained()` for
-the embedding layer to monitor progress.
+*Future work*: Convenience APIs like `pending_bundle_count()` and
+`all_subscribers_drained()` could be added for the embedding layer to more
+easily monitor shutdown progress.
 
 **Recovery from Offline Period**: When a node recovers after extended downtime,
 the most recent data is typically highest priority. Quiver supports this via:
@@ -1223,9 +1229,8 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   to Quiver. The consumer-side cursor only advances to the next bundle once the
   acknowledgement for the current bundle is recorded.
 1. On each Ack, Quiver updates the subscriber's in-memory progress state.
-  Periodically (based on `progress_flush_interval`), the in-memory state is
-  atomically flushed to the subscriber's progress file (`quiver.sub.<id>`).
-  For example, after processing seg-120:
+  The embedding layer periodically calls `maintain()` to flush dirty progress
+  files and clean up completed segments. For example, after processing seg-120:
 
   ```text
   quiver.sub.parquet_exporter:
