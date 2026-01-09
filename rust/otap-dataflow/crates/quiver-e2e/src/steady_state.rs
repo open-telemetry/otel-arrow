@@ -24,7 +24,7 @@ use tracing::{info, warn};
 use crate::bundle;
 use crate::dashboard::{Dashboard, SteadyStateConfig};
 use crate::memory::MemoryTracker;
-use crate::stress::{SteadyStateStats, calculate_disk_usage};
+use crate::stats::{SteadyStateStats, calculate_disk_usage};
 use crate::subscriber::SubscriberDelay;
 
 /// Output mode for the steady-state runner.

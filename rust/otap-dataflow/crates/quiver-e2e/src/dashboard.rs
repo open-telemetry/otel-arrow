@@ -23,8 +23,7 @@ use ratatui::{
 };
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
-use crate::memory::MemoryTracker;
-use crate::stress::{SteadyStateStats, StressStats, calculate_disk_usage};
+use crate::stats::SteadyStateStats;
 
 /// Reads the syscall counts (reads and writes separately) from /proc/self/io.
 /// Returns (syscr, syscw) or (0, 0) if the file cannot be read.
@@ -262,62 +261,6 @@ impl Dashboard {
         Ok(false)
     }
 
-    /// Updates and renders the dashboard.
-    pub fn update(
-        &mut self,
-        stats: &StressStats,
-        data_dir: &std::path::Path,
-        config: &DashboardConfig,
-    ) -> io::Result<()> {
-        let elapsed = self.start_time.elapsed();
-        let current_memory = MemoryTracker::current_allocated_mb();
-        let disk_bytes = calculate_disk_usage(data_dir).unwrap_or(0);
-
-        // Calculate current consumed throughput
-        let now = Instant::now();
-        let iteration_elapsed = now.duration_since(self.last_iteration_time);
-        let consumed_this_period = stats
-            .total_bundles_consumed
-            .saturating_sub(self.last_iteration_consumed);
-
-        if iteration_elapsed >= Duration::from_secs(1) {
-            let consumed_throughput = (consumed_this_period as f64 / iteration_elapsed.as_secs_f64()) as u64;
-            self.consumed_throughput_history.push(consumed_throughput);
-            if self.consumed_throughput_history.len() > 60 {
-                let _ = self.consumed_throughput_history.remove(0);
-            }
-
-            // Memory history (store as MB * 10 for better sparkline resolution)
-            self.memory_history.push((current_memory * 10.0) as u64);
-            if self.memory_history.len() > 60 {
-                let _ = self.memory_history.remove(0);
-            }
-
-            self.last_iteration_time = now;
-            self.last_iteration_consumed = stats.total_bundles_consumed;
-        }
-
-        let progress = elapsed.as_secs_f64() / self.target_duration.as_secs_f64();
-        let progress_pct = (progress * 100.0).min(100.0);
-
-        let _ = self.terminal.draw(|frame| {
-            render_dashboard(
-                frame,
-                stats,
-                elapsed,
-                self.target_duration,
-                progress_pct,
-                current_memory,
-                disk_bytes,
-                &self.consumed_throughput_history,
-                &self.memory_history,
-                config,
-            );
-        });
-
-        Ok(())
-    }
-
     /// Restores terminal state.
     pub fn cleanup(mut self) -> io::Result<()> {
         disable_raw_mode()?;
@@ -528,17 +471,6 @@ impl Dashboard {
     }
 }
 
-/// Dashboard configuration passed from main.
-#[derive(Clone)]
-pub struct DashboardConfig {
-    pub bundles_per_iteration: usize,
-    pub rows_per_bundle: usize,
-    pub subscribers: usize,
-    pub subscriber_delay_ms: u64,
-    pub simulate_failures: bool,
-    pub data_dir: String,
-}
-
 /// Configuration for steady-state mode dashboard.
 #[derive(Clone)]
 pub struct SteadyStateConfig {
@@ -547,222 +479,6 @@ pub struct SteadyStateConfig {
     pub rows_per_bundle: usize,
     pub subscriber_delay_ms: u64,
     pub data_dir: String,
-}
-
-fn render_dashboard(
-    frame: &mut Frame<'_>,
-    stats: &StressStats,
-    elapsed: Duration,
-    target_duration: Duration,
-    progress_pct: f64,
-    current_memory: f64,
-    disk_bytes: u64,
-    consumed_throughput_history: &[u64],
-    memory_history: &[u64],
-    config: &DashboardConfig,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
-            Constraint::Length(3), // Title + progress
-            Constraint::Length(8), // Stats
-            Constraint::Length(6), // Consumed throughput sparkline
-            Constraint::Length(6), // Memory sparkline
-            Constraint::Min(3),    // Status/config
-        ])
-        .split(frame.area());
-
-    // Title and progress bar
-    render_header(frame, chunks[0], elapsed, target_duration, progress_pct);
-
-    // Stats panels
-    render_stats(frame, chunks[1], stats, current_memory, disk_bytes, elapsed);
-
-    // Consumed throughput sparkline
-    render_throughput_sparkline(frame, chunks[2], consumed_throughput_history);
-
-    // Memory sparkline
-    render_memory_sparkline(frame, chunks[3], memory_history, current_memory);
-
-    // Configuration/status
-    render_config(frame, chunks[4], config);
-}
-
-fn render_header(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    elapsed: Duration,
-    target: Duration,
-    progress_pct: f64,
-) {
-    let hours = elapsed.as_secs() / 3600;
-    let minutes = (elapsed.as_secs() % 3600) / 60;
-    let seconds = elapsed.as_secs() % 60;
-
-    let remaining = target.saturating_sub(elapsed);
-    let rem_hours = remaining.as_secs() / 3600;
-    let rem_mins = (remaining.as_secs() % 3600) / 60;
-    let rem_secs = remaining.as_secs() % 60;
-
-    let title = format!(
-        " Quiver Stress Test │ Elapsed: {:02}:{:02}:{:02} │ Remaining: {:02}:{:02}:{:02} │ Press 'q' to quit ",
-        hours, minutes, seconds, rem_hours, rem_mins, rem_secs
-    );
-
-    let gauge = Gauge::default()
-        .block(Block::default().title(title).borders(Borders::ALL))
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
-        .percent(progress_pct as u16)
-        .label(format!("{:.1}%", progress_pct));
-
-    frame.render_widget(gauge, area);
-}
-
-fn render_stats(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    stats: &StressStats,
-    current_memory: f64,
-    disk_bytes: u64,
-    elapsed: Duration,
-) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-        ])
-        .split(area);
-
-    // Iterations & bundles
-    let avg_throughput = if elapsed.as_secs() > 0 {
-        stats.total_bundles_consumed as f64 / elapsed.as_secs_f64()
-    } else {
-        0.0
-    };
-
-    let iterations_text = vec![
-        Line::from(vec![
-            Span::styled("Iterations: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{}", stats.iterations),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Ingested:   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{}", stats.total_bundles_ingested),
-                Style::default().fg(Color::Green),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Consumed:   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{}", stats.total_bundles_consumed),
-                Style::default().fg(Color::Blue),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Throughput: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:.0}/s", avg_throughput),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-    ];
-
-    let iterations_block = Paragraph::new(iterations_text)
-        .block(Block::default().title(" Bundles ").borders(Borders::ALL));
-    frame.render_widget(iterations_block, chunks[0]);
-
-    // Memory stats
-    let memory_growth = current_memory - stats.initial_memory_mb;
-    let memory_color = if memory_growth > 100.0 {
-        Color::Red
-    } else if memory_growth > 50.0 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-
-    let memory_text = vec![
-        Line::from(vec![
-            Span::styled("Current:  ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:.1} MB", current_memory),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Initial:  ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:.1} MB", stats.initial_memory_mb),
-                Style::default().fg(Color::Gray),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Growth:   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:+.1} MB", memory_growth),
-                Style::default().fg(memory_color),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Peak:     ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:.1} MB", stats.peak_memory_mb),
-                Style::default().fg(Color::Magenta),
-            ),
-        ]),
-    ];
-
-    let memory_block =
-        Paragraph::new(memory_text).block(Block::default().title(" Memory ").borders(Borders::ALL));
-    frame.render_widget(memory_block, chunks[1]);
-
-    // Disk stats
-    let disk_mb = disk_bytes as f64 / 1024.0 / 1024.0;
-    let first_disk =
-        stats.disk_history.first().map(|(_, b)| *b).unwrap_or(0) as f64 / 1024.0 / 1024.0;
-    let disk_growth = disk_mb - first_disk;
-
-    let disk_text = vec![
-        Line::from(vec![
-            Span::styled("Current:  ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:.1} MB", disk_mb),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Initial:  ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:.1} MB", first_disk),
-                Style::default().fg(Color::Gray),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Growth:   ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{:+.1} MB", disk_growth),
-                Style::default().fg(if disk_growth > 100.0 {
-                    Color::Red
-                } else {
-                    Color::Green
-                }),
-            ),
-        ]),
-        Line::from(""),
-    ];
-
-    let disk_block =
-        Paragraph::new(disk_text).block(Block::default().title(" Disk ").borders(Borders::ALL));
-    frame.render_widget(disk_block, chunks[2]);
 }
 
 fn render_throughput_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
@@ -1000,40 +716,6 @@ fn render_buffered_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64])
         .bar_set(symbols::bar::NINE_LEVELS);
 
     frame.render_widget(sparkline, area);
-}
-
-fn render_config(frame: &mut Frame<'_>, area: Rect, config: &DashboardConfig) {
-    let delay_str = if config.subscriber_delay_ms > 0 {
-        format!("{}ms", config.subscriber_delay_ms)
-    } else {
-        "none".to_string()
-    };
-
-    let config_lines = vec![
-        Line::from(format!("Data dir: {}", config.data_dir)),
-        Line::from(format!(
-            "Bundles: {} │ Rows/bundle: {} │ Subscribers: {} │ Delay: {} │ Failures: {}",
-            config.bundles_per_iteration,
-            config.rows_per_bundle,
-            config.subscribers,
-            delay_str,
-            if config.simulate_failures {
-                "yes"
-            } else {
-                "no"
-            },
-        )),
-    ];
-
-    let config_block = Paragraph::new(config_lines)
-        .block(
-            Block::default()
-                .title(" Configuration ")
-                .borders(Borders::ALL),
-        )
-        .style(Style::default().fg(Color::DarkGray));
-
-    frame.render_widget(config_block, area);
 }
 
 // =============================================================================

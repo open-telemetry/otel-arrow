@@ -1,25 +1,28 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Quiver Stress Test Harness
+//! Quiver End-to-End Test Harness
 //!
-//! This binary exercises the complete persistence flow with:
+//! This binary exercises the complete Quiver persistence flow with:
 //! - Configurable data volume and bundle sizes
 //! - Memory consumption tracking (via jemalloc)
 //! - Multiple concurrent subscribers
-//! - Network offline + recovery simulation
 //! - Memory-mapped segment reading with comparison mode
+//!
+//! Two modes of operation:
+//! - **Single-run mode** (default): Ingests bundles, consumes them, and exits
+//! - **Duration mode** (`--duration`): Runs a steady-state stress test for a specified duration
 //!
 //! Usage:
 //!   cargo run -p quiver-e2e -- --help
 //!   cargo run -p quiver-e2e -- --bundles 1000 --subscribers 3
+//!   cargo run -p quiver-e2e -- --duration 1h --no-tui
 
 mod bundle;
 mod dashboard;
 mod memory;
+mod stats;
 mod steady_state;
-mod stress;
-mod stress_runner;
 mod subscriber;
 
 use std::path::{Path, PathBuf};
@@ -36,9 +39,9 @@ use tempfile::TempDir;
 use tracing::{Level, info, warn};
 use tracing_subscriber::FmtSubscriber;
 
-use crate::dashboard::{Dashboard, DashboardConfig};
+use crate::dashboard::Dashboard;
 use crate::memory::MemoryTracker;
-use crate::stress::{StressStats, parse_duration};
+use crate::stats::parse_duration;
 use crate::subscriber::SubscriberDelay;
 
 // Use jemalloc for accurate memory tracking
@@ -133,14 +136,9 @@ struct Args {
     #[arg(long, default_value = "0")]
     subscriber_delay_ms: u64,
 
-    /// Disable TUI dashboard for stress mode (use text output instead)
+    /// Disable TUI dashboard (use text output instead)
     #[arg(long)]
     no_tui: bool,
-
-    /// Steady-state mode: single long-running QuiverEngine with concurrent ingest/consume.
-    /// Tests internal cleanup/retention rather than external cleanup between iterations.
-    #[arg(long)]
-    steady_state: bool,
 
     /// WAL flush interval in milliseconds (0 = flush after every write)
     #[arg(long, default_value = "25")]
@@ -166,7 +164,7 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Check if this is stress mode with TUI - don't initialize tracing in TUI mode
+    // Check if this is duration mode with TUI - don't initialize tracing in TUI mode
     // as it interferes with the terminal display
     let use_tui = args.duration.is_some() && !args.no_tui;
 
@@ -178,89 +176,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tracing::subscriber::set_global_default(tracing_sub);
     }
 
-    // Check if this is stress mode
+    // Check if duration mode is requested
     if let Some(ref duration_str) = args.duration {
         let duration = parse_duration(duration_str)
             .map_err(|e| format!("Invalid duration '{}': {}", duration_str, e))?;
 
-        // Steady-state mode: single engine, concurrent ingest/consume, no external cleanup
-        if args.steady_state {
-            return run_steady_state_mode(&args, duration);
-        }
-
-        return run_stress_mode(&args, duration);
+        return run_steady_state_mode(&args, duration);
     }
 
     // Single-run mode
-    run_single_iteration(&args, None)
-}
-
-/// Runs the stress test for a specified duration with periodic reporting.
-fn run_stress_mode(args: &Args, duration: Duration) -> Result<(), Box<dyn std::error::Error>> {
-    use stress_runner::{IterationResult, OutputMode, StressTestConfig};
-
-    // Initialize tracing for text mode (before any logging)
-    if args.no_tui {
-        let tracing_sub = FmtSubscriber::builder()
-            .with_max_level(Level::INFO)
-            .finish();
-        let _ = tracing::subscriber::set_global_default(tracing_sub);
-    }
-
-    // Set up data directory
-    let (tmp, data_dir) = setup_data_dir(args)?;
-
-    // Create dashboard config
-    let dashboard_config = DashboardConfig {
-        bundles_per_iteration: args.bundles,
-        rows_per_bundle: args.rows_per_bundle,
-        subscribers: args.subscribers,
-        subscriber_delay_ms: args.subscriber_delay_ms,
-        simulate_failures: args.simulate_failures,
-        data_dir: data_dir.display().to_string(),
-    };
-
-    // Create output mode
-    let output_mode = if !args.no_tui {
-        let dashboard = Dashboard::new(duration, data_dir.clone())?;
-        OutputMode::tui(dashboard)
-    } else {
-        OutputMode::Text
-    };
-
-    // Build config
-    let config = StressTestConfig {
-        duration,
-        report_interval: Duration::from_secs(args.report_interval),
-        leak_threshold_mb: args.leak_threshold_mb,
-        keep_temp: args.keep_temp,
-    };
-
-    // Clone what we need for closures
-    let args_clone = args.clone();
-    let data_dir_clone = data_dir.clone();
-
-    // Run the unified stress test
-    stress_runner::run(
-        output_mode,
-        config,
-        data_dir,
-        tmp,
-        dashboard_config,
-        |iteration| {
-            let result = run_iteration_for_stress(&args_clone, &data_dir_clone, iteration)?;
-            Ok(IterationResult {
-                bundles_ingested: result.bundles_ingested,
-                bundles_consumed: result.bundles_consumed,
-            })
-        },
-        || cleanup_iteration_data(&data_dir_clone),
-    )
+    run_single_iteration(&args)
 }
 
 /// Runs steady-state stress test: single long-running QuiverEngine with concurrent ingest/consume.
 ///
-/// Unlike the lifecycle stress test, this mode:
+/// This mode:
 /// - Creates ONE QuiverEngine that runs for the entire duration
 /// - Continuously ingests data while subscribers consume concurrently
 /// - Uses a shared SubscriberRegistry for all subscribers to enable coordinated cleanup
@@ -319,120 +249,6 @@ fn run_steady_state_mode(
     steady_state::run(config, tmp, data_dir, output_mode)
 }
 
-/// Result from a single stress iteration.
-struct IterationResult {
-    bundles_ingested: usize,
-    bundles_consumed: usize,
-}
-
-/// Runs a single iteration for stress testing (simplified, no detailed output).
-fn run_iteration_for_stress(
-    args: &Args,
-    data_dir: &Path,
-    _iteration: u64,
-) -> Result<IterationResult, Box<dyn std::error::Error>> {
-    // Generate test data
-    let bundles =
-        bundle::generate_test_bundles(args.bundles, args.rows_per_bundle, args.string_size);
-
-    // Create engine with configured read mode
-    let read_mode = match args.read_mode {
-        ReadModeArg::Standard => SegmentReadMode::Standard,
-        ReadModeArg::Mmap | ReadModeArg::Compare => SegmentReadMode::Mmap,
-    };
-    let config = create_config(
-        data_dir,
-        args.segment_size_mb,
-        args.wal_flush_interval_ms,
-        args.no_wal,
-        read_mode,
-    );
-    let budget = create_budget(args.disk_budget_mb, args.retention_policy);
-    let engine = QuiverEngine::new(config, budget)?;
-
-    // Register and activate subscribers before ingestion
-    let mut subscriber_ids = Vec::with_capacity(args.subscribers);
-    for sub_idx in 0..args.subscribers {
-        let sub_id = SubscriberId::new(format!("subscriber-{}", sub_idx))?;
-        engine.register_subscriber(sub_id.clone())?;
-        engine.activate_subscriber(&sub_id)?;
-        subscriber_ids.push(sub_id);
-    }
-
-    // Ingest all bundles
-    for test_bundle in &bundles {
-        engine.ingest(test_bundle)?;
-    }
-
-    // Flush to ensure all data is available to subscribers
-    engine.flush()?;
-
-    // Consume bundles via unified engine API
-    let mut total_consumed = 0usize;
-    let delay = SubscriberDelay::new(args.subscriber_delay_ms);
-
-    for sub_id in &subscriber_ids {
-        let mut bundles_consumed = 0;
-        while let Some(handle) = engine.next_bundle(sub_id)? {
-            delay.apply();
-            handle.ack();
-            bundles_consumed += 1;
-        }
-        total_consumed += bundles_consumed;
-    }
-
-    // Flush progress before cleanup
-    let _ = engine.flush_progress()?;
-
-    Ok(IterationResult {
-        bundles_ingested: args.bundles,
-        bundles_consumed: total_consumed,
-    })
-}
-
-/// Cleans up data between stress iterations.
-fn cleanup_iteration_data(data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    // Remove segments and exports from previous iteration
-    let segments_dir = data_dir.join("segments");
-    let exports_dir = data_dir.join("exports");
-    let wal_dir = data_dir.join("wal");
-
-    for dir in [&segments_dir, &exports_dir, &wal_dir] {
-        if dir.exists() {
-            // Make all files writable before removal (segments are read-only after finalization)
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Ok(metadata) = path.metadata() {
-                            let mut perms = metadata.permissions();
-                            #[allow(clippy::permissions_set_readonly_false)]
-                            perms.set_readonly(false);
-                            let _ = std::fs::set_permissions(&path, perms);
-                        }
-                    }
-                }
-            }
-            std::fs::remove_dir_all(dir)?;
-        }
-    }
-
-    // Also clean progress files
-    for entry in std::fs::read_dir(data_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("quiver.sub.") {
-                    std::fs::remove_file(&path)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Sets up the data directory (temp or persistent).
 ///
 /// When no data-dir is specified, creates a temp directory in ~/.quiver-e2e/
@@ -480,7 +296,6 @@ fn print_config(args: &Args) {
 /// Runs a single test iteration (original behavior).
 fn run_single_iteration(
     args: &Args,
-    _stress_stats: Option<&mut StressStats>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("╔════════════════════════════════════════════════════════════╗");
     info!("║           Quiver Stress Test Harness                       ║");
