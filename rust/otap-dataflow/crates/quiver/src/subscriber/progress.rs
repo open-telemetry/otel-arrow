@@ -581,6 +581,10 @@ pub fn write_progress_file(
     }
 
     // Atomic rename
+    // Note: fs::rename() is atomic on POSIX systems. On Windows, it's only atomic
+    // when source and target are on the same volume. Since both temp_path and
+    // final_path are in the same directory (data_dir), this is guaranteed to be
+    // on the same volume.
     fs::rename(&temp_path, &final_path)
         .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
 
