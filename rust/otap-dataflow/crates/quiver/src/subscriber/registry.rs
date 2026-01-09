@@ -765,15 +765,21 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         // Force-complete these segments for all subscribers
         for state_lock in subscribers.values() {
             let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut any_completed = false;
+
+            // Process all segments before releasing the lock
             for &segment_seq in &to_drop {
                 if state.force_complete_segment(segment_seq) {
-                    // Mark as dirty so progress is persisted
-                    let id = state.id().clone();
-                    drop(state); // Release write lock before acquiring dirty lock
-                    let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
-                    let _ = dirty_set.insert(id);
-                    break; // Only need to mark dirty once per subscriber
+                    any_completed = true;
                 }
+            }
+
+            // Mark as dirty if any segments were completed
+            if any_completed {
+                let id = state.id().clone();
+                drop(state); // Release write lock before acquiring dirty lock
+                let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                let _ = dirty_set.insert(id);
             }
         }
 
