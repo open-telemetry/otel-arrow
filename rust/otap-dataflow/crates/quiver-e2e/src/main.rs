@@ -79,7 +79,9 @@ struct Args {
     read_mode: ReadModeArg,
 
     /// How often to call maintain() - flushes progress and cleans up segments (in milliseconds, 0 = never)
-    #[arg(long, default_value = "1000")]
+    /// Lower values prevent backpressure by cleaning up segments more frequently.
+    /// At high throughput, consider values as low as 100ms.
+    #[arg(long, default_value = "200")]
     maintain_interval_ms: u64,
 
     /// Keep temp directory after test (for inspection)

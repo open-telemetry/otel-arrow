@@ -403,11 +403,24 @@ impl QuiverEngine {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The disk budget would be exceeded (`StorageAtCapacity`) during segment finalization
+    /// - The disk budget does not have sufficient headroom (`StorageAtCapacity`)
     /// - WAL append fails
     /// - Segment finalization fails
     pub fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
+
+        // Step 0: Check budget headroom before doing any work.
+        // This "taps the brakes" early, leaving room for WAL rotation and
+        // segment finalization to complete. We use a small estimate (4KB)
+        // since the actual segment bytes aren't known until finalization.
+        const INGEST_HEADROOM_ESTIMATE: u64 = 4 * 1024;
+        if !self.budget.has_ingest_headroom(INGEST_HEADROOM_ESTIMATE) {
+            return Err(QuiverError::StorageAtCapacity {
+                requested: INGEST_HEADROOM_ESTIMATE,
+                available: self.budget.headroom().saturating_sub(self.budget.reserved_headroom()),
+                cap: self.budget.cap(),
+            });
+        }
 
         // Step 1: Append to WAL for durability (if enabled)
         // Note: WAL bytes are NOT tracked in budget - they're temporary and purged after

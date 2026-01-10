@@ -52,11 +52,22 @@ pub type CleanupCallback = Box<dyn Fn() -> usize + Send + Sync>;
 /// Shared disk budget for enforcing storage caps.
 ///
 /// Thread-safe and designed to be shared across multiple engines via `Arc`.
+///
+/// # Headroom Reservation
+///
+/// The budget supports a "reserved headroom" which is space held back for
+/// internal operations like WAL rotation and segment finalization. When
+/// checking if there's enough headroom for a new write, the reserved portion
+/// is subtracted from the available space. This prevents deadlocks where
+/// ingestion fills the budget completely, leaving no room for cleanup operations.
 pub struct DiskBudget {
     /// Maximum allowed bytes.
     cap: u64,
     /// Current bytes in use.
     used: AtomicU64,
+    /// Reserved headroom for internal operations (WAL rotation, segment finalization).
+    /// This is subtracted from the available headroom in `has_ingest_headroom()`.
+    reserved_headroom: u64,
     /// Policy when cap is exceeded.
     policy: RetentionPolicy,
     /// Callback for reclaiming space (used with `DropOldest`).
@@ -89,6 +100,30 @@ impl DiskBudget {
         Self {
             cap,
             used: AtomicU64::new(0),
+            reserved_headroom: 0,
+            policy,
+            reclaim_callback: Mutex::new(None),
+            cleanup_callback: Mutex::new(None),
+        }
+    }
+
+    /// Creates a new disk budget with reserved headroom.
+    ///
+    /// The `reserved_headroom` is space held back for internal operations like
+    /// WAL rotation and segment finalization. Ingestion will be backpressured
+    /// when available headroom drops below this threshold.
+    ///
+    /// # Arguments
+    ///
+    /// * `cap` - Maximum bytes allowed.
+    /// * `policy` - What to do when the cap is exceeded.
+    /// * `reserved_headroom` - Bytes to reserve for internal operations.
+    #[must_use]
+    pub fn with_reserved_headroom(cap: u64, policy: RetentionPolicy, reserved_headroom: u64) -> Self {
+        Self {
+            cap,
+            used: AtomicU64::new(0),
+            reserved_headroom,
             policy,
             reclaim_callback: Mutex::new(None),
             cleanup_callback: Mutex::new(None),
@@ -119,6 +154,28 @@ impl DiskBudget {
     #[must_use]
     pub fn headroom(&self) -> u64 {
         self.cap.saturating_sub(self.used.load(Ordering::Relaxed))
+    }
+
+    /// Returns the reserved headroom for internal operations.
+    #[must_use]
+    pub fn reserved_headroom(&self) -> u64 {
+        self.reserved_headroom
+    }
+
+    /// Checks if there is sufficient headroom for ingestion.
+    ///
+    /// Returns `true` if the available headroom (after accounting for reserved
+    /// headroom) is at least `bytes`. This is used to apply backpressure at
+    /// the ingestion boundary, leaving room for internal operations like WAL
+    /// rotation and segment finalization.
+    ///
+    /// This is a "soft" check - it does not reserve space. Use this to decide
+    /// whether to accept new data, then use `try_reserve` for the actual
+    /// reservation.
+    #[must_use]
+    pub fn has_ingest_headroom(&self, bytes: u64) -> bool {
+        let available = self.headroom().saturating_sub(self.reserved_headroom);
+        available >= bytes
     }
 
     /// Returns the configured retention policy.

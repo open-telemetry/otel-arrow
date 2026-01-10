@@ -97,6 +97,16 @@ pub struct SteadyStateStats {
     pub rows_per_bundle: usize,
     /// Approximate bytes per bundle (for calculating MB/s)
     pub bundle_size_bytes: usize,
+    /// Previous ingested count (for live rate calculation)
+    prev_ingested: u64,
+    /// Previous consumed count (for live rate calculation)
+    prev_consumed: u64,
+    /// Timestamp of previous sample (for live rate calculation)
+    prev_sample_time: Option<Instant>,
+    /// Live ingest rate (bundles/sec over last sample interval)
+    live_ingest_rate: f64,
+    /// Live consume rate (bundles/sec over last sample interval)
+    live_consume_rate: f64,
     /// Memory at start
     pub initial_memory_mb: f64,
     /// Peak memory observed
@@ -165,6 +175,22 @@ impl SteadyStateStats {
         force_dropped_segments: u64,
         force_dropped_bundles: u64,
     ) {
+        // Calculate live rates from deltas
+        let now = Instant::now();
+        if let Some(prev_time) = self.prev_sample_time {
+            let dt = now.duration_since(prev_time).as_secs_f64();
+            if dt > 0.0 {
+                let ingested_delta = ingested.saturating_sub(self.prev_ingested);
+                let consumed_delta = consumed.saturating_sub(self.prev_consumed);
+                self.live_ingest_rate = ingested_delta as f64 / dt;
+                self.live_consume_rate = consumed_delta as f64 / dt;
+            }
+        }
+        // Store for next sample
+        self.prev_ingested = ingested;
+        self.prev_consumed = consumed;
+        self.prev_sample_time = Some(now);
+
         self.total_ingested = ingested;
         self.total_consumed = consumed;
         self.active_segments = active_segments;
@@ -185,7 +211,7 @@ impl SteadyStateStats {
         }
     }
 
-    /// Returns ingest rate (bundles/sec).
+    /// Returns average ingest rate since start (bundles/sec).
     pub fn ingest_rate(&self) -> f64 {
         let elapsed = self.elapsed().as_secs_f64();
         if elapsed > 0.0 {
@@ -195,7 +221,7 @@ impl SteadyStateStats {
         }
     }
 
-    /// Returns consume rate (bundles/sec).
+    /// Returns average consume rate since start (bundles/sec).
     pub fn consume_rate(&self) -> f64 {
         let elapsed = self.elapsed().as_secs_f64();
         if elapsed > 0.0 {
@@ -205,22 +231,52 @@ impl SteadyStateStats {
         }
     }
 
-    /// Returns ingest rate in rows/sec.
+    /// Returns live ingest rate (bundles/sec over last sample interval).
+    pub fn live_ingest_rate(&self) -> f64 {
+        self.live_ingest_rate
+    }
+
+    /// Returns live consume rate (bundles/sec over last sample interval).
+    pub fn live_consume_rate(&self) -> f64 {
+        self.live_consume_rate
+    }
+
+    /// Returns live ingest rate in rows/sec.
+    pub fn live_ingest_rows_rate(&self) -> f64 {
+        self.live_ingest_rate * self.rows_per_bundle as f64
+    }
+
+    /// Returns live consume rate in rows/sec.
+    pub fn live_consume_rows_rate(&self) -> f64 {
+        self.live_consume_rate * self.rows_per_bundle as f64
+    }
+
+    /// Returns live ingest rate in MB/sec.
+    pub fn live_ingest_mb_rate(&self) -> f64 {
+        self.live_ingest_rate * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
+    }
+
+    /// Returns live consume rate in MB/sec.
+    pub fn live_consume_mb_rate(&self) -> f64 {
+        self.live_consume_rate * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
+    }
+
+    /// Returns average ingest rate in rows/sec.
     pub fn ingest_rows_rate(&self) -> f64 {
         self.ingest_rate() * self.rows_per_bundle as f64
     }
 
-    /// Returns consume rate in rows/sec.
+    /// Returns average consume rate in rows/sec.
     pub fn consume_rows_rate(&self) -> f64 {
         self.consume_rate() * self.rows_per_bundle as f64
     }
 
-    /// Returns ingest rate in MB/sec.
+    /// Returns average ingest rate in MB/sec.
     pub fn ingest_mb_rate(&self) -> f64 {
         self.ingest_rate() * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
     }
 
-    /// Returns consume rate in MB/sec.
+    /// Returns average consume rate in MB/sec.
     pub fn consume_mb_rate(&self) -> f64 {
         self.consume_rate() * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
     }

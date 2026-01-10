@@ -87,13 +87,55 @@ impl OutputMode {
 
 /// Creates a disk budget from config.
 /// Returns a 100 GB budget if disk_budget_mb is 0 (effectively unlimited).
-fn create_budget(disk_budget_mb: u64, policy: RetentionPolicy) -> Arc<DiskBudget> {
+/// 
+/// The reserved headroom is set to 2x segment_size + WAL size to leave room
+/// for segment finalization and WAL rotation to complete. This prevents
+/// deadlocks where ingestion fills the budget completely.
+///
+/// # Errors
+///
+/// Returns an error if the disk budget is too small to accommodate the reserved
+/// headroom. The minimum budget must be at least reserved_headroom + segment_size
+/// to allow the system to make progress.
+fn create_budget(
+    disk_budget_mb: u64,
+    policy: RetentionPolicy,
+    segment_size_mb: u64,
+    wal_size_mb: u64,
+) -> Result<Arc<DiskBudget>, String> {
     let cap_bytes = if disk_budget_mb == 0 {
         100 * 1024 * 1024 * 1024 // 100 GB "unlimited"
     } else {
         disk_budget_mb * 1024 * 1024
     };
-    Arc::new(DiskBudget::new(cap_bytes, policy))
+
+    // Reserve headroom for internal operations:
+    // - 1x segment size: room for segment finalization (with 200ms maintenance,
+    //   segments are cleaned promptly so we don't need 2x)
+    // - 0.5x WAL size: WAL typically hovers around rotation_target, not max;
+    //   bytes are tracked and released continuously
+    let segment_bytes = segment_size_mb * 1024 * 1024;
+    let wal_bytes = wal_size_mb * 1024 * 1024;
+    let reserved_headroom = segment_bytes + (wal_bytes / 2);
+
+    // Minimum budget must be reserved_headroom + at least one segment worth of
+    // working space, otherwise the system will be in permanent backpressure
+    let min_budget = reserved_headroom + segment_bytes;
+    if cap_bytes < min_budget {
+        let reserved_mb = reserved_headroom / (1024 * 1024);
+        let min_mb = min_budget / (1024 * 1024);
+        return Err(format!(
+            "Disk budget {} MB is too small. With segment_size={} MB and WAL={} MB, \
+             reserved headroom is {} MB. Minimum budget required: {} MB",
+            disk_budget_mb, segment_size_mb, wal_size_mb, reserved_mb, min_mb
+        ));
+    }
+
+    Ok(Arc::new(DiskBudget::with_reserved_headroom(
+        cap_bytes,
+        policy,
+        reserved_headroom,
+    )))
 }
 
 /// Configuration for steady-state test.
@@ -245,7 +287,14 @@ pub fn run(
         }
 
         // Create disk budget (shared by all engines in multi-engine mode)
-        let budget = create_budget(config.disk_budget_mb, config.retention_policy);
+        // WAL max size is typically 2x rotation target to allow one rotated file
+        let wal_size_mb = if config.no_wal { 0 } else { 128 }; // 2 * 64MB rotation target
+        let budget = create_budget(
+            config.disk_budget_mb,
+            config.retention_policy,
+            config.segment_size_mb,
+            wal_size_mb,
+        )?;
 
         // Engine now owns segment store and registry internally
         let engine = QuiverEngine::new(engine_config, budget)?;

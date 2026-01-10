@@ -1005,15 +1005,11 @@ impl WalCoordinator {
             ));
         }
 
-        // Check shared disk budget if provided
-        // This ensures WAL writes respect the global disk cap alongside segments
-        if let Some(ref budget) = self.options.budget {
-            if budget.headroom() < entry_total_bytes {
-                return Err(WalError::WalAtCapacity(
-                    "shared disk budget exceeded; consume segments to free space",
-                ));
-            }
-        }
+        // Note: WAL does NOT check shared disk budget here. The engine applies
+        // backpressure at the ingestion boundary based on budget headroom,
+        // leaving room for WAL rotation and segment finalization to complete.
+        // This simpler approach avoids potential deadlocks from WAL trying to
+        // trigger cleanup while holding locks.
 
         Ok(())
     }

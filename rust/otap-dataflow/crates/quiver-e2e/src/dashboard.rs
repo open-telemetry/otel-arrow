@@ -834,8 +834,8 @@ fn render_steady_state_stats(
         .split(area);
 
     // Bundles panel
-    let ingest_rate = stats.ingest_rate();
-    let consume_rate = stats.consume_rate();
+    let ingest_rate = stats.live_ingest_rate();
+    let consume_rate = stats.live_consume_rate();
 
     let bundles_text = vec![
         Line::from(vec![
@@ -947,14 +947,14 @@ fn render_steady_state_stats(
         Line::from(vec![
             Span::styled("Rows:    ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format!("{:.0}/s", stats.consume_rows_rate()),
+                format!("{:.0}/s", stats.live_consume_rows_rate()),
                 Style::default().fg(Color::Cyan),
             ),
         ]),
         Line::from(vec![
             Span::styled("Data:    ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format!("{:.1} MB/s", stats.consume_mb_rate()),
+                format!("{:.1} MB/s", stats.live_consume_mb_rate()),
                 Style::default().fg(Color::Magenta),
             ),
         ]),
