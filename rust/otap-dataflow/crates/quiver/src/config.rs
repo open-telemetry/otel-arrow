@@ -177,10 +177,18 @@ impl QuiverConfigBuilder {
 }
 
 /// Write-ahead-log related controls.
+///
+/// Note: WAL disk usage is tracked in the shared [`DiskBudget`](crate::DiskBudget)
+/// alongside segments, so the configured disk budget cap applies to the
+/// combined total of WAL files and segment files.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WalConfig {
     /// Maximum on-disk footprint (across active + rotated files).
+    ///
+    /// This is an internal WAL-specific cap that triggers backpressure when
+    /// exceeded. The shared [`DiskBudget`](crate::DiskBudget) provides the
+    /// overall disk limit that includes both WAL and segment storage.
     pub max_size_bytes: NonZeroU64,
     /// Maximum number of rotated WAL files retained during rotation.
     pub max_rotated_files: u16,

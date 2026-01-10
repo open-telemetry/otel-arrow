@@ -244,7 +244,7 @@ impl QuiverEngine {
         let segment_dir = segment_dir(&config);
         fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
 
-        let wal_writer = initialize_wal_writer(&config)?;
+        let wal_writer = initialize_wal_writer(&config, &budget)?;
 
         // Create segment store with configured read mode and budget
         let segment_store = Arc::new(SegmentStore::with_budget(
@@ -843,7 +843,10 @@ fn segment_dir(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("segments")
 }
 
-fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
+fn initialize_wal_writer(
+    config: &QuiverConfig,
+    budget: &Arc<crate::budget::DiskBudget>,
+) -> Result<WalWriter> {
     use crate::wal::FlushPolicy;
 
     let wal_path = wal_path(config);
@@ -855,7 +858,8 @@ fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
     let options = WalWriterOptions::new(wal_path, segment_cfg_hash(config), flush_policy)
         .with_max_wal_size(config.wal.max_size_bytes.get())
         .with_max_rotated_files(config.wal.max_rotated_files as usize)
-        .with_rotation_target(config.wal.rotation_target_bytes.get());
+        .with_rotation_target(config.wal.rotation_target_bytes.get())
+        .with_budget(budget.clone());
     Ok(WalWriter::open(options)?)
 }
 
@@ -2247,16 +2251,26 @@ mod tests {
         ));
         let engine = QuiverEngine::new(config, budget.clone()).expect("engine created");
 
-        // Verify budget starts at 0
-        assert_eq!(budget.used(), 0);
+        // Budget starts with WAL header bytes (WAL is now tracked in budget)
+        let initial_used = budget.used();
+        assert!(
+            initial_used > 0,
+            "budget should include WAL header bytes, got {}",
+            initial_used
+        );
 
         // Ingest a bundle - this will trigger segment finalization due to tiny target size
         let bundle = DummyBundle::with_rows(10);
         engine.ingest(&bundle).expect("ingest succeeds");
 
-        // Budget should now reflect segment file size
+        // Budget should now reflect segment file size + WAL bytes
         let used = budget.used();
-        assert!(used > 0, "budget should track segment bytes, got {}", used);
+        assert!(
+            used > initial_used,
+            "budget should increase after segment write, got {} (was {})",
+            used,
+            initial_used
+        );
 
         // Verify headroom decreased
         let headroom = budget.headroom();

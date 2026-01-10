@@ -113,11 +113,13 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
+use crate::budget::DiskBudget;
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::cursor_sidecar::CursorSidecar;
@@ -222,6 +224,11 @@ pub(crate) struct WalWriterOptions {
     /// Controls how quickly the buffer shrinks after a spike in usage.
     /// Default is (15, 16) for ~6% decay per append.
     pub buffer_decay_rate: (usize, usize),
+    /// Optional shared disk budget for tracking WAL usage alongside segments.
+    ///
+    /// When provided, WAL bytes are recorded in this budget, enabling unified
+    /// disk capacity management across all engine components.
+    pub budget: Option<Arc<DiskBudget>>,
 }
 
 impl WalWriterOptions {
@@ -234,6 +241,7 @@ impl WalWriterOptions {
             max_rotated_files: DEFAULT_MAX_ROTATED_FILES,
             rotation_target_bytes: DEFAULT_ROTATION_TARGET_BYTES,
             buffer_decay_rate: DEFAULT_BUFFER_DECAY_RATE,
+            budget: None,
         }
     }
 
@@ -254,6 +262,16 @@ impl WalWriterOptions {
 
     pub fn with_rotation_target(mut self, target_bytes: u64) -> Self {
         self.rotation_target_bytes = target_bytes.clamp(1, MAX_ROTATION_TARGET_BYTES);
+        self
+    }
+
+    /// Sets the shared disk budget for unified capacity tracking.
+    ///
+    /// When provided, WAL bytes are recorded in this budget, allowing the
+    /// `DiskBudget` to track total disk usage across WAL files, segments,
+    /// and other engine components.
+    pub fn with_budget(mut self, budget: Arc<DiskBudget>) -> Self {
+        self.budget = Some(budget);
         self
     }
 
@@ -466,6 +484,11 @@ impl WalWriter {
         let active_file = ActiveWalFile::new(file, valid_offset, buffer_decay_rate);
         coordinator.restore_cursor_offsets(active_file.len());
         coordinator.recalculate_aggregate_bytes(active_file.len());
+
+        // Record existing WAL bytes in the shared disk budget (if provided)
+        if let Some(ref budget) = coordinator.options.budget {
+            budget.record_existing(coordinator.aggregate_bytes);
+        }
 
         Ok(Self {
             active_file,
@@ -926,6 +949,12 @@ impl WalCoordinator {
         self.cumulative_bytes_written = self
             .cumulative_bytes_written
             .saturating_add(entry_total_bytes);
+
+        // Record the new bytes in the shared disk budget (if provided)
+        if let Some(ref budget) = self.options.budget {
+            budget.record_existing(entry_total_bytes);
+        }
+
         // Record the entry end position for in-memory cursor validation
         self.entry_boundaries.push(entry_end_offset);
 
@@ -974,6 +1003,16 @@ impl WalCoordinator {
             return Err(WalError::WalAtCapacity(
                 "wal size cap exceeded; advance cursor to reclaim space",
             ));
+        }
+
+        // Check shared disk budget if provided
+        // This ensures WAL writes respect the global disk cap alongside segments
+        if let Some(ref budget) = self.options.budget {
+            if budget.headroom() < entry_total_bytes {
+                return Err(WalError::WalAtCapacity(
+                    "shared disk budget exceeded; consume segments to free space",
+                ));
+            }
         }
 
         Ok(())
@@ -1202,8 +1241,15 @@ impl WalCoordinator {
                     std::fs::set_permissions(&front.path, permissions)?;
                 }
 
+                let purged_bytes = front.total_bytes();
                 std::fs::remove_file(&front.path)?;
-                self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
+                self.aggregate_bytes = self.aggregate_bytes.saturating_sub(purged_bytes);
+
+                // Release the purged bytes from the shared disk budget (if provided)
+                if let Some(ref budget) = self.options.budget {
+                    budget.release(purged_bytes);
+                }
+
                 self.purge_count = self.purge_count.saturating_add(1);
                 let _ = self.rotated_files.pop_front();
             } else {
