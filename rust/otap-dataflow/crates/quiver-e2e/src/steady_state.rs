@@ -85,29 +85,44 @@ impl OutputMode {
     }
 }
 
-/// Creates a disk budget from config.
-/// Returns a 100 GB budget if disk_budget_mb is 0 (effectively unlimited).
-/// 
-/// The reserved headroom is set to 2x segment_size + WAL size to leave room
-/// for segment finalization and WAL rotation to complete. This prevents
-/// deadlocks where ingestion fills the budget completely.
+/// Creates a per-engine disk budget using Phase 1 static quota approach.
+///
+/// The global disk budget is divided evenly among engines. Each engine gets
+/// `global_cap / num_engines` as its quota, which it enforces independently
+/// without any cross-engine coordination.
+///
+/// Returns a 100 GB budget per engine if disk_budget_mb is 0 (effectively unlimited).
+///
+/// # Phase 1 Tradeoffs
+///
+/// - **Pro**: Zero cross-engine coordination overhead
+/// - **Con**: Idle engines cannot lend unused quota to busy engines  
+/// - **Con**: Global usage can briefly exceed total cap by `(N-1) * segment_size`
+///
+/// # Reserved Headroom
+///
+/// Each engine's quota includes reserved headroom for internal operations:
+/// - 1x segment size: room for segment finalization
+/// - 0.5x WAL size: WAL working space (tracked and released continuously)
 ///
 /// # Errors
 ///
-/// Returns an error if the disk budget is too small to accommodate the reserved
-/// headroom. The minimum budget must be at least reserved_headroom + segment_size
-/// to allow the system to make progress.
-fn create_budget(
-    disk_budget_mb: u64,
+/// Returns an error if the per-engine quota is too small to accommodate
+/// reserved headroom + one segment of working space.
+fn create_per_engine_budget(
+    global_disk_budget_mb: u64,
+    num_engines: usize,
     policy: RetentionPolicy,
     segment_size_mb: u64,
     wal_size_mb: u64,
 ) -> Result<Arc<DiskBudget>, String> {
-    let cap_bytes = if disk_budget_mb == 0 {
+    // Phase 1: Static quota per engine = global_cap / num_engines
+    let global_cap_bytes = if global_disk_budget_mb == 0 {
         100 * 1024 * 1024 * 1024 // 100 GB "unlimited"
     } else {
-        disk_budget_mb * 1024 * 1024
+        global_disk_budget_mb * 1024 * 1024
     };
+    let per_engine_cap = global_cap_bytes / num_engines as u64;
 
     // Reserve headroom for internal operations:
     // - 1x segment size: room for segment finalization (with 200ms maintenance,
@@ -118,21 +133,26 @@ fn create_budget(
     let wal_bytes = wal_size_mb * 1024 * 1024;
     let reserved_headroom = segment_bytes + (wal_bytes / 2);
 
-    // Minimum budget must be reserved_headroom + at least one segment worth of
-    // working space, otherwise the system will be in permanent backpressure
-    let min_budget = reserved_headroom + segment_bytes;
-    if cap_bytes < min_budget {
+    // Minimum per-engine quota must be reserved_headroom + at least one segment
+    // worth of working space, otherwise the engine will be in permanent backpressure
+    let min_per_engine = reserved_headroom + segment_bytes;
+    if per_engine_cap < min_per_engine {
+        let per_engine_mb = per_engine_cap / (1024 * 1024);
         let reserved_mb = reserved_headroom / (1024 * 1024);
-        let min_mb = min_budget / (1024 * 1024);
+        let min_mb = min_per_engine / (1024 * 1024);
+        let min_global_mb = min_per_engine * num_engines as u64 / (1024 * 1024);
         return Err(format!(
-            "Disk budget {} MB is too small. With segment_size={} MB and WAL={} MB, \
-             reserved headroom is {} MB. Minimum budget required: {} MB",
-            disk_budget_mb, segment_size_mb, wal_size_mb, reserved_mb, min_mb
+            "Per-engine quota {} MB is too small (global {} MB / {} engines). \
+             With segment_size={} MB and WAL={} MB, reserved headroom is {} MB. \
+             Minimum per-engine: {} MB. Minimum global for {} engines: {} MB",
+            per_engine_mb, global_disk_budget_mb, num_engines,
+            segment_size_mb, wal_size_mb, reserved_mb,
+            min_mb, num_engines, min_global_mb
         ));
     }
 
     Ok(Arc::new(DiskBudget::with_reserved_headroom(
-        cap_bytes,
+        per_engine_cap,
         policy,
         reserved_headroom,
     )))
@@ -251,6 +271,15 @@ pub fn run(
     let total_cleaned = Arc::new(AtomicU64::new(0));
     let backpressure_count = Arc::new(AtomicU64::new(0));
 
+    // Log Phase 1 budget allocation (static quotas per engine)
+    if !output.is_tui() && config.disk_budget_mb > 0 {
+        let per_engine_mb = config.disk_budget_mb / config.engines as u64;
+        output.log(&format!(
+            "Disk budget: {} MB global / {} engines = {} MB per engine (Phase 1 static quotas)",
+            config.disk_budget_mb, config.engines, per_engine_mb
+        ));
+    }
+
     // Create per-engine resources (engine owns segment store and registry)
     let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(config.engines);
     let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
@@ -286,11 +315,13 @@ pub fn run(
             ));
         }
 
-        // Create disk budget (shared by all engines in multi-engine mode)
+        // Create per-engine disk budget (Phase 1: static quota per engine)
+        // Each engine gets global_cap / num_engines, enforced independently
         // WAL max size is typically 2x rotation target to allow one rotated file
         let wal_size_mb = if config.no_wal { 0 } else { 128 }; // 2 * 64MB rotation target
-        let budget = create_budget(
+        let budget = create_per_engine_budget(
             config.disk_budget_mb,
+            config.engines,
             config.retention_policy,
             config.segment_size_mb,
             wal_size_mb,

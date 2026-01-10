@@ -3,9 +3,8 @@
 
 //! Disk budget management for enforcing storage caps.
 //!
-//! The [`DiskBudget`] provides a shared, thread-safe mechanism for tracking
-//! and limiting disk usage across multiple Quiver engines and their components
-//! (WAL, segments, progress files).
+//! The [`DiskBudget`] provides a thread-safe mechanism for tracking and limiting
+//! disk usage within a single Quiver engine (WAL, segments, progress files).
 //!
 //! # Hard Cap Enforcement
 //!
@@ -19,16 +18,28 @@
 //! pending.commit(actual);
 //! ```
 //!
-//! # Sharing Across Engines
+//! # Multi-Engine Deployment (Phase 1: Static Quotas)
 //!
-//! A single `DiskBudget` can be shared across multiple `QuiverEngine` instances
-//! to enforce a global disk cap:
+//! When running multiple engines (e.g., one per CPU core), each engine should
+//! receive its own `DiskBudget` with a **static quota** that is the global cap
+//! divided by the number of engines:
 //!
 //! ```ignore
-//! let budget = Arc::new(DiskBudget::new(global_cap));
-//! let engine1 = QuiverEngine::new(config1, budget.clone())?;
-//! let engine2 = QuiverEngine::new(config2, budget.clone())?;
+//! let num_engines = 4;
+//! let per_engine_cap = global_cap / num_engines as u64;
+//!
+//! // Each engine gets its own budget - no sharing, no coordination
+//! let budget1 = Arc::new(DiskBudget::new(per_engine_cap, policy));
+//! let budget2 = Arc::new(DiskBudget::new(per_engine_cap, policy));
+//! let engine1 = QuiverEngine::new(config1, budget1)?;
+//! let engine2 = QuiverEngine::new(config2, budget2)?;
 //! ```
+//!
+//! This approach has zero cross-engine coordination overhead. Each engine
+//! enforces its quota independently. The tradeoff is that:
+//! - An idle engine's unused quota cannot be borrowed by a busy engine
+//! - Global usage can briefly exceed the total cap by up to
+//!   `(N-1) * segment_size` during concurrent segment finalizations
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,9 +60,16 @@ pub type ReclaimCallback = Box<dyn Fn(u64) + Send + Sync>;
 /// Returns the number of segments cleaned up.
 pub type CleanupCallback = Box<dyn Fn() -> usize + Send + Sync>;
 
-/// Shared disk budget for enforcing storage caps.
+/// Disk budget for enforcing storage caps within a single engine.
 ///
-/// Thread-safe and designed to be shared across multiple engines via `Arc`.
+/// Thread-safe via `Arc` for internal sharing between WAL, segment store,
+/// and other engine components.
+///
+/// # Phase 1: Per-Engine Static Quotas
+///
+/// In multi-engine deployments, each engine should have its own `DiskBudget`
+/// with a static quota (global cap / number of engines). This avoids any
+/// cross-engine coordination overhead. See the module docs for details.
 ///
 /// # Headroom Reservation
 ///
@@ -499,5 +517,98 @@ mod tests {
         let pending = budget.try_reserve(0).unwrap();
         assert_eq!(pending.reserved(), 0);
         pending.commit(0);
+    }
+
+    #[test]
+    fn with_reserved_headroom_constructor() {
+        let budget = DiskBudget::with_reserved_headroom(1000, RetentionPolicy::Backpressure, 200);
+        assert_eq!(budget.cap(), 1000);
+        assert_eq!(budget.reserved_headroom(), 200);
+        assert_eq!(budget.used(), 0);
+        assert_eq!(budget.headroom(), 1000);
+    }
+
+    #[test]
+    fn has_ingest_headroom_accounts_for_reserved() {
+        // 1000 cap with 200 reserved = 800 available for ingest
+        let budget = DiskBudget::with_reserved_headroom(1000, RetentionPolicy::Backpressure, 200);
+
+        // With nothing used, we have 800 available for ingest
+        assert!(budget.has_ingest_headroom(800));
+        assert!(budget.has_ingest_headroom(799));
+        assert!(!budget.has_ingest_headroom(801));
+
+        // After using 300, we have 500 available for ingest (1000 - 300 - 200)
+        budget.record_existing(300);
+        assert!(budget.has_ingest_headroom(500));
+        assert!(!budget.has_ingest_headroom(501));
+
+        // After using 800, we have 0 available for ingest (1000 - 800 - 200)
+        budget.record_existing(500); // Now at 800 used
+        assert!(budget.has_ingest_headroom(0));
+        assert!(!budget.has_ingest_headroom(1));
+
+        // Note: headroom() still reports 200, but has_ingest_headroom sees 0
+        assert_eq!(budget.headroom(), 200);
+    }
+
+    #[test]
+    fn independent_budgets_do_not_share_state() {
+        // Phase 1 approach: each engine gets its own budget
+        let per_engine_cap = 500;
+
+        let budget1 = Arc::new(DiskBudget::new(per_engine_cap, RetentionPolicy::Backpressure));
+        let budget2 = Arc::new(DiskBudget::new(per_engine_cap, RetentionPolicy::Backpressure));
+
+        // Each budget starts at 0
+        assert_eq!(budget1.used(), 0);
+        assert_eq!(budget2.used(), 0);
+
+        // Recording in one budget doesn't affect others
+        budget1.record_existing(200);
+        assert_eq!(budget1.used(), 200);
+        assert_eq!(budget2.used(), 0);
+
+        // Each budget enforces its own cap independently
+        let pending = budget1.try_reserve(100).unwrap();
+        pending.commit(100);
+        assert_eq!(budget1.used(), 300);
+        assert_eq!(budget1.headroom(), 200); // 500 - 300
+
+        // budget2 still has full headroom
+        assert_eq!(budget2.headroom(), per_engine_cap);
+
+        // Fill budget1 to capacity
+        budget1.record_existing(200); // Now at 500 (at cap)
+        assert_eq!(budget1.headroom(), 0);
+        
+        // budget1 at capacity should reject
+        assert!(budget1.try_reserve(1).is_err());
+        
+        // budget2 should still accept (independent)
+        let pending2 = budget2.try_reserve(100).unwrap();
+        pending2.commit(100);
+        assert_eq!(budget2.used(), 100);
+    }
+
+    #[test]
+    fn per_engine_headroom_isolation() {
+        // Each engine in Phase 1 has its own reserved headroom
+        let per_engine_cap = 500;
+        let reserved = 100;
+
+        let budget1 = DiskBudget::with_reserved_headroom(per_engine_cap, RetentionPolicy::Backpressure, reserved);
+        let budget2 = DiskBudget::with_reserved_headroom(per_engine_cap, RetentionPolicy::Backpressure, reserved);
+
+        // Each has 400 available for ingest (500 - 100 reserved)
+        assert!(budget1.has_ingest_headroom(400));
+        assert!(budget2.has_ingest_headroom(400));
+
+        // Use up budget1's ingest headroom
+        budget1.record_existing(400);
+        assert!(!budget1.has_ingest_headroom(1));
+
+        // budget2 is unaffected
+        assert!(budget2.has_ingest_headroom(400));
     }
 }
