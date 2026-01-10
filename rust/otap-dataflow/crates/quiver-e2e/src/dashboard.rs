@@ -950,12 +950,7 @@ fn render_steady_state_stats(
         Line::from(vec![
             Span::styled("Active:   ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format!(
-                    "{}",
-                    stats
-                        .total_segments_written
-                        .saturating_sub(stats.total_cleaned)
-                ),
+                format!("{}", stats.active_segments),
                 Style::default().fg(Color::Yellow),
             ),
         ]),

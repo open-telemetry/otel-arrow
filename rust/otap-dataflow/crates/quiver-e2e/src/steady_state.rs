@@ -361,6 +361,11 @@ pub fn run(
         let current_disk = calculate_disk_usage(&data_dir).unwrap_or(0);
         // Get total segments written across all engines (monotonically increasing)
         let total_segments_written: u64 = engines.iter().map(|e| e.total_segments_written()).sum();
+        // Get actual active segment count from segment stores (accurate regardless of cleanup source)
+        let active_segments: u64 = engines
+            .iter()
+            .map(|e| e.segment_store().segment_count() as u64)
+            .sum();
         // Get total force-dropped segments and bundles (DropOldest policy)
         let force_dropped_segments: u64 = engines.iter().map(|e| e.force_dropped_segments()).sum();
         let force_dropped_bundles: u64 = engines.iter().map(|e| e.force_dropped_bundles()).sum();
@@ -369,7 +374,7 @@ pub fn run(
         stats.update_counters(
             total_ingested.load(Ordering::Relaxed),
             total_consumed.load(Ordering::Relaxed),
-            total_cleaned.load(Ordering::Relaxed),
+            active_segments,
             total_segments_written,
             backpressure_count.load(Ordering::Relaxed),
             force_dropped_segments,
@@ -388,15 +393,15 @@ pub fn run(
                 if last_report.elapsed() >= config.report_interval {
                     let ingested = total_ingested.load(Ordering::Relaxed);
                     let consumed = total_consumed.load(Ordering::Relaxed);
-                    let cleaned = total_cleaned.load(Ordering::Relaxed);
                     let backpressure = backpressure_count.load(Ordering::Relaxed);
                     let elapsed = start.elapsed().as_secs_f64();
                     let ingest_rate = ingested as f64 / elapsed;
                     let consume_rate = consumed as f64 / elapsed;
 
                     output.log(&format!(
-                        "[{:.0}s] Ingested: {} ({:.0}/s) | Consumed: {} ({:.0}/s) | Cleaned: {} | BP: {} | Dropped: {} segs/{} bundles | Mem: {:.1}MB | Disk: {:.1}MB",
-                        elapsed, ingested, ingest_rate, consumed, consume_rate, cleaned, backpressure,
+                        "[{:.0}s] Ingested: {} ({:.0}/s) | Consumed: {} ({:.0}/s) | Active: {} | Cleaned: {} | BP: {} | Dropped: {} segs/{} bundles | Mem: {:.1}MB | Disk: {:.1}MB",
+                        elapsed, ingested, ingest_rate, consumed, consume_rate, 
+                        active_segments, stats.total_cleaned, backpressure,
                         force_dropped_segments, force_dropped_bundles,
                         current_mem, current_disk as f64 / 1024.0 / 1024.0
                     ));
@@ -489,14 +494,17 @@ pub fn run(
         final_cleanup_count, cleanup_duration
     ));
 
-    // Calculate totals
-    let total_segments_cleaned = total_cleaned.load(Ordering::Relaxed) + final_cleanup_count;
+    // Get final active segment count (should be near 0 after cleanup)
+    let final_active_segments: u64 = engines
+        .iter()
+        .map(|e| e.segment_store().segment_count() as u64)
+        .sum();
 
     // Update stats with final values
     stats.update_counters(
         final_ingested,
         post_drain_consumed,
-        total_segments_cleaned,
+        final_active_segments,
         final_total_segments_written,
         backpressure_count.load(Ordering::Relaxed),
         final_force_dropped_segments,
@@ -528,7 +536,10 @@ pub fn run(
             "Segments written: {}",
             final_total_segments_written
         ));
-        output.log(&format!("Segments cleaned: {}", total_segments_cleaned));
+        output.log(&format!(
+            "Segments cleaned: {} (active: {})",
+            stats.total_cleaned, final_active_segments
+        ));
         output.log(&format!(
             "Dropped: {} segments / {} bundles (DropOldest policy)",
             final_force_dropped_segments, final_force_dropped_bundles

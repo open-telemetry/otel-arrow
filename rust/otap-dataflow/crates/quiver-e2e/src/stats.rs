@@ -74,10 +74,12 @@ pub struct SteadyStateStats {
     pub total_ingested: u64,
     /// Total bundles consumed
     pub total_consumed: u64,
-    /// Total segments cleaned up
+    /// Total segments cleaned up (NOTE: derived from written - active, may differ from explicit tracking)
     pub total_cleaned: u64,
     /// Total segments written
     pub total_segments_written: u64,
+    /// Currently active segments (from actual segment store count)
+    pub active_segments: u64,
     /// Total backpressure events (StorageAtCapacity errors)
     pub backpressure_count: u64,
     /// Total segments force-dropped (DropOldest policy)
@@ -157,7 +159,7 @@ impl SteadyStateStats {
         &mut self,
         ingested: u64,
         consumed: u64,
-        cleaned: u64,
+        active_segments: u64,
         segments_written: u64,
         backpressure: u64,
         force_dropped_segments: u64,
@@ -165,8 +167,10 @@ impl SteadyStateStats {
     ) {
         self.total_ingested = ingested;
         self.total_consumed = consumed;
-        self.total_cleaned = cleaned;
+        self.active_segments = active_segments;
         self.total_segments_written = segments_written;
+        // Derive cleaned from written - active (accurate regardless of cleanup source)
+        self.total_cleaned = segments_written.saturating_sub(active_segments);
         self.backpressure_count = backpressure;
         self.force_dropped_segments = force_dropped_segments;
         self.force_dropped_bundles = force_dropped_bundles;
