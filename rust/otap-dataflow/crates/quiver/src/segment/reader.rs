@@ -690,9 +690,14 @@ impl SegmentReader {
 
         // Now read with read lock (either our decoder or the one another thread inserted)
         let cache = self.stream_decoders.read();
-        let decoder = cache.get(&stream_id).ok_or_else(|| SegmentError::InvalidFormat {
-            message: format!("decoder for stream {:?} disappeared unexpectedly", stream_id),
-        })?;
+        let decoder = cache
+            .get(&stream_id)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "decoder for stream {:?} disappeared unexpectedly",
+                    stream_id
+                ),
+            })?;
 
         decoder
             .get_batch(chunk_index.raw() as usize)?

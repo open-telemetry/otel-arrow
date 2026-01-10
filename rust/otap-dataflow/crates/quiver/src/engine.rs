@@ -2680,10 +2680,7 @@ mod tests {
             let engine = QuiverEngine::new(config, test_budget()).expect("engine recreated");
 
             // Scan existing segments from previous run
-            let found = engine
-                .segment_store
-                .scan_existing()
-                .expect("scan existing");
+            let found = engine.segment_store.scan_existing().expect("scan existing");
             assert!(!found.is_empty(), "should find segments from previous run");
 
             // Re-register the subscriber (should load from progress file)
