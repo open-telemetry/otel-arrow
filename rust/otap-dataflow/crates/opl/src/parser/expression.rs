@@ -114,7 +114,6 @@ pub(crate) fn parse_and_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpres
     })
 }
 
-// TODO comment on what this is about
 #[derive(Debug, PartialEq)]
 pub(crate) enum LogicalOrScalarExpr {
     Logical(LogicalExpression),

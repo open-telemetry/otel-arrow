@@ -5,8 +5,8 @@
 
 use std::vec;
 
-use data_engine_expressions::QueryLocation;
 use ::pest::{Parser as _, iterators::Pair};
+use data_engine_expressions::QueryLocation;
 use data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
 };
@@ -118,7 +118,6 @@ mod test {
         assert_eq!(errors.len(), 1);
 
         let error = &errors[0];
-        println!("Error: {}", error);
         assert!(
             error
                 .to_string()
