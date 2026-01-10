@@ -142,8 +142,8 @@ impl LogsCollector {
     pub async fn run(self) -> Result<(), Error> {
         loop {
             match self.receiver.recv_async().await {
-                Ok(batch) => {
-                    self.write_batch(batch);
+                Ok(payload) => {
+                    self.write_batch(payload);
                 }
                 Err(err) => {
                     crate::raw_error!("log collector error:", err = err.to_string());
@@ -154,16 +154,25 @@ impl LogsCollector {
     }
 
     /// Write a batch of log records to console.
-    fn write_batch(&self, batch: LogBatch) {
+    fn write_batch(&self, payload: LogPayload) {
         // TODO: Print dropped count as a formatted warning before the batch
-        for record in batch.records {
-            // Identifier.0 is the &'static dyn Callsite
-            let metadata = record.callsite_id.0.metadata();
-            let saved = SavedCallsite::new(metadata);
-            // Use ConsoleWriter's routing: ERROR/WARN to stderr, others to stdout
-            self.writer.raw_print(&record, &saved);
-            // TODO: include producer_key in output when present
+        match payload {
+            LogPayload::Singleton(record) => self.write_record(record),
+            LogPayload::Batch(batch) => {
+                for record in batch.records {
+                    self.write_record(record);
+                }
+            }
         }
+    }
+
+    /// Write one record.
+    fn write_record(&self, record: LogRecord) {        
+        // Identifier.0 is the &'static dyn Callsite
+        let metadata = record.callsite_id.0.metadata();
+        let saved = SavedCallsite::new(metadata);
+        // Use ConsoleWriter's routing: ERROR/WARN to stderr, others to stdout
+        self.writer.raw_print(&record, &saved);
     }
 }
 
@@ -207,12 +216,9 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let record = LogRecord::new(event);
-        let batch = LogBatch {
-            records: vec![record],
-            dropped_count: 0,
-        };
+        let payload = LogPayload::Singleton(record);
 
-        match self.reporter.try_report(batch) {
+        match self.reporter.try_report(payload) {
             Ok(()) => {}
             Err(err) => {
                 crate::raw_error!("failed to send log batch", err = err.to_string());

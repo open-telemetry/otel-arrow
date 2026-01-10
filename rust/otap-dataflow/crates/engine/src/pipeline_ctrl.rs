@@ -19,7 +19,7 @@ use otap_df_config::pipeline::TelemetrySettings;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_telemetry::logs::{LogsReporter, drain_thread_log_buffer};
+use otap_df_telemetry::logs::{LogsReporter, LogPayload, drain_thread_log_buffer};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_error, otel_warn};
 use std::cmp::Reverse;
@@ -357,7 +357,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     // Flush internal logs from the thread-local buffer
                     if let Some(batch) = drain_thread_log_buffer() {
                         let count = batch.size_with_dropped();
-                        if let Err(err) = self.logs_reporter.try_report(batch) {
+                        if let Err(err) = self.logs_reporter.try_report(LogPayload::Batch(batch)) {
                             otel_error!("logs.reporting.fail", error = err.to_string(), dropped = count);
                         }
                     }

@@ -338,7 +338,7 @@ where
         // stack-allocate this temporary.
         // RawLoggingLayer is used before the logs infrastructure is set up,
         // so no producer_key context is available.
-        let record = LogRecord::new(event, None);
+        let record = LogRecord::new(event);
         let callsite = SavedCallsite::new(event.metadata());
         self.writer.raw_print(&record, &callsite);
     }
@@ -376,7 +376,7 @@ mod tests {
         S: Subscriber + for<'a> LookupSpan<'a>,
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-            let record = LogRecord::new(event, None);
+            let record = LogRecord::new(event);
             let callsite = SavedCallsite::new(event.metadata());
 
             // Capture formatted output
@@ -541,7 +541,6 @@ mod tests {
             // 2024-01-15T12:30:45.678Z
             timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::new(),
-            producer_key: None,
         };
 
         let writer = ConsoleWriter::no_color();
@@ -599,7 +598,6 @@ mod tests {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             timestamp_ns: 1_705_321_845_678_000_000,
             body_attrs_bytes: Bytes::from(encoded),
-            producer_key: None,
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];

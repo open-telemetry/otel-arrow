@@ -14,7 +14,7 @@ use otap_df_config::pipeline::service::telemetry::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError};
 
 use crate::{
-    error::Error, logs::LogsReporter, opentelemetry_client::meter_provider::MeterProvider,
+    error::Error, logs::{LogsReporter, UnbufferedChannelLayer}, opentelemetry_client::meter_provider::MeterProvider,
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -63,9 +63,14 @@ impl OpentelemetryClient {
                     logerr(err);
                 }
             }
+            ProviderMode::Unbuffered => {
+            }
+            ProviderMode::Raw => {
+            }
             ProviderMode::Buffered => {
                 // Regional channel: send events to the appropriate logs collector thread
-                let channel_layer = BufferedChannelLayer::new(logs_reporter);
+                // @@@
+                let channel_layer = UnbufferedChannelLayer::new(logs_reporter);
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }
