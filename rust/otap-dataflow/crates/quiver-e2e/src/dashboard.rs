@@ -97,58 +97,11 @@ fn read_process_rss_bytes() -> u64 {
     0
 }
 
-/// Calculates total size of segment files in data_dir/segments/ and any engine_*/segments/ subdirs.
-/// Returns total bytes of .qseg files.
-fn calculate_segment_size(data_dir: &std::path::Path) -> u64 {
-    let mut qseg_bytes = 0u64;
-
-    // Helper to sum .qseg file sizes in a segment directory
-    let scan_segment_dir = |segment_dir: &std::path::Path| -> u64 {
-        let mut bytes = 0u64;
-        if let Ok(entries) = fs::read_dir(segment_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if name.ends_with(".qseg") {
-                        if let Ok(meta) = entry.metadata() {
-                            bytes += meta.len();
-                        }
-                    }
-                }
-            }
-        }
-        bytes
-    };
-
-    // Check data_dir/segments/ (single engine case)
-    let segment_dir = data_dir.join("segments");
-    qseg_bytes += scan_segment_dir(&segment_dir);
-
-    // Check data_dir/engine_*/segments/ (multi-engine case)
-    if let Ok(entries) = fs::read_dir(data_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.starts_with("engine_") {
-                    let engine_segment_dir = path.join("segments");
-                    qseg_bytes += scan_segment_dir(&engine_segment_dir);
-                }
-            }
-        }
-    }
-
-    qseg_bytes
-}
-
 /// Live dashboard state for stress testing.
 pub struct Dashboard {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     start_time: Instant,
     target_duration: Duration,
-    /// Data directory for size-by-type calculations
-    data_dir: std::path::PathBuf,
     /// Maximum history length based on terminal width
     max_history_len: usize,
     /// Recent consumed throughput samples for sparkline (bundles/sec)
@@ -198,7 +151,7 @@ pub struct Dashboard {
 
 impl Dashboard {
     /// Creates and initializes the dashboard.
-    pub fn new(target_duration: Duration, data_dir: std::path::PathBuf) -> io::Result<Self> {
+    pub fn new(target_duration: Duration) -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
@@ -212,9 +165,8 @@ impl Dashboard {
         let column_width = term_width / 2;
         let max_history_len = column_width.saturating_sub(4).max(1);
 
-        // Get initial segment size and syscall counts
-        // Note: WAL bytes are tracked via cumulative engine counter, starting at 0
-        let initial_seg_bytes = calculate_segment_size(&data_dir);
+        // Get initial syscall counts
+        // Note: WAL and segment bytes are tracked via cumulative engine counters, starting at 0
         let (initial_syscr, initial_syscw) = read_process_syscalls();
         let (initial_minflt, initial_majflt) = read_process_page_faults();
 
@@ -222,7 +174,6 @@ impl Dashboard {
             terminal,
             start_time: Instant::now(),
             target_duration,
-            data_dir,
             max_history_len,
             consumed_throughput_history: Vec::with_capacity(max_history_len),
             memory_history: Vec::with_capacity(max_history_len),
@@ -240,8 +191,8 @@ impl Dashboard {
             pid: Pid::from_u32(std::process::id()),
             last_iteration_time: Instant::now(),
             last_iteration_consumed: 0,
-            last_segment_bytes: initial_seg_bytes,
-            last_wal_bytes: 0, // Cumulative from engine, starts at 0
+            last_segment_bytes: 0, // Cumulative from engine, starts at 0
+            last_wal_bytes: 0,     // Cumulative from engine, starts at 0
             last_syscr: initial_syscr,
             last_syscw: initial_syscw,
             last_minflt: initial_minflt,
@@ -293,11 +244,13 @@ impl Dashboard {
     /// Updates and renders the dashboard for steady-state mode.
     ///
     /// `wal_bytes_written` should be the cumulative WAL bytes from `engine.wal_bytes_written()`.
+    /// `segment_bytes_written` should be the cumulative segment bytes from `engine.segment_bytes_written()`.
     pub fn update_steady_state(
         &mut self,
         stats: &SteadyStateStats,
         config: &SteadyStateConfig,
         wal_bytes_written: u64,
+        segment_bytes_written: u64,
     ) -> io::Result<()> {
         let elapsed = self.start_time.elapsed();
 
@@ -371,16 +324,17 @@ impl Dashboard {
                 let _ = self.disk_history.remove(0);
             }
 
-            // Segment write rate (KB/s) - based on .qseg file size growth
-            let current_seg_bytes = calculate_segment_size(&self.data_dir);
-            let seg_bytes_this_period = current_seg_bytes.saturating_sub(self.last_segment_bytes);
+            // Segment write rate (KB/s) - based on cumulative bytes from engine
+            // This is accurate even when segments are cleaned between samples
+            let seg_bytes_this_period =
+                segment_bytes_written.saturating_sub(self.last_segment_bytes);
             let seg_rate_kbs =
                 (seg_bytes_this_period as f64 / iteration_elapsed.as_secs_f64() / 1024.0) as u64;
             self.segment_write_history.push(seg_rate_kbs);
             if self.segment_write_history.len() > self.max_history_len {
                 let _ = self.segment_write_history.remove(0);
             }
-            self.last_segment_bytes = current_seg_bytes;
+            self.last_segment_bytes = segment_bytes_written;
 
             // WAL write rate (KB/s) - based on cumulative bytes from engine
             // This is accurate even across WAL rotations since the counter never decreases

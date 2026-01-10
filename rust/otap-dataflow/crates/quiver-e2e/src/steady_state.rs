@@ -384,9 +384,10 @@ pub fn run(
         // Output mode-specific updates
         match &mut output {
             OutputMode::Tui(Some(dashboard)) => {
-                // Sum WAL bytes across all engines
+                // Sum WAL and segment bytes across all engines
                 let wal_bytes: u64 = engines.iter().map(|e| e.wal_bytes_written()).sum();
-                dashboard.update_steady_state(&stats, &dashboard_config, wal_bytes)?;
+                let segment_bytes: u64 = engines.iter().map(|e| e.segment_bytes_written()).sum();
+                dashboard.update_steady_state(&stats, &dashboard_config, wal_bytes, segment_bytes)?;
             }
             OutputMode::Tui(None) => {}
             OutputMode::Text => {

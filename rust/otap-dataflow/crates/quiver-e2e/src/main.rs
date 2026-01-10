@@ -199,7 +199,7 @@ fn run_steady_state_mode(
 
     // Create output mode (TUI or Text)
     let output_mode = if !args.no_tui {
-        let dashboard = Dashboard::new(duration, data_dir.clone())?;
+        let dashboard = Dashboard::new(duration)?;
         OutputMode::tui(dashboard)
     } else {
         // Initialize tracing for text mode

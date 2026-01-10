@@ -89,6 +89,8 @@ pub struct QuiverEngine {
     segment_cursor: Mutex<WalConsumerCursor>,
     /// Next segment sequence number to assign.
     next_segment_seq: AtomicU64,
+    /// Cumulative bytes written to segments (never decreases, even after cleanup).
+    cumulative_segment_bytes: AtomicU64,
     /// Count of segments force-dropped due to DropOldest policy.
     force_dropped_segments: AtomicU64,
     /// Count of bundles lost due to force-dropped segments.
@@ -273,6 +275,7 @@ impl QuiverEngine {
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(0),
+            cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
             segment_store,
@@ -342,6 +345,13 @@ impl QuiverEngine {
     pub fn wal_bytes_written(&self) -> u64 {
         let writer = self.wal_writer.lock();
         writer.cumulative_bytes_written()
+    }
+
+    /// Returns the cumulative bytes written to segments since engine creation.
+    /// This value never decreases, even as segments are cleaned up after consumption.
+    /// Useful for accurate throughput measurement without file system sampling.
+    pub fn segment_bytes_written(&self) -> u64 {
+        self.cumulative_segment_bytes.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of segments written since engine creation.
@@ -563,6 +573,11 @@ impl QuiverEngine {
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
         let (bytes_written, _checksum) = writer.write_segment(&segment_path, segment)?;
+
+        // Track cumulative bytes (never decreases, for accurate throughput measurement)
+        let _ = self
+            .cumulative_segment_bytes
+            .fetch_add(bytes_written, Ordering::Relaxed);
 
         // Commit reservation with actual bytes written
         pending.commit(bytes_written);
