@@ -1,12 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! TODO
+//! OpenTelemetry Data Processing Language (OPL) parser implementation.
 
 use std::vec;
 
 use data_engine_expressions::QueryLocation;
-// TODO should this just have a result type?
 use ::pest::{Parser as _, iterators::Pair};
 use data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
@@ -27,7 +26,7 @@ pub(crate) use pest::Rule;
 
 use crate::parser::pipeline::parse_pipeline;
 
-/// TODO
+/// Parser for OPL programs.
 pub struct OplParser;
 
 impl Parser for OplParser {
