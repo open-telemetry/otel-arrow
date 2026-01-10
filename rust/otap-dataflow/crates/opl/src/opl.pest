@@ -35,7 +35,6 @@ primitive_expression = {
     | null_token
     | identifier_expression
     | "(" ~ expression ~ ")"
-    // TODO there are more of these
 }
 
 index_expression = {
@@ -49,10 +48,15 @@ index_expression = {
     identifier_expression ~ "[" ~ member_expression ~ "]"
 }
 
+attribute_selection_expression = {
+    identifier_expression ~ ("." ~ identifier_expression)+
+}
+
 member_expression = {
     index_expression
     | primitive_expression
-    // TODO there are more of these
+    | attribute_selection_expression
+    // TODO function calls
 }
 
 integer_literal = @{
@@ -75,7 +79,7 @@ not_token = @{ "not" }
 unary_expression = {
     number_literal
     | negate_token ~ number_literal
-    // TODO negative unary?
+    // TODO negative unary
     // | "-" ~ unary_expression
     | not_token ~ unary_expression
     | member_expression
@@ -126,9 +130,8 @@ expression = {
     or_expression
 }
 
-// TODO add other sources
 source = {
-    "logs"
+    "logs" | "metrics" | "traces" | "signals"
 }
 
 where_operator_call = {

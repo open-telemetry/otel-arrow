@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::DataExpression;
 use data_engine_parser_abstractions::{ParserError, ParserState};
 use pest::iterators::Pair;
 
