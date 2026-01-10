@@ -10,8 +10,6 @@ use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::pipeline_ctrl_msg_channel;
-use otap_df_engine::runtime_pipeline::RuntimePipeline;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::OtlpProtoMessage;
@@ -37,13 +35,15 @@ use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
 use otap_df_pdata::{Consumer, Producer};
 use otap_df_state::{DeployedPipelineKey, store::ObservedStateStore};
 use otap_df_telemetry::MetricsSystem;
+use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
 use tonic::transport::server::{Router, Server};
 use tonic::{Request, Response, Status};
+use tokio::time::{Duration, timeout};
 
 const GRPC_INPUT_ENDPOINT: &str = "http://127.0.0.1:4317";
 const GRPC_OUTPUT_ENDPOINT: &str = "127.0.0.1:4318";
-const PIPELINE_CONFIG_DIRECTORY: &str = "../validation_pipelines";
+
 const DEFAULT_CORE_ID: usize = 0;
 const DEFAULT_THREAD_ID: usize = 0;
 
@@ -81,9 +81,6 @@ pub struct PipelineSimulator<PData: 'static + Clone + Send + Sync + std::fmt::De
     pipeline_context: PipelineContext,
     pipeline_id: PipelineId,
     pipeline_group_id: PipelineGroupId,
-    controller_context: ControllerContext,
-    core_id: usize,
-    thread_id: usize,
     metrics_system: MetricsSystem,
     pipeline_key: DeployedPipelineKey,
 }
@@ -91,9 +88,39 @@ pub struct PipelineSimulator<PData: 'static + Clone + Send + Sync + std::fmt::De
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<PData> {
     // if pipeline alters the data via a processor that performs some transofmration we should expect the equivalent assert to fail
     // otherwise the assert should succeed
+
+    pub fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
+        let core_id = DEFAULT_CORE_ID;
+        let thread_id = DEFAULT_THREAD_ID;
+        let metrics_system = MetricsSystem::default();
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_id = PipelineId::default();
+        let pipeline_group_id = PipelineGroupId::default();
+        let pipeline_context = controller_context.pipeline_context_with(
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            core_id,
+            thread_id,
+        );
+
+        let pipeline_key = DeployedPipelineKey {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id,
+        };
+
+        Self {
+            pipeline_factory,
+            pipeline_context,
+            pipeline_id,
+            pipeline_group_id,
+            metrics_system,
+            pipeline_key,
+        }
+    }
     pub async fn simulate_pipeline(
         &self,
-        proto_message: OtlpProtoMessage,
+        proto_message: &OtlpProtoMessage,
         config_file_path: PathBuf,
     ) -> OtlpProtoMessage {
         // start a grpc client to send messages to the receiver
@@ -111,7 +138,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<P
                 .expect("failed to serve gRPC receiver");
         });
 
-        let pipeline_factory = self.pipeline_factory.clone();
+        let pipeline_factory = self.pipeline_factory;
         let pipeline_context = self.pipeline_context.clone();
         let pipeline_key = self.pipeline_key.clone();
         let metrics_reporter = self.metrics_system.reporter();
@@ -135,52 +162,61 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<P
             let pipeline_runtime = pipeline_factory
                 .build(pipeline_context.clone(), pipeline_config.clone())
                 .expect("pipeline created");
-            pipeline_runtime.run_forever(
-                pipeline_key,
-                pipeline_context,
-                obs_evt_reporter,
-                metrics_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
+            pipeline_runtime
+                .run_forever(
+                    pipeline_key,
+                    pipeline_context,
+                    obs_evt_reporter,
+                    metrics_reporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_ctrl_msg_rx,
+                )
+                .expect("failed to start pipeline")
         });
 
+
         // start sending messages to the pipeline
-        let mut logs_client = LogsServiceClient::connect(GRPC_INPUT_ENDPOINT)
+        let mut logs_client = timeout(Duration::from_secs(10), LogsServiceClient::connect(GRPC_INPUT_ENDPOINT))
             .await
+            .expect("timed out waiting for connection")
             .expect("failed to connect to otlp receiver");
-        let mut traces_client = TraceServiceClient::connect(GRPC_INPUT_ENDPOINT)
+        let mut traces_client = timeout(Duration::from_secs(10), TraceServiceClient::connect(GRPC_INPUT_ENDPOINT))
             .await
+            .expect("timed out waiting for connection")
             .expect("failed to connect to otlp receiver");
-        let mut metrics_client = MetricsServiceClient::connect(GRPC_INPUT_ENDPOINT)
+        let mut metrics_client = timeout(Duration::from_secs(10), MetricsServiceClient::connect(GRPC_INPUT_ENDPOINT))
             .await
+            .expect("timed out waiting for connection")
             .expect("failed to connect to otlp receiver");
 
         match proto_message {
             OtlpProtoMessage::Logs(logs) => {
                 logs_client
-                    .export(ExportLogsServiceRequest::new(logs.resource_logs))
+                    .export(ExportLogsServiceRequest::new(logs.resource_logs.clone()))
                     .await
                     .expect("failed to send message to otlp receiver");
             }
             OtlpProtoMessage::Metrics(metrics) => {
                 metrics_client
-                    .export(ExportMetricsServiceRequest::new(metrics.resource_metrics))
+                    .export(ExportMetricsServiceRequest::new(
+                        metrics.resource_metrics.clone(),
+                    ))
                     .await
                     .expect("failed to send message to otlp receiver");
             }
             OtlpProtoMessage::Traces(traces) => {
                 traces_client
-                    .export(ExportTraceServiceRequest::new(traces.resource_spans))
+                    .export(ExportTraceServiceRequest::new(
+                        traces.resource_spans.clone(),
+                    ))
                     .await
                     .expect("failed to send message to otlp receiver");
             }
         }
 
         // read message from receiver (output from pipeline)
-        let message: OTLPData = receiver
-            .recv()
-            .await
+        let message: OTLPData = timeout(Duration::from_secs(10), receiver
+            .recv()).await.expect("timed out waiting for message")
             .expect("Failed to receive message")
             .into();
 
@@ -216,47 +252,12 @@ impl Default for OtelProtoSimulator {
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Default for PipelineSimulator<PData> {
-    fn default() -> Self {
-        let core_id = DEFAULT_CORE_ID;
-        let thread_id = DEFAULT_THREAD_ID;
-        let metrics_system = MetricsSystem::default();
-        let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_id = PipelineId::default();
-        let pipeline_group_id = PipelineGroupId::default();
-        let pipeline_context = controller_context.pipeline_context_with(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            core_id,
-            thread_id,
-        );
-
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: pipeline_group_id.clone(),
-            pipeline_id: pipeline_id.clone(),
-            core_id,
-        };
-
-        Self {
-            pipeline_factory: &OTAP_PIPELINE_FACTORY,
-            pipeline_context,
-            pipeline_id,
-            pipeline_group_id,
-            core_id,
-            thread_id,
-            controller_context,
-            metrics_system,
-            pipeline_key,
-        }
-    }
-}
-
 pub struct LogsServiceChannel {
     sender: Sender<OTLPData>,
 }
 
 impl LogsServiceChannel {
-    /// creates a new mock logs service
+    /// creates a new logs service
     #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
@@ -269,7 +270,7 @@ pub struct MetricsServiceChannel {
 }
 
 impl MetricsServiceChannel {
-    /// creates a new mock metrics service
+    /// creates a new metrics service
     #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
@@ -282,7 +283,7 @@ pub struct TraceServiceChannel {
 }
 
 impl TraceServiceChannel {
-    /// creates a new mock trace service
+    /// creates a new trace service
     #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
@@ -340,15 +341,25 @@ impl TraceService for TraceServiceChannel {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::fake_data_generator::fake_signal::{
+    use otap_df_otap::OTAP_PIPELINE_FACTORY;
+    use otap_df_otap::fake_data_generator::fake_signal::{
         fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
+    use std::fs;
+    use std::path::Path;
+    use weaver_common::result::WResult;
+    use weaver_common::vdir::VirtualDirectoryPath;
+    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_resolver::SchemaResolver;
+    use weaver_semconv::registry::SemConvRegistry;
+    use weaver_semconv::registry_repo::RegistryRepo;
 
     const LOG_SIGNAL_COUNT: usize = 100;
     const METRIC_SIGNAL_COUNT: usize = 100;
     const TRACE_SIGNAL_COUNT: usize = 100;
     const ITERATIONS: usize = 10;
+    const PIPELINE_CONFIG_DIRECTORY: &str = "./validation_pipelines";
 
     fn get_registry() -> ResolvedRegistry {
         let registry_repo = RegistryRepo::try_new(
@@ -417,18 +428,22 @@ mod test {
         }
     }
 
+    // validate the encoding and decoding
+    #[tokio::test]
     async fn validate_pipeline() {
-        let mut pipeline_simulator = PipelineSimulator::default();
+        let pipeline_simulator = PipelineSimulator::new(&OTAP_PIPELINE_FACTORY);
 
         let registry = get_registry();
 
         // read the validate_pipelines directory
         // read only md files
-        let pipeline_config_files = fs::read_dir(Path::new(PIPELINE_CONFIG_DIRECTORY)).expect("");
+        let pipeline_config_files =
+            fs::read_dir(Path::new(PIPELINE_CONFIG_DIRECTORY)).expect("Directory exists");
         for config_file in pipeline_config_files {
             let file = config_file.expect("ok file to read");
             let file_path = file.path();
             if file_path.is_file() {
+                println!("Validating Pipeline: {}", file_path.display());
                 for _ in 0..ITERATIONS {
                     // generate data and simulate the protocol and compare result
                     let logs = OtlpProtoMessage::Logs(fake_otlp_logs(LOG_SIGNAL_COUNT, &registry));
