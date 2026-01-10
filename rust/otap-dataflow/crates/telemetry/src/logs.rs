@@ -17,7 +17,14 @@ pub struct LogBatch {
     /// The log records in this batch.
     pub records: Vec<LogRecord>,
     /// Number of records dropped in the same period.
-    pub dropped_count: u64,
+    pub dropped_count: usize,
+}
+
+impl LogBatch {
+    /// The total number of dropped if you drop this batch.
+    pub fn size_with_dropped(&self) -> usize {
+        self.records.len() + self.dropped_count
+    }
 }
 
 /// Thread-local log buffer for a pipeline thread.
@@ -167,7 +174,7 @@ impl LogsCollector {
                     self.write_batch(batch);
                 }
                 Err(err) => {
-                    crate::raw_error!("log collector error: {err}");
+                    crate::raw_error!("log collector error:", err = err.to_string());
                     return Ok(());
                 }
             }
@@ -238,7 +245,7 @@ where
         match self.reporter.try_report(batch) {
             Ok(()) => {}
             Err(err) => {
-                crate::raw_error!("failed to send log batch: {}", err);
+                crate::raw_error!("failed to send log batch", err = err.to_string());
             }
         }
     }

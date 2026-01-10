@@ -4,8 +4,15 @@
 //! Raw logging macros that bypass the tracing subscriber and write to
 //! the console. A single `raw_error!(...)` API is provided.
 
+#![allow(unused_macros)]
+
 use super::formatter::RawLoggingLayer;
 use tracing_subscriber::prelude::*;
+
+#[doc(hidden)]
+pub mod _private {
+    pub use tracing::error;
+}
 
 /// Create a subscriber that writes directly to console (bypassing channels).
 fn raw_logging_subscriber() -> impl tracing::Subscriber {
@@ -36,9 +43,21 @@ where
 /// ```
 #[macro_export]
 macro_rules! raw_error {
-    ($($arg:tt)+) => {
+    ($name:expr, $(,)?) => {
         $crate::self_tracing::raw_log::with_raw_logging(|| {
-            ::tracing::error!($($arg)+)
+            $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
+        })
+    };
+    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
+        $crate::self_tracing::raw_log::with_raw_logging(|| {
+            $crate::_private::error!(name: $name,
+                                     target: env!("CARGO_PKG_NAME"),
+                                     name = $name,
+                                     $($key = {
+                                         $value
+                                     }),+,
+                                     ""
+            )
         })
     };
 }
@@ -47,7 +66,7 @@ macro_rules! raw_error {
 mod tests {
     #[test]
     fn test_raw_error() {
-        raw_error!("test error message");
-        raw_error!("test error with arg: {}", 42);
+        raw_error!("panic.late", msg = "test error message");
+        raw_error!("panic.early", msg = "test error with arg", arg = 42);
     }
 }

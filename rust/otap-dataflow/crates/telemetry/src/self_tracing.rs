@@ -9,6 +9,7 @@
 
 pub mod encoder;
 pub mod formatter;
+pub mod raw_log;
 
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
@@ -19,6 +20,10 @@ use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
 pub use formatter::{ConsoleWriter, RawLoggingLayer};
+
+/// Optional key identifying the producing component.
+/// TODO: This is re-exported, instead rename the underlying type.
+pub type ProducerKey = crate::registry::MetricsKey;
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 #[derive(Debug, Clone)]
@@ -34,6 +39,10 @@ pub struct LogRecord {
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
+
+    /// Optional key identifying the producing component (for first-party logs).
+    /// None for third-party logs from libraries.
+    pub producer_key: Option<ProducerKey>,
 }
 
 /// Saved callsite information. This is information that can easily be
@@ -86,7 +95,7 @@ impl SavedCallsite {
 impl LogRecord {
     /// Construct a log record, partially encoding its dynamic content.
     #[must_use]
-    pub fn new(event: &Event<'_>) -> Self {
+    pub fn new(event: &Event<'_>, producer_key: Option<ProducerKey>) -> Self {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.
@@ -101,6 +110,7 @@ impl LogRecord {
             callsite_id: metadata.callsite(),
             timestamp_ns: Self::get_timestamp_nanos(),
             body_attrs_bytes: buf.into_bytes(),
+            producer_key,
         }
     }
 
