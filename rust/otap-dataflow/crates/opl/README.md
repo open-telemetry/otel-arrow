@@ -1,4 +1,4 @@
-## OTel Processing Language (OPL)
+# OTel Processing Language (OPL)
 
 This crate provides implementation of the OTel Processing Language (OPL)
 for transforming telemetry pipeline data.
