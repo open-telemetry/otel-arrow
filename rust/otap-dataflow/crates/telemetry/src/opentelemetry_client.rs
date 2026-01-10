@@ -10,11 +10,12 @@ use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
-    logs::{LogLevel, ProducerStrategy},
+    logs::{LogLevel, ProviderMode},
 };
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{
+    EnvFilter, layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError,
+};
 
 use crate::{
     error::Error,
@@ -96,43 +97,33 @@ impl OpentelemetryClient {
 
         let tracing_setup = tracing_subscriber::registry().with(get_env_filter(config.logs.level));
 
-        let logerr = |err| {
-            use std::io::Write;
-            let _ = std::io::stderr().write_fmt(format_args!(
-                "could not install global tracing/logging subscriber: {err}"
-            ));
+        let logerr = |err: TryInitError| {
+            crate::raw_error!("tracing.subscriber.init", error = err.to_string());
         };
 
         // Configure the global subscriber based on strategies.global.
         // Engine threads override this with BufferWriterLayer via with_default().
         match config.logs.strategies.global {
-            ProducerStrategy::Noop => {
+            ProviderMode::Noop => {
                 // No-op: just install the filter, events are dropped
-                if let Err(err) = tracing_setup.try_init() {
+                if let Err(err) = tracing::subscriber::NoSubscriber::new().try_init() {
                     logerr(err);
                 }
             }
-            ProducerStrategy::Global => {
-                // Global channel: send events to admin collector thread
+            ProviderMode::Regional => {
+                // Regional channel: send events to the appropriate logs collector thread
                 let channel_layer = DirectChannelLayer::new(logs_reporter);
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }
             }
-            ProducerStrategy::Buffered => {
-                // Buffered is only valid for engine threads, treat as global for global subscriber
-                // This is a misconfiguration, but we handle it gracefully
-                let channel_layer = DirectChannelLayer::new(logs_reporter);
-                if let Err(err) = tracing_setup.with(channel_layer).try_init() {
-                    logerr(err);
-                }
+            ProviderMode::OpenTelemetry => {
+                // @@@ TODO!!!
             }
         }
 
-        // Note: OpenTelemetry SDK forwarding is handled by the LogsCollector on the admin thread,
-        // not at the global subscriber level. The output.mode config controls that behavior.
-
-        //TODO: Configure traces provider.
+        // Note: Any span-level detail, typically through a traces provider, has
+        // to be configured via the try_init() cases above.
 
         Ok(Self {
             _runtime: runtime,
