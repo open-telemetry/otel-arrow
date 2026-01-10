@@ -32,15 +32,7 @@ where
 ///
 /// This should be used sparingly, only emergencies! This is a good
 /// configuration for diagnosing internal other logging facilities,
-/// because it is unbuffered and uses a dedicated
-///
-///
-/// # Example
-///
-/// ```ignore
-/// use otap_df_telemetry::raw_error;
-/// raw_error!("Connection failed: {}", error);
-/// ```
+/// because it is unbuffered and overrides the tracing subscriber.
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr, $(,)?) => {
