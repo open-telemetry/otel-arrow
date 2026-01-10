@@ -27,7 +27,10 @@ use std::sync::Arc;
 use crate::error::Error;
 use crate::registry::MetricsRegistryHandle;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 use tokio_util::sync::CancellationToken;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 pub mod attributes;
 pub mod collector;
@@ -63,9 +66,9 @@ pub use tracing::warn_span as otel_warn_span;
 
 // Re-export commonly used logs types for convenience.
 pub use logs::{
-    BufferWriterLayer, DirectChannelLayer, LogsCollector, LogsReporter, ProducerKeyGuard,
-    current_producer_key, flush_thread_log_buffer, install_thread_log_buffer,
-    uninstall_thread_log_buffer, with_engine_thread_subscriber,
+    BufferWriterLayer, LogsCollector, LogsReporter, UnbufferedChannelLayer,
+    drain_thread_log_buffer, install_thread_log_buffer, uninstall_thread_log_buffer,
+    with_engine_thread_subscriber,
 };
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
@@ -156,4 +159,22 @@ impl Default for MetricsSystem {
     fn default() -> Self {
         Self::new(&TelemetryConfig::default())
     }
+}
+
+// If RUST_LOG is set, use it for fine-grained control.
+// Otherwise, fall back to the config level with some noisy dependencies silenced.
+// Users can override by setting RUST_LOG explicitly.
+pub(crate) fn get_env_filter(level: LogLevel) -> EnvFilter {
+    let level = match level {
+        LogLevel::Off => LevelFilter::OFF,
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Info => LevelFilter::INFO,
+        LogLevel::Warn => LevelFilter::WARN,
+        LogLevel::Error => LevelFilter::ERROR,
+    };
+
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Default filter: use config level, but silence known noisy HTTP dependencies
+        EnvFilter::new(format!("{level},h2=off,hyper=off"))
+    })
 }

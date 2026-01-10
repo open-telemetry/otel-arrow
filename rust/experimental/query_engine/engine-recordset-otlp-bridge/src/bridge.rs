@@ -12,29 +12,48 @@ use crate::*;
 const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OTLP_BUFFER_INITIAL_CAPACITY: usize = 1024 * 64;
 
-static EXPRESSIONS: LazyLock<RwLock<Vec<(ParserOptions, PipelineExpression)>>> =
+static EXPRESSIONS: LazyLock<RwLock<Vec<BridgePipeline>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
+
+#[derive(Debug)]
+pub struct BridgePipeline {
+    attributes_schema: Option<ParserMapSchema>,
+    pipeline: PipelineExpression,
+}
+
+impl BridgePipeline {
+    pub fn get_pipeline(&self) -> &PipelineExpression {
+        &self.pipeline
+    }
+}
 
 pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
-) -> Result<PipelineExpression, Vec<ParserError>> {
-    let result =
-        KqlParser::parse_with_options(query, build_parser_options(options).map_err(|e| vec![e])?)?;
-    Ok(result.pipeline)
+) -> Result<BridgePipeline, Vec<ParserError>> {
+    let options = build_parser_options(options).map_err(|e| vec![e])?;
+    let attributes_schema = match options
+        .get_source_map_schema()
+        .and_then(|s| s.get_schema_for_key("Attributes"))
+    {
+        Some(ParserMapKeySchema::Map(Some(attributes_schema))) => Some(attributes_schema.clone()),
+        _ => None,
+    };
+    let result = KqlParser::parse_with_options(query, options)?;
+    Ok(BridgePipeline {
+        attributes_schema,
+        pipeline: result.pipeline,
+    })
 }
 
 pub fn register_pipeline_for_kql_query(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<usize, Vec<ParserError>> {
-    let options = build_parser_options(options).map_err(|e| vec![e])?;
-
-    let result = KqlParser::parse_with_options(query, options.clone())?;
-    let pipeline = result.pipeline;
+    let pipeline = parse_kql_query_into_pipeline(query, options)?;
 
     let mut expressions = EXPRESSIONS.write().unwrap();
-    expressions.push((options, pipeline));
+    expressions.push(pipeline);
     Ok(expressions.len() - 1)
 }
 
@@ -47,11 +66,23 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
 
     let pipeline_registration = expressions.get(pipeline);
 
-    let (options, pipeline) = match pipeline_registration {
+    let pipeline = match pipeline_registration {
         Some(v) => v,
         None => return Err(BridgeError::PipelineNotFound(pipeline)),
     };
 
+    process_protobuf_otlp_export_logs_service_request_using_pipeline(
+        pipeline,
+        log_level,
+        export_logs_service_request_protobuf_data,
+    )
+}
+
+pub fn process_protobuf_otlp_export_logs_service_request_using_pipeline(
+    pipeline: &BridgePipeline,
+    log_level: RecordSetEngineDiagnosticLevel,
+    export_logs_service_request_protobuf_data: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
     let request =
         ExportLogsServiceRequest::from_protobuf(export_logs_service_request_protobuf_data);
 
@@ -59,12 +90,8 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
         return Err(BridgeError::OtlpProtobufReadError(e));
     }
 
-    match process_export_logs_service_request_using_pipeline(
-        Some(options),
-        pipeline,
-        log_level,
-        request.unwrap(),
-    ) {
+    match process_export_logs_service_request_using_pipeline(pipeline, log_level, request.unwrap())
+    {
         Ok((included, dropped)) => {
             let mut included_records_otlp_response = Vec::new();
             if let Some(ref included) = included {
@@ -101,8 +128,7 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
 }
 
 pub fn process_export_logs_service_request_using_pipeline(
-    options: Option<&ParserOptions>,
-    pipeline: &PipelineExpression,
+    pipeline: &BridgePipeline,
     log_level: RecordSetEngineDiagnosticLevel,
     mut export_logs_service_request: ExportLogsServiceRequest,
 ) -> Result<
@@ -117,14 +143,10 @@ pub fn process_export_logs_service_request_using_pipeline(
     );
 
     let mut batch = engine
-        .begin_batch(pipeline)
+        .begin_batch(&pipeline.pipeline)
         .map_err(|e| BridgeError::PipelineInitializationError(e.to_string()))?;
 
-    if let Some(options) = options
-        && let Some(ParserMapKeySchema::Map(Some(attributes_schema))) = options
-            .get_source_map_schema()
-            .and_then(|s| s.get_schema_for_key("Attributes"))
-    {
+    if let Some(attributes_schema) = &pipeline.attributes_schema {
         // Note: This block is a not-so-elegant fix to OTLP not supporting
         // roundtrip of extended types. What we do is if we know something is a
         // DateTime via the schema and the value is a string we will try to
@@ -589,7 +611,6 @@ mod tests {
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
-                None,
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,
@@ -610,7 +631,6 @@ mod tests {
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
-                None,
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,
@@ -632,7 +652,6 @@ mod tests {
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
-                None,
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,
@@ -721,24 +740,19 @@ mod tests {
             )),
         );
 
-        let options = build_parser_options(Some(
-            BridgeOptions::new().with_attributes_schema(
-                ParserMapSchema::new()
-                    .with_key_definition("TimeGenerated", ParserMapKeySchema::DateTime),
-            ),
-        ))
-        .unwrap();
-
-        let pipeline = KqlParser::parse_with_options(
+        let pipeline = parse_kql_query_into_pipeline(
             "source | where gettype(TimeGenerated) == 'datetime'",
-            options.clone(),
+            Some(
+                BridgeOptions::new().with_attributes_schema(
+                    ParserMapSchema::new()
+                        .with_key_definition("TimeGenerated", ParserMapKeySchema::DateTime),
+                ),
+            ),
         )
-        .unwrap()
-        .pipeline;
+        .unwrap();
 
         let (included_records, dropped_records) =
             process_export_logs_service_request_using_pipeline(
-                Some(&options),
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
                 request,

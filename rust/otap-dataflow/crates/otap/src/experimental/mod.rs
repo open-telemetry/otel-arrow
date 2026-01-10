@@ -18,3 +18,7 @@ pub mod azure_monitor_exporter;
 /// Condense Attributes processor
 #[cfg(feature = "condense-attributes-processor")]
 pub mod condense_attributes_processor;
+
+/// Recordset KQL OTLP Query Engine processor
+#[cfg(feature = "recordset-kql-processor")]
+pub mod recordset_kql_processor;

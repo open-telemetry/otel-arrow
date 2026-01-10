@@ -2,15 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Internal logs collection for OTAP-Dataflow.
-//!
-//! Each pipeline thread has a single LogBuffer (via thread-local) that accumulates
-//! log records. The pipeline runtime periodically flushes this buffer to the admin
-//! via a channel. Components don't need to do anything special for logging.
 
 use crate::error::Error;
-use crate::self_tracing::{ConsoleWriter, LogRecord, ProducerKey, SavedCallsite};
+use crate::self_tracing::{ConsoleWriter, LogRecord, SavedCallsite};
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{Event, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
@@ -21,15 +16,26 @@ use tracing_subscriber::{EnvFilter, Registry};
 pub struct LogBatch {
     /// The log records in this batch.
     pub records: Vec<LogRecord>,
-    /// Number of records dropped since the last batch (buffer was full).
-    pub dropped_count: u64,
+    /// Number of records dropped in the same period.
+    pub dropped_count: usize,
+}
+
+/// A payload of two kinds
+pub enum LogPayload {
+    /// A single record.
+    Singleton(LogRecord),
+    /// A batch.
+    Batch(LogBatch),
+}
+
+impl LogBatch {
+    /// The total number of dropped if you drop this batch.
+    pub fn size_with_dropped(&self) -> usize {
+        self.records.len() + self.dropped_count
+    }
 }
 
 /// Thread-local log buffer for a pipeline thread.
-///
-/// All components on this thread share the same buffer.
-/// The pipeline runtime flushes it periodically on a timer.
-/// If the buffer fills before flush, new events are dropped and counted.
 pub struct LogBuffer {
     batch: LogBatch,
 }
@@ -47,35 +53,20 @@ impl LogBuffer {
     }
 
     /// Push a log record. If at capacity, the record is dropped and counted.
-    ///
-    /// Returns true if the record was added, false if dropped.
-    pub fn push(&mut self, record: LogRecord) -> bool {
+    pub fn push(&mut self, record: LogRecord) {
         if self.batch.records.len() >= self.batch.records.capacity() {
             self.batch.dropped_count += 1;
-            false
         } else {
             self.batch.records.push(record);
-            true
         }
     }
 
-    /// Check if the buffer has records to flush.
-    #[must_use]
-    pub fn needs_flush(&self) -> bool {
-        !self.batch.records.is_empty() || self.batch.dropped_count > 0
-    }
-
     /// Drain all records from the buffer, returning them as a batch.
-    /// Resets the dropped count for the next batch.
     pub fn drain(&mut self) -> LogBatch {
-        let capacity = self.batch.records.capacity();
-        std::mem::replace(
-            &mut self.batch,
-            LogBatch {
-                records: Vec::with_capacity(capacity),
-                dropped_count: 0,
-            },
-        )
+        LogBatch {
+            records: self.batch.records.drain(..).collect(),
+            dropped_count: std::mem::take(&mut self.batch.dropped_count),
+        }
     }
 }
 
@@ -84,50 +75,7 @@ thread_local! {
     static CURRENT_LOG_BUFFER: RefCell<Option<LogBuffer>> = const { RefCell::new(None) };
 }
 
-// Thread-local current ProducerKey for third-party instrumentation.
-// When a component is executing, this is set to that component's key so that
-// any tracing::info!() calls from libraries can be attributed to the component.
-thread_local! {
-    static CURRENT_PRODUCER_KEY: RefCell<Option<ProducerKey>> = const { RefCell::new(None) };
-}
-
-/// Guard that sets the current producer key for the duration of a scope.
-///
-/// When dropped, restores the previous key (or None).
-/// This allows nested scoping if needed.
-pub struct ProducerKeyGuard {
-    previous: Option<ProducerKey>,
-}
-
-impl ProducerKeyGuard {
-    /// Enter a scope with the given producer key.
-    ///
-    /// Third-party log events will be attributed to this key until
-    /// the guard is dropped.
-    #[must_use]
-    pub fn enter(key: ProducerKey) -> Self {
-        let previous = CURRENT_PRODUCER_KEY.with(|cell| cell.borrow_mut().replace(key));
-        Self { previous }
-    }
-}
-
-impl Drop for ProducerKeyGuard {
-    fn drop(&mut self) {
-        CURRENT_PRODUCER_KEY.with(|cell| {
-            *cell.borrow_mut() = self.previous;
-        });
-    }
-}
-
-/// Get the current producer key (if any component scope is active).
-#[must_use]
-pub fn current_producer_key() -> Option<ProducerKey> {
-    CURRENT_PRODUCER_KEY.with(|cell| *cell.borrow())
-}
-
 /// Install a log buffer for the current thread.
-///
-/// Called by the pipeline runtime when the thread starts.
 pub fn install_thread_log_buffer(capacity: usize) {
     CURRENT_LOG_BUFFER.with(|cell| {
         *cell.borrow_mut() = Some(LogBuffer::new(capacity));
@@ -135,58 +83,45 @@ pub fn install_thread_log_buffer(capacity: usize) {
 }
 
 /// Uninstall the log buffer for the current thread.
-///
-/// Called by the pipeline runtime when the thread shuts down.
 pub fn uninstall_thread_log_buffer() {
     CURRENT_LOG_BUFFER.with(|cell| {
         *cell.borrow_mut() = None;
     });
 }
 
-/// Flush the current thread's log buffer, returning the batch.
-///
-/// Called by the pipeline runtime on a timer.
-pub fn flush_thread_log_buffer() -> Option<LogBatch> {
+/// Drain the current thread's log buffer, returning the batch.
+pub fn drain_thread_log_buffer() -> Option<LogBatch> {
     CURRENT_LOG_BUFFER.with(|cell| {
-        cell.borrow_mut().as_mut().and_then(|buffer| {
-            if buffer.needs_flush() {
-                Some(buffer.drain())
-            } else {
-                None
-            }
-        })
+        cell.borrow_mut()
+            .as_mut()
+            .and_then(|buffer| Some(buffer.drain()))
     })
 }
 
 /// Reporter for sending log batches through a channel.
 #[derive(Clone)]
 pub struct LogsReporter {
-    sender: flume::Sender<LogBatch>,
+    sender: flume::Sender<LogPayload>,
 }
 
 impl LogsReporter {
     /// Create a new LogsReporter with the given sender.
     #[must_use]
-    pub fn new(sender: flume::Sender<LogBatch>) -> Self {
+    pub fn new(sender: flume::Sender<LogPayload>) -> Self {
         Self { sender }
     }
 
     /// Try to send a batch, non-blocking.
-    ///
-    /// If the channel is full, the batch is dropped (returns Ok).
-    /// Only returns Err if the channel is disconnected.
-    pub fn try_report(&self, batch: LogBatch) -> Result<(), Error> {
-        match self.sender.try_send(batch) {
-            Ok(()) => Ok(()),
-            Err(flume::TrySendError::Full(_)) => Ok(()),
-            Err(flume::TrySendError::Disconnected(_)) => Err(Error::LogsChannelClosed),
-        }
+    pub fn try_report(&self, payload: LogPayload) -> Result<(), Error> {
+        self.sender
+            .try_send(payload)
+            .map_err(|e| Error::LogSendError(e.to_string()))
     }
 }
 
 /// Collector that receives log batches and writes them to console.
 pub struct LogsCollector {
-    receiver: flume::Receiver<LogBatch>,
+    receiver: flume::Receiver<LogPayload>,
     writer: ConsoleWriter,
 }
 
@@ -210,7 +145,8 @@ impl LogsCollector {
                 Ok(batch) => {
                     self.write_batch(batch);
                 }
-                Err(_) => {
+                Err(err) => {
+                    crate::raw_error!("log collector error:", err = err.to_string());
                     return Ok(());
                 }
             }
@@ -219,176 +155,85 @@ impl LogsCollector {
 
     /// Write a batch of log records to console.
     fn write_batch(&self, batch: LogBatch) {
-        // Print dropped count as a formatted warning before the batch
-        if batch.dropped_count > 0 {
-            self.writer.print_dropped_warning(batch.dropped_count);
-        }
+        // TODO: Print dropped count as a formatted warning before the batch
         for record in batch.records {
             // Identifier.0 is the &'static dyn Callsite
             let metadata = record.callsite_id.0.metadata();
             let saved = SavedCallsite::new(metadata);
             // Use ConsoleWriter's routing: ERROR/WARN to stderr, others to stdout
-            self.writer.print_log_record(&record, &saved);
+            self.writer.raw_print(&record, &saved);
             // TODO: include producer_key in output when present
         }
     }
 }
 
-// ============================================================================
-// BufferWriterLayer - For engine threads with thread-local buffer
-// ============================================================================
-
 /// A tracing Layer for engine threads that writes to thread-local LogBuffer.
-///
-/// This layer is installed via `with_default()` on each engine thread.
-/// Events are accumulated in the thread-local buffer and flushed on a timer.
-pub struct BufferWriterLayer {
-    /// Count of events successfully captured to the buffer.
-    events_captured: AtomicU64,
-    /// Count of events dropped because the buffer was full.
-    events_dropped: AtomicU64,
-}
-
-impl BufferWriterLayer {
-    /// Create a new BufferWriterLayer.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            events_captured: AtomicU64::new(0),
-            events_dropped: AtomicU64::new(0),
-        }
-    }
-
-    /// Get the number of events successfully captured.
-    #[must_use]
-    pub fn events_captured(&self) -> u64 {
-        self.events_captured.load(Ordering::Relaxed)
-    }
-
-    /// Get the number of events dropped because buffer was full.
-    #[must_use]
-    pub fn events_dropped(&self) -> u64 {
-        self.events_dropped.load(Ordering::Relaxed)
-    }
-}
-
-impl Default for BufferWriterLayer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Default)]
+pub struct BufferWriterLayer {}
 
 impl<S> TracingLayer<S> for BufferWriterLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let producer_key = current_producer_key();
-        let record = LogRecord::new(event, producer_key);
+        let record = LogRecord::new(event);
 
         CURRENT_LOG_BUFFER.with(|cell| {
             if let Some(ref mut buffer) = *cell.borrow_mut() {
-                if buffer.push(record) {
-                    let _ = self.events_captured.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    let _ = self.events_dropped.fetch_add(1, Ordering::Relaxed);
-                }
+                buffer.push(record);
             }
-            // No buffer = programming error on engine thread, silently drop
+            // TODO: Fallback consideration.
         });
     }
 }
 
-// ============================================================================
-// DirectChannelLayer - Global fallback for non-engine threads
-// ============================================================================
-
 /// A tracing Layer for non-engine threads that sends directly to channel.
-///
-/// This is installed as the global subscriber. Events are sent immediately
-/// to the LogsCollector (non-blocking, dropped if channel is full).
-pub struct DirectChannelLayer {
+pub struct UnbufferedChannelLayer {
     /// Reporter for sending to the channel.
     reporter: LogsReporter,
-    /// Count of events successfully sent.
-    events_captured: AtomicU64,
-    /// Count of events dropped because channel was full.
-    events_dropped: AtomicU64,
 }
 
-impl DirectChannelLayer {
-    /// Create a new DirectChannelLayer with the given reporter.
+impl UnbufferedChannelLayer {
+    /// Create a new unbuffered channel.
     #[must_use]
     pub fn new(reporter: LogsReporter) -> Self {
-        Self {
-            reporter,
-            events_captured: AtomicU64::new(0),
-            events_dropped: AtomicU64::new(0),
-        }
-    }
-
-    /// Get the number of events successfully sent.
-    #[must_use]
-    pub fn events_captured(&self) -> u64 {
-        self.events_captured.load(Ordering::Relaxed)
-    }
-
-    /// Get the number of events dropped because channel was full.
-    #[must_use]
-    pub fn events_dropped(&self) -> u64 {
-        self.events_dropped.load(Ordering::Relaxed)
+        Self { reporter }
     }
 }
 
-impl<S> TracingLayer<S> for DirectChannelLayer
+impl<S> TracingLayer<S> for UnbufferedChannelLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Non-engine threads don't have producer_key context
-        let record = LogRecord::new(event, None);
+        let record = LogRecord::new(event);
         let batch = LogBatch {
             records: vec![record],
             dropped_count: 0,
         };
 
-        match self.reporter.sender.try_send(batch) {
-            Ok(()) => {
-                let _ = self.events_captured.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(flume::TrySendError::Full(_)) => {
-                let _ = self.events_dropped.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(flume::TrySendError::Disconnected(_)) => {
-                // Channel closed, nothing we can do
+        match self.reporter.try_report(batch) {
+            Ok(()) => {}
+            Err(err) => {
+                crate::raw_error!("failed to send log batch", err = err.to_string());
             }
         }
     }
 }
 
-// ============================================================================
-// Engine Thread Subscriber Setup
-// ============================================================================
-
 /// Create a subscriber for engine threads that uses BufferWriterLayer.
-///
-/// This subscriber captures events to the thread-local buffer instead of
-/// sending them to the channel directly.
 fn create_engine_thread_subscriber() -> impl Subscriber {
     // Use the same filter as the global subscriber (INFO by default, RUST_LOG override)
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
-    
+
     Registry::default()
         .with(filter)
-        .with(BufferWriterLayer::new())
+        .with(BufferWriterLayer::default())
 }
 
 /// Run a closure with the engine thread subscriber as the default.
-///
-/// This should be called at the top of each engine thread to ensure all
-/// logging on that thread goes to the thread-local buffer.
 pub fn with_engine_thread_subscriber<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,

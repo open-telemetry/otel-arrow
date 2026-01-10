@@ -33,6 +33,7 @@ thiserror = { workspace = true }
 slotmap = { workspace = true }
 parking_lot = { workspace = true }
 prometheus = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true }
 tonic = { workspace = true, optional = true }
 opentelemetry = { workspace = true }

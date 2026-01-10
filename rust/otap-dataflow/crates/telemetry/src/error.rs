@@ -31,4 +31,8 @@ pub enum Error {
     /// Error during configuration of a component.
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
+
+    /// Error during logs send.
+    #[error("Log send error: {0}")]
+    LogSendError(String),
 }
