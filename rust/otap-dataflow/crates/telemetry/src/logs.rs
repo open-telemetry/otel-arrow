@@ -4,7 +4,7 @@
 //! Internal logs collection for OTAP-Dataflow.
 
 use crate::error::Error;
-use crate::self_tracing::{ConsoleWriter, LogRecord, ProducerKey, SavedCallsite};
+use crate::self_tracing::{ConsoleWriter, LogRecord, SavedCallsite};
 use std::cell::RefCell;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::filter::LevelFilter;
@@ -20,6 +20,14 @@ pub struct LogBatch {
     pub dropped_count: usize,
 }
 
+/// A payload of two kinds
+pub enum LogPayload {
+    /// A single record.
+    Singleton(LogRecord),
+    /// A batch.
+    Batch(LogBatch),
+}
+
 impl LogBatch {
     /// The total number of dropped if you drop this batch.
     pub fn size_with_dropped(&self) -> usize {
@@ -30,7 +38,6 @@ impl LogBatch {
 /// Thread-local log buffer for a pipeline thread.
 pub struct LogBuffer {
     batch: LogBatch,
-    active: Option<ProducerKey>,
 }
 
 impl LogBuffer {
@@ -42,7 +49,6 @@ impl LogBuffer {
                 records: Vec::with_capacity(capacity),
                 dropped_count: 0,
             },
-            active: None,
         }
     }
 
@@ -67,40 +73,6 @@ impl LogBuffer {
 // Thread-local log buffer for the current pipeline thread.
 thread_local! {
     static CURRENT_LOG_BUFFER: RefCell<Option<LogBuffer>> = const { RefCell::new(None) };
-}
-
-/// Guard that sets the current producer key for the duration of a scope.
-pub struct ProducerKeyGuard {
-    previous: Option<ProducerKey>,
-}
-
-impl ProducerKeyGuard {
-    /// Enter a scope with the given producer key.
-    #[must_use]
-    pub fn enter(key: ProducerKey) -> Self {
-        let previous = CURRENT_LOG_BUFFER
-            .with(|cell| cell.borrow_mut().as_mut().map(|b| b.active.replace(key)))
-            .flatten();
-        Self { previous }
-    }
-}
-
-impl Drop for ProducerKeyGuard {
-    fn drop(&mut self) {
-        let _ = CURRENT_LOG_BUFFER.with(|cell| {
-            cell.borrow_mut().as_mut().map(|b| {
-                b.active = self.previous;
-            })
-        });
-    }
-}
-
-/// Get the current producer key
-#[must_use]
-pub fn current_producer_key() -> Option<ProducerKey> {
-    CURRENT_LOG_BUFFER
-        .with(|cell| cell.borrow().as_ref().map(|b| b.active))
-        .flatten()
 }
 
 /// Install a log buffer for the current thread.
@@ -129,27 +101,27 @@ pub fn drain_thread_log_buffer() -> Option<LogBatch> {
 /// Reporter for sending log batches through a channel.
 #[derive(Clone)]
 pub struct LogsReporter {
-    sender: flume::Sender<LogBatch>,
+    sender: flume::Sender<LogPayload>,
 }
 
 impl LogsReporter {
     /// Create a new LogsReporter with the given sender.
     #[must_use]
-    pub fn new(sender: flume::Sender<LogBatch>) -> Self {
+    pub fn new(sender: flume::Sender<LogPayload>) -> Self {
         Self { sender }
     }
 
     /// Try to send a batch, non-blocking.
-    pub fn try_report(&self, batch: LogBatch) -> Result<(), Error> {
+    pub fn try_report(&self, payload: LogPayload) -> Result<(), Error> {
         self.sender
-            .try_send(batch)
+            .try_send(payload)
             .map_err(|e| Error::LogSendError(e.to_string()))
     }
 }
 
 /// Collector that receives log batches and writes them to console.
 pub struct LogsCollector {
-    receiver: flume::Receiver<LogBatch>,
+    receiver: flume::Receiver<LogPayload>,
     writer: ConsoleWriter,
 }
 
@@ -204,39 +176,37 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let producer_key = current_producer_key();
-        let record = LogRecord::new(event, producer_key);
+        let record = LogRecord::new(event);
 
         CURRENT_LOG_BUFFER.with(|cell| {
             if let Some(ref mut buffer) = *cell.borrow_mut() {
                 buffer.push(record);
             }
-            // No buffer = programming error on engine thread, silently drop
+            // TODO: Fallback consideration.
         });
     }
 }
 
 /// A tracing Layer for non-engine threads that sends directly to channel.
-pub struct DirectChannelLayer {
+pub struct UnbufferedChannelLayer {
     /// Reporter for sending to the channel.
     reporter: LogsReporter,
 }
 
-impl DirectChannelLayer {
-    /// Create a new DirectChannelLayer with the given reporter.
+impl UnbufferedChannelLayer {
+    /// Create a new unbuffered channel.
     #[must_use]
     pub fn new(reporter: LogsReporter) -> Self {
         Self { reporter }
     }
 }
 
-impl<S> TracingLayer<S> for DirectChannelLayer
+impl<S> TracingLayer<S> for UnbufferedChannelLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // Non-engine threads don't have producer_key context
-        let record = LogRecord::new(event, None);
+        let record = LogRecord::new(event);
         let batch = LogBatch {
             records: vec![record],
             dropped_count: 0,

@@ -9,18 +9,12 @@ pub mod meter_provider;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
-    AttributeValue, AttributeValueArray, TelemetryConfig,
-    logs::{LogLevel, ProviderMode},
+    AttributeValue, AttributeValueArray, TelemetryConfig, logs::ProviderMode,
 };
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{
-    EnvFilter, layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError,
-};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError};
 
 use crate::{
-    error::Error,
-    logs::{DirectChannelLayer, LogsReporter},
-    opentelemetry_client::meter_provider::MeterProvider,
+    error::Error, logs::LogsReporter, opentelemetry_client::meter_provider::MeterProvider,
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -31,24 +25,6 @@ pub struct OpentelemetryClient {
     meter_provider: SdkMeterProvider,
     logger_provider: Option<SdkLoggerProvider>,
     // TODO: Add traces providers.
-}
-
-// If RUST_LOG is set, use it for fine-grained control.
-// Otherwise, fall back to the config level with some noisy dependencies silenced.
-// Users can override by setting RUST_LOG explicitly.
-fn get_env_filter(level: LogLevel) -> EnvFilter {
-    let level = match level {
-        LogLevel::Off => LevelFilter::OFF,
-        LogLevel::Debug => LevelFilter::DEBUG,
-        LogLevel::Info => LevelFilter::INFO,
-        LogLevel::Warn => LevelFilter::WARN,
-        LogLevel::Error => LevelFilter::ERROR,
-    };
-
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        // Default filter: use config level, but silence known noisy HTTP dependencies
-        EnvFilter::new(format!("{level},h2=off,hyper=off"))
-    })
 }
 
 impl OpentelemetryClient {
@@ -63,30 +39,6 @@ impl OpentelemetryClient {
     /// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
     /// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
     /// noisy HTTP/2 and hyper logs.
-    ///
-    /// TODO: The engine uses a thread-per-core model
-    /// and is NUMA aware.
-    /// The fmt::init() here is truly global, and hence
-    /// this will be a source of contention.
-    /// We need to evaluate alternatives:
-    ///
-    /// 1. Set up per thread subscriber.
-    ///    ```ignore
-    ///    // start of thread
-    ///    let _guard = tracing::subscriber::set_default(subscriber);
-    ///    // now, with this thread, all tracing calls will go to this subscriber
-    ///    // eliminating contention.
-    ///    // end of thread
-    ///    ```
-    ///
-    /// 2. Use custom subscriber that batches logs in thread-local buffer, and
-    ///    flushes them periodically.
-    ///
-    /// The TODO here is to evaluate these options and implement one of them.
-    /// As of now, this causes contention, and we just need to accept temporarily.
-    ///
-    /// TODO: Evaluate also alternatives for the contention caused by the global
-    /// OpenTelemetry logger provider added as layer.
     pub fn new(config: &TelemetryConfig, logs_reporter: LogsReporter) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
@@ -95,7 +47,8 @@ impl OpentelemetryClient {
         let (meter_provider, runtime) =
             MeterProvider::configure(sdk_resource, &config.metrics, runtime)?.into_parts();
 
-        let tracing_setup = tracing_subscriber::registry().with(get_env_filter(config.logs.level));
+        let tracing_setup =
+            tracing_subscriber::registry().with(crate::get_env_filter(config.logs.level));
 
         let logerr = |err: TryInitError| {
             crate::raw_error!("tracing.subscriber.init", error = err.to_string());
@@ -110,15 +63,15 @@ impl OpentelemetryClient {
                     logerr(err);
                 }
             }
-            ProviderMode::Regional => {
+            ProviderMode::Buffered => {
                 // Regional channel: send events to the appropriate logs collector thread
-                let channel_layer = DirectChannelLayer::new(logs_reporter);
+                let channel_layer = BufferedChannelLayer::new(logs_reporter);
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }
             }
             ProviderMode::OpenTelemetry => {
-                // @@@ TODO!!!
+                // @@@ TODO!!! bring this back
             }
         }
 

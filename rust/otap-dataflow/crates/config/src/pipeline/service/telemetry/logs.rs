@@ -9,19 +9,22 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Internal logs configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LogsConfig {
     /// The log level for internal engine logs.
-    #[serde(default)]
     pub level: LogLevel,
 
     /// Logging strategy configuration for different thread contexts.
-    #[serde(default)]
     pub strategies: LoggingStrategies,
+
+    /// The level at which to consider a second fallback strategy.
+    pub fallback_level: LogLevel,
+
+    /// Logging strategy configuration for different thread contexts.
+    pub fallbacks: LoggingStrategies,
 
     /// The list of log processors to configure (for OpenTelemetry SDK output mode).
     /// Only used when `output.mode` is set to `opentelemetry`.
-    #[serde(default)]
     pub processors: Vec<processors::LogProcessorConfig>,
 }
 
@@ -48,15 +51,12 @@ pub enum LogLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LoggingStrategies {
     /// Strategy for non-engine threads.
-    #[serde(default = "default_global_strategy")]
     pub global: ProviderMode,
 
     /// Strategy for engine/pipeline threads.
-    #[serde(default = "default_engine_strategy")]
     pub engine: ProviderMode,
 
     /// Default for internal telemetry-reporting components.
-    #[serde(default = "default_internal_strategy")]
     pub internal: ProviderMode,
 }
 
@@ -64,16 +64,21 @@ pub struct LoggingStrategies {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderMode {
-    /// No-op: log events are silently dropped.
-    /// Use for ITR-downstream components to prevent feedback loops.
+    /// Log events are silently ignored.
     Noop,
 
-    /// Regional channel: send individual events to a regional thread.
-    /// Drop events when full.
-    Regional,
+    /// Regional delivery: send to a buffered channel.
+    Buffered,
 
-    /// Use OTel as the first class provider.
+    /// Regional delivery: send to an unbuffered channel.
+    Unbuffered,
+
+    /// Use OTel-Rust as the provider.
     OpenTelemetry,
+
+    /// Use synchronous logging. This is harmful for performance
+    /// can be used for development or as a fallback configuration.
+    Raw,
 }
 
 /// Output mode: what the recipient does with received log events.
@@ -98,24 +103,38 @@ pub enum OutputMode {
     OpenTelemetry,
 }
 
-impl Default for LoggingStrategies {
-    fn default() -> Self {
-        Self {
-            global: default_global_strategy(),
-            engine: default_engine_strategy(),
-            internal: default_internal_strategy(),
-        }
+fn default_level() -> LogLevel {
+    LogLevel::Off
+}
+
+fn default_fallback_level() -> LogLevel {
+    LogLevel::Error
+}
+
+fn default_strategies() -> LoggingStrategies {
+    LoggingStrategies {
+        global: ProviderMode::Buffered,
+        engine: ProviderMode::Buffered,
+        internal: ProviderMode::Noop,
     }
 }
 
-fn default_global_strategy() -> ProviderMode {
-    ProviderMode::Regional
+fn default_fallback_strategies() -> LoggingStrategies {
+    LoggingStrategies {
+        global: ProviderMode::Raw,
+        engine: ProviderMode::Raw,
+        internal: ProviderMode::Noop,
+    }
 }
 
-fn default_engine_strategy() -> ProviderMode {
-    ProviderMode::Regional
-}
-
-fn default_internal_strategy() -> ProviderMode {
-    ProviderMode::Noop
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            level: default_level(),
+            strategies: default_strategies(),
+            fallback_level: default_fallback_level(),
+            fallbacks: default_fallback_strategies(),
+            processors: Vec::new(),
+        }
+    }
 }
