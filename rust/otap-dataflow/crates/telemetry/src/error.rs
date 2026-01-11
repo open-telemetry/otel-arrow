@@ -33,6 +33,11 @@ pub enum Error {
     ConfigurationError(String),
 
     /// Error during logs send.
-    #[error("Log send error: {0}")]
-    LogSendError(String),
+    #[error("Log send error, dropped: {dropped}: {message}")]
+    LogSendError {
+        /// Number dropped.
+        dropped: usize,
+        /// Reason.
+        message: String,
+    },
 }

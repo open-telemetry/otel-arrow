@@ -31,10 +31,13 @@ pub enum LogPayload {
     Batch(LogBatch),
 }
 
-impl LogBatch {
+impl LogPayload {
     /// The total number of dropped if you drop this batch.
     pub fn size_with_dropped(&self) -> usize {
-        self.records.len() + self.dropped_count
+        match self {
+            Self::Singleton(_) => 1,
+            Self::Batch(batch) => batch.records.len() + batch.dropped_count,
+        }
     }
 }
 
@@ -119,7 +122,10 @@ impl LogsReporter {
     pub fn try_report(&self, payload: LogPayload) -> Result<(), Error> {
         self.sender
             .try_send(payload)
-            .map_err(|e| Error::LogSendError(e.to_string()))
+            .map_err(|e| Error::LogSendError {
+                message: e.to_string(),
+                dropped: e.into_inner().size_with_dropped(),
+            })
     }
 }
 
