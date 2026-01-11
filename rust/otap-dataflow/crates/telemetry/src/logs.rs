@@ -78,18 +78,28 @@ thread_local! {
     static CURRENT_LOG_BUFFER: RefCell<Option<LogBuffer>> = const { RefCell::new(None) };
 }
 
-/// Install a log buffer for the current thread.
-pub fn install_thread_log_buffer(capacity: usize) {
+/// Run a closure with a thread-local log buffer installed.
+///
+/// The buffer is automatically uninstalled when the closure returns (or panics).
+pub fn with_thread_log_buffer<F, R>(capacity: usize, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
     CURRENT_LOG_BUFFER.with(|cell| {
         *cell.borrow_mut() = Some(LogBuffer::new(capacity));
     });
-}
 
-/// Uninstall the log buffer for the current thread.
-pub fn uninstall_thread_log_buffer() {
-    CURRENT_LOG_BUFFER.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CURRENT_LOG_BUFFER.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+    }
+    let _guard = Guard;
+
+    f()
 }
 
 /// Reporter for sending log batches through a channel.
