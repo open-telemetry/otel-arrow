@@ -652,9 +652,9 @@ impl RetryProcessor {
     #[must_use]
     #[cfg(test)]
     pub fn with_config(config: RetryConfig) -> Self {
-        let handle = otap_df_telemetry::registry::MetricsRegistryHandle::default();
+        let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
         let metrics: MetricSet<RetryProcessorMetrics> =
-            handle.register(otap_df_telemetry::testing::EmptyAttributes());
+            telemetry_registry.register(otap_df_telemetry::testing::EmptyAttributes());
 
         let (retry_limit, delays) = config.validate_retries().expect("valid");
         Self {
@@ -679,7 +679,7 @@ mod test {
     use otap_df_engine::testing::node::test_node;
     use otap_df_engine::testing::processor::TestRuntime;
     use otap_df_engine::{Interests, message::Message};
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -760,8 +760,8 @@ mod test {
 
     /// Creates a test pipeline context for testing
     fn create_test_pipeline_context() -> PipelineContext {
-        let metrics_registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
     }
 

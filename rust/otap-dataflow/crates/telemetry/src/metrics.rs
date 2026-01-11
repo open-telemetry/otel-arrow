@@ -10,7 +10,7 @@
 pub mod dispatcher;
 
 use crate::descriptor::MetricsDescriptor;
-use crate::registry::MetricsKey;
+use crate::registry::{EntityKey, MetricSetKey};
 use serde::Serialize;
 use std::ops::{Deref, DerefMut};
 
@@ -117,7 +117,8 @@ impl std::ops::AddAssign for MetricValue {
 /// A concrete set of metrics values grouped under a single descriptor/key.
 #[derive(Clone)]
 pub struct MetricSet<M: MetricSetHandler> {
-    pub(crate) key: MetricsKey,
+    pub(crate) key: MetricSetKey,
+    pub(crate) entity_key: EntityKey,
     pub(crate) metrics: M,
 }
 
@@ -128,6 +129,24 @@ impl<M: MetricSetHandler> MetricSet<M> {
             key: self.key,
             metrics: self.metrics.snapshot_values(),
         }
+    }
+
+    /// Returns the entity key associated with this metric set.
+    #[must_use]
+    pub fn entity_key(&self) -> EntityKey {
+        self.entity_key
+    }
+
+    /// Returns the metrics key associated with this metric set.
+    #[must_use]
+    pub fn metrics_key(&self) -> MetricSetKey {
+        self.key
+    }
+
+    /// Returns the metric set key associated with this metric set.
+    #[must_use]
+    pub fn metric_set_key(&self) -> MetricSetKey {
+        self.key
     }
 }
 
@@ -153,7 +172,7 @@ impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
 /// Immutable snapshot of a metric set's current values.
 #[derive(Debug)]
 pub struct MetricSetSnapshot {
-    pub(crate) key: MetricsKey,
+    pub(crate) key: MetricSetKey,
     pub(crate) metrics: Vec<MetricValue>,
 }
 

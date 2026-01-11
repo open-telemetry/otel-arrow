@@ -93,7 +93,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         // Start the metrics aggregation
-        let metrics_registry = metrics_system.registry();
+        let telemetry_registry = metrics_system.registry();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
                 metrics_system.run(cancellation_token)
@@ -195,7 +195,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     admin_settings,
                     obs_state_handle,
                     admin_senders,
-                    metrics_registry,
+                    telemetry_registry,
                     cancellation_token,
                 )
             })?;

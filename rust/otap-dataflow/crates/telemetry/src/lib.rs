@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use crate::error::Error;
-use crate::registry::MetricsRegistryHandle;
+use crate::registry::TelemetryRegistryHandle;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
@@ -67,7 +67,7 @@ pub mod testing;
 /// The main telemetry system that aggregates and reports metrics.
 pub struct MetricsSystem {
     /// The metrics registry that holds all registered metrics (data + metadata).
-    registry: MetricsRegistryHandle,
+    registry: TelemetryRegistryHandle,
 
     /// The process collecting metrics from the pipelines and aggregating them into the registry.
     collector: collector::MetricsCollector,
@@ -83,15 +83,15 @@ impl MetricsSystem {
     /// Creates a new [`MetricsSystem`] initialized with the given configuration.
     #[must_use]
     pub fn new(config: &TelemetryConfig) -> Self {
-        let metrics_registry = MetricsRegistryHandle::new();
+        let telemetry_registry = TelemetryRegistryHandle::new();
         let (collector, reporter) =
-            collector::MetricsCollector::new(config, metrics_registry.clone());
+            collector::MetricsCollector::new(config, telemetry_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
-            metrics_registry.clone(),
+            telemetry_registry.clone(),
             config.reporting_interval,
         ));
         Self {
-            registry: metrics_registry,
+            registry: telemetry_registry,
             collector,
             reporter,
             dispatcher,
@@ -100,7 +100,7 @@ impl MetricsSystem {
 
     /// Returns a shareable/cloneable handle to the metrics registry.
     #[must_use]
-    pub fn registry(&self) -> MetricsRegistryHandle {
+    pub fn registry(&self) -> TelemetryRegistryHandle {
         self.registry.clone()
     }
 

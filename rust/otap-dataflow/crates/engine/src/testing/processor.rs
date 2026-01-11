@@ -16,7 +16,7 @@ use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
 use otap_df_telemetry::MetricsSystem;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
@@ -187,7 +187,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns a handle to the metrics registry.
-    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
         self.metrics_system.registry()
     }
 

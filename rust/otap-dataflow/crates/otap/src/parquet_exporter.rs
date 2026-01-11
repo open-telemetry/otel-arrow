@@ -1407,11 +1407,11 @@ mod test {
 
         // Telemetry system: registry + reporter + background collector
         let metrics_system = otap_df_telemetry::MetricsSystem::default();
-        let registry = metrics_system.registry();
+        let telemetry_registry = metrics_system.registry();
         let reporter = metrics_system.reporter();
 
         // Build exporter with metrics via from_config
-        let controller_ctx = ControllerContext::new(registry.clone());
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let pipeline_ctx = controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
             .with_node_context(
@@ -1518,7 +1518,7 @@ mod test {
         // Inspect registry to ensure exporter.pdata registered counters were reported
         let mut saw_exporter_pdata = false;
         let mut any_positive = false;
-        registry.visit_current_metrics(|desc, _attrs, iter| {
+        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             if desc.name == "exporter.pdata" {
                 saw_exporter_pdata = true;
                 for (_field, value) in iter {

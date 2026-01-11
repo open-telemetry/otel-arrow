@@ -22,7 +22,7 @@ use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtim
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_telemetry::MetricsSystem;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
@@ -214,7 +214,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns a handle to the metrics registry.
-    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
         self.metrics_system.registry()
     }
 
@@ -355,8 +355,8 @@ impl<PData> ValidationPhase<PData> {
 /// Creates a test pipeline context for component testing
 #[must_use]
 pub fn create_test_pipeline_context() -> PipelineContext {
-    let metrics_registry = MetricsRegistryHandle::new();
-    let controller_ctx = ControllerContext::new(metrics_registry);
+    let telemetry_registry = TelemetryRegistryHandle::new();
+    let controller_ctx = ControllerContext::new(telemetry_registry);
     controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
 }
 
