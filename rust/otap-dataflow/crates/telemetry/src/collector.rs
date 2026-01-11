@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Task periodically collecting the metrics emitted by the engine and the pipelines.
+//! Task periodically collecting the internal signals emitted by the engine and the pipelines.
 
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 
@@ -10,12 +10,14 @@ use crate::metrics::MetricSetSnapshot;
 use crate::registry::TelemetryRegistryHandle;
 use crate::reporter::MetricsReporter;
 
-/// Metrics collector.
+/// Internal collector responsible for gathering internal telemetry signals (fow now only metric
+/// sets or multivariate metrics).
 ///
-/// In this project, metrics are multivariate, meaning that multiple metrics are reported together
-/// sharing the timestamp and the same set of attributes.
-pub struct MetricsCollector {
-    /// The metrics registry where metrics are declared and aggregated.
+/// Note: Soon this collector will be replaced by an Internal Telemetry Reporter (ITR) pipeline
+/// based on an OTAP Dataflow engine processing internal signals. More specifically a special
+/// receiver will be created to ingest internal signals.
+pub struct InternalCollector {
+    /// The registry where entities and metrics are declared and aggregated.
     registry: TelemetryRegistryHandle,
 
     /// Receiver for incoming metrics.
@@ -24,8 +26,8 @@ pub struct MetricsCollector {
     metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
-impl MetricsCollector {
-    /// Creates a new `MetricsCollector` with a pipeline.
+impl InternalCollector {
+    /// Creates a new `InternalCollector` with a pipeline.
     pub(crate) fn new(
         config: &TelemetryConfig,
         registry: TelemetryRegistryHandle,
@@ -205,7 +207,7 @@ mod tests {
     async fn test_collector_without_pipeline_returns_none_on_channel_close() {
         let config = create_test_config(100);
         let telemetry_registry = create_test_registry();
-        let (collector, _reporter) = MetricsCollector::new(&config, telemetry_registry);
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry);
 
         // Close immediately
         drop(_reporter);
@@ -222,7 +224,7 @@ mod tests {
             telemetry_registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(&config, telemetry_registry.clone());
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
 
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
@@ -273,7 +275,7 @@ mod tests {
             telemetry_registry.register(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(&config, telemetry_registry.clone());
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
         let handle = tokio::spawn(async move { collector.run_collection_loop().await });
 
         reporter

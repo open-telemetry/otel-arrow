@@ -70,7 +70,7 @@ pub struct MetricsSystem {
     registry: TelemetryRegistryHandle,
 
     /// The process collecting metrics from the pipelines and aggregating them into the registry.
-    collector: collector::MetricsCollector,
+    collector: collector::InternalCollector,
 
     /// The process reporting metrics to an external system.
     reporter: reporter::MetricsReporter,
@@ -85,7 +85,7 @@ impl MetricsSystem {
     pub fn new(config: &TelemetryConfig) -> Self {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let (collector, reporter) =
-            collector::MetricsCollector::new(config, telemetry_registry.clone());
+            collector::InternalCollector::new(config, telemetry_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
             telemetry_registry.clone(),
             config.reporting_interval,
