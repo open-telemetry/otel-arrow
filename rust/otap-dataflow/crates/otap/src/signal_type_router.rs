@@ -371,7 +371,7 @@ mod tests {
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-        use otap_df_telemetry::MetricsSystem;
+        use otap_df_telemetry::InternalTelemetrySystem;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
         use std::collections::HashMap;
@@ -393,7 +393,7 @@ mod tests {
         // Helper to start/stop telemetry collection on the local task set.
         // Returns the telemetry registry, a cloneable reporter, and the spawned collector task handle.
         fn start_telemetry() -> (TelemetryRegistryHandle, MetricsReporter, JoinHandle<()>) {
-            let telemetry = MetricsSystem::default();
+            let telemetry = InternalTelemetrySystem::default();
             let telemetry_registry = telemetry.registry();
             let reporter = telemetry.reporter();
             let collector_task = tokio::task::spawn_local(async move {

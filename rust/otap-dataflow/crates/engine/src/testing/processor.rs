@@ -15,7 +15,7 @@ use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
-use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::InternalTelemetrySystem;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
@@ -134,7 +134,7 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
-    metrics_system: MetricsSystem,
+    metrics_system: InternalTelemetrySystem,
 
     _pd: PhantomData<PData>,
 }
@@ -146,7 +146,7 @@ pub struct TestPhase<PData> {
     processor: ProcessorWrapper<PData>,
     counters: CtrlMsgCounters,
     output_receiver: Option<Receiver<PData>>,
-    metrics_system: MetricsSystem,
+    metrics_system: InternalTelemetrySystem,
 }
 
 /// Data and operations for the validation phase of a processor.
@@ -167,7 +167,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with default configuration.
     #[must_use]
     pub fn new() -> Self {
-        let metrics_system = MetricsSystem::default();
+        let metrics_system = InternalTelemetrySystem::default();
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
 

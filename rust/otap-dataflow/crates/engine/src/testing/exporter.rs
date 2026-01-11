@@ -21,7 +21,7 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime, test_node};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::InternalTelemetrySystem;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
@@ -153,7 +153,7 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
-    metrics_system: MetricsSystem,
+    metrics_system: InternalTelemetrySystem,
 
     _pd: PhantomData<PData>,
 }
@@ -193,7 +193,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     #[must_use]
     pub fn new() -> Self {
-        let metrics_system = MetricsSystem::default();
+        let metrics_system = InternalTelemetrySystem::default();
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();

@@ -1406,7 +1406,7 @@ mod test {
         let base_dir: String = temp_dir.path().to_str().unwrap().into();
 
         // Telemetry system: registry + reporter + background collector
-        let metrics_system = otap_df_telemetry::MetricsSystem::default();
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let telemetry_registry = metrics_system.registry();
         let reporter = metrics_system.reporter();
 
