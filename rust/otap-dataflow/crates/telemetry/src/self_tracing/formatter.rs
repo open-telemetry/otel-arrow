@@ -97,6 +97,13 @@ impl RawLoggingLayer {
 /// Uses `std::io::Cursor` for position tracking with `std::io::Write`.
 pub type BufWriter<'a> = Cursor<&'a mut [u8]>;
 
+impl Default for ConsoleWriter {
+    /// Uses the standard NO_COLOR environment variable to disable color.
+    fn default() -> Self {
+        Self::no_color()
+    }
+}
+
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
     #[must_use]

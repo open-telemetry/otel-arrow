@@ -7,6 +7,7 @@ pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig, logs::ProviderMode,
@@ -14,7 +15,15 @@ use otap_df_config::pipeline::service::telemetry::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError};
 
 use crate::{
-    error::Error, logs::{LogsReporter, UnbufferedChannelLayer}, opentelemetry_client::meter_provider::MeterProvider,
+    error::Error,
+    logs::{
+        BufferedLayer,
+        //LogsReporter,
+        UnbufferedLayer,
+    },
+    opentelemetry_client::logger_provider::LoggerProvider,
+    opentelemetry_client::meter_provider::MeterProvider,
+    self_tracing::{ConsoleWriter, RawLoggingLayer},
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -39,7 +48,7 @@ impl OpentelemetryClient {
     /// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
     /// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
     /// noisy HTTP/2 and hyper logs.
-    pub fn new(config: &TelemetryConfig, logs_reporter: LogsReporter) -> Result<Self, Error> {
+    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
@@ -54,31 +63,55 @@ impl OpentelemetryClient {
             crate::raw_error!("tracing.subscriber.init", error = err.to_string());
         };
 
+        // The OpenTelemetry logging provider.
+        let mut logger_provider: Option<_> = None;
+
         // Configure the global subscriber based on strategies.global.
         // Engine threads override this with BufferWriterLayer via with_default().
-        match config.logs.strategies.global {
+        let (logger_provider, runtime) = match config.logs.strategies.global {
             ProviderMode::Noop => {
                 // No-op: just install the filter, events are dropped
                 if let Err(err) = tracing::subscriber::NoSubscriber::new().try_init() {
                     logerr(err);
                 }
-            }
-            ProviderMode::Unbuffered => {
+                (None, runtime)
             }
             ProviderMode::Raw => {
+                if let Err(err) = tracing_setup
+                    .with(RawLoggingLayer::new(ConsoleWriter::default()))
+                    .try_init()
+                {
+                    logerr(err);
+                }
+                (None, runtime)
             }
             ProviderMode::Buffered => {
-                // Regional channel: send events to the appropriate logs collector thread
-                // @@@
-                let channel_layer = UnbufferedChannelLayer::new(logs_reporter);
+                let channel_layer = BufferedLayer::new(logs_reporter);
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }
+                (None, runtime)
+            }
+            ProviderMode::Unbuffered => {
+                let channel_layer = UnbufferedLayer::new(logs_reporter);
+                if let Err(err) = tracing_setup.with(channel_layer).try_init() {
+                    logerr(err);
+                }
+                (None, runtime)
             }
             ProviderMode::OpenTelemetry => {
-                // @@@ TODO!!! bring this back
+                let (logger_provider, runtime) =
+                    LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
+
+                let sdk_layer = OpenTelemetryTracingBridge::new(&logger_provider);
+
+                if let Err(err) = tracing_setup.with(sdk_layer).try_init() {
+                    logerr(err)
+                }
+
+                (Some(logger_provider), runtime)
             }
-        }
+        };
 
         // Note: Any span-level detail, typically through a traces provider, has
         // to be configured via the try_init() cases above.
@@ -86,7 +119,7 @@ impl OpentelemetryClient {
         Ok(Self {
             _runtime: runtime,
             meter_provider,
-            logger_provider: None,
+            logger_provider,
         })
     }
 
@@ -176,14 +209,15 @@ mod tests {
     };
 
     use super::*;
-    use crate::logs::LogsCollector;
+    //use crate::logs::LogsCollector;
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let (_collector, reporter) = LogsCollector::new(10);
-        let client = OpentelemetryClient::new(&config, reporter)?;
+        //let (_collector, reporter) = LogsCollector::new(10);
+        // , reporter
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -217,8 +251,9 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let (_collector, reporter) = LogsCollector::new(10);
-        let client = OpentelemetryClient::new(&config, reporter)?;
+        //, reporter
+        //let (_collector, reporter) = LogsCollector::new(10);
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();

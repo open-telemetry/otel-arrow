@@ -7,10 +7,13 @@ use crate::error::Error;
 use crate::self_tracing::{ConsoleWriter, LogRecord, SavedCallsite};
 use std::cell::RefCell;
 use tracing::{Event, Subscriber};
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
+//use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::{
+    Context,
+    Layer as TracingLayer, //, SubscriberExt
+};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::{EnvFilter, Registry};
+//use tracing_subscriber::{EnvFilter, Registry};
 
 /// A batch of log records from a pipeline thread.
 pub struct LogBatch {
@@ -89,15 +92,6 @@ pub fn uninstall_thread_log_buffer() {
     });
 }
 
-/// Drain the current thread's log buffer, returning the batch.
-pub fn drain_thread_log_buffer() -> Option<LogBatch> {
-    CURRENT_LOG_BUFFER.with(|cell| {
-        cell.borrow_mut()
-            .as_mut()
-            .and_then(|buffer| Some(buffer.drain()))
-    })
-}
-
 /// Reporter for sending log batches through a channel.
 #[derive(Clone)]
 pub struct LogsReporter {
@@ -111,7 +105,7 @@ impl LogsReporter {
         Self { sender }
     }
 
-    /// Try to send a batch, non-blocking.
+    /// Try to send a payload, non-blocking.
     pub fn try_report(&self, payload: LogPayload) -> Result<(), Error> {
         self.sender
             .try_send(payload)
@@ -167,7 +161,7 @@ impl LogsCollector {
     }
 
     /// Write one record.
-    fn write_record(&self, record: LogRecord) {        
+    fn write_record(&self, record: LogRecord) {
         // Identifier.0 is the &'static dyn Callsite
         let metadata = record.callsite_id.0.metadata();
         let saved = SavedCallsite::new(metadata);
@@ -176,11 +170,31 @@ impl LogsCollector {
     }
 }
 
-/// A tracing Layer for engine threads that writes to thread-local LogBuffer.
-#[derive(Default)]
-pub struct BufferWriterLayer {}
+/// A tracing Layer that buffers records in thread-local storage.
+pub struct BufferedLayer {
+    /// Reporter for flushing batches.
+    reporter: LogsReporter,
+}
 
-impl<S> TracingLayer<S> for BufferWriterLayer
+impl BufferedLayer {
+    /// Create a new buffered layer.
+    #[must_use]
+    pub fn new(reporter: LogsReporter) -> Self {
+        Self { reporter }
+    }
+
+    /// Flush the current thread's log buffer and send via the channel.
+    pub fn flush(&self) -> Result<(), Error> {
+        if let Some(batch) =
+            CURRENT_LOG_BUFFER.with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
+        {
+            let _ = self.reporter.try_report(LogPayload::Batch(batch))?;
+        }
+        Ok(())
+    }
+}
+
+impl<S> TracingLayer<S> for BufferedLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -196,54 +210,54 @@ where
     }
 }
 
-/// A tracing Layer for non-engine threads that sends directly to channel.
-pub struct UnbufferedChannelLayer {
+/// A tracing Layer that sends each record immediately.
+pub struct UnbufferedLayer {
     /// Reporter for sending to the channel.
     reporter: LogsReporter,
 }
 
-impl UnbufferedChannelLayer {
-    /// Create a new unbuffered channel.
+impl UnbufferedLayer {
+    /// Create a new unbuffered layer.
     #[must_use]
     pub fn new(reporter: LogsReporter) -> Self {
         Self { reporter }
     }
 }
 
-impl<S> TracingLayer<S> for UnbufferedChannelLayer
+impl<S> TracingLayer<S> for UnbufferedLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let record = LogRecord::new(event);
-        let payload = LogPayload::Singleton(record);
 
-        match self.reporter.try_report(payload) {
+        match self.reporter.try_report(LogPayload::Singleton(record)) {
             Ok(()) => {}
             Err(err) => {
-                crate::raw_error!("failed to send log batch", err = err.to_string());
+                crate::raw_error!("failed to send log", err = err.to_string());
             }
         }
     }
 }
 
-/// Create a subscriber for engine threads that uses BufferWriterLayer.
-fn create_engine_thread_subscriber() -> impl Subscriber {
-    // Use the same filter as the global subscriber (INFO by default, RUST_LOG override)
-    let filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env_lossy();
+// Note: Commented below because not use, not ready, slightly incorrect.
 
-    Registry::default()
-        .with(filter)
-        .with(BufferWriterLayer::default())
-}
+// /// Create a subscriber for engine threads that uses BufferedLayer.
+// fn create_engine_thread_subscriber() -> impl Subscriber {
+//     // Use the same filter as the global subscriber (INFO by default, RUST_LOG override)
+//     let filter = EnvFilter::builder()
+//         .with_default_directive(LevelFilter::INFO.into())
+//         .from_env_lossy();
+//     Registry::default()
+//         .with(filter)
+//         .with(BufferedLayer::default())
+// }
 
-/// Run a closure with the engine thread subscriber as the default.
-pub fn with_engine_thread_subscriber<F, R>(f: F) -> R
-where
-    F: FnOnce() -> R,
-{
-    let subscriber = create_engine_thread_subscriber();
-    tracing::subscriber::with_default(subscriber, f)
-}
+// /// Run a closure with the engine thread subscriber as the default.
+// pub fn with_engine_thread_subscriber<F, R>(f: F) -> R
+// where
+//     F: FnOnce() -> R,
+// {
+//     let subscriber = create_engine_thread_subscriber();
+//     tracing::subscriber::with_default(subscriber, f)
+// }
