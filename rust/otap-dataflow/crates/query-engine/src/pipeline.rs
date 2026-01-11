@@ -4,8 +4,6 @@
 //! This module defines the top-level API for executing data transformation pipelines on
 //! streaming telemetry data in the OTAP columnar format.
 
-use std::sync::Arc;
-
 use arrow::compute::concat_batches;
 use async_trait::async_trait;
 use data_engine_expressions::PipelineExpression;
@@ -18,9 +16,11 @@ use datafusion::physical_plan::streaming::PartitionStream;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::pipeline::planner::PipelinePlanner;
+use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
 mod attributes;
@@ -31,6 +31,8 @@ mod planner;
 
 /// TODO docs
 pub mod routing;
+/// TODO docs
+pub mod state;
 
 /// A stage in the pipeline.
 ///
@@ -58,6 +60,7 @@ pub trait PipelineStage {
         session_context: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
+        exec_options: &mut ExecutionState,
     ) -> Result<OtapArrowRecords>;
 }
 
@@ -86,6 +89,7 @@ impl PipelineStage for DataFusionPipelineStage {
         _session_context: &SessionContext,
         _config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
+        _execution_options: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let rb = match otap_batch.get(self.payload_type) {
             Some(rb) => rb,
@@ -212,7 +216,17 @@ impl Pipeline {
     ///
     /// # Returns
     /// The transformed telemetry data after all stages have executed
-    pub async fn execute(&mut self, mut otap_batch: OtapArrowRecords) -> Result<OtapArrowRecords> {
+    pub async fn execute(&mut self, otap_batch: OtapArrowRecords) -> Result<OtapArrowRecords> {
+        let mut exec_state = ExecutionState::default();
+        self.execute_with_state(otap_batch, &mut exec_state).await
+    }
+
+    /// TODO comments
+    pub async fn execute_with_state(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        exec_state: &mut ExecutionState,
+    ) -> Result<OtapArrowRecords> {
         // lazily plan the pipeline if have not already done so
         if self.planned_pipeline.is_none() {
             let session_ctx = Self::create_session_context();
@@ -234,6 +248,7 @@ impl Pipeline {
                     &pipeline.session_context,
                     pipeline.config_options.as_ref(),
                     pipeline.task_context.clone(),
+                    exec_state,
                 )
                 .await?;
         }

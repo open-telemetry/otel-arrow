@@ -32,11 +32,11 @@ use otap_df_engine::{
     processor::ProcessorWrapper,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_query_engine::pipeline::Pipeline;
+use otap_df_query_engine::pipeline::{Pipeline, routing::Router, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata, transform_processor::routing::RouterImpl};
 
 use self::config::Config;
 use self::metrics::Metrics;
@@ -51,6 +51,7 @@ pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:transform:processor";
 /// Opentelemetry Processing Language Processor
 pub struct TransformProcessor {
     pipeline: Pipeline,
+    execution_state: ExecutionState,
     signal_scope: SignalScope,
     metrics: MetricSet<Metrics>,
 }
@@ -111,10 +112,16 @@ impl TransformProcessor {
         // query engine here. Currently, validation happens lazily when the first batch is seen.
         // https://github.com/open-telemetry/otel-arrow/issues/1634
 
+        let mut execution_state = ExecutionState::new();
+        // TODO should `Box<dyn Router>` be a type alias exposed by the routing module?
+        // so we don't accidentally set the wrong type here
+        execution_state.set_extension::<Box<dyn Router>>(Box::new(RouterImpl::new()));
+
         Ok(Self {
             signal_scope: SignalScope::try_from(&pipeline_expr)?,
             pipeline: Pipeline::new(pipeline_expr),
             metrics: pipeline_ctx.register_metrics::<Metrics>(),
+            execution_state,
         })
     }
 
@@ -181,7 +188,11 @@ impl Processor<OtapPdata> for TransformProcessor {
                 } else {
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
                     otap_batch.decode_transport_optimized_ids()?;
-                    match self.pipeline.execute(otap_batch).await {
+                    match self
+                        .pipeline
+                        .execute_with_state(otap_batch, &mut self.execution_state)
+                        .await
+                    {
                         Ok(otap_batch) => {
                             self.metrics.msgs_transformed.inc();
                             otap_batch.into()

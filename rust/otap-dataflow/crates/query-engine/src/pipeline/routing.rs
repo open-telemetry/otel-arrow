@@ -11,17 +11,13 @@ use otap_df_pdata::OtapArrowRecords;
 
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
+use crate::pipeline::state::ExecutionState;
 
 /// TODO docs
 #[async_trait]
-pub trait Router: Send + Sync {
+pub trait Router {
     /// TODO docs
     async fn send(&self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()>;
-}
-
-/// TODO docs
-pub struct RouterProvider {
-    router: Box<dyn Router>,
 }
 
 /// TODO comments
@@ -46,19 +42,9 @@ impl PipelineStage for RouteToPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
-        let router_provider = match task_context
-            .session_config()
-            .get_extension::<RouterProvider>()
-        {
-            Some(r) => r,
-            None => {
-                todo!("oops")
-            }
-        };
-
-        router_provider.router.send(&self.outport_name, otap_batch).await?;
-
+        // route otap_batch to self.outport_name
         // return empty batch
         todo!()
     }
