@@ -119,7 +119,7 @@ fn default_output() -> OutputMode {
 }
 
 fn default_level() -> LogLevel {
-    LogLevel::Off
+    LogLevel::Info
 }
 
 fn default_internal_provider() -> ProviderMode {
