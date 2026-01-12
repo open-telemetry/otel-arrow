@@ -171,12 +171,10 @@ impl LogsConfig {
             }
         }
 
-        if self.output == OutputMode::Internal {
-            if self.providers.engine != ProviderMode::Buffered {
-                return Err(Error::InvalidUserConfig {
-                    error: "output mode is 'internal', engine must use buffered provider".into(),
-                });
-            }
+        if self.output == OutputMode::Internal && self.providers.engine != ProviderMode::Buffered {
+            return Err(Error::InvalidUserConfig {
+                error: "output mode is 'internal', engine must use buffered provider".into(),
+            });
         }
 
         Ok(())
