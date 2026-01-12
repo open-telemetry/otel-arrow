@@ -18,9 +18,9 @@ pub struct LogsConfig {
     #[serde(default = "default_level")]
     pub level: LogLevel,
 
-    /// Logging strategy configuration by runtime context.
+    /// Logging provider configuration.
     #[serde(default = "default_strategies")]
-    pub strategies: LoggingStrategies,
+    pub strategies: LoggingProviders,
 
     /// What to do with collected log events. This applies when any ProviderMode
     /// in strategies indicates Buffered or Unbuffered. Does not apply if all
@@ -51,7 +51,7 @@ pub enum LogLevel {
 
 /// Logging strategies for different execution contexts.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct LoggingStrategies {
+pub struct LoggingProviders {
     /// Strategy for non-engine threads. This defines the global Tokio
     /// `tracing` subsriber. Default is Unbuffered. Note that Buffered
     /// requires opt-in thread-local setup.
@@ -125,8 +125,8 @@ fn default_internal_provider() -> ProviderMode {
     ProviderMode::Noop
 }
 
-fn default_strategies() -> LoggingStrategies {
-    LoggingStrategies {
+fn default_strategies() -> LoggingProviders {
+    LoggingProviders {
         global: ProviderMode::Unbuffered,
         engine: ProviderMode::Buffered,
         internal: default_internal_provider(),

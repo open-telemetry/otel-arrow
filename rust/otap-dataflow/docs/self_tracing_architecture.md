@@ -1,6 +1,13 @@
-# Internal Telemetry Collection Architecture & Development Plan
+# Internal Telemetry Logging Pipeline
 
-## Architecture
+This documents the choices available in the internal logging
+configuration object in
+`otap_df_config::pipeline::service::telemetry::logs`. See the
+[internal telemetry crate's README](../crates/telemetry/README.md) for
+the motivation behind this configuration as well as for a description
+of the internal metrics pipeline.
+
+## Overview
 
 The internal telemetry SDK is designed for the engine to safely
 consume its own telemetry, and we intend for the self-hosted telemetry
@@ -20,12 +27,14 @@ telemetry pipeline consists of one (global) or more (NUMA-regional)
 ITR components and any of the connected processor and exporter
 components reachable from ITR source nodes.
 
-To begin with, every OTAP-Dataflow comonent is configured with an
-internal telemetry SDK meant for primary instrumentation of that
-component. Components are required to exclusively use the internal
-telemetry SDK for self-diagnostics (e.g., `otel_info!(effect, name,
-args...)`); this is considered "first party" internal logging. Other
-uses of Tokio `tracing` are considered third-party internal logging.
+## Logs instrumentation
+
+The OTAP Dataflow engine has dedicated macros, and every component is
+configured with an internal telemetry SDK meant for primary
+instrumentation. Using the `otel_info!(effect, name, args...)` macro
+requires access the component EffectHandler. This is considered
+first-party internal logging, and other uses of Tokio `tracing` are
+considered third-party internal logging.
 
 ## Pitfall avoidance
 
@@ -38,11 +47,12 @@ telemetry pitfalls, as follows:
   themselves. For example, ITR and downstream components may be
   configured for raw logging.
 - Use of dedicated thread(s) for internal telemetry output.
-- Thread-local state to avoidf third-party instrumentation in
+- Thread-local state to avoid third-party instrumentation in
   dedicated internal telemetry threads.
 - Components under observation (non-ITR components) use
   per-engine-core internal logs buffer, allowing overflow.
-- Non-blocking interfaces.
+- Non-blocking interfaces. We prefer to drop internal log events than
+  to block the pipeline.
 - Option to configure internal telemetry multiple ways, including the
   no-op implementation, global or regional logs consumers, buffered and 
   unbuffered.
@@ -75,10 +85,14 @@ for internal logging.
 
 Note: Raw logging is likely to introduce contention over the console.
 
-## Logging strategies and providers
+In cases where internal logging code is forced to handle its own
+errors, the `otap_df_telemetry::raw_error!` macro is meant for
+emergency use, to report about failures to log.
 
-The logging configuration is divided into a set of strategies that
-apply in different contexts:
+## Logging provider modes
+
+The logging configuration supports multiple distinct provider mode
+settings:
 
 - Global: The default Tokio subscriber, this will apply in threads
   that do not belong to an OTAP dataflow engine core.
@@ -86,7 +100,7 @@ apply in different contexts:
 - Internal: This is the default configuration for internal telemetry
   pipeline components.
   
-The provider modes are:
+Provider mode values are:
 
 - Noop: Ignore these producers
 - Unbuffered: Use a non-blocking write to the internal logs channel.
@@ -102,10 +116,11 @@ The provider modes are:
 
 ## Output modes
 
-When any of the providers use Buffered or Unbuffered modes, a thread
-managed by the engine is responsible for consuming logs. This
+When any of the providers use Buffered or Unbuffered modes, an
+engine-managed thread is responsible for consuming internal logs. This
 `LogsCollector` thread is currently global, but could be NUMA-regional
-as described in [README](./README.md).
+as described in [README](./README.md), and it can be configured currently
+for raw or internal logging.
 
 The output modes are:
 
@@ -113,7 +128,7 @@ The output modes are:
   any provider uses Buffered or Unbuffered.
 - Raw: Use raw console logging from the global or regional logging
   thread.
-- Internal: Use an Internal Telemetr Receiver as the destination.
+- Internal: Use an Internal Telemetry Receiver as the destination.
 
 ## Default configuration
 
