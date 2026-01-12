@@ -40,6 +40,7 @@ pub mod metrics;
 pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
+pub mod self_tracing;
 pub mod semconv;
 
 // Re-export _private module from internal_events for macro usage.

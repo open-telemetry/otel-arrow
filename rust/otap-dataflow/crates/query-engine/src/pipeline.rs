@@ -261,7 +261,7 @@ mod test {
 
     use data_engine_expressions::PipelineExpression;
 
-    use data_engine_kql_parser::{KqlParser, Parser};
+    use data_engine_parser_abstractions::Parser;
     use datafusion::catalog::streaming::StreamingTable;
     use datafusion::logical_expr::{col, lit};
     use otap_df_pdata::proto::OtlpProtoMessage;
@@ -296,8 +296,8 @@ mod test {
         MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
-    pub async fn exec_logs_pipeline(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let parser_result = KqlParser::parse(kql_expr).unwrap();
+    pub async fn exec_logs_pipeline<P: Parser>(kql_expr: &str, logs_data: LogsData) -> LogsData {
+        let parser_result = P::parse(kql_expr).unwrap();
         exec_logs_pipeline_expr(parser_result.pipeline, logs_data).await
     }
 
