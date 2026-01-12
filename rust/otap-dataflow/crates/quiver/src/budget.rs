@@ -183,7 +183,11 @@ impl DiskBudget {
     /// * `policy` - What to do when the cap is exceeded.
     /// * `reserved_headroom` - Bytes to reserve for internal operations.
     #[must_use]
-    pub fn with_reserved_headroom(cap: u64, policy: RetentionPolicy, reserved_headroom: u64) -> Self {
+    pub fn with_reserved_headroom(
+        cap: u64,
+        policy: RetentionPolicy,
+        reserved_headroom: u64,
+    ) -> Self {
         Self {
             cap,
             used: AtomicU64::new(0),
@@ -672,8 +676,14 @@ mod tests {
         // Phase 1 approach: each engine gets its own budget
         let per_engine_cap = 500;
 
-        let budget1 = Arc::new(DiskBudget::new(per_engine_cap, RetentionPolicy::Backpressure));
-        let budget2 = Arc::new(DiskBudget::new(per_engine_cap, RetentionPolicy::Backpressure));
+        let budget1 = Arc::new(DiskBudget::new(
+            per_engine_cap,
+            RetentionPolicy::Backpressure,
+        ));
+        let budget2 = Arc::new(DiskBudget::new(
+            per_engine_cap,
+            RetentionPolicy::Backpressure,
+        ));
 
         // Each budget starts at 0
         assert_eq!(budget1.used(), 0);
@@ -696,10 +706,10 @@ mod tests {
         // Fill budget1 to capacity
         budget1.record_existing(200); // Now at 500 (at cap)
         assert_eq!(budget1.headroom(), 0);
-        
+
         // budget1 at capacity should reject
         assert!(budget1.try_reserve(1).is_err());
-        
+
         // budget2 should still accept (independent)
         let pending2 = budget2.try_reserve(100).unwrap();
         pending2.commit(100);
@@ -712,8 +722,16 @@ mod tests {
         let per_engine_cap = 500;
         let reserved = 100;
 
-        let budget1 = DiskBudget::with_reserved_headroom(per_engine_cap, RetentionPolicy::Backpressure, reserved);
-        let budget2 = DiskBudget::with_reserved_headroom(per_engine_cap, RetentionPolicy::Backpressure, reserved);
+        let budget1 = DiskBudget::with_reserved_headroom(
+            per_engine_cap,
+            RetentionPolicy::Backpressure,
+            reserved,
+        );
+        let budget2 = DiskBudget::with_reserved_headroom(
+            per_engine_cap,
+            RetentionPolicy::Backpressure,
+            reserved,
+        );
 
         // Each has 400 available for ingest (500 - 100 reserved)
         assert!(budget1.has_ingest_headroom(400));
@@ -775,11 +793,11 @@ mod tests {
         let cap = 64 * 1024 * 1024; // 64 MB (< 96 MB minimum)
 
         let result = DiskBudget::for_engine(cap, RetentionPolicy::Backpressure, segment, wal_max);
-        
+
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, BudgetConfigError::CapTooSmall { .. }));
-        
+
         // Check error message formatting
         let msg = format!("{}", err);
         assert!(msg.contains("64 MB is too small"));
@@ -793,13 +811,15 @@ mod tests {
         let min_cap = DiskBudget::minimum_cap(segment, wal_max); // 96 MB
 
         // Exactly at minimum should succeed
-        let budget = DiskBudget::for_engine(min_cap, RetentionPolicy::Backpressure, segment, wal_max)
-            .expect("should succeed at minimum cap");
-        
+        let budget =
+            DiskBudget::for_engine(min_cap, RetentionPolicy::Backpressure, segment, wal_max)
+                .expect("should succeed at minimum cap");
+
         assert_eq!(budget.cap(), min_cap);
-        
+
         // One byte below should fail
-        let result = DiskBudget::for_engine(min_cap - 1, RetentionPolicy::Backpressure, segment, wal_max);
+        let result =
+            DiskBudget::for_engine(min_cap - 1, RetentionPolicy::Backpressure, segment, wal_max);
         assert!(result.is_err());
     }
 }

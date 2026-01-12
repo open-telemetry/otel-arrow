@@ -417,7 +417,10 @@ impl QuiverEngine {
         if !self.budget.has_ingest_headroom(INGEST_HEADROOM_ESTIMATE) {
             return Err(QuiverError::StorageAtCapacity {
                 requested: INGEST_HEADROOM_ESTIMATE,
-                available: self.budget.headroom().saturating_sub(self.budget.reserved_headroom()),
+                available: self
+                    .budget
+                    .headroom()
+                    .saturating_sub(self.budget.reserved_headroom()),
                 cap: self.budget.cap(),
             });
         }

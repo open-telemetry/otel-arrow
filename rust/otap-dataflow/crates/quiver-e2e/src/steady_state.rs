@@ -115,8 +115,9 @@ fn create_per_engine_budget(
         .map(Arc::new)
         .map_err(|e| {
             // Add multi-engine context to the error message
-            let min_global_mb = DiskBudget::minimum_cap(segment_bytes, wal_bytes) 
-                * num_engines as u64 / (1024 * 1024);
+            let min_global_mb = DiskBudget::minimum_cap(segment_bytes, wal_bytes)
+                * num_engines as u64
+                / (1024 * 1024);
             format!(
                 "{} (global {} MB / {} engines = {} MB per engine). \
                  Minimum global for {} engines: {} MB",
@@ -439,7 +440,12 @@ pub fn run(
                 // Sum WAL and segment bytes across all engines
                 let wal_bytes: u64 = engines.iter().map(|e| e.wal_bytes_written()).sum();
                 let segment_bytes: u64 = engines.iter().map(|e| e.segment_bytes_written()).sum();
-                dashboard.update_steady_state(&stats, &dashboard_config, wal_bytes, segment_bytes)?;
+                dashboard.update_steady_state(
+                    &stats,
+                    &dashboard_config,
+                    wal_bytes,
+                    segment_bytes,
+                )?;
             }
             OutputMode::Tui(None) => {}
             OutputMode::Text => {
@@ -453,7 +459,7 @@ pub fn run(
 
                     output.log(&format!(
                         "[{:.0}s] Ingested: {} ({:.0}/s) | Consumed: {} ({:.0}/s) | Active: {} | Cleaned: {} | BP: {} | Dropped: {} segs/{} bundles | Mem: {:.1}MB | Disk: {:.1}MB",
-                        elapsed, ingested, ingest_rate, consumed, consume_rate, 
+                        elapsed, ingested, ingest_rate, consumed, consume_rate,
                         active_segments, stats.total_cleaned, backpressure,
                         force_dropped_segments, force_dropped_bundles,
                         current_mem, current_disk as f64 / 1024.0 / 1024.0

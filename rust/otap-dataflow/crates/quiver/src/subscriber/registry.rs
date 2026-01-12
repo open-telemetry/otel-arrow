@@ -542,10 +542,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the number of registered subscribers.
     #[must_use]
     pub fn subscriber_count(&self) -> usize {
-        self.subscribers
-            .read()
-            
-            .len()
+        self.subscribers.read().len()
     }
 
     /// Returns the oldest incomplete segment across all subscribers.
@@ -556,14 +553,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn oldest_incomplete_segment(&self) -> Option<SegmentSeq> {
         self.subscribers
             .read()
-            
             .values()
-            .filter_map(|state_lock| {
-                state_lock
-                    .read()
-                    
-                    .oldest_incomplete_segment()
-            })
+            .filter_map(|state_lock| state_lock.read().oldest_incomplete_segment())
             .min()
     }
 
@@ -576,7 +567,6 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn min_highest_tracked_segment(&self) -> Option<SegmentSeq> {
         self.subscribers
             .read()
-            
             .values()
             .filter_map(|state_lock| {
                 let state = state_lock.read();
@@ -594,7 +584,6 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn debug_subscriber_segment_counts(&self) -> Vec<(String, usize, bool)> {
         self.subscribers
             .read()
-            
             .iter()
             .map(|(id, state_lock)| {
                 let state = state_lock.read();
@@ -614,20 +603,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn cleanup_segments_before(&self, before: SegmentSeq) {
         let subscribers = self.subscribers.read();
         for state_lock in subscribers.values() {
-            state_lock
-                .write()
-                
-                .remove_completed_segments_before(before);
+            state_lock.write().remove_completed_segments_before(before);
         }
     }
 
     /// Returns whether a subscriber is registered.
     #[must_use]
     pub fn is_registered(&self, id: &SubscriberId) -> bool {
-        self.subscribers
-            .read()
-            
-            .contains_key(id)
+        self.subscribers.read().contains_key(id)
     }
 
     /// Returns whether a subscriber is active.
@@ -722,10 +705,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the number of subscribers with uncommitted progress.
     #[must_use]
     pub fn dirty_count(&self) -> usize {
-        self.dirty_subscribers
-            .lock()
-            
-            .len()
+        self.dirty_subscribers.lock().len()
     }
 
     /// Force-drops the oldest pending segments that have no active readers.
