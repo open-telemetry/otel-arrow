@@ -336,10 +336,7 @@ impl AzureMonitorExporter {
             let delay_secs = (capped_delay_secs + jitter).max(1.0);
             let delay = tokio::time::Duration::from_secs_f64(delay_secs);
 
-            println!(
-                "[AzureMonitorExporter] Retrying in {:.1}s...",
-                delay_secs
-            );
+            println!("[AzureMonitorExporter] Retrying in {:.1}s...", delay_secs);
             tokio::time::sleep(delay).await;
         }
     }
