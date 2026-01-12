@@ -58,6 +58,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tonic::transport::Server;
 use tower::limit::GlobalConcurrencyLimitLayer;
+use tower::util::Either;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -358,40 +359,26 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         // Build gRPC server concurrency strategy based on HTTP being enabled:
         // - If HTTP is enabled, use a shared semaphore so both protocols draw from the same pool.
         // - If HTTP is disabled, preserve prior gRPC-only behavior (GlobalConcurrencyLimitLayer).
-        let (server, shared_semaphore) = if self.config.http.is_some() {
+        let (limit_layer, shared_semaphore) = if self.config.http.is_some() {
             let shared = Arc::new(Semaphore::new(max_concurrent_requests));
-            let shared_limit = SharedConcurrencyLayer::new(shared.clone());
-            let mut builder =
-                common::apply_server_tuning(Server::builder(), config).layer(shared_limit);
-
-            if let Some(timeout) = config.timeout {
-                builder = builder.timeout(timeout);
-            }
-
-            (
-                builder
-                    .add_service(logs_server)
-                    .add_service(metrics_server)
-                    .add_service(traces_server),
-                Some(shared),
-            )
+            (Either::Left(SharedConcurrencyLayer::new(shared.clone())), Some(shared))
         } else {
-            let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
-            let mut builder =
-                common::apply_server_tuning(Server::builder(), config).layer(global_limit);
-
-            if let Some(timeout) = config.timeout {
-                builder = builder.timeout(timeout);
-            }
-
             (
-                builder
-                    .add_service(logs_server)
-                    .add_service(metrics_server)
-                    .add_service(traces_server),
+                Either::Right(GlobalConcurrencyLimitLayer::new(max_concurrent_requests)),
                 None,
             )
         };
+
+        let mut server = common::apply_server_tuning(Server::builder(), config).layer(limit_layer);
+
+        if let Some(timeout) = config.timeout {
+            server = server.timeout(timeout);
+        }
+
+        let server = server
+            .add_service(logs_server)
+            .add_service(metrics_server)
+            .add_service(traces_server);
 
         #[cfg(feature = "experimental-tls")]
         let maybe_tls_acceptor =

@@ -326,6 +326,7 @@ fn map_path_to_signal(path: &str) -> Option<SignalType> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn decode_content_encoding(
     accept_compressed_requests: bool,
     headers: &http::HeaderMap,
@@ -376,7 +377,7 @@ fn decode_content_encoding(
                 )
             }
         })?;
-        return Ok(Bytes::from(decoded));
+        Ok(Bytes::from(decoded))
     } else if encoding.eq_ignore_ascii_case("deflate") {
         let mut decoder = flate2::read::ZlibDecoder::new(body.as_ref());
         let decoded = read_to_end_limited(&mut decoder, max_len).map_err(|e| {
@@ -406,7 +407,7 @@ fn decode_content_encoding(
                 )
             }
         })?;
-        return Ok(Bytes::from(decoded));
+        Ok(Bytes::from(decoded))
     } else if encoding.eq_ignore_ascii_case("zstd") {
         let mut decoder = ZstdDecoder::new(body.as_ref()).map_err(|e| {
             let err_msg = e.to_string();
@@ -449,9 +450,9 @@ fn decode_content_encoding(
             }
         })?;
 
-        return Ok(Bytes::from(decoded));
+        Ok(Bytes::from(decoded))
     } else {
-        return Err(unsupported_media_type());
+        Err(unsupported_media_type())
     }
 }
 
@@ -471,10 +472,7 @@ fn read_to_end_limited<R: std::io::Read>(
         // We allow reading past the limit into 'buf' to detect overflow,
         // but we reject appending it to 'out'.
         if out.len().saturating_add(n) > max_len {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "decoded body too large",
-            ));
+            return Err(std::io::Error::other("decoded body too large"));
         }
 
         out.extend_from_slice(&buf[..n]);
@@ -725,7 +723,7 @@ pub async fn serve(
 ) -> std::io::Result<()> {
     let listener = effect_handler
         .tcp_listener(settings.listening_addr)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // Use shared semaphore if provided, otherwise create a dedicated one
     let semaphore = shared_semaphore.unwrap_or_else(|| {

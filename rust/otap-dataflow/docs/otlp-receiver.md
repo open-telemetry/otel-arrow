@@ -8,7 +8,7 @@ and HTTP/1.1 protocols with unified concurrency control.
 
 ## Architecture Overview
 
-```
+```text
                     +------------------------------------------+
                     |           OTLP Receiver Node             |
                     +------------------------------------------+
@@ -73,7 +73,7 @@ overhead and memory allocations on the hot path.
 
 When both protocols are enabled, a single `tokio::sync::Semaphore` controls admission:
 
-```
+```text
                      +---------------------------+
                      |   Shared Semaphore        |
                      |   (max_concurrent_requests)|
@@ -226,7 +226,7 @@ nodes:
 
 #### HTTP Endpoints
 
-```
+```text
 POST /v1/logs    -> ExportLogsServiceRequest    -> ExportLogsServiceResponse
 POST /v1/metrics -> ExportMetricsServiceRequest -> ExportMetricsServiceResponse
 POST /v1/traces  -> ExportTraceServiceRequest   -> ExportTraceServiceResponse
@@ -273,10 +273,10 @@ Both protocols enforce timeouts to mitigate slow-client (Slowloris-style) DoS:
 When both protocols are enabled, the shared semaphore bounds total inflight
 requests across gRPC and HTTP. When at capacity:
 
-- **gRPC (dual-protocol):** Requests queue on `acquire_owned().await` (no permit timeout);
-  request-level `timeout` applies after permit acquisition.
-- **HTTP (dual-protocol):** Requests queue for up to `timeout` (default 30s) waiting
-  for a permit; on timeout, respond 503.
+- **gRPC (dual-protocol):** Requests queue on `acquire_owned().await`
+  (no permit timeout); request-level `timeout` applies after permit acquisition.
+- **HTTP (dual-protocol):** Requests queue for up to `timeout` (default 30s)
+  waiting for a permit; on timeout, respond 503.
 
 When only gRPC is enabled, the original `GlobalConcurrencyLimitLayer` applies:
 excess requests are refused at `poll_ready` rather than queued.
@@ -308,7 +308,7 @@ config:
 When `wait_for_result: true`, the receiver waits for an ACK/NACK from the
 immediate downstream component before responding to the client:
 
-```
+```text
 Client -> Receiver -> Pipeline -> [Downstream] -> ACK/NACK -> Receiver -> Client
 ```
 
@@ -338,5 +338,5 @@ is safe because the OTLP service implementations:
 1. Have stateless `poll_ready` (always returns `Ready`)
 2. Use `Arc`-based internal state sharing
 
-See [crates/otap/src/shared_concurrency.rs](../crates/otap/src/shared_concurrency.rs) for detailed documentation
-on service compatibility requirements.
+See [crates/otap/src/shared_concurrency.rs](../crates/otap/src/shared_concurrency.rs) for
+detailed documentation on service compatibility requirements.
