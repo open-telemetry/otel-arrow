@@ -14,7 +14,7 @@ consume its own telemetry, and we intend for the self-hosted telemetry
 pipeline to be the standard configuration for all OpenTelemetry
 signals.
 
-Consuming self-generated telemetry presents a potential a kind of
+Consuming self-generated telemetry presents a potential
 feedback loop, situations where a telemetry pipeline creates pressure
 on itself. We have designed for the OTAP dataflow engine to remain
 reliable even with this kind of dependency on itself.
