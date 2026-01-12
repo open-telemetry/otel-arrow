@@ -1259,6 +1259,190 @@ returns a NACK, the embedding layer (e.g., persistence_processor):
 Quiver's progress files never see transient NACKs, only final outcomes (`Ack`
 or `Dropped`). This keeps Quiver decoupled from retry policy decisions.
 
+### Async API Design (Planned)
+
+Quiver will provide an async API designed for integration with otap-dataflow's
+async-first, thread-per-core architecture. Since otap-dataflow is the primary
+consumer of quiver, we take a direct dependency on tokio and provide async APIs
+as the primary interface.
+
+#### Background: otap-dataflow's Execution Model
+
+otap-dataflow uses a **thread-per-core** architecture where:
+
+- Each CPU core runs a **single-threaded tokio runtime** (`new_current_thread()`)
+- Processors use `async_trait(?Send)` allowing `!Send` futures
+- No work-stealing occurs between cores
+- Each core has its own pipeline instance with its own Quiver engine
+
+This is *not* the typical multi-threaded tokio model with work-stealing. The
+single-threaded runtime per core means:
+
+- `spawn_blocking()` would move work to a different thread pool, breaking
+  core-affinity benefits
+- Blocking operations on the async runtime starve other tasks on that core
+- We should prefer async I/O or short synchronous operations
+
+Quiver will use `tokio::fs` for cross-platform async file I/O. Internally,
+this dispatches blocking syscalls to tokio's thread pool rather than using
+platform-specific async I/O APIs (io_uring on Linux, IOCP on Windows).
+
+This is a deliberate tradeoff:
+
+- Consistent cross-platform behavior
+- Simpler implementation and testing
+- I/O latency (disk) dominates over thread-hop latency (microseconds)
+- Strict thread-per-core affinity broken during I/O waits
+
+For Quiver's workload (WAL/segment writes with fsync), disk latency typically
+dominates, making the blocking pool overhead negligible in practice.
+
+**Future optimization**: Platform-specific async I/O (io_uring, IOCP) could
+be evaluated if profiling shows blocking pool contention as a bottleneck.
+
+**`!Send` Compatibility**
+
+Quiver's async APIs return futures that can be awaited from `!Send` contexts.
+While the returned futures themselves happen to be `Send` (due to tokio::fs internals),
+Quiver does not require callers to hold `Send` data across await points. This allows
+integration with otap-dataflow's `#[async_trait(?Send)]` patterns.
+
+#### Design Principles
+
+1. **Async-first**: All I/O operations are async. This fits naturally with
+   otap-dataflow's async runtime and avoids blocking the single-threaded
+   executor.
+
+2. **Meaningful completion semantics**: Async operations complete when data is
+   *durably* persisted, not just queued. This enables correct ACK propagation.
+
+#### Ingest: Durability-Aware Completion
+
+The key insight for async ingest is that **completion should mean durability**.
+
+`ingest().await` completes after WAL fsync - meaning data is durable on disk.
+
+This design provides:
+
+- **Correct ACK semantics**: The persistence processor can ACK upstream only
+  after `ingest().await` completes, knowing data is safe on disk.
+- **Natural backpressure**: Slow disk I/O = slow `await` completion = upstream
+  gets throttled automatically. No separate backpressure mechanism needed.
+- **Simpler mental model**: No separate flush interval configuration for
+  durability guarantees.
+
+```rust
+/// Ingests a bundle, completing only after WAL fsync.
+///
+/// The future completes when the data is durably persisted to the WAL.
+/// Segment finalization may occur during this call if thresholds are exceeded.
+///
+/// # Backpressure
+///
+/// If the disk budget is exhausted, returns `StorageAtCapacity` error.
+/// The caller should apply backpressure to upstream (e.g., by not ACKing).
+pub async fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()>
+```
+
+**Implementation**:
+
+- Uses `tokio::fs::File` for WAL writes with `file.sync_data().await`
+- Cross-platform (Windows, macOS, Linux)
+- File I/O runs on tokio's blocking thread pool internally, which is fine -
+  the async task yields while I/O happens
+
+#### Consume: Async Notification
+
+```rust
+/// Waits asynchronously for the next bundle.
+///
+/// Returns when a bundle is available or the subscriber is deactivated.
+pub async fn next_bundle(
+    self: &Arc<Self>,
+    id: &SubscriberId,
+) -> Result<Option<BundleHandle<...>>>
+```
+
+**Implementation**:
+
+- Uses `tokio::sync::Notify` for efficient async waiting
+- On segment finalization, call `notify.notify_waiters()`
+- Async consumers await the notification, then check for available bundles
+
+#### Maintenance and Flush
+
+```rust
+/// Performs maintenance: flushes progress files and cleans up completed segments.
+pub async fn maintain(&self) -> Result<MaintenanceStats>
+
+/// Forces finalization of the current open segment.
+pub async fn flush(&self) -> Result<()>
+```
+
+These operations involve file I/O and should be async to avoid blocking.
+
+#### Sync Operations
+
+Some operations remain synchronous (no I/O or fast enough):
+
+- `claim_bundle()`: Memory lookup + mmap read
+- `BundleHandle::ack()`, `reject()`, `defer()`: In-memory state updates
+- Configuration accessors
+
+#### Dependencies
+
+```toml
+[dependencies]
+tokio = { workspace = true, features = ["fs", "sync"] }
+memmap2 = { workspace = true }
+```
+
+Quiver takes a direct dependency on tokio since its primary (and currently
+only) consumer is otap-dataflow, which uses tokio. This simplifies the API
+and avoids the complexity of maintaining both sync and async code paths.
+
+#### API Summary
+
+| Operation | API |
+| --------- | --- |
+| Ingest | `ingest().await` - returns after WAL fsync (safe to ACK) |
+| Consume | `next_bundle().await` - waits for data |
+| Claim | `claim_bundle()` - sync (memory lookup) |
+| Maintenance | `maintain().await` - async |
+| Flush | `flush().await` - async |
+
+#### Persistence Processor Integration Pattern
+
+With the async API, the persistence processor integration becomes straightforward:
+
+```rust
+// Ingest path (receiving upstream data)
+async fn handle_pdata(&mut self, data: OtapPdata) -> Result<()> {
+    // ingest().await completes only after WAL fsync
+    // Safe to ACK upstream after this returns
+    self.engine.ingest(&data).await?;
+    self.effect_handler.notify_ack(AckMsg::new(data)).await
+}
+
+// Consume path (sending to downstream)
+async fn consume_loop(&mut self) -> Result<()> {
+    loop {
+        let handle = self.engine.next_bundle(&self.subscriber_id).await?;
+        let Some(handle) = handle else { break };
+
+        match self.send_downstream(handle.data()).await {
+            Ok(()) => handle.ack(),
+            Err(e) if e.is_retryable() => {
+                let bundle_ref = handle.defer();
+                self.schedule_retry(bundle_ref);
+            }
+            Err(_) => handle.reject(),
+        }
+    }
+    Ok(())
+}
+```
+
 ### Future Enhancements
 
 - Ability to query over persisted data (e.g., per-node aggregations,
