@@ -61,7 +61,7 @@ where
     }
 }
 
-pub(crate) fn parse_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpression, ParserError> {
+pub(crate) fn parse_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     parse_next_child_rule(&mut inner_rules, Rule::or_expression, parse_or_expression)
@@ -76,7 +76,9 @@ fn no_inner_rule_error(query_location: QueryLocation) -> ParserError {
     )
 }
 
-pub(crate) fn parse_or_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpression, ParserError> {
+pub(crate) fn parse_or_expression(
+    rule: Pair<'_, Rule>,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let left_expr =
@@ -90,21 +92,23 @@ pub(crate) fn parse_or_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpress
     Ok(match maybe_right {
         Some(right_expr) => LogicalExpression::Or(OrLogicalExpression::new(
             query_location,
-            left_expr,
-            right_expr,
-        )),
+            left_expr.into(),
+            right_expr.into(),
+        ))
+        .into(),
         None => left_expr,
     })
 }
 
-pub(crate) fn parse_and_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpression, ParserError> {
+pub(crate) fn parse_and_expression(
+    rule: Pair<'_, Rule>,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let left_expr =
         parse_next_child_rule(&mut inner_rules, Rule::rel_expression, parse_rel_expression)
             .transpose()?
-            .ok_or_else(|| no_inner_rule_error(query_location.clone()))?
-            .into();
+            .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
     let maybe_right =
         parse_right(&mut inner_rules, Rule::and_expression, parse_and_expression).transpose()?;
@@ -112,9 +116,10 @@ pub(crate) fn parse_and_expression(rule: Pair<'_, Rule>) -> Result<LogicalExpres
     Ok(match maybe_right {
         Some(right_expr) => LogicalExpression::And(AndLogicalExpression::new(
             query_location,
-            left_expr,
-            right_expr,
-        )),
+            left_expr.into(),
+            right_expr.into(),
+        ))
+        .into(),
         None => left_expr,
     })
 }
@@ -401,7 +406,7 @@ fn negate_number_literal(
     })
 }
 
-fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     let rule = inner_rules
@@ -420,7 +425,9 @@ fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, 
     }
 }
 
-fn parse_index_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+pub(crate) fn parse_index_expression(
+    rule: Pair<'_, Rule>,
+) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     if inner_rules.len() == 2 {
@@ -457,7 +464,7 @@ fn parse_index_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, P
     }
 }
 
-fn parse_attribute_selection_expression(
+pub(crate) fn parse_attribute_selection_expression(
     rule: Pair<'_, Rule>,
 ) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
@@ -534,7 +541,7 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             NullScalarExpression::new(query_location),
         ))
         .into()),
-        Rule::expression => parse_expression(rule).map(|le| le.into()),
+        Rule::expression => parse_expression(rule),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
             Rule::primitive_expression,
@@ -728,7 +735,7 @@ mod test {
         let input = "a == 10";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
 
         let expected = LogicalExpression::EqualTo(EqualToLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -960,7 +967,7 @@ mod test {
         let input = "b != 20";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
 
         let expected = LogicalExpression::Not(NotLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -990,7 +997,7 @@ mod test {
         let input = "a == 10 or b == 20 and c == 30";
         let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
 
         let expected = LogicalExpression::Or(OrLogicalExpression::new(
             QueryLocation::new_fake(),
@@ -1068,7 +1075,7 @@ mod test {
             )))
         }
 
-        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
         let expected = LogicalExpression::And(AndLogicalExpression::new(
             QueryLocation::new_fake(),
             LogicalExpression::Or(OrLogicalExpression::new(
@@ -1100,7 +1107,7 @@ mod test {
             )))
         }
 
-        let result = parse_expression(rules.next().unwrap()).unwrap();
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
         let expected = LogicalExpression::Or(OrLogicalExpression::new(
             QueryLocation::new_fake(),
             LogicalExpression::And(AndLogicalExpression::new(
