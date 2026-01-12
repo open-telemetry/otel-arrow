@@ -1738,6 +1738,7 @@ mod test {
     use arrow::datatypes::{DataType, Field, Schema};
     use data_engine_kql_parser::{KqlParser, Parser};
     use datafusion::physical_plan::PhysicalExpr;
+    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
@@ -1786,7 +1787,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where severity_text == \"ERROR\"",
             to_logs_data(log_records.clone()),
         )
@@ -1797,7 +1798,7 @@ mod test {
         );
 
         // test same filter where the literal is on the left and column name on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where \"ERROR\" == severity_text",
             to_logs_data(log_records.clone()),
         )
@@ -1808,7 +1809,7 @@ mod test {
         );
 
         // test filtering by some other field types (u32, int32, timestamp)
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where severity_number == 17",
             to_logs_data(log_records.clone()),
         )
@@ -1817,7 +1818,7 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()]
         );
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where severity_number == 17",
             to_logs_data(log_records.clone()),
         )
@@ -1827,7 +1828,7 @@ mod test {
             &[log_records[2].clone()]
         );
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
             to_logs_data(log_records.clone()),
         )
@@ -1837,7 +1838,7 @@ mod test {
             &[log_records[1].clone(), log_records[2].clone()]
         );
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
             to_logs_data(log_records.clone()),
         )
@@ -1848,8 +1849,7 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_simple_attrs_filter() {
+    async fn test_simple_attrs_filter<P: Parser>() {
         let otap_batch = to_otap_logs(vec![
             LogRecord::build()
                 .event_name("1")
@@ -1872,7 +1872,7 @@ mod test {
                 .finish(),
         ];
 
-        let parser_result = KqlParser::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
+        let parser_result = P::parse("logs | where attributes[\"x\"] == \"b\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -1882,7 +1882,7 @@ mod test {
         );
 
         // test same filter where the literal is on the left and the attribute is on the right
-        let parser_result = KqlParser::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
+        let parser_result = P::parse("logs | where \"b\" == attributes[\"x\"]").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -1890,6 +1890,16 @@ mod test {
             &result_otlp.resource_logs[0].scope_logs[0].log_records,
             &expected,
         )
+    }
+
+    #[tokio::test]
+    async fn test_simple_attrs_filter_kql_parser() {
+        test_simple_attrs_filter::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_simple_attrs_filter_opl_parser() {
+        test_simple_attrs_filter::<OplParser>().await;
     }
 
     #[tokio::test]
@@ -1915,7 +1925,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where event_name contains \"error\"",
             to_logs_data(log_records.clone()),
         )
@@ -1926,7 +1936,7 @@ mod test {
         );
 
         // check we could specify the column on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where \"1234\" contains event_name",
             to_logs_data(log_records.clone()),
         )
@@ -1937,7 +1947,7 @@ mod test {
         );
 
         // also check we can filter by attributes using contains
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"username\"] contains \"y\"",
             to_logs_data(log_records.clone()),
         )
@@ -1948,7 +1958,7 @@ mod test {
         );
 
         // check that we could also specify the column on the right for attributes
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where \"albert\" contains attributes[\"username\"]",
             to_logs_data(log_records.clone()),
         )
@@ -1989,7 +1999,7 @@ mod test {
                 },
             ],
         };
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where resource.schema_url contains \"version\"",
             input.clone(),
         )
@@ -2002,7 +2012,7 @@ mod test {
         );
 
         // test same as above, but with literal contains the column value
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where \"experimental version\" contains resource.schema_url",
             input.clone(),
         )
@@ -2038,7 +2048,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where event_name matches regex \"^err.*\"",
             to_logs_data(log_records.clone()),
         )
@@ -2049,7 +2059,7 @@ mod test {
         );
 
         // also check we can filter by attributes using contains
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"username\"] matches regex \"^t.*\"",
             to_logs_data(log_records.clone()),
         )
@@ -2090,7 +2100,7 @@ mod test {
                 },
             ],
         };
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where resource.schema_url matches regex \"v.*1\"",
             input.clone(),
         )
@@ -2135,7 +2145,7 @@ mod test {
         };
 
         // test filter by resource properties
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where resource.schema_url == \"schema1\"",
             input.clone(),
         )
@@ -2148,7 +2158,7 @@ mod test {
         );
 
         // test same as above, but with the literal on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where \"schema2\" == resource.schema_url",
             input.clone(),
         )
@@ -2161,7 +2171,7 @@ mod test {
         );
 
         // test filter by resource attributes
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where resource.attributes[\"x\"] == \"a\"",
             input.clone(),
         )
@@ -2174,8 +2184,7 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_simple_filter_traces() {
+    async fn test_simple_filter_traces<P: Parser>() {
         let spans = vec![
             Span::build()
                 .name("span1")
@@ -2259,7 +2268,7 @@ mod test {
         ];
 
         let input = to_otap_traces(spans.clone());
-        let parser_result = KqlParser::parse("traces | where name == \"span2\"").unwrap();
+        let parser_result = P::parse("traces | where name == \"span2\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input).await.unwrap();
 
@@ -2292,7 +2301,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_traces_by_attrs() {
+    async fn test_simple_filter_traces_kql_parser() {
+        test_simple_filter_traces::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_traces_opl_parser() {
+        test_simple_filter_traces::<OplParser>().await;
+    }
+
+    async fn test_filter_traces_by_attrs<P: Parser>() {
         let spans = vec![
             Span::build()
                 .name("span1")
@@ -2311,8 +2329,7 @@ mod test {
         ];
 
         let input = to_otap_traces(spans.clone());
-        let parser_result =
-            KqlParser::parse("traces | where attributes[\"key\"] == \"val1\"").unwrap();
+        let parser_result = P::parse("traces | where attributes[\"key\"] == \"val2\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input).await.unwrap();
 
@@ -2321,12 +2338,21 @@ mod test {
         assert_eq!(traces_data.resource_spans[0].scope_spans.len(), 1);
         pretty_assertions::assert_eq!(
             &traces_data.resource_spans[0].scope_spans[0].spans,
-            &[spans[0].clone()]
+            &[spans[1].clone()]
         )
     }
 
     #[tokio::test]
-    async fn test_simple_filter_metrics() {
+    async fn test_filter_traces_by_attrs_kql_parser() {
+        test_filter_traces_by_attrs::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_traces_by_attrs_opl_parser() {
+        test_filter_traces_by_attrs::<OplParser>().await;
+    }
+
+    async fn test_simple_filter_metrics<P: Parser>() {
         let metrics = vec![
             Metric::build()
                 .name("metric1")
@@ -2479,7 +2505,7 @@ mod test {
         ];
 
         let input = to_otap_metrics(metrics.clone());
-        let parser_result = KqlParser::parse("traces | where name == \"metric1\"").unwrap();
+        let parser_result = P::parse("metrics | where name == \"metric1\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input).await.unwrap();
 
@@ -2555,7 +2581,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_metrics_by_attrs() {
+    async fn test_simple_filter_metrics_kql_parser() {
+        test_simple_filter_metrics::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_metrics_opl_parser() {
+        test_simple_filter_metrics::<OplParser>().await;
+    }
+
+    async fn test_filter_metrics_by_attrs<P: Parser>() {
         let metrics = vec![
             Metric::build()
                 .name("metric1")
@@ -2574,8 +2609,7 @@ mod test {
         ];
 
         let input = to_otap_metrics(metrics.clone());
-        let parser_result =
-            KqlParser::parse("metrics | where attributes[\"key\"] == \"val1\"").unwrap();
+        let parser_result = P::parse("metrics | where attributes[\"key\"] == \"val1\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input).await.unwrap();
 
@@ -2589,7 +2623,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_removes_child_record_batch_if_parent_fully_filtered_out() {
+    async fn test_filter_metrics_by_attrs_kql_parser() {
+        test_filter_metrics_by_attrs::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_metrics_by_attrs_opl_parser() {
+        test_filter_metrics_by_attrs::<OplParser>().await;
+    }
+
+    async fn test_removes_child_record_batch_if_parent_fully_filtered_out<P: Parser>() {
         let spans = vec![
             Span::build()
                 .name("span1")
@@ -2617,8 +2660,8 @@ mod test {
                 .finish(),
         ];
 
-        let input = to_otap_traces(spans);
-        let parser_result = KqlParser::parse("traces | where name == \"span1\"").unwrap();
+        let input = to_otap_traces(spans.clone());
+        let parser_result = P::parse("traces | where name == \"span1\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input).await.unwrap();
 
@@ -2626,6 +2669,16 @@ mod test {
         // should no longer be present
         assert!(result.get(ArrowPayloadType::SpanEvents).is_none());
         assert!(result.get(ArrowPayloadType::SpanEventAttrs).is_none())
+    }
+
+    #[tokio::test]
+    async fn test_removes_child_record_batch_if_parent_fully_filtered_out_kql_parser() {
+        test_removes_child_record_batch_if_parent_fully_filtered_out::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_removes_child_record_batch_if_parent_fully_filtered_out_opl_parser() {
+        test_removes_child_record_batch_if_parent_fully_filtered_out::<OplParser>().await;
     }
 
     #[tokio::test]
@@ -2662,7 +2715,7 @@ mod test {
         };
 
         // test filter by resource properties
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where instrumentation_scope.name == \"name1\"",
             input.clone(),
         )
@@ -2679,7 +2732,7 @@ mod test {
         );
 
         // test same as above, but with the literal on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where \"name2\" == instrumentation_scope.name",
             input.clone(),
         )
@@ -2696,7 +2749,7 @@ mod test {
         );
 
         // test filter by resource attributes
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where instrumentation_scope.attributes[\"x\"] == \"a\"",
             input.clone(),
         )
@@ -2713,8 +2766,7 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_filter_with_and() {
+    async fn test_filter_with_and<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -2745,8 +2797,7 @@ mod test {
 
         // check simple filter "and" properties
         let parser_result =
-            KqlParser::parse("logs | where severity_text == \"ERROR\" and event_name == \"2\"")
-                .unwrap();
+            P::parse("logs | where severity_text == \"ERROR\" and event_name == \"2\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -2755,11 +2806,10 @@ mod test {
             &[log_records[1].clone()],
         );
 
-        // check simple filter "and" with attributes
-        let parser_result = KqlParser::parse(
-            "logs | where severity_text == \"ERROR\" and attributes[\"x\"] == \"c\"",
-        )
-        .unwrap();
+        // check simple filter "and" with mixed attributes and properties
+        let parser_result =
+            P::parse("logs | where severity_text == \"ERROR\" and attributes[\"x\"] == \"c\"")
+                .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -2769,10 +2819,9 @@ mod test {
         );
 
         // check simple filter "and" two attributes
-        let parser_result = KqlParser::parse(
-            "logs | where attributes[\"y\"] == \"d\" and attributes[\"x\"] == \"a\"",
-        )
-        .unwrap();
+        let parser_result =
+            P::parse("logs | where attributes[\"y\"] == \"d\" and attributes[\"x\"] == \"a\"")
+                .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -2783,7 +2832,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_with_or() {
+    async fn test_filter_with_and_kql_parser() {
+        test_filter_with_and::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_and_opl_parser() {
+        test_filter_with_and::<OplParser>().await;
+    }
+
+    async fn test_filter_with_or<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -2813,10 +2871,9 @@ mod test {
         let otap_batch = to_otap_logs(log_records.clone());
 
         // check simple filter "or" with properties predicates
-        let parser_result = KqlParser::parse(
-            "logs | where severity_text == \"INFO\" or severity_text == \"ERROR\"",
-        )
-        .unwrap();
+        let parser_result =
+            P::parse("logs | where severity_text == \"INFO\" or severity_text == \"ERROR\"")
+                .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -2826,10 +2883,9 @@ mod test {
         );
 
         // check simple filter "or" with mixed attributes/properties predicates
-        let parser_result = KqlParser::parse(
-            "logs | where severity_text == \"ERROR\" or attributes[\"x\"] == \"c\"",
-        )
-        .unwrap();
+        let parser_result =
+            P::parse("logs | where severity_text == \"ERROR\" or attributes[\"x\"] == \"c\"")
+                .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -2839,10 +2895,9 @@ mod test {
         );
 
         // check simple filter "or" two attributes predicates
-        let parser_result = KqlParser::parse(
-            "logs | where attributes[\"x\"] == \"a\" or attributes[\"y\"] == \"e\"",
-        )
-        .unwrap();
+        let parser_result =
+            P::parse("logs | where attributes[\"x\"] == \"a\" or attributes[\"y\"] == \"e\"")
+                .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch.clone()).await.unwrap();
         let result_otlp = otap_to_logs_data(result);
@@ -2853,7 +2908,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_with_not() {
+    async fn test_filter_with_or_kql_parser() {
+        test_filter_with_or::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_or_opl_parser() {
+        test_filter_with_or::<OplParser>().await;
+    }
+
+    async fn test_filter_with_not<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -2882,7 +2946,7 @@ mod test {
         ];
 
         // check simple filter "not" with properties predicate
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(severity_text == \"INFO\")",
             to_logs_data(log_records.clone()),
         )
@@ -2893,7 +2957,7 @@ mod test {
         );
 
         // check simple filter "not" with attributes predicate
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"b\")",
             to_logs_data(log_records.clone()),
         )
@@ -2905,7 +2969,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_not_and() {
+    async fn test_filter_with_not_kql_parser() {
+        test_filter_with_not::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_not_opl_parser() {
+        test_filter_with_not::<OplParser>().await;
+    }
+
+    async fn test_filter_not_and<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -2934,7 +3007,7 @@ mod test {
         ];
 
         // check simple inverted "and" filter with properties predicates
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(severity_text == \"INFO\" and event_name == \"1\")",
             to_logs_data(log_records.clone()),
         )
@@ -2945,7 +3018,7 @@ mod test {
         );
 
         // check simple inverted "and" filter with attributes predicates
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"b\" and attributes[\"y\"] == \"e\")",
             to_logs_data(log_records.clone()),
         )
@@ -2957,7 +3030,7 @@ mod test {
 
         // check simple inverted "and" filter with mixed attributes & properties predicates
         // check simple inverted "and" filter with attributes predicates
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"c\" and severity_text == \"DEBUG\")",
             to_logs_data(log_records.clone()),
         )
@@ -2969,7 +3042,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_not_or() {
+    async fn test_filter_not_and_kql_parser() {
+        test_filter_not_and::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_not_and_opl_parser() {
+        test_filter_not_and::<OplParser>().await;
+    }
+
+    async fn test_filter_not_or<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -2998,7 +3080,7 @@ mod test {
         ];
 
         // check simple inverted "or" filter with properties predicates
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(severity_text == \"INFO\" or event_name == \"2\")",
             to_logs_data(log_records.clone()),
         )
@@ -3009,7 +3091,7 @@ mod test {
         );
 
         // check simple inverted "or" filter with attributes predicates
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"b\" or attributes[\"y\"] == \"f\")",
             to_logs_data(log_records.clone()),
         )
@@ -3020,7 +3102,7 @@ mod test {
         );
 
         // check simple inverted "or" filter with mixed attributes & properties predicates
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(attributes[\"x\"] == \"c\" or severity_text == \"INFO\")",
             to_logs_data(log_records.clone()),
         )
@@ -3032,7 +3114,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_with_nulls() {
+    async fn test_filter_not_or_kql_parser() {
+        test_filter_not_or::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_not_or_opl_parser() {
+        test_filter_not_or::<OplParser>().await;
+    }
+
+    async fn test_filter_with_nulls<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3049,7 +3140,7 @@ mod test {
         ];
 
         // check simple filter to ensure we filter out the value with null in the column
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_text == \"ERROR\"",
             to_logs_data(log_records.clone()),
         )
@@ -3061,7 +3152,7 @@ mod test {
 
         // test a few scenarios where if we had null in the selection vector (which we
         // shouldn't have), they would not pass:
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where not(severity_text == \"ERROR\")",
             to_logs_data(log_records.clone()),
         )
@@ -3070,7 +3161,7 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[2].clone()],
         );
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_text == \"ERROR\" or event_name == \"3\"",
             to_logs_data(log_records.clone()),
         )
@@ -3079,6 +3170,16 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone(), log_records[2].clone()],
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_nulls_kql_parser() {
+        test_filter_with_nulls::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_with_nulls_opl_parser() {
+        test_filter_with_nulls::<OplParser>().await;
     }
 
     #[tokio::test]
@@ -3110,7 +3211,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"z\"] > 2",
             to_logs_data(log_records.clone()),
         )
@@ -3120,7 +3221,7 @@ mod test {
             &[log_records[2].clone()],
         );
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"z\"] >= 2",
             to_logs_data(log_records.clone()),
         )
@@ -3130,7 +3231,7 @@ mod test {
             &[log_records[1].clone(), log_records[2].clone()],
         );
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"z\"] < 2",
             to_logs_data(log_records.clone()),
         )
@@ -3140,7 +3241,7 @@ mod test {
             &[log_records[0].clone()],
         );
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"z\"] <= 2",
             to_logs_data(log_records.clone()),
         )
@@ -3151,8 +3252,7 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_filter_nomatch() {
+    async fn test_filter_nomatch<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3180,7 +3280,7 @@ mod test {
                 .finish(),
         ];
 
-        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let parser_result = P::parse("logs | where event_name == \"5\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3200,12 +3300,31 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_empty_batch() {
+    async fn test_filter_nomatch_kql_parser() {
+        test_filter_nomatch::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_nomatch_opl_parser() {
+        test_filter_nomatch::<OplParser>().await;
+    }
+
+    async fn test_empty_batch<P: Parser>() {
         let input = OtapArrowRecords::Logs(Logs::default());
-        let parser_result = KqlParser::parse("logs | where event_name == \"5\"").unwrap();
+        let parser_result = P::parse("logs | where event_name == \"5\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(input.clone()).await.unwrap();
         assert_eq!(result, input);
+    }
+
+    #[tokio::test]
+    async fn test_empty_batch_kql_parser() {
+        test_empty_batch::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_empty_batch_opl_parser() {
+        test_empty_batch::<OplParser>().await;
     }
 
     #[tokio::test]
@@ -3297,7 +3416,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where severity_text == string(null)",
             to_logs_data(log_records.clone()),
         )
@@ -3309,7 +3428,7 @@ mod test {
         );
 
         // check it's supported if null literal on the left and column on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) == severity_text",
             to_logs_data(log_records.clone()),
         )
@@ -3349,7 +3468,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where severity_text != string(null)",
             to_logs_data(log_records.clone()),
         )
@@ -3361,7 +3480,7 @@ mod test {
         );
 
         // check it's supported if null literal on the left and column on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) != severity_text",
             to_logs_data(log_records.clone()),
         )
@@ -3404,7 +3523,7 @@ mod test {
         let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where severity_text == string(null)",
             to_logs_data(log_records.clone()),
         )
@@ -3420,7 +3539,7 @@ mod test {
         );
 
         // check it's supported if null literal on the left and column on the right
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) == severity_text",
             to_logs_data(log_records.clone()),
         )
@@ -3519,7 +3638,7 @@ mod test {
         };
 
         // test filter by scope properties
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where instrumentation_scope.name == string(null)",
             input.clone(),
         )
@@ -3536,7 +3655,7 @@ mod test {
         );
 
         // test filter by scope properties, this time the null is on the left
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) == instrumentation_scope.name",
             input.clone(),
         )
@@ -3585,7 +3704,7 @@ mod test {
         };
 
         // test filter by scope properties
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where instrumentation_scope.name == string(null)",
             input.clone(),
         )
@@ -3635,7 +3754,7 @@ mod test {
         };
 
         // test filter by scope properties
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where instrumentation_scope.name != string(null)",
             input.clone(),
         )
@@ -3652,7 +3771,7 @@ mod test {
         );
 
         // test filter by scope properties, this time the null is on the left
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) != instrumentation_scope.name",
             input.clone(),
         )
@@ -3724,7 +3843,7 @@ mod test {
             LogRecord::build().event_name("3").finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"x\"] == string(null)",
             to_logs_data(log_records.clone()),
         )
@@ -3736,7 +3855,7 @@ mod test {
         );
 
         // check the same thing works if we put null on the left
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) == attributes[\"x\"]",
             to_logs_data(log_records.clone()),
         )
@@ -3761,7 +3880,7 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"x\"] == string(null)",
             to_logs_data(log_records.clone()),
         )
@@ -3772,7 +3891,7 @@ mod test {
             &log_records.clone()
         );
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) == attributes[\"x\"]",
             to_logs_data(log_records.clone()),
         )
@@ -3798,7 +3917,7 @@ mod test {
             LogRecord::build().event_name("3").finish(),
         ];
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where attributes[\"x\"] != string(null)",
             to_logs_data(log_records.clone()),
         )
@@ -3810,7 +3929,7 @@ mod test {
         );
 
         // check the same thing works if we put null on the left
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | where string(null) != attributes[\"x\"]",
             to_logs_data(log_records.clone()),
         )
@@ -3856,13 +3975,12 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
     }
 
-    #[tokio::test]
-    async fn test_optional_attrs_existence_changes() {
+    async fn test_optional_attrs_existence_changes<P: Parser>() {
         // what happens if some optional attributes are present one batch, then not present in the
         // next, then present in the next, etc.
 
         let query = "logs | where attributes[\"a\"] == \"1234\"";
-        let parser_result = KqlParser::parse(query).unwrap();
+        let parser_result = P::parse(query).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
 
         // no attrs to start
@@ -3924,6 +4042,16 @@ mod test {
         let result = pipeline.execute(otap_input.clone()).await.unwrap();
 
         assert_eq!(result, otap_input)
+    }
+
+    #[tokio::test]
+    async fn test_optional_attrs_existence_changes_kql_parser() {
+        test_optional_attrs_existence_changes::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_optional_attrs_existence_changes_opl_parser() {
+        test_optional_attrs_existence_changes::<OplParser>().await;
     }
 
     #[test]

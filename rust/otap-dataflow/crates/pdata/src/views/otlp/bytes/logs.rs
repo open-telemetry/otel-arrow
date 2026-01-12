@@ -153,6 +153,18 @@ pub struct RawLogRecord<'a> {
     bytes_parser: ProtoBytesParser<'a, LogFieldOffsets>,
 }
 
+impl<'a> RawLogRecord<'a> {
+    /// Create a new instance of `RawLogRecord`. This is exposed
+    /// specifically for interpreting internally generated log records
+    /// which encode body and attributes as OTLP bytes.
+    #[must_use]
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self {
+            bytes_parser: ProtoBytesParser::new(buf),
+        }
+    }
+}
+
 /// Known field offsets within byte buffer for fields in ResourceLogs message
 pub struct LogFieldOffsets {
     scalar_fields: [Cell<Option<(NonZeroUsize, NonZeroUsize)>>; 13],
@@ -274,11 +286,7 @@ impl<'a> Iterator for LogRecordsIter<'a> {
     type Item = RawLogRecord<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let slice = self.byte_parser.next()?;
-
-        Some(RawLogRecord {
-            bytes_parser: ProtoBytesParser::new(slice),
-        })
+        Some(RawLogRecord::new(self.byte_parser.next()?))
     }
 }
 

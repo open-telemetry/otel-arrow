@@ -61,7 +61,6 @@ nodes:
             "span_id": "SpanId"
             "attributes":
               "message": "ParsedMessage"
-          disable_schema_mapping: false
 
       # Authentication configuration (uses Azure SDK defaults)
       auth:

@@ -76,7 +76,11 @@ flate2 = { workspace = true }
 zstd = { workspace = true }
 
 # Geneva exporter dependencies
-geneva-uploader = { version = "0.3.0", optional = true }
+geneva-uploader = { version = "0.4.0", optional = true }
+
+# Recordset KQL OTLP query_engine Processor dependencies
+data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
+data_engine_recordset = { workspace = true, optional = true }
 
 # Azure Monitor Exporter dependencies
 azure_identity = { workspace = true, optional = true }
@@ -111,6 +115,11 @@ azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:
 # Experimental processors
 experimental-processors = []
 condense-attributes-processor = ["experimental-processors"]
+recordset-kql-processor = [
+    "experimental-processors",
+    "dep:data_engine_recordset_otlp_bridge",
+    "dep:data_engine_recordset"
+]
 
 [dev-dependencies]
 flume.workspace = true
