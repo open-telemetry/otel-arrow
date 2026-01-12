@@ -9,8 +9,11 @@ use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_telemetry::self_tracing::{ConsoleWriter, RawLoggingLayer};
 use std::path::PathBuf;
 use sysinfo::System;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Registry;
 
 #[cfg(all(
     not(windows),
@@ -123,12 +126,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", system_info());
 
-    // Load pipeline configuration from file
-    let pipeline_cfg = PipelineConfig::from_file(
-        pipeline_group_id.clone(),
-        pipeline_id.clone(),
-        &args.pipeline,
-    )?;
+    // Load pipeline configuration with early logging so parse errors are readable.
+    // Use with_default for a thread-local subscriber during config loading only.
+    let early_subscriber = Registry::default()
+        .with(RawLoggingLayer::new(ConsoleWriter::color()));
+    let pipeline_cfg = tracing::subscriber::with_default(early_subscriber, || {
+        PipelineConfig::from_file(
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            &args.pipeline,
+        )
+    })?;
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);

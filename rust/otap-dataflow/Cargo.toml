@@ -33,7 +33,10 @@ path = "src/main.rs"
 otap-df-config.workspace = true
 otap-df-controller.workspace = true
 otap-df-otap.workspace = true
+otap-df-telemetry.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true

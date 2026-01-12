@@ -16,9 +16,11 @@ pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:otap:internal_teleme
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LogsConfig {
     /// The log level for internal engine logs.
+    #[serde(default = "default_level")]
     pub level: LogLevel,
 
     /// Logging strategy configuration for different thread contexts.
+    #[serde(default = "default_strategies")]
     pub strategies: LoggingStrategies,
 
     /// What to do with collected log events.
@@ -27,6 +29,7 @@ pub struct LogsConfig {
 
     /// The list of log processors to configure (for OpenTelemetry SDK output mode).
     /// Only used when `output.mode` is set to `opentelemetry`.
+    #[serde(default)]
     pub processors: Vec<processors::LogProcessorConfig>,
 }
 

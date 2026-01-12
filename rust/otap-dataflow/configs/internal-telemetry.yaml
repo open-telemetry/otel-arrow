@@ -40,7 +40,6 @@ service:
       # The default level is "info".
       level: "debug"
       strategies:
-        global: global
+        global: unbuffered
         engine: buffered
-      output:
-        mode: raw
+      output: raw
