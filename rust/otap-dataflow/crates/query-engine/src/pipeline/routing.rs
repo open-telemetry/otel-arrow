@@ -15,29 +15,42 @@ use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::state::ExecutionState;
 
-/// TODO docs
+/// A trait for routing OTAP (OpenTelemetry Arrow Protocol) batch records to some destination.
+///
+/// The pipeline stage that handles routing will look for an implementation of this trait
+/// in the `ExecutionState` extensions, and invoke it to send the data to the appropriate route.
+/// 
+/// The trait also provides methods to allow down-casting to concrete implementations. This means
+/// the execution state can own the router as a trait object, but the pipeline caller can retrieve
+/// it, downcast it to a concrete type, and inspect any state it may have or call other methods.
+/// This is useful for implementations that buffer batches before sending them.
+///
 #[async_trait]
 pub trait Router {
-    /// TODO docs
+    /// returns a reference as `Any` for down-casting
     fn as_any(&self) -> &dyn Any;
 
-    /// TODO dodcs
+    /// returns a mutable reference as `Any` for down-casting
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
-    /// TODO docs
+    /// Send OTAP batch to the specified route.
     async fn send(&mut self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()>;
 }
 
-/// TODO comments
+/// [`PipelineStage`] that routes OTAP batches to a specified route. 
+/// 
+/// This stage looks for a `Router` implementation in the `ExecutionState` extensions,
+/// and invokes it to send the batch to the specified route. [`Pipeline`s](super::Pipeline)
+/// that include this stage must ensure that a `Router` is set in the execution state.
 pub struct RouteToPipelineStage {
-    outport_name: String,
+    route_name: String,
 }
 
 impl RouteToPipelineStage {
-    /// TODO comments
-    pub fn new(outport_name: &str) -> Self {
+    /// Create a new `RouteToPipelineStage` that routes to the specified route name.
+    pub fn new(route_name: &str) -> Self {
         Self {
-            outport_name: outport_name.to_string(),
+            route_name: route_name.to_string(),
         }
     }
 }
@@ -55,7 +68,7 @@ impl PipelineStage for RouteToPipelineStage {
         let root_payload_type = otap_batch.root_payload_type();
         match exec_state.get_extension_mut::<Box<dyn Router>>() {
             Some(router) => {
-                router.send(&self.outport_name, otap_batch).await?;
+                router.send(&self.route_name, otap_batch).await?;
             }
             None => {
                 return Err(Error::ExecutionError {
@@ -141,6 +154,34 @@ mod test {
                 assert_eq!(test_router.routed[0].0, "test_sink");
             }
             None => panic!("Failed to downcast router to TestRouter"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_to_pipeline_stage_no_router() {
+        let output_expr = OutputDataExpression::new(
+            QueryLocation::new_fake(),
+            OutputExpression::NamedSink(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "test_sink",
+            )),
+        );
+        let pipeline_expr = PipelineExpressionBuilder::new("test")
+            .with_expressions(vec![DataExpression::Output(output_expr)])
+            .build()
+            .unwrap();
+        let mut pipeline = Pipeline::new(pipeline_expr);
+        let mut exec_state = ExecutionState::new();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let result = pipeline
+            .execute_with_state(otap_batch, &mut exec_state)
+            .await;
+
+        match result {
+            Err(Error::ExecutionError { cause }) => {
+                assert_eq!(cause, "No router extension found in execution state");
+            }
+            _ => panic!("Expected ExecutionError"),
         }
     }
 }

@@ -6,6 +6,20 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// Additional state that may be carried along during the execution of a pipeline.
+/// 
+/// This can be used to store arbitrary extensions that may be needed by custom pipeline stages.
+/// Extensions are stored in a type-map and pipeline stages can retrieve them by a known type.
+/// 
+// Note: this is similar to datafusion's `ExecutionState`, which it also uses for extensions, but
+// without the need for `Send + Sync` bounds, as those are not required in this context due to these
+// pipeline stages executing in a single threaded runtime. This also means that pipeline
+// stages can get mutable references to extensions if needed.
+// 
+// In the future, this may be expanded to include other execution-related state like metrics
+//
+// Also note that when the pipeline is executed without an ExecutionState being provided, a default
+// one will be created. This means that anything added to this in the future should be inexpensive
+// to initialize in the default case.
 #[derive(Default)]
 pub struct ExecutionState {
     // TODO comments
@@ -45,19 +59,19 @@ impl ExecutionState {
 
 /// Map that holds opaque objects indexed by their type.
 ///
-/// Note: this is similar to datafusion's `AnyMap`, which it also uses for extensions, but
-/// without the `Send + Sync` bounds, as those are not required in this context due to these
-/// pipeline stages executing in a single threaded runtime. This also means that pipeline
-/// stages can get mutable references to extensions if needed.
+// Note: this is similar to datafusion's `AnyMap`, which it also uses for extensions, but
+// without the `Send + Sync` bounds, as those are not required in this context due to these
+// pipeline stages executing in a single threaded runtime. This also means that pipeline
+// stages can get mutable references to extensions if needed.
 type ExtensionMap = HashMap<TypeId, Box<dyn Any + 'static>, BuildHasherDefault<IdHasher>>;
 
 /// Hasher for [`ExtensionMap`].
 ///
-/// This is the same as the one used by datafusion's `AnyMap`.
-///
-/// With [`TypeId`]s as keys, there's no need to hash them. They are already hashes themselves,
-/// coming from the compiler. The [`IdHasher`] just holds the [`u64`] of the [`TypeId`], and then
-/// returns it, instead of doing any bit fiddling.
+// This is the same as the one used by datafusion's `AnyMap`.
+//
+// With [`TypeId`]s as keys, there's no need to hash them. They are already hashes themselves,
+// coming from the compiler. The [`IdHasher`] just holds the [`u64`] of the [`TypeId`], and then
+// returns it, instead of doing any bit fiddling.
 #[derive(Default)]
 struct IdHasher(u64);
 
