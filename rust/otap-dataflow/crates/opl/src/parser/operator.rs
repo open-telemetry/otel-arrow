@@ -2,19 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-<<<<<<< HEAD
-    DataExpression, DiscardDataExpression, LogicalExpression, NotLogicalExpression,
+    DataExpression,
     TransformExpression,
-=======
-    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
+    ConditionalDataExpression, ConditionalDataExpressionBranch,
     DiscardDataExpression, Expression, LogicalExpression, NotLogicalExpression, QueryLocation,
->>>>>>> a67f5e8f (added if statement that works, aside from extend used in tests)
 };
-use data_engine_parser_abstractions::{ParserError, ParserState, to_query_location};
+use data_engine_parser_abstractions::{ParserError, to_query_location};
 use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
 use crate::parser::expression::parse_expression;
+use crate::parser::pipeline::{parse_pipeline_stage, PipelineBuilder};
 use crate::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_operator_call(
@@ -23,13 +21,9 @@ pub(crate) fn parse_operator_call(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
-<<<<<<< HEAD
-            Rule::set_operator_call => parse_set_operator_call(rule, state)?,
-            Rule::where_operator_call => parse_where_operator_call(rule, state)?,
-=======
+            Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
             Rule::if_else_operator_call => parse_if_else_opeartor_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
->>>>>>> a67f5e8f (added if statement that works, aside from extend used in tests)
             invalid_rule => {
                 let query_location = to_query_location(&rule);
                 return Err(invalid_child_rule_error(
@@ -44,17 +38,16 @@ pub(crate) fn parse_operator_call(
     Ok(())
 }
 
-<<<<<<< HEAD
 pub(crate) fn parse_set_operator_call(
     operator_call_rule: Pair<'_, Rule>,
-    state: &mut ParserState,
+    pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     if let Some(rule) = operator_call_rule.into_inner().next() {
         match rule.as_rule() {
             Rule::assignment_expression => {
                 let set_expr = parse_assignment_expression(rule)?;
                 let transform_expr = TransformExpression::Set(set_expr);
-                state.push_expression(DataExpression::Transform(transform_expr));
+                pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
             }
             invalid_rule => {
                 let query_location = to_query_location(&rule);
@@ -62,27 +55,15 @@ pub(crate) fn parse_set_operator_call(
                     query_location,
                     Rule::assignment_expression,
                     invalid_rule,
-=======
-/// Trait for building pipelines.
-///
-/// This abstracts away the details of how expressions are added to a pipeline, so the same parser
-/// utility functions can be used targetting different pipeline builder. In pratice, this is useful
-/// when building nested pipelines for some expressions which nest pipeline stages, such as if/else
-pub(crate) trait PipelineBuilder {
-    fn push_data_expression(&mut self, data_expression: DataExpression);
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
-impl PipelineBuilder for Vec<DataExpression> {
-    fn push_data_expression(&mut self, data_expression: DataExpression) {
-        self.push(data_expression);
-    }
-}
 
-impl PipelineBuilder for ParserState {
-    fn push_data_expression(&mut self, data_expression: DataExpression) {
-        self.push_expression(data_expression);
-    }
-}
 
 pub(crate) fn parse_if_else_opeartor_call(
     operator_call_rule: Pair<'_, Rule>,
@@ -117,7 +98,7 @@ pub(crate) fn parse_if_else_opeartor_call(
                             .to_string(),
                     )
                 })?;
-                next_condition = Some(parse_expression(condition_rule)?);
+                next_condition = Some(parse_expression(condition_rule)?.into());
             }
 
             // parse the pipeline of data expressions for this branch
@@ -125,14 +106,9 @@ pub(crate) fn parse_if_else_opeartor_call(
                 let branch_loc_end = rule.as_span().end();
 
                 // parse all the rules
-                let inner_rules = rule.into_inner();
-                let mut inner_exprs = Vec::with_capacity(inner_rules.len());
-                for inner_rule in inner_rules {
-                    parse_operator_call(inner_rule, &mut inner_exprs)?;
+                for inner_rule in rule.into_inner(){
+                    parse_pipeline_stage(inner_rule, &mut next_branch)?;
                 }
-                inner_exprs
-                    .drain(..)
-                    .for_each(|expr| pipeline_builder.push_data_expression(expr));
 
                 // take the data expressions for the branch and reset next_branch
                 let curr_branch = next_branch;
@@ -182,7 +158,8 @@ pub(crate) fn parse_if_else_opeartor_call(
                 let inner_rules = branch_rules.into_inner();
                 let mut else_branch_exprs = Vec::with_capacity(inner_rules.len());
                 for inner_rule in inner_rules {
-                    parse_operator_call(inner_rule, &mut else_branch_exprs)?;
+                    // TODO check the rule type
+                    parse_pipeline_stage(inner_rule, &mut else_branch_exprs)?;
                 }
 
                 conditional_expr = conditional_expr.with_default_branch(else_branch_exprs);
@@ -191,17 +168,13 @@ pub(crate) fn parse_if_else_opeartor_call(
                 return Err(ParserError::SyntaxError(
                     conditional_expr.get_query_location().clone(),
                     format!("invalid rule found in if_else_expression {rule}"),
->>>>>>> a67f5e8f (added if statement that works, aside from extend used in tests)
                 ));
             }
         }
     }
 
-<<<<<<< HEAD
+    pipeline_builder.push_data_expression(DataExpression::Conditional(conditional_expr));
     Ok(())
-=======
-    todo!()
->>>>>>> a67f5e8f (added if statement that works, aside from extend used in tests)
 }
 
 pub(crate) fn parse_where_operator_call(
@@ -303,7 +276,7 @@ mod tests {
                 QueryLocation::new_fake(),
                 value,
             ))),
-            false,
+            true,
         ))
     }
 
