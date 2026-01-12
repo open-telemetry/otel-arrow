@@ -221,7 +221,7 @@ mod tests {
 
         // Register a metric set to get a valid key
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
-            telemetry_registry.register(MockAttributeSet::new("attr"));
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
@@ -272,7 +272,7 @@ mod tests {
         let config = create_test_config(10);
         let telemetry_registry = create_test_registry();
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
-            telemetry_registry.register(MockAttributeSet::new("attr"));
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());

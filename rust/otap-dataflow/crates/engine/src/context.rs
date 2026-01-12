@@ -181,7 +181,7 @@ impl PipelineContext {
     ) -> MetricSet<T> {
         self.controller_context
             .telemetry_registry_handle
-            .register::<T>(self.node_attribute_set())
+            .register_metric_set::<T>(self.node_attribute_set())
     }
 
     /// Returns the node attribute set for the current node context.

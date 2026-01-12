@@ -526,10 +526,9 @@ mod tests {
         fn new(config: Config) -> Self {
             // Create a standalone metrics set for tests (not bound to a pipeline)
             let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
-            let metric_set =
-                telemetry_registry.register::<SyslogCefReceiverMetrics>(
-                    otap_df_telemetry::testing::EmptyAttributes(),
-                );
+            let metric_set = telemetry_registry.register_metric_set::<SyslogCefReceiverMetrics>(
+                otap_df_telemetry::testing::EmptyAttributes(),
+            );
             SyslogCefReceiver {
                 config,
                 metrics: Rc::new(RefCell::new(metric_set)),

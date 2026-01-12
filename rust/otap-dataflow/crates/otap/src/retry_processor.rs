@@ -654,7 +654,7 @@ impl RetryProcessor {
     pub fn with_config(config: RetryConfig) -> Self {
         let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
         let metrics: MetricSet<RetryProcessorMetrics> =
-            telemetry_registry.register(otap_df_telemetry::testing::EmptyAttributes());
+            telemetry_registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes());
 
         let (retry_limit, delays) = config.validate_retries().expect("valid");
         Self {

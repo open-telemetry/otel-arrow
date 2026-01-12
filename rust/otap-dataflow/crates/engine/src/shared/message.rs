@@ -65,7 +65,7 @@ impl<T> SharedSender<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelSenderMetrics>(attrs);
+            .register_metric_set::<ChannelSenderMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
@@ -98,7 +98,7 @@ impl<T> SharedSender<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelSenderMetrics>(attrs);
+            .register_metric_set::<ChannelSenderMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
@@ -205,7 +205,7 @@ impl<T> SharedReceiver<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelReceiverMetrics>(attrs);
+            .register_metric_set::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));
@@ -242,7 +242,7 @@ impl<T> SharedReceiver<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelReceiverMetrics>(attrs);
+            .register_metric_set::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));

@@ -65,6 +65,7 @@ pub use tracing::warn_span as otel_warn_span;
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.
+pub mod entity;
 pub mod testing;
 
 /// The internal telemetry system that registers, collects, and reports internal signals.

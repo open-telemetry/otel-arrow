@@ -15,8 +15,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
-use otap_df_telemetry::metrics::MetricValue;
-use otap_df_telemetry::registry::{MetricsIterator, TelemetryRegistryHandle};
+use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
@@ -1188,13 +1188,13 @@ mod tests {
         // Build registry with two entries for the same metric set but different attributes
         let telemetry_registry = TelemetryRegistryHandle::new();
         let _m1: otap_df_telemetry::metrics::MetricSet<MetricSetA> =
-            telemetry_registry.register(MockAttrSet::new("prod", "us"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("prod", "us"));
         let _m2: otap_df_telemetry::metrics::MetricSet<MetricSetB> =
-            telemetry_registry.register(MockAttrSet::new("dev", "eu"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("dev", "eu"));
         let _m3: otap_df_telemetry::metrics::MetricSet<MetricSetC> =
-            telemetry_registry.register(MockAttrSet::new("prod", "us"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("prod", "us"));
         let _m4: otap_df_telemetry::metrics::MetricSet<MetricSetD> =
-            telemetry_registry.register(MockAttrSet::new("dev", "us"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("dev", "us"));
 
         // Group by the "env" attribute and do not reset
         let groups = aggregate_metric_groups(&telemetry_registry, false, &["env"]);

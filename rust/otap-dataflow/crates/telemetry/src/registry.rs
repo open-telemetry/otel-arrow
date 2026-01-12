@@ -1,358 +1,34 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! The telemetry registry component combining entity and metrics registries (see the ITS diagram
+//! architecture in the main [README.md](../README.md) file of this crate.
+//!
 //! Type-safe metrics registry maintaining aggregated telemetry metrics.
 //!
 //! Note: Concrete metrics live in their respective crates; this registry aggregates them via
 //! dynamic dispatch.
 
-use crate::attributes::{AttributeSetHandler, AttributeValue};
-use crate::descriptor::{
-    AttributeValueType, AttributesDescriptor, Instrument, MetricsDescriptor, MetricsField,
-    Temporality,
+use crate::attributes::AttributeSetHandler;
+use crate::descriptor::MetricsDescriptor;
+use crate::entity::EntityRegistry;
+use crate::metrics::{
+    MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
-use crate::metrics::{MetricSet, MetricSetHandler, MetricValue};
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
-use slotmap::{SlotMap, new_key_type};
-use std::collections::{HashMap, HashSet};
+use slotmap::new_key_type;
 use std::fmt::Debug;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 new_key_type! {
-    /// This key is used to identify a specific entity entry in the registry (slotmap index).
+    /// This key is used to identify a specific entity entry in the entity registry (slotmap index).
     pub struct EntityKey;
-    /// This key is used to identify a specific metrics entry in the registry (slotmap index).
+
+    /// This key is used to identify a specific metrics entry in the metric set registry (slotmap
+    /// index).
     pub struct MetricSetKey;
 }
-
-#[derive(Debug, Clone)]
-struct EntityAttributeSet {
-    descriptor: &'static AttributesDescriptor,
-    values: Arc<[AttributeValue]>,
-    sorted_indices: Arc<[usize]>,
-}
-
-impl AttributeSetHandler for EntityAttributeSet {
-    fn descriptor(&self) -> &'static AttributesDescriptor {
-        self.descriptor
-    }
-
-    fn attribute_values(&self) -> &[AttributeValue] {
-        &self.values
-    }
-}
-
-fn hash_attribute_value<H: Hasher>(value: &AttributeValue, state: &mut H) {
-    match value {
-        AttributeValue::String(v) => {
-            0u8.hash(state);
-            v.hash(state);
-        }
-        AttributeValue::Int(v) => {
-            1u8.hash(state);
-            v.hash(state);
-        }
-        AttributeValue::UInt(v) => {
-            2u8.hash(state);
-            v.hash(state);
-        }
-        AttributeValue::Double(v) => {
-            3u8.hash(state);
-            v.to_bits().hash(state);
-        }
-        AttributeValue::Boolean(v) => {
-            4u8.hash(state);
-            v.hash(state);
-        }
-    }
-}
-
-fn attribute_value_type_rank(value_type: AttributeValueType) -> u8 {
-    match value_type {
-        AttributeValueType::String => 0,
-        AttributeValueType::Int => 1,
-        AttributeValueType::Double => 2,
-        AttributeValueType::Boolean => 3,
-    }
-}
-
-fn attribute_value_equal(left: &AttributeValue, right: &AttributeValue) -> bool {
-    match (left, right) {
-        (AttributeValue::String(a), AttributeValue::String(b)) => a == b,
-        (AttributeValue::Int(a), AttributeValue::Int(b)) => a == b,
-        (AttributeValue::UInt(a), AttributeValue::UInt(b)) => a == b,
-        (AttributeValue::Double(a), AttributeValue::Double(b)) => a.to_bits() == b.to_bits(),
-        (AttributeValue::Boolean(a), AttributeValue::Boolean(b)) => a == b,
-        _ => false,
-    }
-}
-
-impl EntityAttributeSet {
-    fn new(attrs: impl AttributeSetHandler) -> Self {
-        let descriptor = attrs.descriptor();
-        let values: Arc<[AttributeValue]> = attrs.attribute_values().to_vec().into();
-        debug_assert_eq!(
-            descriptor.fields.len(),
-            values.len(),
-            "descriptor.fields and attribute values length must match"
-        );
-
-        let mut indices: Vec<usize> = (0..descriptor.fields.len()).collect();
-        indices.sort_by(|&left, &right| {
-            let left_field = &descriptor.fields[left];
-            let right_field = &descriptor.fields[right];
-            match left_field.key.cmp(right_field.key) {
-                std::cmp::Ordering::Equal => attribute_value_type_rank(left_field.r#type)
-                    .cmp(&attribute_value_type_rank(right_field.r#type)),
-                other => other,
-            }
-        });
-
-        Self {
-            descriptor,
-            values,
-            sorted_indices: indices.into(),
-        }
-    }
-}
-
-impl PartialEq for EntityAttributeSet {
-    fn eq(&self, other: &Self) -> bool {
-        if self.descriptor.fields.len() != self.values.len()
-            || other.descriptor.fields.len() != other.values.len()
-        {
-            return false;
-        }
-
-        if self.sorted_indices.len() != other.sorted_indices.len() {
-            return false;
-        }
-
-        self.sorted_indices
-            .iter()
-            .zip(other.sorted_indices.iter())
-            .all(|(lhs_idx, rhs_idx)| {
-                let lhs_field = &self.descriptor.fields[*lhs_idx];
-                let rhs_field = &other.descriptor.fields[*rhs_idx];
-                if lhs_field.key != rhs_field.key || lhs_field.r#type != rhs_field.r#type {
-                    return false;
-                }
-                let lhs_value = &self.values[*lhs_idx];
-                let rhs_value = &other.values[*rhs_idx];
-                attribute_value_equal(lhs_value, rhs_value)
-            })
-    }
-}
-
-impl Eq for EntityAttributeSet {}
-
-impl Hash for EntityAttributeSet {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        let descriptor_len = self.descriptor.fields.len();
-        let values_len = self.values.len();
-        descriptor_len.hash(state);
-        values_len.hash(state);
-        if descriptor_len != values_len {
-            return;
-        }
-
-        self.sorted_indices.len().hash(state);
-        for idx in self.sorted_indices.iter() {
-            let field = &self.descriptor.fields[*idx];
-            field.key.hash(state);
-            attribute_value_type_rank(field.r#type).hash(state);
-            let value = &self.values[*idx];
-            hash_attribute_value(value, state);
-        }
-    }
-}
-
-/// A registry that maintains de-duplicated attribute sets for entities.
-#[derive(Default)]
-pub struct EntityRegistry {
-    entities: SlotMap<EntityKey, Arc<EntityAttributeSet>>,
-    entities_by_signature: HashMap<EntityAttributeSet, EntityKey>,
-}
-
-impl Debug for EntityRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EntityRegistry")
-            .field("entities_len", &self.entities.len())
-            .finish()
-    }
-}
-
-impl EntityRegistry {
-    /// Registers (or reuses) an entity for the provided attribute set and returns its key.
-    fn register(&mut self, attrs: impl AttributeSetHandler) -> EntityKey {
-        let entity = EntityAttributeSet::new(attrs);
-        if let Some(existing) = self.entities_by_signature.get(&entity) {
-            return *existing;
-        }
-
-        let attrs = Arc::new(entity.clone());
-
-        let entity_key = self.entities.insert(attrs);
-        let _ = self.entities_by_signature.insert(entity, entity_key);
-        entity_key
-    }
-
-    fn unregister(&mut self, entity_key: EntityKey) -> bool {
-        if let Some(attrs) = self.entities.remove(entity_key) {
-            let _ = self.entities_by_signature.remove(attrs.as_ref());
-            true
-        } else {
-            false
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.entities.len()
-    }
-
-    fn get(&self, key: EntityKey) -> Option<&EntityAttributeSet> {
-        self.entities.get(key).map(|attrs| attrs.as_ref())
-    }
-
-    fn get_shared(&self, key: EntityKey) -> Option<Arc<EntityAttributeSet>> {
-        self.entities.get(key).cloned()
-    }
-
-    fn visit_entities<F>(&self, mut f: F)
-    where
-        F: FnMut(EntityKey, &dyn AttributeSetHandler),
-    {
-        for (key, attrs) in self.entities.iter() {
-            f(key, attrs.as_ref());
-        }
-    }
-}
-
-/// A registered metrics entry containing all necessary information for metrics aggregation.
-pub struct MetricsEntry {
-    /// The static descriptor describing the metrics structure
-    pub metrics_descriptor: &'static MetricsDescriptor,
-    /// Current metric values stored as a vector
-    pub metric_values: Vec<MetricValue>,
-
-    /// Entity key for the associated attribute set
-    pub entity_key: EntityKey,
-}
-
-impl Debug for MetricsEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MetricsEntry")
-            .field("metrics_descriptor", &self.metrics_descriptor)
-            .field("metric_values", &self.metric_values)
-            .field("entity_key", &self.entity_key)
-            .finish()
-    }
-}
-
-impl MetricsEntry {
-    /// Creates a new metrics entry
-    #[must_use]
-    pub fn new(
-        metrics_descriptor: &'static MetricsDescriptor,
-        metric_values: Vec<MetricValue>,
-        entity_key: EntityKey,
-    ) -> Self {
-        Self {
-            metrics_descriptor,
-            metric_values,
-            entity_key,
-        }
-    }
-}
-
-/// Lightweight iterator over metrics (no heap allocs).
-pub struct MetricsIterator<'a> {
-    fields: &'static [MetricsField],
-    values: &'a [MetricValue],
-    idx: usize,
-    len: usize,
-}
-
-impl<'a> MetricsIterator<'a> {
-    #[inline]
-    fn new(fields: &'static [MetricsField], values: &'a [MetricValue]) -> Self {
-        let len = values.len();
-        debug_assert_eq!(
-            fields.len(),
-            len,
-            "descriptor.fields and metric values length must match"
-        );
-        Self {
-            fields,
-            values,
-            idx: 0,
-            len,
-        }
-    }
-}
-
-impl<'a> Iterator for MetricsIterator<'a> {
-    type Item = (&'static MetricsField, MetricValue);
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        // Single bound check: emit every metric (including zeros).
-        if self.idx >= self.len {
-            return None;
-        }
-        let i = self.idx;
-        self.idx = i + 1;
-
-        // SAFETY: `i < self.len` and `self.len == self.fields.len() == self.values.len()` by construction.
-        let v = {
-            #[cfg(feature = "unchecked-index")]
-            #[allow(unsafe_code)]
-            unsafe {
-                *self.values.get_unchecked(i)
-            }
-            #[cfg(not(feature = "unchecked-index"))]
-            {
-                self.values[i]
-            }
-        };
-
-        let field = {
-            #[cfg(feature = "unchecked-index")]
-            #[allow(unsafe_code)]
-            unsafe {
-                self.fields.get_unchecked(i)
-            }
-            #[cfg(not(feature = "unchecked-index"))]
-            {
-                &self.fields[i]
-            }
-        };
-
-        Some((field, v))
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        // Exact remaining length now that we yield all elements.
-        let rem = self.len.saturating_sub(self.idx);
-        (rem, Some(rem))
-    }
-}
-
-impl<'a> ExactSizeIterator for MetricsIterator<'a> {}
-
-// This iterator is "fused": once `next()` returns `None`, it will always return `None`.
-// Rationale:
-// - `idx` increases monotonically up to `len` and is never reset.
-// - No internal state can make new items appear after exhaustion.
-// Benefit:
-// - Allows iterator adaptors (e.g. `chain`) to skip redundant checks after exhaustion,
-//   and callers do not need to wrap with `iter.fuse()`.
-
-// Note: This marker trait does not change behavior. It only encodes the guarantee.
-impl<'a> core::iter::FusedIterator for MetricsIterator<'a> {}
 
 /// A sendable and cloneable handle on a telemetry registry.
 ///
@@ -364,253 +40,14 @@ impl<'a> core::iter::FusedIterator for MetricsIterator<'a> {}
 ///   (which is not on the hot path either).
 #[derive(Debug, Clone)]
 pub struct TelemetryRegistryHandle {
-    registry: Arc<Mutex<TelemetryRegistry>>,
+    pub(crate) registry: Arc<Mutex<TelemetryRegistry>>,
 }
 
-/// A sendable and cloneable handle on a metric set registry.
-#[derive(Debug, Clone)]
-pub struct MetricSetRegistryHandle {
-    registry: Arc<Mutex<TelemetryRegistry>>,
-}
-
-/// A sendable and cloneable handle on an entity registry.
-#[derive(Debug, Clone)]
-pub struct EntityRegistryHandle {
-    registry: Arc<Mutex<TelemetryRegistry>>,
-}
-
-/// A metrics registry that maintains aggregated metrics for different entity keys.
-#[derive(Default)]
-pub struct MetricSetRegistry {
-    pub(crate) metrics: SlotMap<MetricSetKey, MetricsEntry>,
-}
-
-impl Debug for MetricSetRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MetricSetRegistry")
-            .field("metrics_len", &self.metrics.len())
-            .finish()
-    }
-}
-
-impl MetricSetRegistry {
-    /// Registers a metric set type for the given entity and returns a `MetricSet`
-    /// instance that can be used to report metrics for that type.
-    fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &mut self,
-        entity_key: EntityKey,
-    ) -> MetricSet<T> {
-        let metrics = T::default();
-        let descriptor = metrics.descriptor();
-
-        let metrics_key = self.metrics.insert(MetricsEntry::new(
-            descriptor,
-            metrics.snapshot_values(),
-            entity_key,
-        ));
-
-        MetricSet {
-            key: metrics_key,
-            entity_key,
-            metrics,
-        }
-    }
-
-    /// Merges a metrics snapshot (delta) into the registered instance keyed by `metrics_key`.
-    fn accumulate_snapshot(&mut self, metrics_key: MetricSetKey, metrics_values: &[MetricValue]) {
-        if let Some(entry) = self.metrics.get_mut(metrics_key) {
-            debug_assert_eq!(
-                entry.metrics_descriptor.metrics.len(),
-                metrics_values.len(),
-                "descriptor.metrics and snapshot values length must match"
-            );
-
-            entry
-                .metric_values
-                .iter_mut()
-                .zip(metrics_values)
-                .zip(entry.metrics_descriptor.metrics.iter())
-                .for_each(|((current, incoming), field)| match field.instrument {
-                    Instrument::Gauge => {
-                        // Gauges report absolute values; replace.
-                        *current = *incoming;
-                    }
-                    Instrument::Histogram => {
-                        // Histograms (currently represented as numeric aggregates) report per-interval changes.
-                        current.add_in_place(*incoming);
-                    }
-                    Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
-                        Some(Temporality::Delta) => {
-                            // Delta sums report per-interval changes => accumulate.
-                            current.add_in_place(*incoming);
-                        }
-                        Some(Temporality::Cumulative) => {
-                            // Cumulative sums report the current value => replace.
-                            *current = *incoming;
-                        }
-                        None => {
-                            debug_assert!(false, "sum-like instrument must have a temporality");
-                            // Prefer replacing to avoid runaway accumulation if misconfigured.
-                            *current = *incoming;
-                        }
-                    },
-                });
-        } else {
-            // TODO: consider logging missing key
-        }
-    }
-
-    fn unregister(&mut self, metrics_key: MetricSetKey) -> bool {
-        self.metrics.remove(metrics_key).is_some()
-    }
-
-    /// Returns the total number of registered metrics sets.
-    fn len(&self) -> usize {
-        self.metrics.len()
-    }
-
-    /// Visits only metric sets, yields a zero-alloc iterator
-    /// of (MetricsField, value), then resets the values to zero.
-    pub(crate) fn visit_metrics_and_reset<F>(
-        &mut self,
-        entities: &EntityRegistry,
-        mut f: F,
-        keep_all_zeroes: bool,
-    ) where
-        for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
-    {
-        for entry in self.metrics.values_mut() {
-            let values = &mut entry.metric_values;
-            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
-                let desc = entry.metrics_descriptor;
-                if let Some(attrs) = entities.get(entry.entity_key) {
-                    f(desc, attrs, MetricsIterator::new(desc.metrics, values));
-                }
-
-                // Zero after reporting.
-                values.iter_mut().for_each(MetricValue::reset);
-            }
-        }
-    }
-
-    /// Generates a SemConvRegistry from the current MetricSetRegistry.
-    /// AttributeFields are deduplicated based on their key.
-    #[must_use]
-    pub fn generate_semconv_registry(&self, entities: &EntityRegistry) -> SemConvRegistry {
-        let mut unique_attributes = HashSet::new();
-        let mut attributes = Vec::new();
-        let mut metric_sets = Vec::new();
-
-        // Collect all unique metric descriptors
-        let mut unique_metrics = HashSet::new();
-        for entry in self.metrics.values() {
-            // Add metrics descriptor if not already seen
-            if unique_metrics.insert(entry.metrics_descriptor as *const _) {
-                metric_sets.push(entry.metrics_descriptor);
-            }
-
-            // Add attribute fields, deduplicating by key
-            if let Some(entity) = entities.get(entry.entity_key) {
-                for field in entity.descriptor().fields {
-                    if unique_attributes.insert(field.key) {
-                        attributes.push(field);
-                    }
-                }
-            }
-        }
-
-        SemConvRegistry {
-            version: "2".into(),
-            attributes,
-            metric_sets,
-        }
-    }
-}
-
+/// The main telemetry registry maintaining both entity and metric set registries.
 #[derive(Debug, Default)]
-struct TelemetryRegistry {
-    entities: EntityRegistry,
-    metrics: MetricSetRegistry,
-}
-
-impl Default for EntityRegistryHandle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EntityRegistryHandle {
-    /// Creates a new `EntityRegistryHandle`.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            registry: Arc::new(Mutex::new(TelemetryRegistry::default())),
-        }
-    }
-
-    /// Returns a telemetry registry handle sharing this entity registry.
-    #[must_use]
-    pub fn telemetry_registry(&self) -> TelemetryRegistryHandle {
-        TelemetryRegistryHandle {
-            registry: self.registry.clone(),
-        }
-    }
-
-    /// Returns a metric set registry handle sharing this entity registry.
-    #[must_use]
-    pub fn metric_set_registry(&self) -> MetricSetRegistryHandle {
-        MetricSetRegistryHandle {
-            registry: self.registry.clone(),
-        }
-    }
-
-    /// Registers (or reuses) an entity for the provided attribute set.
-    pub fn register(&self, attrs: impl AttributeSetHandler + Send + Sync + 'static) -> EntityKey {
-        self.registry.lock().entities.register(attrs)
-    }
-
-    /// Unregisters an entity by key.
-    #[must_use]
-    pub fn unregister(&self, entity_key: EntityKey) -> bool {
-        self.registry.lock().entities.unregister(entity_key)
-    }
-
-    /// Returns the total number of registered entities.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.registry.lock().entities.len()
-    }
-
-    /// Returns true if there are no registered entities.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Visits all registered entities.
-    pub fn visit_entities<F>(&self, f: F)
-    where
-        F: FnMut(EntityKey, &dyn AttributeSetHandler),
-    {
-        self.registry.lock().entities.visit_entities(f);
-    }
-
-    /// Returns a shared attribute set handle for the given key.
-    #[must_use]
-    pub fn get_attributes(
-        &self,
-        entity_key: EntityKey,
-    ) -> Option<Arc<dyn AttributeSetHandler + Send + Sync>> {
-        self.registry
-            .lock()
-            .entities
-            .get_shared(entity_key)
-            .map(|attrs| {
-                let attrs: Arc<dyn AttributeSetHandler + Send + Sync> = attrs;
-                attrs
-            })
-    }
+pub(crate) struct TelemetryRegistry {
+    pub(crate) entities: EntityRegistry,
+    pub(crate) metrics: MetricSetRegistry,
 }
 
 impl Default for TelemetryRegistryHandle {
@@ -628,161 +65,59 @@ impl TelemetryRegistryHandle {
         }
     }
 
-    /// Returns a metric set registry handle sharing this telemetry registry.
-    #[must_use]
-    pub fn metric_set_registry(&self) -> MetricSetRegistryHandle {
-        MetricSetRegistryHandle {
-            registry: self.registry.clone(),
-        }
-    }
-
-    /// Returns an entity registry handle sharing this telemetry registry.
-    #[must_use]
-    pub fn entity_registry(&self) -> EntityRegistryHandle {
-        EntityRegistryHandle {
-            registry: self.registry.clone(),
-        }
-    }
-
     /// Registers (or reuses) an entity for the provided attribute set.
     pub fn register_entity(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> EntityKey {
-        self.entity_registry().register(attrs)
+        self.registry.lock().entities.register(attrs)
     }
 
     /// Unregisters an entity by key.
     #[must_use]
     pub fn unregister_entity(&self, entity_key: EntityKey) -> bool {
-        self.entity_registry().unregister(entity_key)
+        self.registry.lock().entities.unregister(entity_key)
     }
 
-    /// Registers a metric set type for the provided entity key.
+    /// Returns the total number of registered entities.
     #[must_use]
-    pub fn register_with_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    pub fn entity_len(&self) -> usize {
+        self.registry.lock().entities.len()
+    }
+
+    /// Returns true if there are no registered entities.
+    #[must_use]
+    pub fn entity_is_empty(&self) -> bool {
+        self.entity_len() == 0
+    }
+
+    /// Visits all registered entities.
+    pub fn visit_entities<F>(&self, f: F)
+    where
+        F: FnMut(EntityKey, &dyn AttributeSetHandler),
+    {
+        self.registry.lock().entities.visit_entities(f);
+    }
+
+    /// Returns a shared attribute set handle for the given key.
+    #[must_use]
+    pub fn get_entity_attributes(
         &self,
         entity_key: EntityKey,
-    ) -> MetricSet<T> {
-        self.metric_set_registry().register_with_entity(entity_key)
-    }
-
-    /// Registers a metric set type with the given static attributes and returns a `MetricSet`
-    /// instance that can be used to report metrics for that type.
-    pub fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-        attrs: impl AttributeSetHandler + Send + Sync + 'static,
-    ) -> MetricSet<T> {
-        self.metric_set_registry().register(attrs)
-    }
-
-    /// Unregisters a metric set by key.
-    #[must_use]
-    pub fn unregister_metric_set(&self, metrics_key: MetricSetKey) -> bool {
-        self.metric_set_registry().unregister(metrics_key)
-    }
-
-    /// Adds a new metrics snapshot to the aggregator for the given key.
-    pub fn accumulate_snapshot(&self, metrics_key: MetricSetKey, metrics: &[MetricValue]) {
-        self.metric_set_registry()
-            .accumulate_snapshot(metrics_key, metrics);
-    }
-
-    /// Returns the total number of registered metrics sets.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.metric_set_registry().len()
-    }
-
-    /// Returns true if there are no registered metrics sets.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Visits metric sets, yields a zero-alloc iterator
-    /// of (MetricsField, value), then resets the values to zero.
-    pub fn visit_metrics_and_reset<F>(&self, f: F)
-    where
-        for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
-    {
-        self.visit_metrics_and_reset_with_zeroes(f, false);
-    }
-
-    /// Visits metric sets, yields a zero-alloc iterator
-    /// of (MetricsField, value), then resets the values to zero.
-    /// Retains zero-valued metrics if `keep_all_zeroes` is true.
-    pub fn visit_metrics_and_reset_with_zeroes<F>(&self, f: F, keep_all_zeroes: bool)
-    where
-        for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
-    {
-        self.metric_set_registry()
-            .visit_metrics_and_reset_with_zeroes(f, keep_all_zeroes);
-    }
-
-    /// Generates a SemConvRegistry from the current MetricSetRegistry.
-    /// AttributeFields are deduplicated based on their key.
-    #[must_use]
-    pub fn generate_semconv_registry(&self) -> SemConvRegistry {
-        self.metric_set_registry().generate_semconv_registry()
-    }
-
-    /// Visits current metric sets without resetting them.
-    /// This is useful for read-only access to metrics for HTTP endpoints.
-    pub fn visit_current_metrics<F>(&self, f: F)
-    where
-        for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
-    {
-        self.visit_current_metrics_with_zeroes(f, false);
-    }
-
-    /// Visits current metric sets without resetting them, with optional zero retention.
-    /// This is useful for read-only access to metrics for HTTP endpoints.
-    pub fn visit_current_metrics_with_zeroes<F>(&self, f: F, keep_all_zeroes: bool)
-    where
-        for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
-    {
-        self.metric_set_registry()
-            .visit_current_metrics_with_zeroes(f, keep_all_zeroes);
-    }
-}
-
-impl Default for MetricSetRegistryHandle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MetricSetRegistryHandle {
-    /// Creates a new `MetricSetRegistryHandle`.
-    #[must_use]
-    pub fn new() -> Self {
-        TelemetryRegistryHandle::new().metric_set_registry()
-    }
-
-    /// Returns an entity registry handle sharing this metric set registry.
-    #[must_use]
-    pub fn entity_registry(&self) -> EntityRegistryHandle {
-        EntityRegistryHandle {
-            registry: self.registry.clone(),
-        }
-    }
-
-    /// Registers (or reuses) an entity for the provided attribute set.
-    pub fn register_entity(
-        &self,
-        attrs: impl AttributeSetHandler + Send + Sync + 'static,
-    ) -> EntityKey {
-        self.entity_registry().register(attrs)
+    ) -> Option<Arc<dyn AttributeSetHandler + Send + Sync>> {
+        self.registry
+            .lock()
+            .entities
+            .get_shared(entity_key)
+            .map(|attrs| {
+                let attrs: Arc<dyn AttributeSetHandler + Send + Sync> = attrs;
+                attrs
+            })
     }
 
     /// Registers a metric set type for the provided entity key.
     #[must_use]
-    pub fn register_with_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    pub fn register_metric_set_with_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         entity_key: EntityKey,
     ) -> MetricSet<T> {
@@ -796,7 +131,7 @@ impl MetricSetRegistryHandle {
 
     /// Registers a metric set type with the given static attributes and returns a `MetricSet`
     /// instance that can be used to report metrics for that type.
-    pub fn register<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    pub fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> MetricSet<T> {
@@ -807,7 +142,7 @@ impl MetricSetRegistryHandle {
 
     /// Unregisters a metric set by key.
     #[must_use]
-    pub fn unregister(&self, metrics_key: MetricSetKey) -> bool {
+    pub fn unregister_metric_set(&self, metrics_key: MetricSetKey) -> bool {
         self.registry.lock().metrics.unregister(metrics_key)
     }
 
@@ -851,7 +186,7 @@ impl MetricSetRegistryHandle {
     {
         let mut reg = self.registry.lock();
         let TelemetryRegistry { entities, metrics } = &mut *reg;
-        metrics.visit_metrics_and_reset(&*entities, f, keep_all_zeroes);
+        metrics.visit_metrics_and_reset(entities, f, keep_all_zeroes);
     }
 
     /// Generates a SemConvRegistry from the current MetricSetRegistry.
@@ -898,7 +233,7 @@ mod tests {
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        Temporality,
+        MetricsField, Temporality,
     };
     use std::fmt::Debug;
 
@@ -1010,13 +345,12 @@ mod tests {
     #[test]
     fn test_entity_registry_register_dedupes() {
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let entity_registry = telemetry_registry.entity_registry();
 
-        let key1 = entity_registry.register(MockAttributeSet::new("value".to_string()));
-        let key2 = entity_registry.register(MockAttributeSet::new("value".to_string()));
+        let key1 = telemetry_registry.register_entity(MockAttributeSet::new("value".to_string()));
+        let key2 = telemetry_registry.register_entity(MockAttributeSet::new("value".to_string()));
 
         assert_eq!(key1, key2);
-        assert_eq!(entity_registry.len(), 1);
+        assert_eq!(telemetry_registry.entity_len(), 1);
     }
 
     #[test]
@@ -1084,15 +418,14 @@ mod tests {
         }
 
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let entity_registry = telemetry_registry.entity_registry();
 
-        let key1 = entity_registry.register(OrderedAttributeSetA {
+        let key1 = telemetry_registry.register_entity(OrderedAttributeSetA {
             values: vec![
                 AttributeValue::String("value".to_string()),
                 AttributeValue::Int(7),
             ],
         });
-        let key2 = entity_registry.register(OrderedAttributeSetB {
+        let key2 = telemetry_registry.register_entity(OrderedAttributeSetB {
             values: vec![
                 AttributeValue::Int(7),
                 AttributeValue::String("value".to_string()),
@@ -1100,17 +433,16 @@ mod tests {
         });
 
         assert_eq!(key1, key2);
-        assert_eq!(entity_registry.len(), 1);
+        assert_eq!(telemetry_registry.entity_len(), 1);
     }
 
     #[test]
     fn test_entity_registry_get_attributes() {
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let entity_registry = telemetry_registry.entity_registry();
 
-        let key = entity_registry.register(MockAttributeSet::new("value".to_string()));
-        let attrs = entity_registry
-            .get_attributes(key)
+        let key = telemetry_registry.register_entity(MockAttributeSet::new("value".to_string()));
+        let attrs = telemetry_registry
+            .get_entity_attributes(key)
             .expect("missing attributes");
 
         let collected: Vec<_> = attrs.iter_attributes().collect();
@@ -1122,25 +454,23 @@ mod tests {
     #[test]
     fn test_entity_registry_unregister() {
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let entity_registry = telemetry_registry.entity_registry();
 
-        let key = entity_registry.register(MockAttributeSet::new("value".to_string()));
+        let key = telemetry_registry.register_entity(MockAttributeSet::new("value".to_string()));
 
-        assert!(entity_registry.unregister(key));
-        assert_eq!(entity_registry.len(), 0);
-        assert!(entity_registry.get_attributes(key).is_none());
-        assert!(!entity_registry.unregister(key));
+        assert!(telemetry_registry.unregister_entity(key));
+        assert_eq!(telemetry_registry.entity_len(), 0);
+        assert!(telemetry_registry.get_entity_attributes(key).is_none());
+        assert!(!telemetry_registry.unregister_entity(key));
     }
 
     #[test]
     fn test_metrics_registry_register_with_entity_key() {
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let entity_key = telemetry_registry
-            .entity_registry()
-            .register(MockAttributeSet::new("value".to_string()));
+        let entity_key =
+            telemetry_registry.register_entity(MockAttributeSet::new("value".to_string()));
 
         let metric_set: MetricSet<MockMetricSet> =
-            telemetry_registry.register_with_entity(entity_key);
+            telemetry_registry.register_metric_set_with_entity(entity_key);
         assert_eq!(metric_set.entity_key(), entity_key);
     }
 
@@ -1149,7 +479,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
-        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
         let metrics_key = metric_set.key;
 
         assert!(telemetry_registry.unregister_metric_set(metrics_key));
@@ -1162,7 +492,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
-        let _metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let _metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
         assert_eq!(telemetry_registry.len(), 1);
     }
 
@@ -1173,8 +503,8 @@ mod tests {
         let attrs1 = MockAttributeSet::new("value1".to_string());
         let attrs2 = MockAttributeSet::new("value2".to_string());
 
-        let _metric_set1: MetricSet<MockMetricSet> = telemetry_registry.register(attrs1);
-        let _metric_set2: MetricSet<MockMetricSet> = telemetry_registry.register(attrs2);
+        let _metric_set1: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs1);
+        let _metric_set2: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs2);
 
         assert_eq!(telemetry_registry.len(), 2);
     }
@@ -1184,7 +514,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
-        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
         let metrics_key = metric_set.key;
 
         // Accumulate some values
@@ -1224,7 +554,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
-        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
         let metrics_key = metric_set.key;
 
         // Test wrapping behavior with overflow
@@ -1256,7 +586,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
-        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
         let metrics_key = metric_set.key;
 
         // This should panic on overflow when unchecked-arithmetic is disabled
@@ -1269,7 +599,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
 
-        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
         let metrics_key = metric_set.key;
 
         // Add some metrics
@@ -1396,7 +726,7 @@ mod tests {
         let telemetry_registry_clone = telemetry_registry.clone();
 
         let attrs = MockAttributeSet::new("test_value".to_string());
-        let _metric_set: MetricSet<MockMetricSet> = telemetry_registry.register(attrs);
+        let _metric_set: MetricSet<MockMetricSet> = telemetry_registry.register_metric_set(attrs);
 
         // Both handles should see the same registry
         assert_eq!(telemetry_registry.len(), 1);
@@ -1415,7 +745,8 @@ mod tests {
             let telemetry_registry_clone = telemetry_registry.clone();
             let thread_handle = thread::spawn(move || {
                 let attrs = MockAttributeSet::new(format!("value_{i}"));
-                let metric_set: MetricSet<MockMetricSet> = telemetry_registry_clone.register(attrs);
+                let metric_set: MetricSet<MockMetricSet> =
+                    telemetry_registry_clone.register_metric_set(attrs);
                 let metrics_key = metric_set.key;
 
                 // Accumulate some values
@@ -1495,7 +826,8 @@ mod tests {
 
         let telemetry_registry = TelemetryRegistryHandle::new();
         let attrs = MockAttributeSet::new("test_value".to_string());
-        let metric_set: MetricSet<MockGaugeMetricSet> = telemetry_registry.register(attrs);
+        let metric_set: MetricSet<MockGaugeMetricSet> =
+            telemetry_registry.register_metric_set(attrs);
         let key = metric_set.key;
 
         // First snapshot sets gauge=5, counter+=10.
@@ -1563,7 +895,7 @@ mod tests {
 
         let telemetry_registry = TelemetryRegistryHandle::new();
         let metric_set: MetricSet<MockCumulativeCounterMetricSet> =
-            telemetry_registry.register(MockAttributeSet::new("attr".to_string()));
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr".to_string()));
         let metrics_key = metric_set.key;
 
         telemetry_registry.accumulate_snapshot(metrics_key, &[MetricValue::U64(10)]);
