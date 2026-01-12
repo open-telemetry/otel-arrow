@@ -136,10 +136,14 @@ impl<C: ResolutionCallback> BundleHandle<C> {
     /// Defers the bundle for later retry.
     ///
     /// This releases the bundle's claim without logging any outcome. The
-    /// embedding layer should schedule a retry and call `claim_bundle()` with
-    /// the returned `BundleRef` when ready.
+    /// bundle becomes immediately eligible for redelivery via `next_bundle()`.
     ///
-    /// Returns the bundle reference for retry scheduling.
+    /// The embedding layer can either:
+    /// - Call `next_bundle()` again (the deferred bundle will be returned
+    ///   since it's the oldest unresolved unclaimed bundle), or
+    /// - Use the returned `BundleRef` with `claim_bundle()` for explicit retry
+    ///
+    /// Returns the bundle reference (useful for custom retry scheduling).
     #[must_use]
     pub fn defer(mut self) -> BundleRef {
         self.resolved = true;

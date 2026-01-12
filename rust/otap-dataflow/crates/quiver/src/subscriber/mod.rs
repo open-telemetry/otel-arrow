@@ -29,11 +29,20 @@
 //! 1. Subscriber calls `next_bundle()` to claim the next pending bundle
 //! 2. Receives a `BundleHandle` wrapping the data and resolution methods
 //! 3. After processing, calls `handle.ack()` or `handle.reject()`
-//! 4. If retry is needed, calls `handle.defer()` and schedules retry
-//! 5. On retry, calls `claim_bundle(bundle_ref)` to re-acquire
+//! 4. If retry is needed, calls `handle.defer()` to release the claim
+//! 5. On retry, either:
+//!    - Call `next_bundle()` again (deferred bundle will be returned since
+//!      it's the oldest unresolved unclaimed bundle), or
+//!    - Call `claim_bundle(bundle_ref)` to explicitly re-acquire a specific bundle
 //!
-//! The embedding layer (e.g., otap-dataflow's persistence_processor) handles
-//! retry timing, backoff, and dispatch—Quiver only records terminal outcomes.
+//! **Note:** Deferred bundles are automatically rescheduled. When `defer()` is
+//! called, the bundle's claim is released and it becomes eligible for redelivery
+//! via `next_bundle()`. The embedding layer does NOT need to track deferred
+//! bundles separately—Quiver handles this internally.
+//!
+//! The embedding layer (e.g., otap-dataflow's persistence_processor) may still
+//! choose to track deferred bundles for custom retry timing, backoff strategies,
+//! or priority scheduling—but this is optional.
 //!
 //! # Module Organization
 //!
