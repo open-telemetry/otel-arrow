@@ -177,7 +177,7 @@ flowchart LR
 
     UL -->|LogPayload::Singleton| CH
     BL -->|periodic flush<br/>LogPayload::Batch| CH
-    NL -.->|discarded| X[∅]
+    NL -.->|discarded| X[null]
 
     CH --> LC
     LC -->|raw format| CON
@@ -244,7 +244,7 @@ flowchart LR
 
     UL -->|LogPayload::Singleton| CH
     BL -->|periodic flush<br/>LogPayload::Batch| CH
-    NL -.->|discarded| X[∅]
+    NL -.->|discarded| X[null]
 
     CH --> ITR
     ITR -->|OtapPayload<br/>ExportLogsRequest| PROC
