@@ -71,7 +71,8 @@ overhead and memory allocations on the hot path.
 
 ### Shared Concurrency Control
 
-When both protocols are enabled, a single `tokio::sync::Semaphore` controls admission:
+When both protocols are enabled, a single `tokio::sync::Semaphore`
+controls admission:
 
 ```text
                      +---------------------------+
@@ -93,9 +94,11 @@ regardless of which protocol clients use.
 
 **Protocol-specific behavior:**
 
-- **gRPC only (no HTTP configured):** Uses the original `GlobalConcurrencyLimitLayer`
-  with early refusal at `poll_ready` when over limit (no queuing on permits).
-- **Both protocols:** Shared semaphore; gRPC queues on `acquire_owned().await` with
+- **gRPC only (no HTTP configured):** Uses the original
+  `GlobalConcurrencyLimitLayer` with early refusal at `poll_ready`
+  when over limit (no queuing on permits).
+- **Both protocols:** Shared semaphore; gRPC queues on `acquire_owned().await`
+  with
   no permit timeout; HTTP queues on the shared semaphore with a permit timeout
   (default: `http.timeout`, 30s).
 - **HTTP only:** Uses its own semaphore and permit timeout (default: 30s).
@@ -201,6 +204,8 @@ nodes:
 
 ## Protocol Details
 
+<!-- markdownlint-disable MD013 -->
+
 ### OTLP/gRPC
 
 | Aspect | Details |
@@ -243,6 +248,8 @@ POST /v1/traces  -> ExportTraceServiceRequest   -> ExportTraceServiceResponse
 | 415 | Unsupported media type (only protobuf) |
 | 500 | Internal error |
 | 503 | Service unavailable (at capacity or pipeline error) |
+
+<!-- markdownlint-enable MD013 -->
 
 ## Security Considerations
 
@@ -338,5 +345,7 @@ is safe because the OTLP service implementations:
 1. Have stateless `poll_ready` (always returns `Ready`)
 2. Use `Arc`-based internal state sharing
 
-See [crates/otap/src/shared_concurrency.rs](../crates/otap/src/shared_concurrency.rs) for
-detailed documentation on service compatibility requirements.
+See [shared concurrency implementation][shared-concurrency] for detailed
+documentation on service compatibility requirements.
+
+[shared-concurrency]: ../crates/otap/src/shared_concurrency.rs
