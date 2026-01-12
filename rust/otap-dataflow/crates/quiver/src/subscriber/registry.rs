@@ -647,14 +647,21 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// 25ms) to persist progress. Each subscriber's progress file is written
     /// atomically.
     ///
+    /// # Best-Effort Semantics
+    ///
+    /// This method uses best-effort semantics: if one subscriber fails to flush,
+    /// the method continues attempting to flush remaining subscribers. Failed
+    /// subscribers are re-added to the dirty set for retry on the next call.
+    ///
     /// # Returns
     ///
-    /// The number of subscribers that were flushed.
+    /// On success, returns the number of subscribers that were flushed.
     ///
     /// # Errors
     ///
-    /// Returns an error if any progress file cannot be written. Partial flushes
-    /// may occur—some subscribers may be persisted while others fail.
+    /// Returns the first error encountered after attempting all flushes.
+    /// Check the dirty count after an error to see how many subscribers still
+    /// need flushing.
     pub fn flush_progress(&self) -> Result<usize> {
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
@@ -676,6 +683,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         };
 
         let mut flushed = 0;
+        let mut first_error: Option<SubscriberError> = None;
 
         for (sub_id, state_lock) in to_flush {
             // Get state data with per-subscriber lock
@@ -693,15 +701,22 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     flushed += 1;
                 }
                 Err(e) => {
-                    // Re-add to dirty set and return error
+                    // Re-add to dirty set for retry
                     let mut dirty_set = self.dirty_subscribers.lock();
                     let _ = dirty_set.insert(sub_id.clone());
-                    return Err(e);
+                    // Keep the first error, continue with remaining subscribers
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
                 }
             }
         }
 
-        Ok(flushed)
+        // Return first error if any occurred, otherwise success
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(flushed),
+        }
     }
 
     /// Returns the number of subscribers with uncommitted progress.
