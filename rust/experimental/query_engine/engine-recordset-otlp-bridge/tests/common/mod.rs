@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_expressions::*;
 use data_engine_recordset::*;
+use data_engine_recordset_otlp_bridge::BridgePipeline;
 
 pub(crate) fn process_records<'a, TRecords, TRecord>(
-    pipeline: &'a PipelineExpression,
+    pipeline: &'a BridgePipeline,
     engine: &RecordSetEngine,
     records: &mut TRecords,
 ) -> RecordSetEngineResults<'a, TRecord>
@@ -16,9 +16,9 @@ where
     println!("Request:");
     println!("{records:?}");
 
-    println!("{pipeline}");
+    println!("{}", pipeline.get_pipeline());
 
-    let mut batch = engine.begin_batch(pipeline).unwrap();
+    let mut batch = engine.begin_batch(pipeline.get_pipeline()).unwrap();
 
     let dropped_records = batch.push_records(records);
 

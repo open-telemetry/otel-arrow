@@ -55,7 +55,9 @@ impl AzureMonitorExporter {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig { error: e })?;
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            })?;
 
         // Create log transformer
         let transformer = Transformer::new(&config);
@@ -563,7 +565,6 @@ mod tests {
                 stream_name: "stream".to_string(),
                 dcr: "dcr-id".to_string(),
                 schema: SchemaConfig {
-                    disable_schema_mapping: false,
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),

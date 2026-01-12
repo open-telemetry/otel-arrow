@@ -15,7 +15,7 @@ ENV CGO_ENABLED=0
 
 # Note the version should match the builder version referenced in the Makefile.
 # The version is overridden when running `make builder`.
-RUN go install go.opentelemetry.io/collector/cmd/builder@v0.142.0
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.143.0
 
 # This command generates main.go, go.mod but does not update deps.
 RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowcol-build.yaml

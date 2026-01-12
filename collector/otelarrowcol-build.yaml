@@ -17,7 +17,7 @@ dist:
 
   # Note: this version number is replaced to match the current release using `sed`
   # during the release process, see ../../../RELEASING.md.
-  version: 0.45.0
+  version: 0.46.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
@@ -29,28 +29,28 @@ dist:
 # The version is overridden when running `make builder`.
 exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.143.0
 
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.142.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.142.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.143.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.143.0
   # OTLP exporter is included for test and validation.
-  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.142.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.142.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.143.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.143.0
 
 receivers:
   # This is the core OpenTelemetry Protocol with Apache Arrow receiver
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.143.0
 
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.143.0
   # OTLP receiver is included for the OTLP/HTTP Receiver, test and validation.
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.142.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.143.0
 processors:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.143.0
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.142.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.142.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.142.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.143.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.143.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.143.0
 
 replaces:
   - github.com/open-telemetry/otel-arrow/go => ../../../go
