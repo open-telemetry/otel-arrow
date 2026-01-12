@@ -51,8 +51,8 @@ telemetry pitfalls, as follows:
   dedicated internal telemetry threads.
 - Components under observation (non-ITR components) use
   per-engine-core internal logs buffer, allowing overflow.
-- Non-blocking interfaces. We prefer to drop internal log events than
-  to block the pipeline.
+- Non-blocking interfaces. We prefer to drop and count dropped
+  internal log events than to block the pipeline.
 - Option to configure internal telemetry multiple ways, including the
   no-op implementation, global or regional logs consumers, buffered and 
   unbuffered.
