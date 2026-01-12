@@ -55,7 +55,7 @@ telemetry pitfalls, as follows:
 - Non-blocking interfaces. We prefer to drop and count dropped
   internal log events than to block the pipeline.
 - Option to configure internal telemetry multiple ways, including the
-  no-op implementation, global or regional logs consumers, buffered and 
+  no-op implementation, global or regional logs consumers, buffered and
   unbuffered.
 
 ## OTLP-bytes first
@@ -100,13 +100,13 @@ settings:
 - Engine: This is the default configuration for engine core threads.
 - Internal: This is the default configuration for internal telemetry
   pipeline components.
-  
+
 Provider mode values are:
 
 - Noop: Ignore these producers
 - Unbuffered: Use a non-blocking write to the internal logs channel.
   Unbuffered is the default for the global provider.
-- Buffered: Use a thread-local buffer, requires managed flushing. 
+- Buffered: Use a thread-local buffer, requires managed flushing.
   The global provider is not supported for buffered logging.
 - OpenTelemetry: Use the OpenTelemetry SDK. This option has the most
   comprehensive obsevability, including OpenTelemetry traces
@@ -132,6 +132,9 @@ The output modes are:
 - Internal: Use an Internal Telemetry Receiver as the destination.
 
 ## Default configuration
+
+In this configuration, a dedicated `LogsCollector` thread consumes
+from the channel and prints to console.
 
 ```yaml
 service:
@@ -182,6 +185,10 @@ flowchart LR
 
 ## Internal Telemetry Receiver configuration
 
+In this configuration, the `InternalTelemetryReceiver` node consumes
+from the channel and emits `OtapPayload::ExportLogsRequest` into the
+pipeline.
+
 ```yaml
 service:
   telemetry:
@@ -192,7 +199,7 @@ service:
         engine: buffered
         internal: noop
       output: internal
-      
+
 nodes:
   internal_telemetry:
     kind: receiver
@@ -201,7 +208,7 @@ nodes:
       out_port:
         destinations:
           - otlp_exporter
-          
+
   otlp_exporter:
     kind: exporer
     ...
@@ -243,7 +250,3 @@ flowchart LR
     ITR -->|OtapPayload<br/>ExportLogsRequest| PROC
     PROC --> EXP
 ```
-
-**Key differences:**
-- **Raw output mode**: A dedicated `LogsCollector` thread consumes from the channel and prints to console
-- **Internal output mode**: The `InternalTelemetryReceiver` node consumes from the channel and emits `OtapPayload::ExportLogsRequest` into the pipeline
