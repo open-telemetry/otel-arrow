@@ -3,8 +3,14 @@
 
 //! Internal logs collection for OTAP-Dataflow.
 
+use bytes::Bytes;
 use crate::error::Error;
-use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer, SavedCallsite};
+use crate::self_tracing::{ConsoleWriter, DirectLogRecordEncoder, LogRecord, RawLoggingLayer, SavedCallsite};
+use otap_df_pdata::otlp::ProtoBuffer;
+use otap_df_pdata::proto::consts::field_num::logs::{
+    LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
+};
+use otap_df_pdata::proto_encode_len_delimited_unknown_size;
 use std::cell::RefCell;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
@@ -23,6 +29,57 @@ impl LogBatch {
     /// The total size including dropped records.
     pub fn size_with_dropped(&self) -> usize {
         self.records.len() + self.dropped_count
+    }
+
+    /// Encode this batch as an OTLP ExportLogsServiceRequest.
+    ///
+    /// The batch is wrapped in a minimal structure:
+    /// - One ResourceLogs with no resource attributes
+    /// - One ScopeLogs with no scope
+    /// - All log records from the batch
+    #[must_use]
+    pub fn encode_export_logs_request(&self) -> Bytes {
+        let mut buf = ProtoBuffer::with_capacity(self.records.len() * 256);
+
+        // ExportLogsServiceRequest { resource_logs: [ ResourceLogs { ... } ] }
+        proto_encode_len_delimited_unknown_size!(
+            LOGS_DATA_RESOURCE, // field 1: resource_logs (same field number)
+            {
+                // ResourceLogs { scope_logs: [ ScopeLogs { ... } ] }
+                // Note: we skip resource (field 1) to use empty/default resource
+                proto_encode_len_delimited_unknown_size!(
+                    RESOURCE_LOGS_SCOPE_LOGS, // field 2: scope_logs
+                    {
+                        // ScopeLogs { log_records: [ ... ] }
+                        // Note: we skip scope (field 1) to use empty/default scope
+                        for record in &self.records {
+                            self.encode_log_record(record, &mut buf);
+                        }
+                    },
+                    &mut buf
+                );
+            },
+            &mut buf
+        );
+
+        buf.into_bytes()
+    }
+
+    /// Encode a single log record into the buffer.
+    fn encode_log_record(&self, record: &LogRecord, buf: &mut ProtoBuffer) {
+        // Get the callsite metadata for encoding
+        let metadata = record.callsite_id.0.metadata();
+        let callsite = SavedCallsite::new(metadata);
+
+        proto_encode_len_delimited_unknown_size!(
+            SCOPE_LOGS_LOG_RECORDS, // field 2: log_records
+            {
+                let mut encoder = DirectLogRecordEncoder::new(buf);
+                // Clone record since encode_log_record takes ownership
+                let _ = encoder.encode_log_record(record.clone(), &callsite);
+            },
+            buf
+        );
     }
 }
 
@@ -108,6 +165,15 @@ where
     f()
 }
 
+/// Drain the thread-local log buffer and return the batch.
+///
+/// Returns `None` if no buffer is installed (e.g., not in an engine thread).
+/// This is for use by the internal telemetry receiver node.
+#[must_use]
+pub fn drain_thread_log_buffer() -> Option<LogBatch> {
+    CURRENT_LOG_BUFFER.with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
+}
+
 /// Reporter for sending log batches through a channel.
 #[derive(Clone)]
 pub struct LogsReporter {
@@ -118,6 +184,18 @@ impl LogsReporter {
     /// Create a new LogsReporter with the given sender.
     #[must_use]
     pub fn new(sender: flume::Sender<LogPayload>) -> Self {
+        Self { sender }
+    }
+
+    /// Create a null reporter that discards all payloads.
+    ///
+    /// Used for internal telemetry mode where the buffer is drained directly
+    /// rather than sent through a channel.
+    #[must_use]
+    pub fn null() -> Self {
+        // Create a bounded channel of size 0 - sends will always fail
+        // but we never actually call try_report on a null reporter
+        let (sender, _receiver) = flume::bounded(0);
         Self { sender }
     }
 
@@ -284,6 +362,11 @@ pub enum EngineLogsSetup {
         /// Reporter to send singletons through.
         reporter: LogsReporter,
     },
+    /// Internal: accumulates in thread-local buffer, drained by internal telemetry receiver.
+    Internal {
+        /// Buffer capacity per thread.
+        capacity: usize,
+    },
 }
 
 /// Handle for flushing buffered logs from the engine thread.
@@ -295,16 +378,19 @@ pub enum LogsFlusher {
     Noop,
     /// Flusher that drains the thread-local buffer and sends via the reporter.
     Buffered(LogsReporter),
+    /// Flusher for internal telemetry mode - drain returns batch directly.
+    /// Used by internal telemetry receiver node.
+    InternalDrain,
 }
 
 impl LogsFlusher {
-    /// Flush any buffered logs.
+    /// Flush any buffered logs by sending to the reporter.
     ///
-    /// For `Noop`, this does nothing.
+    /// For `Noop` and `InternalDrain`, this does nothing.
     /// For `Buffered`, this drains the thread-local buffer and sends as a batch.
     pub fn flush(&self) -> Result<(), Error> {
         match self {
-            LogsFlusher::Noop => Ok(()),
+            LogsFlusher::Noop | LogsFlusher::InternalDrain => Ok(()),
             LogsFlusher::Buffered(reporter) => {
                 if let Some(batch) = CURRENT_LOG_BUFFER
                     .with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
@@ -313,6 +399,19 @@ impl LogsFlusher {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// Drain the thread-local buffer and return the batch directly.
+    ///
+    /// For use by internal telemetry receiver only.
+    /// Returns `None` if no buffer is installed or if this is not `InternalDrain` mode.
+    pub fn drain(&self) -> Option<LogBatch> {
+        match self {
+            LogsFlusher::InternalDrain => {
+                CURRENT_LOG_BUFFER.with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
+            }
+            _ => None,
         }
     }
 }
@@ -358,6 +457,19 @@ impl EngineLogsSetup {
                 let layer = UnbufferedLayer::new(reporter.clone());
                 let subscriber = Registry::default().with(filter).with(layer);
                 tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
+            }
+            EngineLogsSetup::Internal { capacity } => {
+                // For internal mode, we use a "null" reporter that doesn't send anywhere.
+                // The internal telemetry receiver will drain the buffer directly.
+                let null_reporter = LogsReporter::null();
+                let layer = ThreadBufferedLayer::new(null_reporter);
+                let subscriber = Registry::default().with(filter).with(layer);
+                let flusher = LogsFlusher::InternalDrain;
+
+                // Install the thread-local buffer
+                with_thread_log_buffer(*capacity, || {
+                    tracing::subscriber::with_default(subscriber, || f(flusher))
+                })
             }
         }
     }

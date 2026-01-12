@@ -53,6 +53,11 @@ pub struct LoggingStrategies {
 
     /// Strategy for engine/pipeline threads.
     pub engine: ProviderMode,
+
+    /// Strategy for nodes handling internal telemetry (downstream of internal receiver).
+    /// Defaults to Noop to prevent log recursion.
+    #[serde(default = "default_internal_provider")]
+    pub internal: ProviderMode,
 }
 
 /// Logs producer: how log events are captured and routed.
@@ -79,13 +84,17 @@ pub enum ProviderMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputMode {
-    /// Disable output.
+    /// No-output is incompatible with Buffered and Unbuffered provider modes.
     Noop,
 
     /// Raw logging: format and print directly to console (stdout/stderr).
     /// ERROR/WARN go to stderr, others to stdout.
     #[default]
     Raw,
+
+    /// Route to internal telemetry receiver node.
+    /// Requires engine provider to be Buffered.
+    Internal,
 }
 
 fn default_output() -> OutputMode {
@@ -96,10 +105,15 @@ fn default_level() -> LogLevel {
     LogLevel::Off
 }
 
+fn default_internal_provider() -> ProviderMode {
+    ProviderMode::Noop
+}
+
 fn default_strategies() -> LoggingStrategies {
     LoggingStrategies {
         global: ProviderMode::Unbuffered,
         engine: ProviderMode::Buffered,
+        internal: default_internal_provider(),
     }
 }
 
@@ -120,6 +134,7 @@ impl LogsConfig {
     /// Returns an error if:
     /// - `output` is `Noop` but a provider strategy uses `Buffered` or `Unbuffered`
     ///   (logs would be sent but discarded)
+    /// - `output` is `Internal` but engine provider is not `Buffered`
     pub fn validate(&self) -> Result<(), String> {
         if self.output == OutputMode::Noop {
             let global_sends = matches!(
@@ -140,6 +155,17 @@ impl LogsConfig {
                 ));
             }
         }
+
+        if self.output == OutputMode::Internal {
+            if self.strategies.engine != ProviderMode::Buffered {
+                return Err(format!(
+                    "output mode is 'internal' but engine provider is {:?}. \
+                     Internal output requires engine provider to be 'buffered'.",
+                    self.strategies.engine
+                ));
+            }
+        }
+
         Ok(())
     }
 }

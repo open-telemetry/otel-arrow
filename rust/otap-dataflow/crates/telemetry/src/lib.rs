@@ -66,8 +66,8 @@ pub use tracing::warn_span as otel_warn_span;
 
 // Re-export commonly used logs types for convenience.
 pub use logs::{
-    EngineLogsSetup, LogsCollector, LogsFlusher, LogsReporter, ThreadBufferedLayer,
-    UnbufferedLayer,
+    drain_thread_log_buffer, EngineLogsSetup, LogBatch, LogsCollector, LogsFlusher, LogsReporter,
+    ThreadBufferedLayer, UnbufferedLayer,
 };
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.

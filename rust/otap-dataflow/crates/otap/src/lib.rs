@@ -52,6 +52,9 @@ pub mod noop_exporter;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
+/// Internal telemetry receiver that drains engine logs into the pipeline.
+pub mod internal_telemetry_receiver;
+
 /// Experimental exporters and processors
 #[cfg(any(
     feature = "experimental-exporters",

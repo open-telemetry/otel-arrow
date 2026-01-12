@@ -106,7 +106,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     })?;
                 Some(reporter)
             }
-            OutputMode::Noop => None,
+            OutputMode::Noop | OutputMode::Internal => None,
         };
 
         let opentelemetry_client =
@@ -142,30 +142,37 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        // Create engine logs setup based on strategy configuration.
-        // Note: validation ensures that if Buffered/Unbuffered is used, logs_reporter is Some.
-        let engine_logs_setup = match telemetry_config.logs.strategies.engine {
-            ProviderMode::Noop => EngineLogsSetup::Noop,
-            ProviderMode::Raw => EngineLogsSetup::Raw,
-            ProviderMode::Buffered => EngineLogsSetup::Buffered {
-                reporter: logs_reporter
-                    .clone()
-                    .expect("validated: buffered requires reporter"),
+        // Create engine logs setup based on output mode and strategy configuration.
+        // When output is Internal, use Internal setup (validation ensures engine is Buffered).
+        // Otherwise, use the strategy configuration.
+        let engine_logs_setup = if telemetry_config.logs.output == OutputMode::Internal {
+            EngineLogsSetup::Internal {
                 capacity: 1024, // TODO: make configurable
-            },
-            ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
-                reporter: logs_reporter
-                    .clone()
-                    .expect("validated: unbuffered requires reporter"),
-            },
-            ProviderMode::OpenTelemetry => {
-                // OpenTelemetry mode for engine is not yet supported
-                // Fall back to buffered for now
-                EngineLogsSetup::Buffered {
+            }
+        } else {
+            match telemetry_config.logs.strategies.engine {
+                ProviderMode::Noop => EngineLogsSetup::Noop,
+                ProviderMode::Raw => EngineLogsSetup::Raw,
+                ProviderMode::Buffered => EngineLogsSetup::Buffered {
                     reporter: logs_reporter
                         .clone()
-                        .expect("validated: opentelemetry requires reporter"),
-                    capacity: 1024,
+                        .expect("validated: buffered requires reporter"),
+                    capacity: 1024, // TODO: make configurable
+                },
+                ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
+                    reporter: logs_reporter
+                        .clone()
+                        .expect("validated: unbuffered requires reporter"),
+                },
+                ProviderMode::OpenTelemetry => {
+                    // OpenTelemetry mode for engine is not yet supported
+                    // Fall back to buffered for now
+                    EngineLogsSetup::Buffered {
+                        reporter: logs_reporter
+                            .clone()
+                            .expect("validated: opentelemetry requires reporter"),
+                        capacity: 1024,
+                    }
                 }
             }
         };
