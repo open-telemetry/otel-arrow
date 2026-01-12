@@ -68,7 +68,7 @@ impl OpentelemetryClient {
 
         // Configure the global subscriber based on strategies.global.
         // Engine threads override this with BufferWriterLayer via with_default().
-        let (logger_provider, runtime) = match config.logs.strategies.global {
+        let (logger_provider, runtime) = match config.logs.providers.global {
             ProviderMode::Noop => {
                 // No-op: just install the filter, events are dropped
                 if let Err(err) = tracing::subscriber::NoSubscriber::new().try_init() {

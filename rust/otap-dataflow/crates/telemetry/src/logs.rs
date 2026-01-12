@@ -3,9 +3,11 @@
 
 //! Internal logs collection for OTAP-Dataflow.
 
-use bytes::Bytes;
 use crate::error::Error;
-use crate::self_tracing::{ConsoleWriter, DirectLogRecordEncoder, LogRecord, RawLoggingLayer, SavedCallsite};
+use crate::self_tracing::{
+    ConsoleWriter, DirectLogRecordEncoder, LogRecord, RawLoggingLayer, SavedCallsite,
+};
+use bytes::Bytes;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::field_num::logs::{
     LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
@@ -13,9 +15,9 @@ use otap_df_pdata::proto::consts::field_num::logs::{
 use otap_df_pdata::proto_encode_len_delimited_unknown_size;
 use std::cell::RefCell;
 use tracing::{Event, Subscriber};
+use tracing_subscriber::Registry;
 use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Registry;
 
 /// A batch of log records from a pipeline thread.
 pub struct LogBatch {
@@ -27,6 +29,7 @@ pub struct LogBatch {
 
 impl LogBatch {
     /// The total size including dropped records.
+    #[must_use]
     pub fn size_with_dropped(&self) -> usize {
         self.records.len() + self.dropped_count
     }
@@ -301,7 +304,7 @@ impl ThreadBufferedLayer {
         if let Some(batch) =
             CURRENT_LOG_BUFFER.with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
         {
-            let _ = self.reporter.try_report(LogPayload::Batch(batch))?;
+            self.reporter.try_report(LogPayload::Batch(batch))?;
         }
         Ok(())
     }
@@ -318,7 +321,6 @@ where
             if let Some(ref mut buffer) = *cell.borrow_mut() {
                 buffer.push(record);
             }
-            // TODO: Fallback consideration.
         });
     }
 }

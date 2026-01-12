@@ -110,31 +110,32 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // The receiver end goes to either:
         // - LogsCollector thread (output == Raw): prints to console
         // - Internal Telemetry Receiver node (output == Internal): emits as OTLP
-        let (logs_reporter, logs_receiver) = if strategies_need_reporter {
+        let (logs_reporter, logs_receiver, logs_collector_handle) = if strategies_need_reporter {
             match telemetry_config.logs.output {
                 OutputMode::Raw => {
                     // Start collector thread for Raw output mode
                     let (logs_collector, reporter) =
                         LogsCollector::new(telemetry_config.reporting_channel_size);
-                    // TODO: Store handle for graceful shutdown
-                    let _logs_collector_handle =
+                    let logs_collector_handle =
                         spawn_thread_local_task("logs-collector", move |_cancellation_token| {
                             logs_collector.run()
                         })?;
-                    (Some(reporter), None)
+                    (Some(reporter), None, Some(logs_collector_handle))
                 }
                 OutputMode::Internal => {
                     // For Internal output, create just the channel.
                     // The ITR node will receive from it during pipeline build.
                     let (logs_receiver, reporter) =
                         LogsCollector::channel(telemetry_config.reporting_channel_size);
-                    (Some(reporter), Some(logs_receiver))
+                    (Some(reporter), Some(logs_receiver), None)
                 }
-                OutputMode::Noop => (None, None),
+                OutputMode::Noop => (None, None, None),
             }
         } else {
-            (None, None)
+            (None, None, None)
         };
+        // Keep the handle alive - dropping it would join the thread and block forever
+        let _logs_collector_handle = logs_collector_handle;
 
         let opentelemetry_client =
             OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;

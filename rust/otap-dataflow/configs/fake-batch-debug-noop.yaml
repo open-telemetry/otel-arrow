@@ -49,5 +49,15 @@ nodes:
       mode: signal
   noop:
     kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    plugin_urn: "urn:otel:noop:exporterX"
     config:
+
+service:
+  telemetry:
+    logs:
+      # The default level is "info".
+      level: "debug"
+      strategies:
+        global: raw
+        engine: raw
+      output: noop
