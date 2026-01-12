@@ -5,6 +5,7 @@
 
 pub mod processors;
 
+use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -19,11 +20,11 @@ pub struct LogsConfig {
     pub level: LogLevel,
 
     /// Logging provider configuration.
-    #[serde(default = "default_strategies")]
-    pub strategies: LoggingProviders,
+    #[serde(default = "default_providers")]
+    pub providers: LoggingProviders,
 
     /// What to do with collected log events. This applies when any ProviderMode
-    /// in strategies indicates Buffered or Unbuffered. Does not apply if all
+    /// in providers indicates Buffered or Unbuffered. Does not apply if all
     /// providers are in [Noop, Raw, OpenTelemetry].
     #[serde(default = "default_output")]
     pub output: OutputMode,
@@ -49,22 +50,22 @@ pub enum LogLevel {
     Error,
 }
 
-/// Logging strategies for different execution contexts.
+/// Logging providers for different execution contexts.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LoggingProviders {
-    /// Strategy for non-engine threads. This defines the global Tokio
+    /// Provider mode for non-engine threads. This defines the global Tokio
     /// `tracing` subsriber. Default is Unbuffered. Note that Buffered
     /// requires opt-in thread-local setup.
     pub global: ProviderMode,
 
-    /// Strategy for engine/pipeline threads. This defines how the
+    /// Provider mod for engine/pipeline threads. This defines how the
     /// engine thread / core sets the Tokio `tracing`
     /// subscriber. Default is Buffered. Internal logs will be flushed
     /// by either the Internal Telemetry Receiver or the main pipeline
     /// controller.
     pub engine: ProviderMode,
 
-    /// Strategy for nodes downstream of Internal Telemetry receiver.
+    /// Provider mode for nodes downstream of Internal Telemetry receiver.
     /// This defaults to Noop to avoid internal feedback.
     #[serde(default = "default_internal_provider")]
     pub internal: ProviderMode,
@@ -109,7 +110,7 @@ pub enum OutputMode {
 
     /// Route to Internal Telemetry Receiver node.  The pipeline must
     /// include a nod with INTERNAL_TELEMETRY_RECEIVER_URN.  The
-    /// engine provider strategy must be Buffered for internal output.
+    /// engine provider mode must be Buffered for internal output.
     Internal,
 }
 
@@ -125,7 +126,7 @@ fn default_internal_provider() -> ProviderMode {
     ProviderMode::Noop
 }
 
-fn default_strategies() -> LoggingProviders {
+fn default_providers() -> LoggingProviders {
     LoggingProviders {
         global: ProviderMode::Unbuffered,
         engine: ProviderMode::Buffered,
@@ -137,7 +138,7 @@ impl Default for LogsConfig {
     fn default() -> Self {
         Self {
             level: default_level(),
-            strategies: default_strategies(),
+            providers: default_providers(),
             output: default_output(),
             processors: Vec::new(),
         }
@@ -148,37 +149,33 @@ impl LogsConfig {
     /// Validate the logs configuration.
     ///
     /// Returns an error if:
-    /// - `output` is `Noop` but a provider strategy uses `Buffered` or `Unbuffered`
+    /// - `output` is `Noop` but a provider uses `Buffered` or `Unbuffered`
     ///   (logs would be sent but discarded)
     /// - `output` is `Internal` but engine provider is not `Buffered`
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), Error> {
         if self.output == OutputMode::Noop {
             let global_sends = matches!(
-                self.strategies.global,
+                self.providers.global,
                 ProviderMode::Buffered | ProviderMode::Unbuffered
             );
             let engine_sends = matches!(
-                self.strategies.engine,
+                self.providers.engine,
                 ProviderMode::Buffered | ProviderMode::Unbuffered
             );
 
             if global_sends || engine_sends {
-                return Err(format!(
-                    "output mode is 'noop' but provider strategies would send logs: \
-                     global={:?}, engine={:?}. Set strategies to 'noop', 'raw', or 'opentelemetry', \
-                     or change output to 'raw'.",
-                    self.strategies.global, self.strategies.engine
-                ));
+                return Err(Error::InvalidUserConfig {
+                    error: "output mode is 'noop' but a provider uses buffered or unbuffered"
+                        .into(),
+                });
             }
         }
 
         if self.output == OutputMode::Internal {
-            if self.strategies.engine != ProviderMode::Buffered {
-                return Err(format!(
-                    "output mode is 'internal' but engine provider is {:?}. \
-                     Internal output requires engine provider to be 'buffered'.",
-                    self.strategies.engine
-                ));
+            if self.providers.engine != ProviderMode::Buffered {
+                return Err(Error::InvalidUserConfig {
+                    error: "output mode is 'internal', engine must use buffered provider".into(),
+                });
             }
         }
 
