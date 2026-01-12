@@ -295,32 +295,28 @@ impl AzureMonitorExporter {
         }
     }
 
-    async fn try_refresh_token(&mut self, auth: &Auth) -> Result<AccessToken, Error> {
-        let max_attempts = 5;
+    async fn try_refresh_token(&mut self, auth: &Auth) -> AccessToken {
         let min_delay_secs = 5.0_f64;
         let max_delay_secs = 30.0_f64;
         let max_jitter_perc = 0.10_f64; // 10% as decimal
 
-        for attempt in 1..=max_attempts {
+        let mut attempt = 0_i32;
+        loop {
+            attempt += 1;
+
             match auth.get_token().await {
                 Ok(token) => {
                     println!(
-                        "[AzureMonitorExporter] Obtained initial access token, expires on {}",
+                        "[AzureMonitorExporter] Obtained access token, expires on {}",
                         token.expires_on
                     );
-
-                    return Ok(token);
+                    return token;
                 }
                 Err(e) => {
                     println!(
-                        "[AzureMonitorExporter] Failed to obtain access token (attempt {}/{}): {e}",
-                        attempt, max_attempts
+                        "[AzureMonitorExporter] Failed to obtain access token (attempt {}): {e}",
+                        attempt
                     );
-                    if attempt == max_attempts {
-                        return Err(Error::InternalError {
-                            message: format!("Failed to obtain access token after {max_attempts} attempts: {e}"),
-                        });
-                    }
                 }
             }
 
@@ -331,8 +327,7 @@ impl AzureMonitorExporter {
             // Add jitter: random value between -max_jitter_perc% and +max_jitter_perc% of the delay
             let jitter_range = capped_delay_secs * max_jitter_perc;
             let jitter = if jitter_range > 0.0 {
-                // Random value in [-jitter_range, +jitter_range]
-                let random_factor = rand::random::<f64>() * 2.0 - 1.0; // [-1.0, 1.0)
+                let random_factor = rand::random::<f64>() * 2.0 - 1.0;
                 random_factor * jitter_range
             } else {
                 0.0
@@ -340,17 +335,13 @@ impl AzureMonitorExporter {
 
             let delay_secs = (capped_delay_secs + jitter).max(1.0);
             let delay = tokio::time::Duration::from_secs_f64(delay_secs);
-            
+
             println!(
                 "[AzureMonitorExporter] Retrying in {:.1}s...",
                 delay_secs
             );
             tokio::time::sleep(delay).await;
         }
-
-        Err(Error::InternalError {
-            message: "Exceeded maximum attempts to obtain initial access token".to_string(),
-        })
     }
 
     async fn handle_shutdown(
@@ -466,7 +457,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             message: format!("Failed to create auth handler: {e}"),
         })?;
 
-        let token = self.try_refresh_token(&auth).await?;
+        let token = self.try_refresh_token(&auth).await;
         self.client_pool
             .initialize(&self.config.api, &auth)
             .await
@@ -486,7 +477,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 biased;
 
                 _ = tokio::time::sleep_until(next_token_refresh) => {
-                    let new_token = self.try_refresh_token(&auth).await?;
+                    let new_token = self.try_refresh_token(&auth).await;
                     next_token_refresh = Self::get_next_token_refresh(new_token);
                 }
 
