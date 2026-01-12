@@ -187,7 +187,10 @@ mod tests {
             call_count: Arc::new(Mutex::new(0)),
         });
 
-        let auth = Auth::from_credential(credential, "test_scope".to_string());
+        let auth = Auth::from_credential(
+            credential as Arc<dyn TokenCredential>,
+            "test_scope".to_string(),
+        );
 
         assert!(auth.cached_token.read().await.is_none());
         assert_eq!(auth.scope, "test_scope");
@@ -247,7 +250,8 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
 
         // First call fetches from credential
         let token1 = auth.get_token().await.unwrap();
@@ -268,7 +272,8 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
 
         // First call
         let _ = auth.get_token().await.unwrap();
@@ -288,7 +293,8 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
 
         let token1 = auth.get_token().await.unwrap();
         let token2 = auth.get_token().await.unwrap();
@@ -309,7 +315,8 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
 
         // Fetch and cache token
         let _ = auth.get_token().await.unwrap();
@@ -332,7 +339,8 @@ mod tests {
             call_count: Arc::new(Mutex::new(0)),
         });
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
 
         // Should not panic when invalidating empty cache
         auth.invalidate_token().await;
@@ -360,7 +368,10 @@ mod tests {
             }
         }
 
-        let auth = Auth::from_credential(Arc::new(FailingCredential), "scope".to_string());
+        let auth = Auth::from_credential(
+            Arc::new(FailingCredential) as Arc<dyn TokenCredential>,
+            "scope".to_string(),
+        );
 
         let result = auth.get_token().await;
         assert!(result.is_err());
@@ -402,7 +413,7 @@ mod tests {
         let auth = Auth::from_credential(
             Arc::new(FailOnceThenSucceed {
                 call_count: call_count.clone(),
-            }),
+            }) as Arc<dyn TokenCredential>,
             "scope".to_string(),
         );
 
@@ -428,7 +439,10 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth = Arc::new(Auth::from_credential(credential, "scope".to_string()));
+        let auth = Arc::new(Auth::from_credential(
+            credential as Arc<dyn TokenCredential>,
+            "scope".to_string(),
+        ));
 
         // Spawn multiple concurrent token requests
         let mut handles = vec![];
@@ -464,7 +478,8 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth1 = Auth::from_credential(credential, "scope".to_string());
+        let auth1 =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
         let auth2 = auth1.clone();
 
         // Fetch via auth1
