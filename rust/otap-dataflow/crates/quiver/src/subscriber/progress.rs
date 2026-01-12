@@ -183,6 +183,10 @@ impl ProgressHeader {
             ));
         }
 
+        // Note: We don't validate header_size against file size here because
+        // deserialize() is called with just the header bytes. File-level bounds
+        // checking happens in read_progress_file().
+
         // Read flags (warn on unknown flags but don't fail)
         let flags = u16::from_le_bytes([data[12], data[13]]);
         if flags != 0 {
@@ -500,8 +504,19 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
     // Parse header
     let header = ProgressHeader::deserialize(&data[..HEADER_V1_SIZE], path)?;
 
-    // Parse entries
+    // Validate header_size against file bounds
     let header_size = header.header_size as usize;
+    if header_size > crc_offset {
+        return Err(SubscriberError::progress_corrupted(
+            path,
+            format!(
+                "header_size ({header_size}) exceeds file body size ({})",
+                crc_offset
+            ),
+        ));
+    }
+
+    // Parse entries
     let body_data = &data[header_size..crc_offset];
     let mut body_reader = io::Cursor::new(body_data);
 
@@ -869,6 +884,98 @@ mod tests {
             result,
             Err(SubscriberError::ProgressCorrupted { .. })
         ));
+    }
+
+    #[test]
+    fn read_detects_oversized_header() {
+        let dir = tempdir().unwrap();
+        let sub_id = SubscriberId::new("test-sub").unwrap();
+
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+
+        // Corrupt the header_size field to claim a size larger than the file
+        let path = progress_file_path(dir.path(), &sub_id);
+        let mut data = fs::read(&path).unwrap();
+
+        // Set header_size to 0xFFFF (way larger than file)
+        data[10] = 0xFF;
+        data[11] = 0xFF;
+
+        // Recalculate CRC to avoid CRC error
+        let crc_offset = data.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&data[..crc_offset]);
+        let crc = hasher.finalize();
+        data[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+        fs::write(&path, &data).unwrap();
+
+        let result = read_progress_file(&path);
+        assert!(
+            matches!(result, Err(SubscriberError::ProgressCorrupted { .. })),
+            "expected ProgressCorrupted error for oversized header, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn read_detects_entry_count_overflow() {
+        let dir = tempdir().unwrap();
+        let sub_id = SubscriberId::new("test-sub").unwrap();
+
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+
+        // Corrupt the entry_count field to claim more entries than exist
+        let path = progress_file_path(dir.path(), &sub_id);
+        let mut data = fs::read(&path).unwrap();
+
+        // Set entry_count to 1000 but file has no entries
+        data[22..26].copy_from_slice(&1000u32.to_le_bytes());
+
+        // Recalculate CRC
+        let crc_offset = data.len() - 4;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&data[..crc_offset]);
+        let crc = hasher.finalize();
+        data[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+        fs::write(&path, &data).unwrap();
+
+        let result = read_progress_file(&path);
+        // Should fail when trying to read entries that don't exist
+        assert!(
+            result.is_err(),
+            "expected error for entry count overflow, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn read_handles_zero_byte_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("quiver.sub.empty");
+
+        // Create empty file
+        fs::write(&path, b"").unwrap();
+
+        let result = read_progress_file(&path);
+        assert!(matches!(
+            result,
+            Err(SubscriberError::ProgressCorrupted { .. })
+        ));
+    }
+
+    #[test]
+    fn read_handles_garbage_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("quiver.sub.garbage");
+
+        // Write random garbage
+        fs::write(&path, b"this is not a valid progress file at all!!!").unwrap();
+
+        let result = read_progress_file(&path);
+        assert!(
+            result.is_err(),
+            "expected error for garbage file, got: {result:?}"
+        );
     }
 
     #[test]
