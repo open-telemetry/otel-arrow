@@ -21,7 +21,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::pipeline::service::telemetry::logs::ProviderMode;
+use otap_df_config::pipeline::service::telemetry::logs::{OutputMode, ProviderMode};
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -86,17 +86,31 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
 
-        let (logs_collector, logs_reporter) =
-            LogsCollector::new(telemetry_config.reporting_channel_size);
-        // Start the logs collector thread
-        // TODO: Store handle for graceful shutdown
-        let _logs_collector_handle =
-            spawn_thread_local_task("logs-collector", move |_cancellation_token| {
-                logs_collector.run()
-            })?;
+        // Validate logs configuration
+        telemetry_config
+            .logs
+            .validate()
+            .map_err(|msg| Error::ConfigurationError { message: msg })?;
+
+        // Create logs collector and reporter based on output mode.
+        // Only start the collector thread if output is Raw.
+        let logs_reporter = match telemetry_config.logs.output {
+            OutputMode::Raw => {
+                let (logs_collector, reporter) =
+                    LogsCollector::new(telemetry_config.reporting_channel_size);
+                // Start the logs collector thread
+                // TODO: Store handle for graceful shutdown
+                let _logs_collector_handle =
+                    spawn_thread_local_task("logs-collector", move |_cancellation_token| {
+                        logs_collector.run()
+                    })?;
+                Some(reporter)
+            }
+            OutputMode::Noop => None,
+        };
 
         let opentelemetry_client =
-            OpentelemetryClient::new(telemetry_config, Some(logs_reporter.clone()))?;
+            OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -128,22 +142,29 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        // Create engine logs setup based on strategy configuration
+        // Create engine logs setup based on strategy configuration.
+        // Note: validation ensures that if Buffered/Unbuffered is used, logs_reporter is Some.
         let engine_logs_setup = match telemetry_config.logs.strategies.engine {
             ProviderMode::Noop => EngineLogsSetup::Noop,
             ProviderMode::Raw => EngineLogsSetup::Raw,
             ProviderMode::Buffered => EngineLogsSetup::Buffered {
-                reporter: logs_reporter.clone(),
+                reporter: logs_reporter
+                    .clone()
+                    .expect("validated: buffered requires reporter"),
                 capacity: 1024, // TODO: make configurable
             },
             ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
-                reporter: logs_reporter.clone(),
+                reporter: logs_reporter
+                    .clone()
+                    .expect("validated: unbuffered requires reporter"),
             },
             ProviderMode::OpenTelemetry => {
                 // OpenTelemetry mode for engine is not yet supported
                 // Fall back to buffered for now
                 EngineLogsSetup::Buffered {
-                    reporter: logs_reporter.clone(),
+                    reporter: logs_reporter
+                        .clone()
+                        .expect("validated: opentelemetry requires reporter"),
                     capacity: 1024,
                 }
             }

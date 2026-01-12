@@ -96,4 +96,11 @@ pub enum Error {
         /// Panic message.
         panic_message: String,
     },
+
+    /// Configuration validation error.
+    #[error("Configuration error: {message}")]
+    ConfigurationError {
+        /// Error message describing the configuration problem.
+        message: String,
+    },
 }
