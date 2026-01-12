@@ -92,7 +92,7 @@ additive_op = _{
 }
 
 additive_expression = {
-    unary_expression ~ (additive_op ~ additive_expression)*
+    multiplicative_expression ~ (additive_op ~ additive_expression)*
 }
 
 multiplicative_op_mul = @{ "*" }
@@ -103,7 +103,7 @@ multiplicative_op = _{
 }
 
 multiplicative_expression = {
-    additive_expression ~ (multiplicative_op ~ multiplicative_expression)*
+    unary_expression ~ (multiplicative_op ~ multiplicative_expression)*
 }
 
 rel_op_eq = @{ "==" }
@@ -113,7 +113,7 @@ rel_op = _{
 }
 
 rel_expression = {
-    multiplicative_expression ~ (rel_op ~ rel_expression)*
+    additive_expression ~ (rel_op ~ rel_expression)*
 }
 
 // TODO add bitwise expressions

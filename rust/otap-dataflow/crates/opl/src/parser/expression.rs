@@ -157,8 +157,8 @@ pub(crate) fn parse_rel_expression(
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
-        Rule::multiplicative_expression,
-        parse_multiplicative_expression,
+        Rule::additive_expression,
+        parse_additive_expression,
     )
     .transpose()?
     .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
@@ -212,8 +212,8 @@ pub(crate) fn parse_multiplicative_expression(
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
-        Rule::additive_expression,
-        parse_additive_expression,
+        Rule::unary_expression,
+        parse_unary_expression,
     )
     .transpose()?
     .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
@@ -264,8 +264,8 @@ pub(crate) fn parse_additive_expression(
     let mut inner_rules = rule.into_inner();
     let left_expr = parse_next_child_rule(
         &mut inner_rules,
-        Rule::unary_expression,
-        parse_unary_expression,
+        Rule::multiplicative_expression,
+        parse_multiplicative_expression,
     )
     .transpose()?
     .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
@@ -886,26 +886,14 @@ mod test {
         assert_eq!(rules.len(), 1);
         let result: ScalarExpression = parse_rel_expression(rules.next().unwrap()).unwrap().into();
 
-        let one_plus_two = ScalarExpression::Math(MathScalarExpression::Add(
+        let two_times_three = ScalarExpression::Math(MathScalarExpression::Multiply(
             BinaryMathematicalScalarExpression::new(
                 QueryLocation::new_fake(),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-                )),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
                 )),
-            ),
-        ));
-
-        let three_minus_four = ScalarExpression::Math(MathScalarExpression::Subtract(
-            BinaryMathematicalScalarExpression::new(
-                QueryLocation::new_fake(),
                 ScalarExpression::Static(StaticScalarExpression::Integer(
                     IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
-                )),
-                ScalarExpression::Static(StaticScalarExpression::Integer(
-                    IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
                 )),
             ),
         ));
@@ -922,15 +910,25 @@ mod test {
             ),
         ));
 
-        let expected = ScalarExpression::Math(MathScalarExpression::Multiply(
+        let expected = ScalarExpression::Math(MathScalarExpression::Add(
             BinaryMathematicalScalarExpression::new(
                 QueryLocation::new_fake(),
-                one_plus_two,
-                ScalarExpression::Math(MathScalarExpression::Divide(
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                ScalarExpression::Math(MathScalarExpression::Subtract(
                     BinaryMathematicalScalarExpression::new(
                         QueryLocation::new_fake(),
-                        three_minus_four,
-                        five_mod_six,
+                        two_times_three,
+                        ScalarExpression::Math(MathScalarExpression::Divide(
+                            BinaryMathematicalScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ScalarExpression::Static(StaticScalarExpression::Integer(
+                                    IntegerScalarExpression::new(QueryLocation::new_fake(), 4),
+                                )),
+                                five_mod_six,
+                            ),
+                        )),
                     ),
                 )),
             ),
