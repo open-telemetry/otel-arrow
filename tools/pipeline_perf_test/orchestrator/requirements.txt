@@ -10,7 +10,7 @@ docker==7.1.0
 psutil==7.2.1
 
 # Kubernetes management
-kubernetes==33.1.0
+kubernetes==34.1.0
 
 # Other dependencies
 duckdb==1.4.3
