@@ -129,6 +129,41 @@ service:
       output: raw
 ```
 
+```mermaid
+flowchart LR
+    subgraph "Thread Contexts"
+        G[Global Threads<br/>HTTP admin, etc.]
+        E[Engine Threads<br/>Pipeline cores]
+        I[Internal Threads<br/>ITR components]
+    end
+
+    subgraph "Provider Layers"
+        UL[UnbufferedLayer<br/>immediate send]
+        BL[ThreadBufferedLayer<br/>thread-local buffer]
+        NL[Noop<br/>dropped]
+    end
+
+    subgraph "Channel"
+        CH[(flume channel)]
+    end
+
+    subgraph "Output"
+        LC[LogsCollector Thread]
+        CON[Console<br/>stdout/stderr]
+    end
+
+    G -->|tracing event| UL
+    E -->|tracing event| BL
+    I -->|tracing event| NL
+
+    UL -->|LogPayload::Singleton| CH
+    BL -->|periodic flush<br/>LogPayload::Batch| CH
+    NL -.->|discarded| X[∅]
+
+    CH --> LC
+    LC -->|raw format| CON
+```
+
 ## Internal Telemetry Receiver configuration
 
 ```yaml
@@ -155,3 +190,44 @@ nodes:
     kind: exporer
     ...
 ```
+
+```mermaid
+flowchart LR
+    subgraph "Thread Contexts"
+        G[Global Threads<br/>HTTP admin, etc.]
+        E[Engine Threads<br/>Pipeline cores]
+        I[Internal Threads<br/>ITR components]
+    end
+
+    subgraph "Provider Layers"
+        UL[UnbufferedLayer<br/>immediate send]
+        BL[ThreadBufferedLayer<br/>thread-local buffer]
+        NL[Noop<br/>dropped]
+    end
+
+    subgraph "Channel"
+        CH[(flume channel)]
+    end
+
+    subgraph "Internal Telemetry Pipeline"
+        ITR[InternalTelemetryReceiver<br/>encodes to OTLP bytes]
+        PROC[Processors<br/>batch, filter, etc.]
+        EXP[Exporter<br/>OTLP, file, etc.]
+    end
+
+    G -->|tracing event| UL
+    E -->|tracing event| BL
+    I -->|tracing event| NL
+
+    UL -->|LogPayload::Singleton| CH
+    BL -->|periodic flush<br/>LogPayload::Batch| CH
+    NL -.->|discarded| X[∅]
+
+    CH --> ITR
+    ITR -->|OtapPayload<br/>ExportLogsRequest| PROC
+    PROC --> EXP
+```
+
+**Key differences:**
+- **Raw output mode**: A dedicated `LogsCollector` thread consumes from the channel and prints to console
+- **Internal output mode**: The `InternalTelemetryReceiver` node consumes from the channel and emits `OtapPayload::ExportLogsRequest` into the pipeline
