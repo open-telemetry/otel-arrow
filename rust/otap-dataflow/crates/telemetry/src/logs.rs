@@ -4,16 +4,12 @@
 //! Internal logs collection for OTAP-Dataflow.
 
 use crate::error::Error;
-use crate::self_tracing::{ConsoleWriter, LogRecord, SavedCallsite};
+use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer, SavedCallsite};
 use std::cell::RefCell;
 use tracing::{Event, Subscriber};
-//use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::layer::{
-    Context,
-    Layer as TracingLayer, //, SubscriberExt
-};
+use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
-//use tracing_subscriber::{EnvFilter, Registry};
+use tracing_subscriber::Registry;
 
 /// A batch of log records from a pipeline thread.
 pub struct LogBatch {
@@ -21,6 +17,13 @@ pub struct LogBatch {
     pub records: Vec<LogRecord>,
     /// Number of records dropped in the same period.
     pub dropped_count: usize,
+}
+
+impl LogBatch {
+    /// The total size including dropped records.
+    pub fn size_with_dropped(&self) -> usize {
+        self.records.len() + self.dropped_count
+    }
 }
 
 /// A payload of two kinds
@@ -32,11 +35,11 @@ pub enum LogPayload {
 }
 
 impl LogPayload {
-    /// The total number of dropped if you drop this batch.
+    /// The total number of records (including dropped) in this payload.
     pub fn size_with_dropped(&self) -> usize {
         match self {
             Self::Singleton(_) => 1,
-            Self::Batch(batch) => batch.records.len() + batch.dropped_count,
+            Self::Batch(batch) => batch.size_with_dropped(),
         }
     }
 }
@@ -187,13 +190,15 @@ impl LogsCollector {
 }
 
 /// A tracing Layer that buffers records in thread-local storage.
-pub struct BufferedLayer {
+///
+/// For engine threads that control their own flush timing.
+pub struct ThreadBufferedLayer {
     /// Reporter for flushing batches.
     reporter: LogsReporter,
 }
 
-impl BufferedLayer {
-    /// Create a new buffered layer.
+impl ThreadBufferedLayer {
+    /// Create a new thread-buffered layer.
     #[must_use]
     pub fn new(reporter: LogsReporter) -> Self {
         Self { reporter }
@@ -210,7 +215,7 @@ impl BufferedLayer {
     }
 }
 
-impl<S> TracingLayer<S> for BufferedLayer
+impl<S> TracingLayer<S> for ThreadBufferedLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
@@ -256,24 +261,104 @@ where
     }
 }
 
-// Note: Commented below because not use, not ready, slightly incorrect.
+/// Engine logging configuration, carrying the data needed for each mode.
+///
+/// This enum is constructed based on `config.logs.strategies.engine` and passed
+/// to each engine thread. The engine thread uses `with_engine_subscriber()` to
+/// run its work with the appropriate logging layer.
+#[derive(Clone)]
+pub enum EngineLogsSetup {
+    /// Logs are silently dropped.
+    Noop,
+    /// Synchronous raw logging to console.
+    Raw,
+    /// Buffered: accumulates in thread-local buffer, flushed periodically.
+    Buffered {
+        /// Reporter to send batches through.
+        reporter: LogsReporter,
+        /// Buffer capacity per thread.
+        capacity: usize,
+    },
+    /// Unbuffered: each log is sent immediately.
+    Unbuffered {
+        /// Reporter to send singletons through.
+        reporter: LogsReporter,
+    },
+}
 
-// /// Create a subscriber for engine threads that uses BufferedLayer.
-// fn create_engine_thread_subscriber() -> impl Subscriber {
-//     // Use the same filter as the global subscriber (INFO by default, RUST_LOG override)
-//     let filter = EnvFilter::builder()
-//         .with_default_directive(LevelFilter::INFO.into())
-//         .from_env_lossy();
-//     Registry::default()
-//         .with(filter)
-//         .with(BufferedLayer::default())
-// }
+/// Handle for flushing buffered logs from the engine thread.
+///
+/// For non-buffered modes, flush is a no-op.
+#[derive(Clone)]
+pub enum LogsFlusher {
+    /// No-op flusher for modes that don't buffer.
+    Noop,
+    /// Flusher that drains the thread-local buffer and sends via the reporter.
+    Buffered(LogsReporter),
+}
 
-// /// Run a closure with the engine thread subscriber as the default.
-// pub fn with_engine_thread_subscriber<F, R>(f: F) -> R
-// where
-//     F: FnOnce() -> R,
-// {
-//     let subscriber = create_engine_thread_subscriber();
-//     tracing::subscriber::with_default(subscriber, f)
-// }
+impl LogsFlusher {
+    /// Flush any buffered logs.
+    ///
+    /// For `Noop`, this does nothing.
+    /// For `Buffered`, this drains the thread-local buffer and sends as a batch.
+    pub fn flush(&self) -> Result<(), Error> {
+        match self {
+            LogsFlusher::Noop => Ok(()),
+            LogsFlusher::Buffered(reporter) => {
+                if let Some(batch) = CURRENT_LOG_BUFFER
+                    .with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
+                {
+                    reporter.try_report(LogPayload::Batch(batch))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl EngineLogsSetup {
+    /// Run a closure with the engine-appropriate tracing subscriber.
+    ///
+    /// Returns a `LogsFlusher` that can be used to periodically flush buffered logs.
+    /// For non-buffered modes, the flusher is a no-op.
+    pub fn with_engine_subscriber<F, R>(
+        &self,
+        log_level: otap_df_config::pipeline::service::telemetry::logs::LogLevel,
+        f: F,
+    ) -> R
+    where
+        F: FnOnce(LogsFlusher) -> R,
+    {
+        let filter = crate::get_env_filter(log_level);
+
+        match self {
+            EngineLogsSetup::Noop => {
+                // Use NoSubscriber - events are dropped
+                let subscriber = tracing::subscriber::NoSubscriber::new();
+                tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
+            }
+            EngineLogsSetup::Raw => {
+                let subscriber = Registry::default()
+                    .with(filter)
+                    .with(RawLoggingLayer::new(ConsoleWriter::default()));
+                tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
+            }
+            EngineLogsSetup::Buffered { reporter, capacity } => {
+                let layer = ThreadBufferedLayer::new(reporter.clone());
+                let subscriber = Registry::default().with(filter).with(layer);
+                let flusher = LogsFlusher::Buffered(reporter.clone());
+
+                // Install the thread-local buffer
+                with_thread_log_buffer(*capacity, || {
+                    tracing::subscriber::with_default(subscriber, || f(flusher))
+                })
+            }
+            EngineLogsSetup::Unbuffered { reporter } => {
+                let layer = UnbufferedLayer::new(reporter.clone());
+                let subscriber = Registry::default().with(filter).with(layer);
+                tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
+            }
+        }
+    }
+}

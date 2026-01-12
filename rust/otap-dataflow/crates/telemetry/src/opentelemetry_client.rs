@@ -16,11 +16,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::Tr
 
 use crate::{
     error::Error,
-    logs::{
-        BufferedLayer,
-        //LogsReporter,
-        UnbufferedLayer,
-    },
+    logs::{LogsReporter, UnbufferedLayer},
     opentelemetry_client::logger_provider::LoggerProvider,
     opentelemetry_client::meter_provider::MeterProvider,
     self_tracing::{ConsoleWriter, RawLoggingLayer},
@@ -48,13 +44,20 @@ impl OpentelemetryClient {
     /// When `RUST_LOG` is set, it takes precedence and allows filtering by target.
     /// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
     /// noisy HTTP/2 and hyper logs.
-    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+    ///
+    /// The `logs_reporter` parameter is required when `strategies.global` is set to
+    /// `Unbuffered`. It should be created via `LogsCollector::new()` and the collector
+    /// should be run on a dedicated thread.
+    pub fn new(
+        config: &TelemetryConfig,
+        logs_reporter: Option<LogsReporter>,
+    ) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
 
         let (meter_provider, runtime) =
-            MeterProvider::configure(sdk_resource, &config.metrics, runtime)?.into_parts();
+            MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?.into_parts();
 
         let tracing_setup =
             tracing_subscriber::registry().with(crate::get_env_filter(config.logs.level));
@@ -62,9 +65,6 @@ impl OpentelemetryClient {
         let logerr = |err: TryInitError| {
             crate::raw_error!("tracing.subscriber.init", error = err.to_string());
         };
-
-        // The OpenTelemetry logging provider.
-        let mut logger_provider: Option<_> = None;
 
         // Configure the global subscriber based on strategies.global.
         // Engine threads override this with BufferWriterLayer via with_default().
@@ -86,14 +86,15 @@ impl OpentelemetryClient {
                 (None, runtime)
             }
             ProviderMode::Buffered => {
-                let channel_layer = BufferedLayer::new(logs_reporter);
-                if let Err(err) = tracing_setup.with(channel_layer).try_init() {
-                    logerr(err);
-                }
-                (None, runtime)
+                return Err(Error::ConfigurationError(
+                    "global buffered logging not supported".into(),
+                ));
             }
             ProviderMode::Unbuffered => {
-                let channel_layer = UnbufferedLayer::new(logs_reporter);
+                let reporter = logs_reporter.ok_or_else(|| {
+                    Error::ConfigurationError("Unbuffered logging requires a LogsReporter".into())
+                })?;
+                let channel_layer = UnbufferedLayer::new(reporter);
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }
@@ -209,15 +210,14 @@ mod tests {
     };
 
     use super::*;
-    //use crate::logs::LogsCollector;
+    use crate::logs::LogsCollector;
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        //let (_collector, reporter) = LogsCollector::new(10);
-        // , reporter
-        let client = OpentelemetryClient::new(&config)?;
+        let (_collector, reporter) = LogsCollector::new(10);
+        let client = OpentelemetryClient::new(&config, Some(reporter))?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -251,9 +251,8 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        //, reporter
-        //let (_collector, reporter) = LogsCollector::new(10);
-        let client = OpentelemetryClient::new(&config)?;
+        let (_collector, reporter) = LogsCollector::new(10);
+        let client = OpentelemetryClient::new(&config, Some(reporter))?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();

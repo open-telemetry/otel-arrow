@@ -17,12 +17,6 @@ pub struct LogsConfig {
     /// Logging strategy configuration for different thread contexts.
     pub strategies: LoggingStrategies,
 
-    /// The level at which to consider a second fallback strategy.
-    pub fallback_level: LogLevel,
-
-    /// Logging strategy configuration for different thread contexts.
-    pub fallbacks: LoggingStrategies,
-
     /// The list of log processors to configure (for OpenTelemetry SDK output mode).
     /// Only used when `output.mode` is set to `opentelemetry`.
     pub processors: Vec<processors::LogProcessorConfig>,
@@ -55,9 +49,6 @@ pub struct LoggingStrategies {
 
     /// Strategy for engine/pipeline threads.
     pub engine: ProviderMode,
-
-    /// Default for internal telemetry-reporting components.
-    pub internal: ProviderMode,
 }
 
 /// Logs producer: how log events are captured and routed.
@@ -67,17 +58,16 @@ pub enum ProviderMode {
     /// Log events are silently ignored.
     Noop,
 
-    /// Regional delivery: send to a buffered channel.
+    /// Place into a thread-local buffer.
     Buffered,
 
-    /// Regional delivery: send to an unbuffered channel.
+    /// Non-blocking, immediate delivery.
     Unbuffered,
 
     /// Use OTel-Rust as the provider.
     OpenTelemetry,
 
-    /// Use synchronous logging. This is harmful for performance
-    /// can be used for development or as a fallback configuration.
+    /// Use synchronous logging.
     Raw,
 }
 
@@ -107,23 +97,10 @@ fn default_level() -> LogLevel {
     LogLevel::Off
 }
 
-fn default_fallback_level() -> LogLevel {
-    LogLevel::Error
-}
-
 fn default_strategies() -> LoggingStrategies {
     LoggingStrategies {
-        global: ProviderMode::Buffered,
+        global: ProviderMode::Unbuffered,
         engine: ProviderMode::Buffered,
-        internal: ProviderMode::Noop,
-    }
-}
-
-fn default_fallback_strategies() -> LoggingStrategies {
-    LoggingStrategies {
-        global: ProviderMode::Raw,
-        engine: ProviderMode::Raw,
-        internal: ProviderMode::Noop,
     }
 }
 
@@ -132,8 +109,6 @@ impl Default for LogsConfig {
         Self {
             level: default_level(),
             strategies: default_strategies(),
-            fallback_level: default_fallback_level(),
-            fallbacks: default_fallback_strategies(),
             processors: Vec::new(),
         }
     }

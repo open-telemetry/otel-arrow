@@ -21,6 +21,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::pipeline::service::telemetry::logs::ProviderMode;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -36,7 +37,7 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::logs::{LogsCollector, LogsReporter, install_thread_log_buffer, uninstall_thread_log_buffer, with_engine_thread_subscriber};
+use otap_df_telemetry::logs::{EngineLogsSetup, LogsCollector};
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
@@ -85,11 +86,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
 
-        // Create the logs collection channel before OpentelemetryClient so it can
-        // install the DirectChannelLayer for global subscriber.
-        let (logs_collector, logs_reporter) = LogsCollector::new(
-            telemetry_config.reporting_channel_size,
-        );
+        let (logs_collector, logs_reporter) =
+            LogsCollector::new(telemetry_config.reporting_channel_size);
         // Start the logs collector thread
         // TODO: Store handle for graceful shutdown
         let _logs_collector_handle =
@@ -97,7 +95,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 logs_collector.run()
             })?;
 
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;
+        let opentelemetry_client =
+            OpentelemetryClient::new(telemetry_config, Some(logs_reporter.clone()))?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -128,6 +127,28 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             spawn_thread_local_task("observed-state-store", move |cancellation_token| {
                 obs_state_store.run(cancellation_token)
             })?;
+
+        // Create engine logs setup based on strategy configuration
+        let engine_logs_setup = match telemetry_config.logs.strategies.engine {
+            ProviderMode::Noop => EngineLogsSetup::Noop,
+            ProviderMode::Raw => EngineLogsSetup::Raw,
+            ProviderMode::Buffered => EngineLogsSetup::Buffered {
+                reporter: logs_reporter.clone(),
+                capacity: 1024, // TODO: make configurable
+            },
+            ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
+                reporter: logs_reporter.clone(),
+            },
+            ProviderMode::OpenTelemetry => {
+                // OpenTelemetry mode for engine is not yet supported
+                // Fall back to buffered for now
+                EngineLogsSetup::Buffered {
+                    reporter: logs_reporter.clone(),
+                    capacity: 1024,
+                }
+            }
+        };
+        let log_level = telemetry_config.logs.level;
 
         // Start one thread per requested core
         // Get available CPU cores for pinning
@@ -162,7 +183,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 thread_id,
             );
             let metrics_reporter = metrics_reporter.clone();
-            let logs_reporter = logs_reporter.clone();
+            let engine_logs_setup = engine_logs_setup.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
             let obs_evt_reporter = obs_evt_reporter.clone();
@@ -177,7 +198,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_handle,
                         obs_evt_reporter,
                         metrics_reporter,
-                        logs_reporter,
+                        engine_logs_setup,
+                        log_level,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
                     )
@@ -395,17 +417,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        logs_reporter: LogsReporter,
+        engine_logs_setup: EngineLogsSetup,
+        log_level: otap_df_config::pipeline::service::telemetry::logs::LogLevel,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
-        // Run the entire pipeline thread with the engine-specific tracing subscriber.
-        // This ensures all logs go to the thread-local buffer instead of the global channel.
-        with_engine_thread_subscriber(|| {
-            // Install thread-local log buffer for this pipeline thread
-            // Buffer capacity: 1024 entries (TODO: make configurable)
-            install_thread_log_buffer(1024);
-
+        // Run with the engine-appropriate tracing subscriber.
+        // The closure receives a LogsFlusher for buffered mode.
+        engine_logs_setup.with_engine_subscriber(log_level, |logs_flusher| {
             // Create a tracing span for this pipeline thread
             // so that all logs within this scope include pipeline context.
             let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
@@ -439,24 +458,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ));
 
             // Start the pipeline (this will use the current thread's Tokio runtime)
-            let result = runtime_pipeline
+            runtime_pipeline
                 .run_forever(
                     pipeline_key,
                     pipeline_context,
                     obs_evt_reporter,
                     metrics_reporter,
-                    logs_reporter,
+                    logs_flusher,
                     pipeline_ctrl_msg_tx,
                     pipeline_ctrl_msg_rx,
                 )
                 .map_err(|e| Error::PipelineRuntimeError {
                     source: Box::new(e),
-                });
-
-            // Cleanup: uninstall thread-local log buffer
-            uninstall_thread_log_buffer();
-
-            result
+                })
         })
     }
 }

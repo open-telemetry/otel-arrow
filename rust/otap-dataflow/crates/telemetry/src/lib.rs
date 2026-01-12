@@ -65,7 +65,10 @@ pub use tracing::trace_span as otel_trace_span;
 pub use tracing::warn_span as otel_warn_span;
 
 // Re-export commonly used logs types for convenience.
-pub use logs::{BufferedLayer, LogsCollector, LogsReporter, UnbufferedLayer};
+pub use logs::{
+    EngineLogsSetup, LogsCollector, LogsFlusher, LogsReporter, ThreadBufferedLayer,
+    UnbufferedLayer,
+};
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config

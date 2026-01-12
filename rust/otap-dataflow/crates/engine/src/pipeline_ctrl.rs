@@ -19,7 +19,7 @@ use otap_df_config::pipeline::TelemetrySettings;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_telemetry::logs::{LogsReporter, LogPayload, drain_thread_log_buffer};
+use otap_df_telemetry::logs::LogsFlusher;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_error, otel_warn};
 use std::cmp::Reverse;
@@ -183,8 +183,8 @@ pub struct PipelineCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
-    /// Global logs reporter for internal log collection.
-    logs_reporter: LogsReporter,
+    /// Logs flusher for periodic flush of internal log buffers.
+    logs_flusher: LogsFlusher,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
@@ -202,7 +202,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        logs_reporter: LogsReporter,
+        logs_flusher: LogsFlusher,
         internal_telemetry: TelemetrySettings,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
@@ -216,7 +216,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
-            logs_reporter,
+            logs_flusher,
             channel_metrics,
             telemetry: internal_telemetry,
         }
@@ -355,11 +355,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     }
 
                     // Flush internal logs from the thread-local buffer
-                    if let Some(batch) = drain_thread_log_buffer() {
-                        let count = batch.size_with_dropped();
-                        if let Err(err) = self.logs_reporter.try_report(LogPayload::Batch(batch)) {
-                            otel_error!("logs.reporting.fail", error = err.to_string(), dropped = count);
-                        }
+                    if let Err(err) = self.logs_flusher.flush() {
+                        otel_error!("logs.flush.fail", error = err.to_string());
                     }
 
                     // Deliver all accumulated control messages (best-effort)
@@ -436,7 +433,7 @@ mod tests {
     use otap_df_config::pipeline::PipelineSettings;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::logs::LogsCollector;
+    use otap_df_telemetry::logs::LogsFlusher;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
     use tokio::task::LocalSet;
@@ -489,8 +486,8 @@ mod tests {
             thread_id,
         );
 
-        // Create a LogsReporter for testing (collector is dropped, that's ok for tests)
-        let (_collector, logs_reporter) = LogsCollector::new(10);
+        // Create a no-op LogsFlusher for testing
+        let logs_flusher = LogsFlusher::Noop;
 
         let manager = PipelineCtrlMsgManager::new(
             DeployedPipelineKey {
@@ -503,7 +500,7 @@ mod tests {
             control_senders,
             observed_state_store.reporter(),
             metrics_reporter,
-            logs_reporter,
+            logs_flusher,
             pipeline_settings.telemetry.clone(),
             Vec::new(),
         );
@@ -910,8 +907,8 @@ mod tests {
                     thread_id,
                 );
 
-                // Create a LogsReporter for testing (collector is dropped, that's ok for tests)
-                let (_collector, logs_reporter) = LogsCollector::new(10);
+                // Create a no-op LogsFlusher for testing
+                let logs_flusher = LogsFlusher::Noop;
 
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
@@ -921,7 +918,7 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(),
                     metrics_reporter,
-                    logs_reporter,
+                    logs_flusher,
                     TelemetrySettings::default(),
                     Vec::new(),
                 );
