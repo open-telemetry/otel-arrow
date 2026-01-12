@@ -15,5 +15,5 @@ proc-macro = true
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 quote = "1.0"
 proc-macro2 = "1.0"
-convert_case = "0.8.0"
+convert_case = "0.10.0"
 otap-df-pdata-otlp-model = { workspace = true }
