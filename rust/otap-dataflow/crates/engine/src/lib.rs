@@ -292,10 +292,18 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///   the hyper-edges between them to determine the best channel type.
     /// - Assign channels to the source nodes and their destination nodes based on the previous
     ///   analysis.
+    ///
+    /// # Parameters
+    /// - `pipeline_ctx`: The pipeline context for this build.
+    /// - `config`: The pipeline configuration.
+    /// - `logs_receiver`: Optional tuple of (URN, receiver) for internal logs channel.
+    ///   When provided, the receiver is injected into any receiver node matching the URN,
+    ///   enabling collection of logs from all threads via the channel.
     pub fn build(
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
         config: PipelineConfig,
+        logs_receiver: Option<(&str, receiver::LogsReceiver)>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
@@ -332,7 +340,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
-                    let wrapper = self.create_receiver(
+                    let mut wrapper = self.create_receiver(
                         &pipeline_ctx,
                         &mut receiver_names,
                         &mut nodes,
@@ -340,6 +348,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         name.clone(),
                         node_config.clone(),
                     )?;
+
+                    // Inject logs receiver if this is the target node
+                    if let Some((target_urn, ref logs_rx)) = logs_receiver {
+                        if node_config.plugin_urn.as_ref() == target_urn {
+                            wrapper.set_logs_receiver(logs_rx.clone());
+                        }
+                    }
+
                     receivers.push(wrapper.with_control_channel_metrics(
                         &pipeline_ctx,
                         &mut channel_metrics,

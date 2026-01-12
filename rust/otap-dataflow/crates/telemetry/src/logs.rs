@@ -216,6 +216,9 @@ pub struct LogsCollector {
     writer: ConsoleWriter,
 }
 
+/// Type alias for the log payload receiver channel.
+pub type LogsReceiver = flume::Receiver<LogPayload>;
+
 impl LogsCollector {
     /// Create a new collector and reporter pair.
     #[must_use]
@@ -227,6 +230,17 @@ impl LogsCollector {
         };
         let reporter = LogsReporter::new(sender);
         (collector, reporter)
+    }
+
+    /// Create a reporter and receiver pair without the collector.
+    ///
+    /// Use this when the receiver will be consumed elsewhere (e.g., by the
+    /// Internal Telemetry Receiver node).
+    #[must_use]
+    pub fn channel(channel_size: usize) -> (LogsReceiver, LogsReporter) {
+        let (sender, receiver) = flume::bounded(channel_size);
+        let reporter = LogsReporter::new(sender);
+        (receiver, reporter)
     }
 
     /// Run the collection loop until the channel is closed.
@@ -362,11 +376,6 @@ pub enum EngineLogsSetup {
         /// Reporter to send singletons through.
         reporter: LogsReporter,
     },
-    /// Internal: accumulates in thread-local buffer, drained by internal telemetry receiver.
-    Internal {
-        /// Buffer capacity per thread.
-        capacity: usize,
-    },
 }
 
 /// Handle for flushing buffered logs from the engine thread.
@@ -378,19 +387,16 @@ pub enum LogsFlusher {
     Noop,
     /// Flusher that drains the thread-local buffer and sends via the reporter.
     Buffered(LogsReporter),
-    /// Flusher for internal telemetry mode - drain returns batch directly.
-    /// Used by internal telemetry receiver node.
-    InternalDrain,
 }
 
 impl LogsFlusher {
     /// Flush any buffered logs by sending to the reporter.
     ///
-    /// For `Noop` and `InternalDrain`, this does nothing.
+    /// For `Noop`, this does nothing.
     /// For `Buffered`, this drains the thread-local buffer and sends as a batch.
     pub fn flush(&self) -> Result<(), Error> {
         match self {
-            LogsFlusher::Noop | LogsFlusher::InternalDrain => Ok(()),
+            LogsFlusher::Noop => Ok(()),
             LogsFlusher::Buffered(reporter) => {
                 if let Some(batch) = CURRENT_LOG_BUFFER
                     .with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
@@ -399,19 +405,6 @@ impl LogsFlusher {
                 }
                 Ok(())
             }
-        }
-    }
-
-    /// Drain the thread-local buffer and return the batch directly.
-    ///
-    /// For use by internal telemetry receiver only.
-    /// Returns `None` if no buffer is installed or if this is not `InternalDrain` mode.
-    pub fn drain(&self) -> Option<LogBatch> {
-        match self {
-            LogsFlusher::InternalDrain => {
-                CURRENT_LOG_BUFFER.with(|cell| cell.borrow_mut().as_mut().map(|buffer| buffer.drain()))
-            }
-            _ => None,
         }
     }
 }
@@ -457,19 +450,6 @@ impl EngineLogsSetup {
                 let layer = UnbufferedLayer::new(reporter.clone());
                 let subscriber = Registry::default().with(filter).with(layer);
                 tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
-            }
-            EngineLogsSetup::Internal { capacity } => {
-                // For internal mode, we use a "null" reporter that doesn't send anywhere.
-                // The internal telemetry receiver will drain the buffer directly.
-                let null_reporter = LogsReporter::null();
-                let layer = ThreadBufferedLayer::new(null_reporter);
-                let subscriber = Registry::default().with(filter).with(layer);
-                let flusher = LogsFlusher::InternalDrain;
-
-                // Install the thread-local buffer
-                with_thread_log_buffer(*capacity, || {
-                    tracing::subscriber::with_default(subscriber, || f(flusher))
-                })
             }
         }
     }

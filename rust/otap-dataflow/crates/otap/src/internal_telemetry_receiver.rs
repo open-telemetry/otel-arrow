@@ -3,7 +3,7 @@
 
 //! Internal telemetry receiver.
 //!
-//! This receiver drains the engine thread's internal log buffer and emits
+//! This receiver consumes internal logs from the logging channel and emits
 //! the logs as OTLP ExportLogsRequest messages into the pipeline.
 
 use crate::OTAP_RECEIVER_FACTORIES;
@@ -21,39 +21,29 @@ use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::ReceiverFactory;
 use otap_df_pdata::OtlpProtoBytes;
-use otap_df_telemetry::drain_thread_log_buffer;
+use otap_df_telemetry::logs::{LogBatch, LogPayload};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::time::Duration;
 
 /// The URN for the internal telemetry receiver.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:otap:internal_telemetry:receiver";
+pub use otap_df_config::pipeline::service::telemetry::logs::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Configuration for the internal telemetry receiver.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
-    /// Interval in milliseconds between buffer drains.
-    #[serde(default = "default_drain_interval_ms")]
-    pub drain_interval_ms: u64,
-}
-
-fn default_drain_interval_ms() -> u64 {
-    1000
-}
+pub struct Config {}
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            drain_interval_ms: default_drain_interval_ms(),
-        }
+        Self {}
     }
 }
 
-/// A receiver that drains the engine's internal log buffer and emits OTLP logs.
+/// A receiver that consumes internal logs from the logging channel and emits OTLP logs.
 pub struct InternalTelemetryReceiver {
+    #[allow(dead_code)]
     config: Config,
 }
 
@@ -101,11 +91,14 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        let drain_interval = Duration::from_millis(self.config.drain_interval_ms);
+        // Get the logs receiver channel from the effect handler
+        let logs_receiver = effect_handler
+            .logs_receiver()
+            .expect("InternalTelemetryReceiver requires a logs_receiver to be configured");
 
         // Start periodic telemetry collection
         let _ = effect_handler
-            .start_periodic_telemetry(Duration::from_secs(1))
+            .start_periodic_telemetry(std::time::Duration::from_secs(1))
             .await?;
 
         loop {
@@ -116,8 +109,10 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
-                            // Drain any remaining logs before shutdown
-                            self.drain_and_send(&effect_handler).await?;
+                            // Drain any remaining logs from channel before shutdown
+                            while let Ok(payload) = logs_receiver.try_recv() {
+                                self.send_payload(&effect_handler, payload).await?;
+                            }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                         }
                         Ok(NodeControlMsg::CollectTelemetry { .. }) => {
@@ -132,9 +127,17 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                     }
                 }
 
-                // Periodic drain
-                _ = tokio::time::sleep(drain_interval) => {
-                    self.drain_and_send(&effect_handler).await?;
+                // Receive logs from the channel
+                result = logs_receiver.recv_async() => {
+                    match result {
+                        Ok(payload) => {
+                            self.send_payload(&effect_handler, payload).await?;
+                        }
+                        Err(_) => {
+                            // Channel closed, exit gracefully
+                            return Ok(TerminalState::default());
+                        }
+                    }
                 }
             }
         }
@@ -142,16 +145,24 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
 }
 
 impl InternalTelemetryReceiver {
-    /// Drain the thread-local log buffer and send as OTLP logs.
-    async fn drain_and_send(&self, effect_handler: &local::EffectHandler<OtapPdata>) -> Result<(), Error> {
-        if let Some(batch) = drain_thread_log_buffer() {
-            if !batch.records.is_empty() {
-                let bytes = batch.encode_export_logs_request();
-                let pdata = OtapPdata::new_todo_context(
-                    OtlpProtoBytes::ExportLogsRequest(bytes).into(),
-                );
-                effect_handler.send_message(pdata).await?;
-            }
+    /// Send a log payload as OTLP logs.
+    async fn send_payload(
+        &self,
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        payload: LogPayload,
+    ) -> Result<(), Error> {
+        let batch = match payload {
+            LogPayload::Singleton(record) => LogBatch {
+                records: vec![record],
+                dropped_count: 0,
+            },
+            LogPayload::Batch(batch) => batch,
+        };
+
+        if !batch.records.is_empty() {
+            let bytes = batch.encode_export_logs_request();
+            let pdata = OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+            effect_handler.send_message(pdata).await?;
         }
         Ok(())
     }

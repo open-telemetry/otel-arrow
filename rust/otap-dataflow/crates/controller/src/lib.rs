@@ -21,7 +21,9 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::pipeline::service::telemetry::logs::{OutputMode, ProviderMode};
+use otap_df_config::pipeline::service::telemetry::logs::{
+    OutputMode, ProviderMode, INTERNAL_TELEMETRY_RECEIVER_URN,
+};
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -92,21 +94,46 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .validate()
             .map_err(|msg| Error::ConfigurationError { message: msg })?;
 
-        // Create logs collector and reporter based on output mode.
-        // Only start the collector thread if output is Raw.
-        let logs_reporter = match telemetry_config.logs.output {
-            OutputMode::Raw => {
-                let (logs_collector, reporter) =
-                    LogsCollector::new(telemetry_config.reporting_channel_size);
-                // Start the logs collector thread
-                // TODO: Store handle for graceful shutdown
-                let _logs_collector_handle =
-                    spawn_thread_local_task("logs-collector", move |_cancellation_token| {
-                        logs_collector.run()
-                    })?;
-                Some(reporter)
+        // Create logs reporter based on provider strategies.
+        // LogsReporter is needed when:
+        // - global == Unbuffered (global threads send directly to channel)
+        // - engine == Buffered or Unbuffered (engine threads send to channel)
+        // Raw provider mode = synchronous console output, no reporter needed.
+        let strategies_need_reporter =
+            telemetry_config.logs.strategies.global == ProviderMode::Unbuffered
+                || matches!(
+                    telemetry_config.logs.strategies.engine,
+                    ProviderMode::Buffered | ProviderMode::Unbuffered
+                );
+
+        // Create the reporter if strategies need it.
+        // The receiver end goes to either:
+        // - LogsCollector thread (output == Raw): prints to console
+        // - Internal Telemetry Receiver node (output == Internal): emits as OTLP
+        let (logs_reporter, logs_receiver) = if strategies_need_reporter {
+            match telemetry_config.logs.output {
+                OutputMode::Raw => {
+                    // Start collector thread for Raw output mode
+                    let (logs_collector, reporter) =
+                        LogsCollector::new(telemetry_config.reporting_channel_size);
+                    // TODO: Store handle for graceful shutdown
+                    let _logs_collector_handle =
+                        spawn_thread_local_task("logs-collector", move |_cancellation_token| {
+                            logs_collector.run()
+                        })?;
+                    (Some(reporter), None)
+                }
+                OutputMode::Internal => {
+                    // For Internal output, create just the channel.
+                    // The ITR node will receive from it during pipeline build.
+                    let (logs_receiver, reporter) =
+                        LogsCollector::channel(telemetry_config.reporting_channel_size);
+                    (Some(reporter), Some(logs_receiver))
+                }
+                OutputMode::Noop => (None, None),
             }
-            OutputMode::Noop | OutputMode::Internal => None,
+        } else {
+            (None, None)
         };
 
         let opentelemetry_client =
@@ -142,37 +169,31 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        // Create engine logs setup based on output mode and strategy configuration.
-        // When output is Internal, use Internal setup (validation ensures engine is Buffered).
-        // Otherwise, use the strategy configuration.
-        let engine_logs_setup = if telemetry_config.logs.output == OutputMode::Internal {
-            EngineLogsSetup::Internal {
+        // Create engine logs setup based on strategy configuration.
+        // When output is Internal, the logs go through the channel to ITR.
+        // The validation layer ensures that when output=Internal, engine strategy is Buffered.
+        let engine_logs_setup = match telemetry_config.logs.strategies.engine {
+            ProviderMode::Noop => EngineLogsSetup::Noop,
+            ProviderMode::Raw => EngineLogsSetup::Raw,
+            ProviderMode::Buffered => EngineLogsSetup::Buffered {
+                reporter: logs_reporter
+                    .clone()
+                    .expect("validated: buffered requires reporter"),
                 capacity: 1024, // TODO: make configurable
-            }
-        } else {
-            match telemetry_config.logs.strategies.engine {
-                ProviderMode::Noop => EngineLogsSetup::Noop,
-                ProviderMode::Raw => EngineLogsSetup::Raw,
-                ProviderMode::Buffered => EngineLogsSetup::Buffered {
+            },
+            ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
+                reporter: logs_reporter
+                    .clone()
+                    .expect("validated: unbuffered requires reporter"),
+            },
+            ProviderMode::OpenTelemetry => {
+                // OpenTelemetry mode for engine is not yet supported
+                // Fall back to buffered for now
+                EngineLogsSetup::Buffered {
                     reporter: logs_reporter
                         .clone()
-                        .expect("validated: buffered requires reporter"),
-                    capacity: 1024, // TODO: make configurable
-                },
-                ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
-                    reporter: logs_reporter
-                        .clone()
-                        .expect("validated: unbuffered requires reporter"),
-                },
-                ProviderMode::OpenTelemetry => {
-                    // OpenTelemetry mode for engine is not yet supported
-                    // Fall back to buffered for now
-                    EngineLogsSetup::Buffered {
-                        reporter: logs_reporter
-                            .clone()
-                            .expect("validated: opentelemetry requires reporter"),
-                        capacity: 1024,
-                    }
+                        .expect("validated: opentelemetry requires reporter"),
+                    capacity: 1024,
                 }
             }
         };
@@ -212,6 +233,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             );
             let metrics_reporter = metrics_reporter.clone();
             let engine_logs_setup = engine_logs_setup.clone();
+            let logs_receiver = logs_receiver.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
             let obs_evt_reporter = obs_evt_reporter.clone();
@@ -228,6 +250,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         metrics_reporter,
                         engine_logs_setup,
                         log_level,
+                        logs_receiver,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
                     )
@@ -447,6 +470,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: MetricsReporter,
         engine_logs_setup: EngineLogsSetup,
         log_level: otap_df_config::pipeline::service::telemetry::logs::LogLevel,
+        logs_receiver: Option<otap_df_telemetry::LogsReceiver>,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
@@ -474,8 +498,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ));
 
             // Build the runtime pipeline from the configuration
+            // Pass logs_receiver for injection into ITR node (if present)
+            let logs_receiver_param = logs_receiver
+                .map(|rx| (INTERNAL_TELEMETRY_RECEIVER_URN, rx));
             let runtime_pipeline = pipeline_factory
-                .build(pipeline_context.clone(), pipeline_config.clone())
+                .build(pipeline_context.clone(), pipeline_config.clone(), logs_receiver_param)
                 .map_err(|e| Error::PipelineRuntimeError {
                     source: Box::new(e),
                 })?;

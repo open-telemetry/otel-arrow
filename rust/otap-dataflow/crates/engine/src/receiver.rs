@@ -27,6 +27,9 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Type alias for the internal logs receiver channel.
+pub type LogsReceiver = otap_df_telemetry::LogsReceiver;
+
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
 /// Note: This is useful for creating a single interface for the receiver regardless of their
@@ -50,6 +53,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
+        /// Receiver for internal logs (for internal telemetry receiver).
+        logs_receiver: Option<LogsReceiver>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -69,6 +74,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
+        /// Receiver for internal logs (for internal telemetry receiver).
+        logs_receiver: Option<LogsReceiver>,
     },
 }
 
@@ -108,6 +115,7 @@ impl<PData> ReceiverWrapper<PData> {
             control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
+            logs_receiver: None,
         }
     }
 
@@ -133,6 +141,7 @@ impl<PData> ReceiverWrapper<PData> {
             control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
+            logs_receiver: None,
         }
     }
 
@@ -155,7 +164,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver,
                 pdata_senders,
                 pdata_receiver,
-                ..
+                logs_receiver,
             } => {
                 let channel_id = control_channel_id(&node_id);
                 let control_sender = match control_sender.into_mpsc() {
@@ -189,6 +198,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     pdata_receiver,
+                    logs_receiver,
                 }
             }
             ReceiverWrapper::Shared {
@@ -200,7 +210,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver,
                 pdata_senders,
                 pdata_receiver,
-                ..
+                logs_receiver,
             } => {
                 let channel_id = control_channel_id(&node_id);
                 let control_sender = match control_sender.into_mpsc() {
@@ -234,6 +244,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     pdata_receiver,
+                    logs_receiver,
                 }
             }
         }
@@ -253,6 +264,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
+                    logs_receiver,
                     ..
                 },
                 metrics_reporter,
@@ -275,6 +287,7 @@ impl<PData> ReceiverWrapper<PData> {
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
+                    logs_receiver,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -363,6 +376,31 @@ impl<PData> Node<PData> for ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => control_sender.send(msg).await,
             ReceiverWrapper::Shared { control_sender, .. } => control_sender.send(msg).await,
+        }
+    }
+}
+
+impl<PData> ReceiverWrapper<PData> {
+    /// Set the logs receiver for internal telemetry.
+    ///
+    /// This is used by the Internal Telemetry Receiver to receive logs
+    /// from all threads via the logs channel.
+    pub fn set_logs_receiver(&mut self, receiver: LogsReceiver) {
+        match self {
+            ReceiverWrapper::Local { logs_receiver, .. } => {
+                *logs_receiver = Some(receiver);
+            }
+            ReceiverWrapper::Shared { logs_receiver, .. } => {
+                *logs_receiver = Some(receiver);
+            }
+        }
+    }
+
+    /// Take the logs receiver, if set.
+    pub fn take_logs_receiver(&mut self) -> Option<LogsReceiver> {
+        match self {
+            ReceiverWrapper::Local { logs_receiver, .. } => logs_receiver.take(),
+            ReceiverWrapper::Shared { logs_receiver, .. } => logs_receiver.take(),
         }
     }
 }

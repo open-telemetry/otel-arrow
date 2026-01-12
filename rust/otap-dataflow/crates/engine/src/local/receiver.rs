@@ -120,6 +120,9 @@ impl<PData> ControlChannel<PData> {
     }
 }
 
+/// Type alias for the internal logs receiver channel.
+pub type LogsReceiver = otap_df_telemetry::LogsReceiver;
+
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
@@ -130,6 +133,8 @@ pub struct EffectHandler<PData> {
     msg_senders: HashMap<PortName, LocalSender<PData>>,
     /// Cached default sender for fast access in the hot path
     default_sender: Option<LocalSender<PData>>,
+    /// Receiver for internal logs (for internal telemetry receiver).
+    logs_receiver: Option<LogsReceiver>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -142,6 +147,7 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
         node_request_sender: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        logs_receiver: Option<LogsReceiver>,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
@@ -159,7 +165,17 @@ impl<PData> EffectHandler<PData> {
             core,
             msg_senders,
             default_sender,
+            logs_receiver,
         }
+    }
+
+    /// Returns the logs receiver, if configured.
+    ///
+    /// This is used by the Internal Telemetry Receiver to consume logs
+    /// from all threads via the logs channel.
+    #[must_use]
+    pub fn logs_receiver(&self) -> Option<&LogsReceiver> {
+        self.logs_receiver.as_ref()
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -318,7 +334,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -339,7 +355,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -362,6 +378,7 @@ mod tests {
             Some("a".into()),
             ctrl_tx,
             metrics_reporter,
+            None,
         );
 
         eh.send_message(11).await.unwrap();
@@ -385,7 +402,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -414,7 +431,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

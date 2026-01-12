@@ -38,9 +38,6 @@ service:
   telemetry:
     logs:
       level: "info"
-      internal:
-        # To use the OTel SDK, disable the internal logger.
-        enabled: false
       processors:
         - batch:
             exporter:

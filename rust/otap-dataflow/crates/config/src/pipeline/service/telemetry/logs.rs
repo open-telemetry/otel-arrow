@@ -8,6 +8,10 @@ pub mod processors;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// The well-known URN for the Internal Telemetry Receiver node.
+/// This receiver collects internal logs from all threads and emits them as OTLP.
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:otap:internal_telemetry:receiver";
+
 /// Internal logs configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LogsConfig {
