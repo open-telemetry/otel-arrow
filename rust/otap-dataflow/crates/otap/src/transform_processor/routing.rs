@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::any::Any;
+
 use async_trait::async_trait;
 use otap_df_engine::local::processor::EffectHandler;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
@@ -21,7 +23,16 @@ impl RouterImpl {
 
 #[async_trait]
 impl Router for RouterImpl {
-    async fn send(&self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()> {
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    async fn send(&mut self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()> {
         todo!()
         // // TODO this isn't the correct handling for context
         // let pdata = OtapPdata::new(
