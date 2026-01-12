@@ -1188,7 +1188,7 @@ nodes:
       segment:
         target_size: 32MB
       wal:
-        max_size: 4GB
+        max_size: 128MB
         flush_interval: 25ms
       retention:
         max_retain_after_ingestion_hours: 72

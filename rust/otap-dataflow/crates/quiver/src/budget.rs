@@ -49,6 +49,52 @@ use parking_lot::Mutex;
 use crate::config::RetentionPolicy;
 use crate::error::{QuiverError, Result};
 
+/// Error returned when budget configuration is invalid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetConfigError {
+    /// The cap is too small for the required reserved headroom.
+    CapTooSmall {
+        /// The requested cap.
+        cap: u64,
+        /// The calculated reserved headroom.
+        reserved_headroom: u64,
+        /// The minimum cap required.
+        min_cap: u64,
+        /// The segment size used in the calculation.
+        segment_size_bytes: u64,
+        /// The WAL max size used in the calculation.
+        wal_max_size_bytes: u64,
+    },
+}
+
+impl std::fmt::Display for BudgetConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BudgetConfigError::CapTooSmall {
+                cap,
+                reserved_headroom,
+                min_cap,
+                segment_size_bytes,
+                wal_max_size_bytes,
+            } => {
+                let cap_mb = cap / (1024 * 1024);
+                let reserved_mb = reserved_headroom / (1024 * 1024);
+                let min_mb = min_cap / (1024 * 1024);
+                let seg_mb = segment_size_bytes / (1024 * 1024);
+                let wal_mb = wal_max_size_bytes / (1024 * 1024);
+                write!(
+                    f,
+                    "Budget cap {} MB is too small. With segment_size={} MB and WAL max={} MB, \
+                     reserved headroom is {} MB. Minimum cap required: {} MB",
+                    cap_mb, seg_mb, wal_mb, reserved_mb, min_mb
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BudgetConfigError {}
+
 /// Callback type for reclaiming space when using `DropOldest` policy.
 ///
 /// The callback receives the number of bytes needed and should attempt to
@@ -154,6 +200,75 @@ impl DiskBudget {
     #[must_use]
     pub fn unlimited() -> Self {
         Self::new(u64::MAX, RetentionPolicy::Backpressure)
+    }
+
+    /// Creates a disk budget for a single engine with automatically calculated headroom.
+    ///
+    /// This is the recommended way to create a budget for production use. It calculates
+    /// the appropriate reserved headroom based on segment and WAL sizes to ensure the
+    /// engine can always complete segment finalization without exceeding the cap.
+    ///
+    /// # Phase 1: Static Quotas
+    ///
+    /// When running multiple engines (e.g., one per CPU core), divide the global cap
+    /// by the number of engines and call this for each:
+    ///
+    /// ```ignore
+    /// let per_engine_cap = global_cap / num_engines;
+    /// let budget = DiskBudget::for_engine(per_engine_cap, policy, segment_size, wal_max_size)?;
+    /// ```
+    ///
+    /// # Headroom Calculation
+    ///
+    /// Reserved headroom = `segment_size + (wal_max_size / 4)`:
+    /// - **segment_size**: Covers the transient overlap during finalization when both
+    ///   the WAL entries AND the new segment file exist before the WAL is purged.
+    /// - **wal_max_size / 4**: Buffer for bundles arriving during finalization and
+    ///   early accumulation for the next segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cap is too small for the reserved headroom plus at
+    /// least one segment's worth of working space.
+    pub fn for_engine(
+        cap: u64,
+        policy: RetentionPolicy,
+        segment_size_bytes: u64,
+        wal_max_size_bytes: u64,
+    ) -> std::result::Result<Self, BudgetConfigError> {
+        let reserved_headroom = Self::calculate_headroom(segment_size_bytes, wal_max_size_bytes);
+        let min_cap = reserved_headroom + segment_size_bytes;
+
+        if cap < min_cap {
+            return Err(BudgetConfigError::CapTooSmall {
+                cap,
+                reserved_headroom,
+                min_cap,
+                segment_size_bytes,
+                wal_max_size_bytes,
+            });
+        }
+
+        Ok(Self::with_reserved_headroom(cap, policy, reserved_headroom))
+    }
+
+    /// Calculates the recommended reserved headroom for given segment and WAL sizes.
+    ///
+    /// Formula: `segment_size + (wal_max_size / 4)`
+    ///
+    /// See [`for_engine`](Self::for_engine) for rationale.
+    #[must_use]
+    pub fn calculate_headroom(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
+        segment_size_bytes + (wal_max_size_bytes / 4)
+    }
+
+    /// Returns the minimum cap required for given segment and WAL sizes.
+    ///
+    /// This is `reserved_headroom + segment_size` (need room for at least one segment).
+    #[must_use]
+    pub fn minimum_cap(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
+        let reserved = Self::calculate_headroom(segment_size_bytes, wal_max_size_bytes);
+        reserved + segment_size_bytes
     }
 
     /// Returns the configured cap.
@@ -610,5 +725,81 @@ mod tests {
 
         // budget2 is unaffected
         assert!(budget2.has_ingest_headroom(400));
+    }
+
+    #[test]
+    fn calculate_headroom_formula() {
+        // Formula: segment_size + (wal_max_size / 4)
+        let segment = 32 * 1024 * 1024; // 32 MB
+        let wal_max = 128 * 1024 * 1024; // 128 MB
+
+        let headroom = DiskBudget::calculate_headroom(segment, wal_max);
+        // 32 MB + 32 MB = 64 MB
+        assert_eq!(headroom, 64 * 1024 * 1024);
+
+        // Edge case: no WAL
+        let headroom_no_wal = DiskBudget::calculate_headroom(segment, 0);
+        assert_eq!(headroom_no_wal, segment);
+    }
+
+    #[test]
+    fn minimum_cap_calculation() {
+        let segment = 32 * 1024 * 1024; // 32 MB
+        let wal_max = 128 * 1024 * 1024; // 128 MB
+
+        let min_cap = DiskBudget::minimum_cap(segment, wal_max);
+        // headroom (64 MB) + segment (32 MB) = 96 MB
+        assert_eq!(min_cap, 96 * 1024 * 1024);
+    }
+
+    #[test]
+    fn for_engine_succeeds_with_sufficient_cap() {
+        let segment = 32 * 1024 * 1024; // 32 MB
+        let wal_max = 128 * 1024 * 1024; // 128 MB
+        let cap = 150 * 1024 * 1024; // 150 MB (> 96 MB minimum)
+
+        let budget = DiskBudget::for_engine(cap, RetentionPolicy::Backpressure, segment, wal_max)
+            .expect("should succeed");
+
+        assert_eq!(budget.cap(), cap);
+        assert_eq!(budget.reserved_headroom(), 64 * 1024 * 1024);
+        // Available for ingest = 150 - 64 = 86 MB
+        assert!(budget.has_ingest_headroom(86 * 1024 * 1024));
+        assert!(!budget.has_ingest_headroom(87 * 1024 * 1024));
+    }
+
+    #[test]
+    fn for_engine_fails_with_insufficient_cap() {
+        let segment = 32 * 1024 * 1024; // 32 MB
+        let wal_max = 128 * 1024 * 1024; // 128 MB
+        let cap = 64 * 1024 * 1024; // 64 MB (< 96 MB minimum)
+
+        let result = DiskBudget::for_engine(cap, RetentionPolicy::Backpressure, segment, wal_max);
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, BudgetConfigError::CapTooSmall { .. }));
+        
+        // Check error message formatting
+        let msg = format!("{}", err);
+        assert!(msg.contains("64 MB is too small"));
+        assert!(msg.contains("Minimum cap required: 96 MB"));
+    }
+
+    #[test]
+    fn for_engine_exactly_at_minimum() {
+        let segment = 32 * 1024 * 1024; // 32 MB
+        let wal_max = 128 * 1024 * 1024; // 128 MB
+        let min_cap = DiskBudget::minimum_cap(segment, wal_max); // 96 MB
+
+        // Exactly at minimum should succeed
+        let budget = DiskBudget::for_engine(min_cap, RetentionPolicy::Backpressure, segment, wal_max)
+            .expect("should succeed at minimum cap");
+        
+        assert_eq!(budget.cap(), min_cap);
+        
+        // One byte below should fail
+        let result = DiskBudget::for_engine(min_cap - 1, RetentionPolicy::Backpressure, segment, wal_max);
+        assert!(result.is_err());
     }
 }

@@ -104,9 +104,9 @@ pub struct SteadyStateStats {
     /// Timestamp of previous sample (for live rate calculation)
     prev_sample_time: Option<Instant>,
     /// Live ingest rate (bundles/sec over last sample interval)
-    live_ingest_rate: f64,
+    live_bundles_ingest_rate: f64,
     /// Live consume rate (bundles/sec over last sample interval)
-    live_consume_rate: f64,
+    live_bundles_consume_rate: f64,
     /// Memory at start
     pub initial_memory_mb: f64,
     /// Peak memory observed
@@ -182,8 +182,8 @@ impl SteadyStateStats {
             if dt > 0.0 {
                 let ingested_delta = ingested.saturating_sub(self.prev_ingested);
                 let consumed_delta = consumed.saturating_sub(self.prev_consumed);
-                self.live_ingest_rate = ingested_delta as f64 / dt;
-                self.live_consume_rate = consumed_delta as f64 / dt;
+                self.live_bundles_ingest_rate = ingested_delta as f64 / dt;
+                self.live_bundles_consume_rate = consumed_delta as f64 / dt;
             }
         }
         // Store for next sample
@@ -232,23 +232,23 @@ impl SteadyStateStats {
     }
 
     /// Returns live ingest rate (bundles/sec over last sample interval).
-    pub fn live_ingest_rate(&self) -> f64 {
-        self.live_ingest_rate
+    pub fn live_bundles_ingest_rate(&self) -> f64 {
+        self.live_bundles_ingest_rate
     }
 
     /// Returns live consume rate (bundles/sec over last sample interval).
-    pub fn live_consume_rate(&self) -> f64 {
-        self.live_consume_rate
+    pub fn live_bundles_consume_rate(&self) -> f64 {
+        self.live_bundles_consume_rate
     }
 
     /// Returns live consume rate in rows/sec.
     pub fn live_consume_rows_rate(&self) -> f64 {
-        self.live_consume_rate * self.rows_per_bundle as f64
+        self.live_bundles_consume_rate * self.rows_per_bundle as f64
     }
 
     /// Returns live consume rate in MB/sec.
     pub fn live_consume_mb_rate(&self) -> f64 {
-        self.live_consume_rate * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
+        self.live_bundles_consume_rate * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
     }
 
     /// Returns average ingest rate in rows/sec.

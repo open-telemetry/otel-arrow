@@ -66,7 +66,7 @@ pub mod subscriber;
 pub mod telemetry;
 pub(crate) mod wal;
 
-pub use budget::{DiskBudget, PendingWrite};
+pub use budget::{BudgetConfigError, DiskBudget, PendingWrite};
 pub use config::{
     DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
 };

@@ -834,8 +834,8 @@ fn render_steady_state_stats(
         .split(area);
 
     // Bundles panel
-    let ingest_rate = stats.live_ingest_rate();
-    let consume_rate = stats.live_consume_rate();
+    let ingest_rate = stats.live_bundles_ingest_rate();
+    let consume_rate = stats.live_bundles_consume_rate();
 
     let bundles_text = vec![
         Line::from(vec![

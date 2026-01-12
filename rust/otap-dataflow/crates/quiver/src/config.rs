@@ -217,7 +217,11 @@ impl WalConfig {
 impl Default for WalConfig {
     fn default() -> Self {
         Self {
-            max_size_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).expect("non-zero"),
+            // WAL max should accommodate (max_rotated_files + 1) * rotation_target_bytes
+            // with some headroom. At 10 rotated files × 64 MB = 640 MB theoretical max,
+            // 128 MB is conservative (allows ~2 rotations worth). The WAL naturally
+            // stays smaller because rotation purges old files.
+            max_size_bytes: NonZeroU64::new(128 * 1024 * 1024).expect("non-zero"),
             max_rotated_files: 10,
             rotation_target_bytes: NonZeroU64::new(64 * 1024 * 1024).expect("non-zero"),
             flush_interval: Duration::from_millis(25),
