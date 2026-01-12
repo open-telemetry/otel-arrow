@@ -31,6 +31,7 @@ use crate::otap_grpc::common;
 use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::server_settings::GrpcServerSettings;
 use crate::otlp_http::HttpServerSettings;
+use crate::shared_concurrency::SharedConcurrencyLayer;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -54,8 +55,8 @@ use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 use tonic::transport::Server;
-use tower::limit::GlobalConcurrencyLimitLayer;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -147,6 +148,10 @@ impl OTLPReceiver {
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
+        // Set both protocols to downstream_capacity.
+        // When HTTP is enabled, they'll share a single semaphore pool,
+        // so the true ceiling is downstream_capacity (not 2x).
+        // When HTTP is disabled, only gRPC uses the capacity.
         common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
         if let Some(http) = self.config.http.as_mut() {
             crate::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
@@ -184,14 +189,24 @@ impl OTLPReceiver {
             0
         };
         let http_slots = if http_wait { http_concurrency } else { 0 };
-        let ack_slot_capacity = (grpc_slots + http_slots).max(1);
+
+        // Only calculate capacity when ACK slots will actually be created.
+        // When wait_for_result is disabled for both protocols, no slots are needed.
+        let total_slots = grpc_slots + http_slots;
+        // Total shared ACK capacity per signal, across both HTTP and gRPC.
+        // Each signal (logs, metrics, traces) gets its own slot with this capacity.
+        let shared_ack_slot_capacity = if wait_for_result_any {
+            total_slots.max(1) // Ensure at least 1 slot for internal data structure
+        } else {
+            0 // No slots will be created, so capacity is irrelevant
+        };
 
         let logs_slot = wait_for_result_any
-            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(ack_slot_capacity));
+            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
         let metrics_slot = wait_for_result_any
-            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(ack_slot_capacity));
+            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
         let traces_slot = wait_for_result_any
-            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(ack_slot_capacity));
+            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
 
         let logs_server = LogsServiceServer::new(
             effect_handler.clone(),
@@ -354,10 +369,16 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let (logs_server, metrics_server, traces_server, ack_registry) =
             self.build_signal_services(&effect_handler, &settings);
         let max_concurrent_requests = config.max_concurrent_requests.max(1);
+
+        // Create shared semaphore for both gRPC and HTTP servers.
+        // This ensures total inflight requests never exceed downstream capacity.
+        let shared_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
+
         let server = {
-            let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
+            // Use shared semaphore for gRPC concurrency limiting
+            let shared_limit = SharedConcurrencyLayer::new(shared_semaphore.clone());
             let mut builder =
-                common::apply_server_tuning(Server::builder(), config).layer(global_limit);
+                common::apply_server_tuning(Server::builder(), config).layer(shared_limit);
 
             // Apply timeout if configured
             if let Some(timeout) = config.timeout {
@@ -412,11 +433,14 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
 
         let mut http_task: Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>> =
             if let Some(http) = self.config.http.clone() {
+                // Pass the shared semaphore to HTTP server so both protocols
+                // draw from the same concurrency pool
                 Box::pin(crate::otlp_http::serve(
                     effect_handler.clone(),
                     http,
                     ack_registry.clone(),
                     self.metrics.clone(),
+                    Some(shared_semaphore.clone()),
                 ))
             } else {
                 Box::pin(std::future::pending())
@@ -463,6 +487,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         _ = handle.cancel().await;
                     }
                     if let Err(error) = result {
+                        self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(&effect_handler, error));
                     }
                     break;
@@ -1765,6 +1790,80 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_http_rejects_compressed_when_disabled() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024 * 1024,
+            accept_compressed_requests: false, // Explicitly disable compression
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                use flate2::Compression;
+                use flate2::write::GzEncoder;
+                use std::io::Write;
+
+                // Create valid gzip compressed data
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&request_bytes).unwrap();
+                let compressed = encoder.finish().unwrap();
+
+                // Send compressed request when compression is disabled
+                let (status, body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", compressed, Some("gzip"))
+                        .await
+                        .expect("http request should succeed");
+
+                // Should reject with 415 Unsupported Media Type
+                assert_eq!(status, http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+                assert!(body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
     fn test_otlp_receiver_nack() {
         let test_runtime = TestRuntime::new();
 
@@ -1807,6 +1906,107 @@ mod tests {
                 assert_eq!(status.code(), tonic::Code::Unavailable);
                 assert!(status.message().contains("Test nack reason"));
                 assert!(status.message().contains("Pipeline processing failed"));
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let nack_validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                // Receive the logs pdata, create Nack message and send it back
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                let nack = NackMsg::new("Test nack reason", logs_pdata);
+                if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                        .await
+                        .expect("Failed to send Nack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(nack_scenario)
+            .run_validation_concurrent(nack_validation);
+    }
+
+    #[test]
+    fn test_otlp_http_receiver_nack() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: true, // Enable wait_for_result to test NACK path
+            max_request_body_size: 1024 * 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let nack_scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                // Send HTTP request
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("http request should succeed");
+
+                // Should receive 503 Service Unavailable with NACK reason
+                assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+                assert!(!body.is_empty(), "Response body should contain NACK reason");
+
+                // Decode the RpcStatus response
+                let rpc_status = crate::otlp_http::RpcStatus::decode(body.as_ref())
+                    .expect("Should decode RpcStatus");
+
+                // Verify the NACK reason is included
+                assert_eq!(rpc_status.code, 14); // gRPC UNAVAILABLE code
+                assert!(
+                    rpc_status.message.contains("Test nack reason"),
+                    "Response should contain nack reason, got: {}",
+                    rpc_status.message
+                );
+                assert!(
+                    rpc_status.message.contains("Pipeline processing failed"),
+                    "Response should contain error prefix, got: {}",
+                    rpc_status.message
+                );
 
                 ctx.send_shutdown(Instant::now(), "Test complete")
                     .await

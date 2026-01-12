@@ -90,6 +90,9 @@ pub mod metrics;
 
 pub(crate) mod socket_options;
 
+/// Shared concurrency limiting across protocol servers
+pub(crate) mod shared_concurrency;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 

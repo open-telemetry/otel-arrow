@@ -248,12 +248,17 @@ fn ok_response(signal: SignalType) -> Response<Full<Bytes>> {
     resp
 }
 
+/// Google RPC status format for HTTP error responses.
+///
+/// This follows the Google RPC error model, encoding status codes and messages
+/// in protobuf format for consistency with gRPC error handling.
+/// See: https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto
 #[derive(Clone, PartialEq, ::prost::Message)]
-struct RpcStatus {
+pub(crate) struct RpcStatus {
     #[prost(int32, tag = "1")]
-    code: i32,
+    pub(crate) code: i32,
     #[prost(string, tag = "2")]
-    message: String,
+    pub(crate) message: String,
     #[prost(message, repeated, tag = "3")]
     details: Vec<Any>,
 }
@@ -500,15 +505,34 @@ impl HttpHandler {
             return Ok(unsupported_media_type());
         }
 
-        let Ok(_permit) = self.semaphore.try_acquire_owned() else {
-            otap_df_telemetry::otel_warn!(
-                "HttpRequestRejected",
-                reason = "concurrency_limit_exceeded",
-                path = req.uri().path(),
-                max_concurrent = self.settings.max_concurrent_requests
-            );
-            self.metrics.lock().rejected_requests.inc();
-            return Ok(service_unavailable());
+        // Acquire permit with timeout for fair queuing across protocols.
+        // Uses the request timeout if configured, otherwise a short default to avoid
+        // indefinite queuing. This provides first-come-first-served fairness between
+        // HTTP and gRPC while still rejecting slow clients promptly.
+        let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
+        let permit_result =
+            tokio::time::timeout(permit_timeout, self.semaphore.clone().acquire_owned()).await;
+
+        let _permit = match permit_result {
+            Ok(Ok(permit)) => permit,
+            Ok(Err(_)) => {
+                // Semaphore closed (shouldn't happen)
+                otap_df_telemetry::otel_error!("HttpSemaphoreClosed", path = req.uri().path());
+                self.metrics.lock().rejected_requests.inc();
+                return Ok(internal_error());
+            }
+            Err(_) => {
+                // Timeout waiting for permit
+                otap_df_telemetry::otel_warn!(
+                    "HttpRequestRejected",
+                    reason = "concurrency_limit_timeout",
+                    path = req.uri().path(),
+                    max_concurrent = self.settings.max_concurrent_requests,
+                    timeout_ms = permit_timeout.as_millis() as u64
+                );
+                self.metrics.lock().rejected_requests.inc();
+                return Ok(service_unavailable());
+            }
         };
 
         let timeout = self.settings.timeout;
@@ -622,8 +646,18 @@ impl HttpHandler {
             if let Some((_guard, rx)) = cancel_rx {
                 match rx.await {
                     Ok(Ok(())) => {}
-                    Ok(Err(_nack)) => {
-                        return Err(service_unavailable());
+                    Ok(Err(nack)) => {
+                        otap_df_telemetry::otel_debug!(
+                            "HttpRequestNacked",
+                            reason = nack.reason.as_str(),
+                            signal = format!("{:?}", signal)
+                        );
+                        // Include the nack reason in the response for parity with gRPC
+                        return Err(rpc_status_response(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            14, // gRPC UNAVAILABLE code
+                            format!("Pipeline processing failed: {}", nack.reason),
+                        ));
                     }
                     Err(_) => {
                         return Err(internal_error());
@@ -668,33 +702,58 @@ impl Drop for SlotGuard {
 }
 
 /// Starts the OTLP/HTTP server.
+///
+/// # Parameters
+///
+/// - `shared_semaphore`: Optional semaphore shared with other protocol servers
+///   (e.g., gRPC). When provided, all protocols draw from the same concurrency
+///   pool. When `None`, creates a dedicated semaphore based on `settings.max_concurrent_requests`.
 pub async fn serve(
     effect_handler: EffectHandler<OtapPdata>,
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
+    shared_semaphore: Option<Arc<Semaphore>>,
 ) -> std::io::Result<()> {
     let listener = effect_handler
         .tcp_listener(settings.listening_addr)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-    debug_assert!(
-        settings.max_concurrent_requests > 0,
-        "tune_max_concurrent_requests should have been called before serve()"
-    );
-    let semaphore = Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)));
+
+    // Use shared semaphore if provided, otherwise create a dedicated one
+    let semaphore = shared_semaphore.unwrap_or_else(|| {
+        debug_assert!(
+            settings.max_concurrent_requests > 0,
+            "tune_max_concurrent_requests should have been called before serve()"
+        );
+        Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)))
+    });
 
     #[cfg(feature = "experimental-tls")]
     let maybe_tls_acceptor = build_tls_acceptor(settings.tls.as_ref()).await?;
 
     loop {
-        let (stream, _peer) = listener.accept().await?;
-        let stream = socket_options::apply_socket_options(
+        let (stream, peer_addr) = listener.accept().await?;
+
+        // Apply socket options. If this fails for a single connection, log and skip
+        // that connection rather than terminating the entire server.
+        let stream = match socket_options::apply_socket_options(
             stream,
             settings.tcp_nodelay,
             settings.tcp_keepalive,
             settings.tcp_keepalive_interval,
             settings.tcp_keepalive_retries,
-        )?;
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                otap_df_telemetry::otel_warn!(
+                    "HttpSocketOptionsFailed",
+                    peer = peer_addr.to_string(),
+                    error = e.to_string(),
+                    message = "Failed to apply socket options to connection, skipping"
+                );
+                continue; // Skip this connection, continue accepting others
+            }
+        };
 
         let handler = HttpHandler {
             effect_handler: effect_handler.clone(),
