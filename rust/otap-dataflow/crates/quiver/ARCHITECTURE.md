@@ -10,8 +10,8 @@ without data loss.
 
 Quiver is a standalone, embeddable Arrow-based segment store packaged as a
 reusable Rust crate. This document defines its design, scope, and implementation
-details. While Quiver is being developed first for `otap-dataflow`, it is designed to be
-decoupled so it can integrate into other telemetry pipelines or streaming
+details. While Quiver is being developed first for `otap-dataflow`, it is designed
+to be decoupled so it can integrate into other telemetry pipelines or streaming
 systems that need durable buffering around Apache Arrow.
 
 Throughout the proposal we use **RecordBundle** to describe the logical unit
@@ -153,8 +153,8 @@ WAL entries belonging to:
   - Arrow payload blobs are serialized in the **streaming** IPC format. For each
     populated slot we write exactly one contiguous IPC stream containing the
     chunk(s) belonging to that `Option<RecordBatch>` value. The blob for a slot
-    immediately follows its metadata block, so the serialized representation of a
-    single `RecordBundle` is `[entry header][slot bitmap][metadata0][payload0]
+    immediately follows its metadata block, so the serialized representation of
+    a single `RecordBundle` is `[entry header][slot bitmap][metadata0][payload0]
     [metadata1][payload1]...` Absent slots (bitmap bit cleared) contribute neither
     metadata nor bytes; they are implicitly `None` when reconstructing the
     bundle.
@@ -424,7 +424,7 @@ Quiver is a standalone persistence library with no knowledge of the embedding
 pipeline's control flow semantics. Responsibilities are split as follows:
 
 | Concern | Quiver (Library) | Embedding Layer (e.g., persistence_processor) |
-|---------|------------------|------------------------------------------------|
+| ------- | ---------------- | --------------------------------------------- |
 | WAL + Segment storage | Yes | |
 | Per-subscriber progress files | Yes | |
 | Subscriber state (per-segment tracking) | Yes | |
@@ -620,12 +620,12 @@ interleaved backfill) while Quiver tracks completion accurately.
 ### Terminology
 
 - **RecordBundle**: The generic ingestion unit Quiver stores in a segment.
-  Conceptually, it is a fixed-width array of optional payload type slots (e.g., slot
-  0 = root records, slot 1 = resource attributes). The type only exposes
+  Conceptually, it is a fixed-width array of optional payload type slots (e.g.,
+  slot 0 = root records, slot 1 = resource attributes). The type only exposes
   `arrow::record_batch::RecordBatch` values plus metadata needed to compute a
   schema fingerprint and row count.
-- **Payload Type Slot**: A stable identifier within a `RecordBundle`. Each slot maps
-  to exactly one logical payload kind for the embedding system. OTAP assigns
+- **Payload Type Slot**: A stable identifier within a `RecordBundle`. Each slot
+  maps to exactly one logical payload kind for the embedding system. OTAP assigns
   slots to `Logs`, `LogAttrs`, `ResourceAttrs`, etc.; another integration can
   provide its own slot table.
 - **Stream**: The ordered sequence of Arrow IPC messages Quiver writes for a
@@ -924,7 +924,7 @@ type synchronization between the Rust newtypes (`SlotId`, `StreamId`,
 Segment files are designed to be safely detectable as corrupt or incomplete:
 
 | Error Condition | Detection Mechanism | Recovery Action |
-|-----------------|---------------------|-----------------|
+| --------------- | ------------------- | --------------- |
 | Truncated file | File too short for trailer (< 16 bytes) | `SegmentError::Truncated` - skip file |
 | Invalid magic | Trailer magic bytes mismatch | `SegmentError::InvalidFormat` - skip file |
 | CRC mismatch | Computed CRC != stored CRC | `SegmentError::ChecksumMismatch` - skip file |

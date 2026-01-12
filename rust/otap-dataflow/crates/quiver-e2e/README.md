@@ -14,7 +14,8 @@ ingestion -> WAL -> segment finalization -> subscriber consumption -> cleanup.
 - **Memory Leak Detection**: Tracks heap allocations via jemalloc to detect leaks
 - **Disk Usage Monitoring**: Monitors segment and WAL growth over time
 - **TUI Dashboard**: Real-time visualization with sparklines and metrics
-- **Configurable Durability**: Test with full WAL protection or high-throughput segment-only mode
+- **Configurable Durability**: Test with full WAL protection or high-throughput
+                               segment-only mode
 
 ## Usage
 
@@ -43,7 +44,7 @@ cargo run -p otap-df-quiver-e2e --release -- \
 ## Command-Line Options
 
 | Option | Description | Default |
-|--------|-------------|---------|
+| ------ | ----------- | ------- |
 | `--duration` | Test duration (e.g., 10s, 5m, 1h) | 10s |
 | `--bundles` | Bundles per iteration | 50 |
 | `--rows-per-bundle` | Rows per bundle | 100 |
