@@ -92,7 +92,7 @@ additive_op = _{
 }
 
 additive_expression = {
-    multiplicative_expression ~ (additive_op ~ additive_expression)*
+    multiplicative_expression ~ (additive_op ~ multiplicative_expression)*
 }
 
 multiplicative_op_mul = @{ "*" }
@@ -103,7 +103,7 @@ multiplicative_op = _{
 }
 
 multiplicative_expression = {
-    unary_expression ~ (multiplicative_op ~ multiplicative_expression)*
+    unary_expression ~ (multiplicative_op ~ unary_expression)*
 }
 
 rel_op_eq = @{ "==" }
