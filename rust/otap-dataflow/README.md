@@ -1,4 +1,4 @@
-# OTAP Dataflow Library
+# OTAP Dataflow Engine
 
 [![build](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![build](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-audit.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-audit.yml)
@@ -10,7 +10,7 @@
 
 ## Overview
 
-The OTAP Dataflow library is a set of core Rust crates which combine
+The OTAP Dataflow Engine is a set of core Rust crates which combine
 to produce an OpenTelemetry pipeline support, for use as an embedded
 software component, providing a framework for collecting OpenTelemetry
 data.
@@ -337,6 +337,7 @@ docker build --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
 ## Contributing
 
 - [Contribution Guidelines](CONTRIBUTING.md)
+- [Internal Telemetry Guidelines](docs/telemetry/README.md)
 - Code of Conduct (TBD)
 
 Before submitting a PR, please run the following commands:
