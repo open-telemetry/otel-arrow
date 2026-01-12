@@ -241,19 +241,9 @@ impl SteadyStateStats {
         self.live_consume_rate
     }
 
-    /// Returns live ingest rate in rows/sec.
-    pub fn live_ingest_rows_rate(&self) -> f64 {
-        self.live_ingest_rate * self.rows_per_bundle as f64
-    }
-
     /// Returns live consume rate in rows/sec.
     pub fn live_consume_rows_rate(&self) -> f64 {
         self.live_consume_rate * self.rows_per_bundle as f64
-    }
-
-    /// Returns live ingest rate in MB/sec.
-    pub fn live_ingest_mb_rate(&self) -> f64 {
-        self.live_ingest_rate * self.bundle_size_bytes as f64 / 1024.0 / 1024.0
     }
 
     /// Returns live consume rate in MB/sec.
