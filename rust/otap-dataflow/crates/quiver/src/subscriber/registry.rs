@@ -37,8 +37,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
+
+use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
@@ -126,6 +128,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// # Errors
     ///
     /// Returns an error if progress files cannot be read or are corrupted.
+    #[must_use = "the registry should be stored and used for subscriber management"]
     pub fn open(config: RegistryConfig, segment_provider: Arc<P>) -> Result<Arc<Self>> {
         // Load existing state from progress files
         let mut subscribers = HashMap::new();
@@ -196,7 +199,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ///
     /// Returns an error if the subscriber ID is invalid.
     pub fn register(&self, id: SubscriberId) -> Result<()> {
-        let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+        let mut subscribers = self.subscribers.write();
 
         if subscribers.contains_key(&id) {
             // Already registered (possibly from progress file recovery)
@@ -221,14 +224,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn activate(&self, id: &SubscriberId) -> Result<()> {
         // Get subscriber lock (read lock on map, then per-subscriber write lock)
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers
                 .get(id)
                 .cloned()
                 .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
         };
 
-        let mut state = state_lock.write().expect("subscriber lock poisoned");
+        let mut state = state_lock.write();
 
         if state.is_active() {
             return Ok(());
@@ -254,14 +257,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns an error if the subscriber is not registered.
     pub fn deactivate(&self, id: &SubscriberId) -> Result<()> {
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers
                 .get(id)
                 .cloned()
                 .ok_or_else(|| SubscriberError::not_found(id.as_str()))?
         };
 
-        let mut state = state_lock.write().expect("subscriber lock poisoned");
+        let mut state = state_lock.write();
         state.deactivate();
         Ok(())
     }
@@ -278,7 +281,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn unregister(&self, id: &SubscriberId) -> Result<()> {
         // Remove from in-memory state
         {
-            let mut subscribers = self.subscribers.write().expect("subscribers lock poisoned");
+            let mut subscribers = self.subscribers.write();
             if subscribers.remove(id).is_none() {
                 return Err(SubscriberError::not_found(id.as_str()));
             }
@@ -286,7 +289,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Remove from dirty set
         {
-            let mut dirty = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+            let mut dirty = self.dirty_subscribers.lock();
             let _ = dirty.remove(id);
         }
 
@@ -302,10 +305,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// will start tracking the new segment.
     pub fn on_segment_finalized(&self, segment_seq: SegmentSeq, bundle_count: u32) {
         // Read lock on map, then per-subscriber write locks
-        let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+        let subscribers = self.subscribers.read();
 
         for state_lock in subscribers.values() {
-            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut state = state_lock.write();
             if state.is_active() {
                 state.add_segment(segment_seq, bundle_count);
             }
@@ -313,9 +316,9 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Notify waiting subscribers that new bundles are available
         let (lock, cvar) = &self.bundle_available;
-        let mut available = lock.lock().expect("bundle_available lock poisoned");
+        let mut available = lock.lock();
         *available = true;
-        cvar.notify_all();
+        let _ = cvar.notify_all();
     }
 
     /// Returns the next pending bundle for a subscriber.
@@ -331,7 +334,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
         // Get subscriber lock with minimal map lock time
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers
                 .get(id)
                 .cloned()
@@ -339,7 +342,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         };
 
         let bundle_ref = {
-            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut state = state_lock.write();
 
             if !state.is_active() {
                 return Err(SubscriberError::not_found(id.as_str()));
@@ -411,7 +414,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 None => {
                     // No bundle available, wait for notification
                     let (lock, cvar) = &self.bundle_available;
-                    let mut available = lock.lock().expect("bundle_available lock poisoned");
+                    let mut available = lock.lock();
 
                     // Check if data became available while acquiring lock
                     if *available {
@@ -420,7 +423,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     }
 
                     // Calculate remaining timeout
-                    let wait_timeout = if let Some(deadline) = deadline {
+                    let wait_duration = if let Some(deadline) = deadline {
                         let now = std::time::Instant::now();
                         if now >= deadline {
                             return Ok(None);
@@ -432,10 +435,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                         Duration::from_millis(100)
                     };
 
-                    let result = cvar
-                        .wait_timeout(available, wait_timeout)
-                        .expect("condvar wait failed");
-                    available = result.0;
+                    // parking_lot's wait_for takes &mut guard, doesn't consume it
+                    let _ = cvar.wait_for(&mut available, wait_duration);
 
                     // Reset the flag since we're about to check
                     *available = false;
@@ -460,7 +461,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ) -> Result<BundleHandle<RegistryCallback<P>>> {
         // Get subscriber lock with minimal map lock time
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers
                 .get(id)
                 .cloned()
@@ -468,7 +469,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         };
 
         {
-            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut state = state_lock.write();
 
             // Check if already resolved
             if state.is_resolved(&bundle_ref) {
@@ -508,19 +509,19 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ) {
         // Get subscriber lock with minimal map lock time
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers.get(subscriber_id).cloned()
         };
 
         // Update in-memory state
         if let Some(state_lock) = state_lock {
-            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut state = state_lock.write();
             let _ = state.record_outcome(bundle_ref, outcome);
         }
 
         // Mark subscriber as dirty (needs flushing)
         {
-            let mut dirty = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+            let mut dirty = self.dirty_subscribers.lock();
             let _ = dirty.insert(subscriber_id.clone());
         }
     }
@@ -528,12 +529,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Releases a bundle claim without resolving.
     fn release_bundle(&self, subscriber_id: &SubscriberId, bundle_ref: BundleRef) {
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers.get(subscriber_id).cloned()
         };
 
         if let Some(state_lock) = state_lock {
-            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut state = state_lock.write();
             state.release(bundle_ref);
         }
     }
@@ -543,7 +544,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn subscriber_count(&self) -> usize {
         self.subscribers
             .read()
-            .expect("subscribers lock poisoned")
+            
             .len()
     }
 
@@ -555,12 +556,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn oldest_incomplete_segment(&self) -> Option<SegmentSeq> {
         self.subscribers
             .read()
-            .expect("subscribers lock poisoned")
+            
             .values()
             .filter_map(|state_lock| {
                 state_lock
                     .read()
-                    .expect("subscriber lock poisoned")
+                    
                     .oldest_incomplete_segment()
             })
             .min()
@@ -575,10 +576,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn min_highest_tracked_segment(&self) -> Option<SegmentSeq> {
         self.subscribers
             .read()
-            .expect("subscribers lock poisoned")
+            
             .values()
             .filter_map(|state_lock| {
-                let state = state_lock.read().expect("subscriber lock poisoned");
+                let state = state_lock.read();
                 if state.is_active() {
                     state.highest_tracked_segment()
                 } else {
@@ -593,10 +594,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn debug_subscriber_segment_counts(&self) -> Vec<(String, usize, bool)> {
         self.subscribers
             .read()
-            .expect("subscribers lock poisoned")
+            
             .iter()
             .map(|(id, state_lock)| {
-                let state = state_lock.read().expect("subscriber lock poisoned");
+                let state = state_lock.read();
                 (
                     id.as_str().to_string(),
                     state.segment_count(),
@@ -611,11 +612,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Call this after deleting segment files to free memory tracking completed
     /// segments. This calls `remove_completed_segments_before` on each subscriber.
     pub fn cleanup_segments_before(&self, before: SegmentSeq) {
-        let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+        let subscribers = self.subscribers.read();
         for state_lock in subscribers.values() {
             state_lock
                 .write()
-                .expect("subscriber lock poisoned")
+                
                 .remove_completed_segments_before(before);
         }
     }
@@ -625,7 +626,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn is_registered(&self, id: &SubscriberId) -> bool {
         self.subscribers
             .read()
-            .expect("subscribers lock poisoned")
+            
             .contains_key(id)
     }
 
@@ -633,11 +634,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     #[must_use]
     pub fn is_active(&self, id: &SubscriberId) -> bool {
         let state_lock = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             subscribers.get(id).cloned()
         };
 
-        state_lock.is_some_and(|lock| lock.read().expect("subscriber lock poisoned").is_active())
+        state_lock.is_some_and(|lock| lock.read().is_active())
     }
 
     /// Flushes all dirty subscribers to their progress files.
@@ -657,7 +658,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn flush_progress(&self) -> Result<usize> {
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
-            let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+            let mut dirty_set = self.dirty_subscribers.lock();
             dirty_set.drain().collect()
         };
 
@@ -667,7 +668,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Collect data we need while holding read lock briefly
         let to_flush: Vec<(SubscriberId, Arc<RwLock<SubscriberState>>)> = {
-            let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+            let subscribers = self.subscribers.read();
             dirty
                 .into_iter()
                 .filter_map(|sub_id| subscribers.get(&sub_id).map(|s| (sub_id, s.clone())))
@@ -679,7 +680,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         for (sub_id, state_lock) in to_flush {
             // Get state data with per-subscriber lock
             let (entries, oldest_incomplete) = {
-                let state = state_lock.read().expect("subscriber lock poisoned");
+                let state = state_lock.read();
                 let entries = state.to_progress_entries();
                 let oldest = state
                     .oldest_incomplete_segment()
@@ -693,7 +694,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 }
                 Err(e) => {
                     // Re-add to dirty set and return error
-                    let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                    let mut dirty_set = self.dirty_subscribers.lock();
                     let _ = dirty_set.insert(sub_id.clone());
                     return Err(e);
                 }
@@ -708,7 +709,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     pub fn dirty_count(&self) -> usize {
         self.dirty_subscribers
             .lock()
-            .expect("dirty lock poisoned")
+            
             .len()
     }
 
@@ -723,7 +724,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the list of segment sequences that were force-completed and
     /// can be safely deleted from disk.
     pub fn force_drop_oldest_pending_segments(&self) -> Vec<SegmentSeq> {
-        let subscribers = self.subscribers.read().expect("subscribers lock poisoned");
+        let subscribers = self.subscribers.read();
 
         // Build a set of all pending (incomplete) segments across all subscribers
         // and track which segments have claimed bundles
@@ -732,7 +733,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         let mut segments_with_readers: HashSet<SegmentSeq> = HashSet::new();
 
         for state_lock in subscribers.values() {
-            let state = state_lock.read().expect("subscriber lock poisoned");
+            let state = state_lock.read();
 
             // Collect all incomplete segments from progress entries
             for entry in state.to_progress_entries() {
@@ -764,7 +765,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Force-complete these segments for all subscribers
         for state_lock in subscribers.values() {
-            let mut state = state_lock.write().expect("subscriber lock poisoned");
+            let mut state = state_lock.write();
             let mut any_completed = false;
 
             // Process all segments before releasing the lock
@@ -778,7 +779,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             if any_completed {
                 let id = state.id().clone();
                 drop(state); // Release write lock before acquiring dirty lock
-                let mut dirty_set = self.dirty_subscribers.lock().expect("dirty lock poisoned");
+                let mut dirty_set = self.dirty_subscribers.lock();
                 let _ = dirty_set.insert(id);
             }
         }
