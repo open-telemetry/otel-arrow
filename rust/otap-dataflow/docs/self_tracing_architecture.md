@@ -141,7 +141,7 @@ service:
   telemetry:
     logs:
       level: info
-      strategies:
+      providers:
         global: unbuffered
         engine: buffered
         internal: noop
@@ -194,7 +194,7 @@ service:
   telemetry:
     logs:
       level: info
-      strategies:
+      providers:
         global: unbuffered
         engine: buffered
         internal: noop
