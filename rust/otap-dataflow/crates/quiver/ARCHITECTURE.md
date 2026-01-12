@@ -321,7 +321,7 @@ Field descriptions:
 
 ##### File Semantics
 
-- **Atomic updates**: Progress is written via `write temp → fsync → rename`,
+- **Atomic updates**: Progress is written via `write temp -> fsync -> rename`,
   ensuring crash-safe updates without append-only log compaction.
 - **Batched I/O**: In-memory state is updated on each ack; file writes are
   batched via the `maintain()` API. The embedding layer calls `maintain()`
@@ -334,7 +334,7 @@ Field descriptions:
 ##### Recovery Semantics
 
 - **Startup**: Read each `quiver.sub.<id>` file to restore that subscriber's
-  state. No log replay required—file contains current state.
+  state. No log replay required--file contains current state.
 - **CRC validation**: If CRC fails, the file is considered corrupted. Recovery
   options: (1) start fresh from latest segment, (2) fail startup, or (3) use
   backup if available. Policy is configurable.
@@ -414,7 +414,7 @@ later) while maintaining accurate progress tracking.
 Each subscriber maintains a progress file (`quiver.sub.<id>`) that snapshots
 its current state. Progress files are atomically updated via write-fsync-rename,
 avoiding the compaction complexity of append-only logs. Recovery reads each
-progress file directly—no log replay required. Segment cleanup is coordinated
+progress file directly--no log replay required. Segment cleanup is coordinated
 by checking that all subscriber progress files show `oldest_incomplete_segment`
 past the segment to be deleted.
 
@@ -1246,7 +1246,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   `oldest_incomplete_segment > 120` for all subscribers), the segment becomes
   eligible for eviction according to the retention policy.
 1. During crash recovery Quiver reads each subscriber's progress file to
-  restore per-subscriber state directly—no log replay required.
+  restore per-subscriber state directly--no log replay required.
 
 Nack handling is owned by the embedding layer, not Quiver. When an exporter
 returns a NACK, the embedding layer (e.g., persistence_processor):
@@ -1312,7 +1312,7 @@ steady-state sweeper runs.
 - ~~Ack log scale: what rotation/checkpoint policy keeps replay time bounded under
   heavy churn?~~ (Addressed: per-subscriber progress files replace the append-only
   log. Each file contains current state snapshot, not a log to replay. No rotation
-  or compaction needed—files are atomically overwritten.)
+  or compaction needed--files are atomically overwritten.)
 - Observability: which metrics/logs expose progress file state, incomplete segment
   count, and eviction/backpressure activity so operators can react early?
 - Policy interaction: how does time-based retention interact with the size-cap

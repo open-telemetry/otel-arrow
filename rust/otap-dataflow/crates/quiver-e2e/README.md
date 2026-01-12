@@ -6,7 +6,7 @@ End-to-end stress test harness for the Quiver persistence layer.
 
 This crate provides a comprehensive stress testing tool for validating Quiver's
 persistence guarantees under sustained load. It exercises the complete data flow:
-ingestion → WAL → segment finalization → subscriber consumption → cleanup.
+ingestion -> WAL -> segment finalization -> subscriber consumption -> cleanup.
 
 ## Features
 
