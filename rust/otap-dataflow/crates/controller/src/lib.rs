@@ -22,7 +22,7 @@ use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::pipeline::service::telemetry::logs::{
-    OutputMode, ProviderMode, INTERNAL_TELEMETRY_RECEIVER_URN,
+    INTERNAL_TELEMETRY_RECEIVER_URN, OutputMode, ProviderMode,
 };
 use otap_df_config::{
     PipelineGroupId, PipelineId,
@@ -92,25 +92,27 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         telemetry_config
             .logs
             .validate()
-            .map_err(|msg| Error::ConfigurationError { message: msg })?;
+            .map_err(|msg| Error::ConfigurationError {
+                message: msg.to_string(),
+            })?;
 
-        // Create logs reporter based on provider strategies.
+        // Create logs reporter based on provider providers.
         // LogsReporter is needed when:
         // - global == Unbuffered (global threads send directly to channel)
         // - engine == Buffered or Unbuffered (engine threads send to channel)
         // Raw provider mode = synchronous console output, no reporter needed.
-        let strategies_need_reporter =
-            telemetry_config.logs.strategies.global == ProviderMode::Unbuffered
-                || matches!(
-                    telemetry_config.logs.strategies.engine,
-                    ProviderMode::Buffered | ProviderMode::Unbuffered
-                );
+        let providers_need_reporter = telemetry_config.logs.providers.global
+            == ProviderMode::Unbuffered
+            || matches!(
+                telemetry_config.logs.providers.engine,
+                ProviderMode::Buffered | ProviderMode::Unbuffered
+            );
 
-        // Create the reporter if strategies need it.
+        // Create the reporter if providers need it.
         // The receiver end goes to either:
         // - LogsCollector thread (output == Raw): prints to console
         // - Internal Telemetry Receiver node (output == Internal): emits as OTLP
-        let (logs_reporter, logs_receiver, logs_collector_handle) = if strategies_need_reporter {
+        let (logs_reporter, logs_receiver, logs_collector_handle) = if providers_need_reporter {
             match telemetry_config.logs.output {
                 OutputMode::Raw => {
                     // Start collector thread for Raw output mode
@@ -173,7 +175,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Create engine logs setup based on strategy configuration.
         // When output is Internal, the logs go through the channel to ITR.
         // The validation layer ensures that when output=Internal, engine strategy is Buffered.
-        let engine_logs_setup = match telemetry_config.logs.strategies.engine {
+        let engine_logs_setup = match telemetry_config.logs.providers.engine {
             ProviderMode::Noop => EngineLogsSetup::Noop,
             ProviderMode::Raw => EngineLogsSetup::Raw,
             ProviderMode::Buffered => EngineLogsSetup::Buffered {

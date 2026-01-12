@@ -30,6 +30,7 @@ pub struct LogsConfig {
     pub output: OutputMode,
 
     /// OpenTelemetry SDK is configured via processors.
+    #[serde(default)]
     pub processors: Vec<processors::LogProcessorConfig>,
 }
 
