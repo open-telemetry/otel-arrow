@@ -651,8 +651,15 @@ pub fn scan_progress_files(dir: &Path) -> Result<Vec<SubscriberId>> {
             }
 
             // Try to parse as valid subscriber ID
-            if let Ok(id) = SubscriberId::new(id_str) {
-                subscriber_ids.push(id);
+            match SubscriberId::new(id_str) {
+                Ok(id) => subscriber_ids.push(id),
+                Err(e) => {
+                    tracing::warn!(
+                        file = %name,
+                        error = %e,
+                        "ignoring progress file with invalid subscriber ID"
+                    );
+                }
             }
         }
     }
