@@ -22,7 +22,8 @@ reliable even with this kind of dependency on itself.
 ## Internal telemetry receiver
 
 The Internal Telemetry Receiver or "ITR" is an OTAP-Dataflow receiver
-component that produces telemetry from internal sources. An internal
+component that receives telemetry from internal sources and sends
+sends to an internal telemetry pipeline. An internal
 telemetry pipeline consists of one (global) or more (NUMA-regional)
 ITR components and any of the connected processor and exporter
 components reachable from ITR source nodes.

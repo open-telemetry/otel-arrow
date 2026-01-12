@@ -54,7 +54,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LoggingProviders {
     /// Provider mode for non-engine threads. This defines the global Tokio
-    /// `tracing` subsriber. Default is Unbuffered. Note that Buffered
+    /// `tracing` subscriber. Default is Unbuffered. Note that Buffered
     /// requires opt-in thread-local setup.
     pub global: ProviderMode,
 
