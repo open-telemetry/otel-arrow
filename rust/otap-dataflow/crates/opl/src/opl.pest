@@ -1,0 +1,155 @@
+// Grammar for Observability Programming Language (OPL)
+
+WHITESPACE = _{ " " | NEWLINE | "\t" }
+
+ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+single_quote_string_char = _{
+    !("'" | "\\") ~ ANY
+    | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+
+string_literal = {
+    ("\"" ~ double_quote_string_char* ~ "\"")
+    | ("'" ~ single_quote_string_char* ~ "'")
+}
+
+identifier_expression = {
+    ident
+}
+
+bool_true_token = @{ "true" }
+bool_false_token = @{ "false" }
+null_token = @{ "null" }
+
+primitive_expression = {
+    string_literal
+    | bool_true_token
+    | bool_false_token
+    | null_token
+    | identifier_expression
+    | "(" ~ expression ~ ")"
+}
+
+index_expression = {
+    // TODO: the way this grammar is defined doesn't yet handle
+    // - nested indexing (e.g. a["x"]["y"])
+    // - computing index from some complex expression (e.g. a[i + 1])
+    //
+    // This should probably be defined as  `member_expression ~ "[" ~ expression ~ "]"
+    // but that makes the grammar left recursive so it would need which makes parsing a
+    // bit more complicated, so we can change the implementation when this is needed.
+    identifier_expression ~ "[" ~ member_expression ~ "]"
+}
+
+attribute_selection_expression = {
+    identifier_expression ~ ("." ~ identifier_expression)+
+}
+
+member_expression = {
+    index_expression
+    | primitive_expression
+    | attribute_selection_expression
+    // TODO function calls
+}
+
+integer_literal = @{
+    ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+}
+
+exponent_literal = { ^"e" ~ ("+" | "-")? ~ integer_literal }
+float_literal = @{
+    (integer_literal ~ "." ~ integer_literal ~ exponent_literal?)
+    | (integer_literal ~ exponent_literal)
+}
+
+number_literal = {
+    float_literal | integer_literal
+}
+
+negate_token = @{ "-" }
+not_token = @{ "not" }
+
+unary_expression = {
+    number_literal
+    | negate_token ~ number_literal
+    // TODO negative unary
+    // | "-" ~ unary_expression
+    | not_token ~ unary_expression
+    | member_expression
+}
+
+additive_op_add = @{ "+" }
+additive_op_sub = @{ "-" }
+additive_op = _{
+    additive_op_add | additive_op_sub
+}
+
+additive_expression = {
+    multiplicative_expression ~ (additive_op ~ multiplicative_expression)*
+}
+
+multiplicative_op_mul = @{ "*" }
+multiplicative_op_div = @{ "/" }
+multiplicative_op_mod = @{ "%" }
+multiplicative_op = _{
+    multiplicative_op_mul | multiplicative_op_div | multiplicative_op_mod
+}
+
+multiplicative_expression = {
+    unary_expression ~ (multiplicative_op ~ unary_expression)*
+}
+
+rel_op_eq = @{ "==" }
+rel_op_neq = @{ "!="}
+rel_op = _{
+    rel_op_eq | rel_op_neq
+}
+
+rel_expression = {
+    additive_expression ~ (rel_op ~ rel_expression)*
+}
+
+// TODO add bitwise expressions
+
+and_expression = {
+    rel_expression ~ ("and" ~ and_expression)*
+}
+
+or_expression = {
+    and_expression ~ ("or" ~ or_expression)*
+}
+
+expression = {
+    or_expression
+}
+
+source = {
+    "logs" | "metrics" | "traces" | "signals"
+}
+
+where_operator_call = {
+    "where" ~ expression
+}
+
+operator_call = {
+    where_operator_call
+}
+
+pipeline_stage = {
+    operator_call
+}
+
+pipeline = {
+    source ~ ("|" ~ pipeline_stage)+
+}
+
+program = {
+    SOI ~ pipeline ~ EOI
+}
