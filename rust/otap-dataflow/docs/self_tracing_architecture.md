@@ -19,7 +19,7 @@ feedback loop, situations where a telemetry pipeline creates pressure
 on itself. We have designed for the OTAP dataflow engine to remain
 reliable even with this kind of dependency on itself.
 
-## Internal telemetry receiver
+## Internal Telemetry Receiver (ITR)
 
 The Internal Telemetry Receiver or "ITR" is an OTAP-Dataflow receiver
 component that receives telemetry from internal sources and sends
