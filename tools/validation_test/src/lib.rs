@@ -3,13 +3,18 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+
+// ToDo: Support transformative processors in a pipeline, 
+// we should be able to know when the assert equivalent will fail 
+
+
 use otap_df_config::PipelineGroupId;
 use otap_df_config::PipelineId;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::pipeline_ctrl_msg_channel;
+use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::OtlpProtoMessage;
@@ -37,15 +42,44 @@ use otap_df_state::{DeployedPipelineKey, store::ObservedStateStore};
 use otap_df_telemetry::MetricsSystem;
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
+use tokio::time::{Duration, timeout};
 use tonic::transport::server::{Router, Server};
 use tonic::{Request, Response, Status};
-use tokio::time::{Duration, timeout};
 
 const GRPC_INPUT_ENDPOINT: &str = "http://127.0.0.1:4317";
+
+const CONNECTION_MAX_RETRIES: usize = 20;
+const CONNECTION_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+async fn connect_with_retry<T, E, F, Fut>(
+    connect_fn: F,
+    max_retries: usize,
+    retry_delay: Duration,
+) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Debug,
+{
+    let mut last_error = None;
+    for attempt in 0..max_retries {
+        match connect_fn().await {
+            Ok(client) => return Ok(client),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < max_retries - 1 {
+                    tokio::time::sleep(retry_delay).await;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap())
+}
 const GRPC_OUTPUT_ENDPOINT: &str = "127.0.0.1:4318";
 
 const DEFAULT_CORE_ID: usize = 0;
 const DEFAULT_THREAD_ID: usize = 0;
+const DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE: usize = 100;
 
 /// struct to simulate the otel arrow protocol, uses a producer and consumer to encode and decode a otlp request
 pub struct OtelProtoSimulator {
@@ -120,23 +154,33 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<P
     }
     pub async fn simulate_pipeline(
         &self,
-        proto_message: &OtlpProtoMessage,
+        proto_messages: &[OtlpProtoMessage],
         config_file_path: PathBuf,
-    ) -> OtlpProtoMessage {
+    ) -> Result<Vec<OtlpProtoMessage>, String> {
         // start a grpc client to send messages to the receiver
         // start a grpc server to receiver messages from the exporter
         let (sender, mut receiver) = tokio::sync::mpsc::channel(64);
         let grpc_server = self.create_grpc_server(sender);
 
+        // Create shutdown signal for gRPC server
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
         // start gRPC server in the Tokio runtime
-        let addr: std::net::SocketAddr =
-            GRPC_OUTPUT_ENDPOINT.parse().expect("valid socket address");
+        let addr: std::net::SocketAddr = GRPC_OUTPUT_ENDPOINT.parse().expect("endpoint is valid");
         let _grpc_server_task = tokio::spawn(async move {
             grpc_server
-                .serve(addr)
+                .serve_with_shutdown(addr, async {
+                    shutdown_rx.await.ok();
+                })
                 .await
-                .expect("failed to serve gRPC receiver");
+                .expect("failed to start up grpc server");
         });
+
+        // Create the pipeline control channel outside the thread so we can send shutdown
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
+            pipeline_ctrl_msg_channel::<PData>(DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE);
+        // Clone the sender before moving into the thread so we can use it for shutdown
+        let shutdown_sender = pipeline_ctrl_msg_tx.clone();
 
         let pipeline_factory = self.pipeline_factory;
         let pipeline_context = self.pipeline_context.clone();
@@ -151,17 +195,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<P
                 pipeline_id.clone(),
                 config_file_path,
             )
-            .expect("correct file path");
+            .expect("invalid config");
             let obs_state_store = ObservedStateStore::new(pipeline_config.pipeline_settings());
             let obs_evt_reporter = obs_state_store.reporter();
-            let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
-                pipeline_config
-                    .pipeline_settings()
-                    .default_pipeline_ctrl_msg_channel_size,
-            );
             let pipeline_runtime = pipeline_factory
                 .build(pipeline_context.clone(), pipeline_config.clone())
-                .expect("pipeline created");
+                .expect("failed to create runtime");
             pipeline_runtime
                 .run_forever(
                     pipeline_key,
@@ -171,65 +210,95 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<P
                     pipeline_ctrl_msg_tx,
                     pipeline_ctrl_msg_rx,
                 )
-                .expect("failed to start pipeline")
+                .expect("failed to start pipeline");
         });
 
-
         // start sending messages to the pipeline
-        let mut logs_client = timeout(Duration::from_secs(10), LogsServiceClient::connect(GRPC_INPUT_ENDPOINT))
-            .await
-            .expect("timed out waiting for connection")
-            .expect("failed to connect to otlp receiver");
-        let mut traces_client = timeout(Duration::from_secs(10), TraceServiceClient::connect(GRPC_INPUT_ENDPOINT))
-            .await
-            .expect("timed out waiting for connection")
-            .expect("failed to connect to otlp receiver");
-        let mut metrics_client = timeout(Duration::from_secs(10), MetricsServiceClient::connect(GRPC_INPUT_ENDPOINT))
-            .await
-            .expect("timed out waiting for connection")
-            .expect("failed to connect to otlp receiver");
+        // Use retry logic to wait for the pipeline's gRPC receiver to be ready
+        let mut logs_client = connect_with_retry(
+            || LogsServiceClient::connect(GRPC_INPUT_ENDPOINT),
+            CONNECTION_MAX_RETRIES,
+            CONNECTION_RETRY_DELAY,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
-        match proto_message {
-            OtlpProtoMessage::Logs(logs) => {
-                logs_client
-                    .export(ExportLogsServiceRequest::new(logs.resource_logs.clone()))
-                    .await
-                    .expect("failed to send message to otlp receiver");
-            }
-            OtlpProtoMessage::Metrics(metrics) => {
-                metrics_client
-                    .export(ExportMetricsServiceRequest::new(
-                        metrics.resource_metrics.clone(),
-                    ))
-                    .await
-                    .expect("failed to send message to otlp receiver");
-            }
-            OtlpProtoMessage::Traces(traces) => {
-                traces_client
-                    .export(ExportTraceServiceRequest::new(
-                        traces.resource_spans.clone(),
-                    ))
-                    .await
-                    .expect("failed to send message to otlp receiver");
+        let mut traces_client = connect_with_retry(
+            || TraceServiceClient::connect(GRPC_INPUT_ENDPOINT),
+            CONNECTION_MAX_RETRIES,
+            CONNECTION_RETRY_DELAY,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let mut metrics_client = connect_with_retry(
+            || MetricsServiceClient::connect(GRPC_INPUT_ENDPOINT),
+            CONNECTION_MAX_RETRIES,
+            CONNECTION_RETRY_DELAY,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        for proto_message in proto_messages {
+            match proto_message {
+                OtlpProtoMessage::Logs(logs) => {
+                    logs_client
+                        .export(ExportLogsServiceRequest::new(logs.resource_logs.clone()))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                OtlpProtoMessage::Metrics(metrics) => {
+                    metrics_client
+                        .export(ExportMetricsServiceRequest::new(
+                            metrics.resource_metrics.clone(),
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                OtlpProtoMessage::Traces(traces) => {
+                    traces_client
+                        .export(ExportTraceServiceRequest::new(
+                            traces.resource_spans.clone(),
+                        ))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
 
-        // read message from receiver (output from pipeline)
-        let message: OTLPData = timeout(Duration::from_secs(10), receiver
-            .recv()).await.expect("timed out waiting for message")
-            .expect("Failed to receive message")
-            .into();
+        // Shutdown the pipeline before reading responses
+        shutdown_sender
+            .send(PipelineControlMsg::Shutdown {
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(5),
+                reason: "Test completed".to_string(),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
-        // convert OTLPData to OTLPProtoMessage and return
-        match message {
-            OTLPData::Logs(logs) => OtlpProtoMessage::Logs(logs.into()),
-            OTLPData::Metrics(metrics) => OtlpProtoMessage::Metrics(metrics.into()),
-            OTLPData::Traces(traces) => OtlpProtoMessage::Traces(traces.into()),
-            OTLPData::Profiles(_) => {
-                // error here as we should not be receiving a profiles type
-                panic!("did not send a profile type");
-            }
+        // Shutdown the gRPC server gracefully
+        let _ = shutdown_tx.send(());
+
+        // Give pipeline time to process and forward messages
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Read all messages from the receiver until empty
+        let mut output_messages = Vec::new();
+        while let Ok(Some(message_data)) =
+            timeout(Duration::from_millis(100), receiver.recv()).await
+        {
+            let message: OTLPData = message_data.into();
+            let proto_message = match message {
+                OTLPData::Logs(logs) => OtlpProtoMessage::Logs(logs.into()),
+                OTLPData::Metrics(metrics) => OtlpProtoMessage::Metrics(metrics.into()),
+                OTLPData::Traces(traces) => OtlpProtoMessage::Traces(traces.into()),
+                OTLPData::Profiles(_) => {
+                    return Err("Received unexpected Profiles message".to_string());
+                }
+            };
+            output_messages.push(proto_message);
         }
+
+        Ok(output_messages)
     }
 
     fn create_grpc_server(&self, sender: Sender<OTLPData>) -> Router {
@@ -360,6 +429,7 @@ mod test {
     const TRACE_SIGNAL_COUNT: usize = 100;
     const ITERATIONS: usize = 10;
     const PIPELINE_CONFIG_DIRECTORY: &str = "./validation_pipelines";
+    const MESSAGE_COUNT: usize = 10;
 
     fn get_registry() -> ResolvedRegistry {
         let registry_repo = RegistryRepo::try_new(
@@ -444,30 +514,45 @@ mod test {
             let file_path = file.path();
             if file_path.is_file() {
                 println!("Validating Pipeline: {}", file_path.display());
-                for _ in 0..ITERATIONS {
-                    // generate data and simulate the protocol and compare result
-                    let logs = OtlpProtoMessage::Logs(fake_otlp_logs(LOG_SIGNAL_COUNT, &registry));
-                    let logs_output = pipeline_simulator
-                        .simulate_pipeline(&logs, file_path.clone())
-                        .await;
-                    assert_equivalent(&[logs], &[logs_output]);
 
-                    let metrics = OtlpProtoMessage::Metrics(fake_otlp_metrics(
-                        METRIC_SIGNAL_COUNT,
-                        &registry,
-                    ));
-                    let metrics_output = pipeline_simulator
-                        .simulate_pipeline(&metrics, file_path.clone())
-                        .await;
-                    assert_equivalent(&[metrics], &[metrics_output]);
+                // generate data and simulate the protocol and compare result
+                let logs: Vec<OtlpProtoMessage> = (0..MESSAGE_COUNT)
+                    .map(|_| OtlpProtoMessage::Logs(fake_otlp_logs(LOG_SIGNAL_COUNT, &registry)))
+                    .collect();
+                let logs_output = pipeline_simulator
+                    .simulate_pipeline(&logs, file_path.clone())
+                    .await
+                    .expect("failed to simulate pipeline");
+                assert_equivalent(&logs, &logs_output);
 
-                    let traces =
-                        OtlpProtoMessage::Traces(fake_otlp_traces(TRACE_SIGNAL_COUNT, &registry));
-                    let traces_output = pipeline_simulator
-                        .simulate_pipeline(&traces, file_path.clone())
-                        .await;
-                    assert_equivalent(&[traces], &[traces_output]);
-                }
+                let metrics: Vec<OtlpProtoMessage> = (0..MESSAGE_COUNT)
+                    .map(|_| {
+                        OtlpProtoMessage::Metrics(fake_otlp_metrics(
+                            METRIC_SIGNAL_COUNT,
+                            &registry,
+                        ))
+                    })
+                    .collect();
+                let metrics_output = pipeline_simulator
+                    .simulate_pipeline(&metrics, file_path.clone())
+                    .await
+                    .expect("failed to simulate pipeline");
+                assert_equivalent(&metrics, &metrics_output);
+
+                let traces: Vec<OtlpProtoMessage> = (0..MESSAGE_COUNT)
+                    .map(|_| {
+                        OtlpProtoMessage::Traces(fake_otlp_traces(
+                            TRACE_SIGNAL_COUNT,
+                            &registry,
+                        ))
+                    })
+                    .collect();
+                let traces_output = pipeline_simulator
+                    .simulate_pipeline(&traces, file_path.clone())
+                    .await
+                    .expect("failed to simulate pipeline");
+                assert_equivalent(&traces, &traces_output);
+        
             }
         }
     }
