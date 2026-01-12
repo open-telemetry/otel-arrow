@@ -11,6 +11,7 @@ use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
 use otap_df_config::pipeline::PipelineSettings;
+use otap_df_telemetry::{otel_error, otel_warn, raw_error};
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -51,7 +52,7 @@ impl ObservedStateHandle {
         match self.pipelines.lock() {
             Ok(guard) => guard.clone(),
             Err(poisoned) => {
-                log::warn!(
+                otel_warn!(
                     "ObservedStateHandle mutex was poisoned; returning possibly stale snapshot"
                 );
                 poisoned.into_inner().clone()
@@ -101,23 +102,28 @@ impl ObservedStateStore {
     }
 
     /// Reports a new observed event in the store.
-    #[allow(
-        clippy::print_stderr,
-        reason = "Use `eprintln!` while waiting for https://github.com/open-telemetry/otel-arrow/issues/1237."
-    )]
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
         // ToDo Event reporting see: https://github.com/open-telemetry/otel-arrow/issues/1237
         // The code below is temporary and should be replaced with a proper event reporting
         // mechanism (see previous todo).
         match &observed_event.r#type {
-            EventType::Request(_) | EventType::Error(_) => {
-                eprintln!("Observed event: {observed_event:?}")
+            EventType::Request(_) => {
+                otel_error!(
+                    "request.event",
+                    observed_event = tracing::field::debug(&observed_event)
+                );
+            }
+            EventType::Error(_) => {
+                otel_error!(
+                    "error.event",
+                    observed_event = tracing::field::debug(&observed_event)
+                );
             }
             EventType::Success(_) => { /* no console output for success events */ }
         }
 
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
-            log::warn!(
+            otel_warn!(
                 "ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state"
             );
             poisoned.into_inner()
@@ -154,7 +160,10 @@ impl ObservedStateStore {
                 // Exit the loop if the channel is closed
                 while let Ok(event) = self.receiver.recv_async().await {
                     if let Err(e) = self.report(event) {
-                        log::error!("Error reporting observed event: {e}");
+                        raw_error!(
+                            "Error reporting observed event",
+                            error = e.to_string(),
+                        );
                     }
                 }
             } => { /* Channel closed, exit gracefully */ }

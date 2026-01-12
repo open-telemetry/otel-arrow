@@ -6,7 +6,6 @@
 
 // Allow test-friendly patterns in this test-only module
 #![allow(clippy::unwrap_used)]
-#![allow(clippy::print_stderr)]
 
 mod collector;
 mod error;

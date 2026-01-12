@@ -13,7 +13,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-otap-df-config = { path = "../config" }
+otap-df-config = { workspace = true }
+otap-df-telemetry = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,4 +23,7 @@ flume = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
-log = { workspace = true }
+
+# Note: use for tracing::field::debug() annotations, b/c otel_xxx! macros
+# do not support directly. Consider whether to add or consolidate.
+tracing = { workspace = true }

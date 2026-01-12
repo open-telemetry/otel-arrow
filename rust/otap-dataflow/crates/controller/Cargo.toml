@@ -27,3 +27,4 @@ miette = { workspace = true }
 core_affinity = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+tracing = { workspace = true }

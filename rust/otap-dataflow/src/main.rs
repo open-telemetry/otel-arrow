@@ -12,8 +12,8 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_telemetry::self_tracing::{ConsoleWriter, RawLoggingLayer};
 use std::path::PathBuf;
 use sysinfo::System;
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
+use tracing_subscriber::layer::SubscriberExt;
 
 #[cfg(all(
     not(windows),
@@ -124,12 +124,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
     let pipeline_id: PipelineId = "default_pipeline".into();
 
-    println!("{}", system_info());
-
     // Load pipeline configuration with early logging so parse errors are readable.
     // Use with_default for a thread-local subscriber during config loading only.
-    let early_subscriber = Registry::default()
-        .with(RawLoggingLayer::new(ConsoleWriter::color()));
+    let early_subscriber = Registry::default().with(RawLoggingLayer::new(ConsoleWriter::color()));
     let pipeline_cfg = tracing::subscriber::with_default(early_subscriber, || {
         PipelineConfig::from_file(
             pipeline_group_id.clone(),
@@ -137,6 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &args.pipeline,
         )
     })?;
+
+    tracing::info!("{}", system_info());
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
@@ -159,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         CoreAllocation::AllCores => println!("Requested core allocation: all available cores"),
         CoreAllocation::CoreCount { count } => println!("Requested core allocation: {count} cores"),
         CoreAllocation::CoreSet { .. } => {
-            println!("Requested core allocation: {}", quota.core_allocation);
+            tracing::info!("Requested core allocation: {}", quota.core_allocation);
         }
     }
 
@@ -175,11 +174,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     match result {
         Ok(_) => {
-            println!("Pipeline run successfully");
+            tracing::info!("Pipeline run successfully");
             std::process::exit(0);
         }
         Err(e) => {
-            eprintln!("Pipeline failed to run: {e}");
+            tracing::error!("Pipeline failed to run: {e}");
             std::process::exit(1);
         }
     }

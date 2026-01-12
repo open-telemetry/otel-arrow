@@ -4,6 +4,7 @@
 //! Utilities to run a non-Send async task on a dedicated OS thread with a
 //! single-threaded Tokio runtime and LocalSet, plus a shutdown signal.
 
+use otap_df_telemetry::raw_error;
 use std::future::Future;
 use std::thread;
 use tokio::{runtime::Builder as RtBuilder, task::LocalSet};
@@ -50,7 +51,6 @@ impl<T, E> ThreadLocalTaskHandle<T, E> {
 }
 
 impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
-    #[allow(clippy::print_stderr)]
     fn drop(&mut self) {
         // Best-effort, idempotent shutdown on drop.
         self.cancel_token.cancel();
@@ -64,17 +64,18 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
                 Ok(Err(_)) => {
                     // Task returned an error; can't propagate it from Drop, so just log.
                     // ToDo Replace this eprintln once we have selected a logging solution
-                    eprintln!(
-                        "Thread '{}' finished with an error during drop; error suppressed",
-                        self.name
+                    raw_error!(
+                        "Thread finished with an error during drop; error suppressed",
+                        thread_name = &self.name,
                     );
                 }
                 Err(panic) => {
                     // Don't panic in Drop; report and suppress.
                     // ToDo Replace this eprintln once we have selected a logging solution
-                    eprintln!(
-                        "Thread '{}' panicked during drop: {panic:?}; panic suppressed",
-                        self.name
+                    raw_error!(
+                        "Thread panicked during drop; panic suppressed",
+                        thread_name = &self.name,
+                        panicked = tracing::field::debug(panic),
                     );
                 }
             }
