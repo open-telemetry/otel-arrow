@@ -505,39 +505,47 @@ impl HttpHandler {
             return Ok(unsupported_media_type());
         }
 
-        // Acquire permit with timeout for fair queuing across protocols.
-        // Uses the request timeout if configured, otherwise a short default to avoid
-        // indefinite queuing. This provides first-come-first-served fairness between
-        // HTTP and gRPC while still rejecting slow clients promptly.
-        let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
-        let permit_result =
-            tokio::time::timeout(permit_timeout, self.semaphore.clone().acquire_owned()).await;
-
-        let _permit = match permit_result {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => {
-                // Semaphore closed (shouldn't happen)
-                otap_df_telemetry::otel_error!("HttpSemaphoreClosed", path = req.uri().path());
-                self.metrics.lock().rejected_requests.inc();
-                return Ok(internal_error());
-            }
-            Err(_) => {
-                // Timeout waiting for permit
-                otap_df_telemetry::otel_warn!(
-                    "HttpRequestRejected",
-                    reason = "concurrency_limit_timeout",
-                    path = req.uri().path(),
-                    max_concurrent = self.settings.max_concurrent_requests,
-                    timeout_ms = permit_timeout.as_millis() as u64
-                );
-                self.metrics.lock().rejected_requests.inc();
-                return Ok(service_unavailable());
-            }
-        };
-
         let timeout = self.settings.timeout;
         let path = req.uri().path().to_string();
+        let path_for_fut = path.clone();
+
+        // Acquire permit with timeout for fair queuing across protocols.
+        // Uses the request timeout if configured, otherwise a short default to avoid
+        // indefinite queuing.
+        //
+        // Important: this is done inside the request future so the overall request timeout
+        // (if enabled) accounts for time spent waiting for a permit.
+        let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
+
         let fut = async move {
+            let permit_result =
+                tokio::time::timeout(permit_timeout, self.semaphore.clone().acquire_owned()).await;
+
+            let _permit = match permit_result {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => {
+                    // Semaphore closed (shouldn't happen)
+                    otap_df_telemetry::otel_error!(
+                        "HttpSemaphoreClosed",
+                        path = path_for_fut.as_str()
+                    );
+                    self.metrics.lock().rejected_requests.inc();
+                    return Err(internal_error());
+                }
+                Err(_) => {
+                    // Timeout waiting for permit
+                    otap_df_telemetry::otel_warn!(
+                        "HttpRequestRejected",
+                        reason = "concurrency_limit_timeout",
+                        path = path_for_fut.as_str(),
+                        max_concurrent = self.settings.max_concurrent_requests,
+                        timeout_ms = permit_timeout.as_millis() as u64
+                    );
+                    self.metrics.lock().rejected_requests.inc();
+                    return Err(service_unavailable());
+                }
+            };
+
             self.metrics.lock().requests_started.inc();
 
             let max_len = self.settings.max_request_body_size as usize;

@@ -57,6 +57,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tonic::transport::Server;
+use tower::limit::GlobalConcurrencyLimitLayer;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -176,29 +177,13 @@ impl OTLPReceiver {
         let grpc_wait = settings.wait_for_result;
         let wait_for_result_any = grpc_wait || http_wait;
 
-        let http_concurrency = self
-            .config
-            .http
-            .as_ref()
-            .map(|http| http.max_concurrent_requests)
-            .unwrap_or(0);
-
-        let grpc_slots = if grpc_wait {
-            settings.max_concurrent_requests
+        // When HTTP is enabled it always shares the same semaphore pool as gRPC.
+        // That means the maximum number of concurrent wait-for-result subscriptions that can be
+        // active across BOTH protocols is bounded by the shared semaphore capacity.
+        let shared_ack_slot_capacity = if wait_for_result_any {
+            settings.max_concurrent_requests.max(1)
         } else {
             0
-        };
-        let http_slots = if http_wait { http_concurrency } else { 0 };
-
-        // Only calculate capacity when ACK slots will actually be created.
-        // When wait_for_result is disabled for both protocols, no slots are needed.
-        let total_slots = grpc_slots + http_slots;
-        // Total shared ACK capacity per signal, across both HTTP and gRPC.
-        // Each signal (logs, metrics, traces) gets its own slot with this capacity.
-        let shared_ack_slot_capacity = if wait_for_result_any {
-            total_slots.max(1) // Ensure at least 1 slot for internal data structure
-        } else {
-            0 // No slots will be created, so capacity is irrelevant
         };
 
         let logs_slot = wait_for_result_any
@@ -370,25 +355,42 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             self.build_signal_services(&effect_handler, &settings);
         let max_concurrent_requests = config.max_concurrent_requests.max(1);
 
-        // Create shared semaphore for both gRPC and HTTP servers.
-        // This ensures total inflight requests never exceed downstream capacity.
-        let shared_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
-
-        let server = {
-            // Use shared semaphore for gRPC concurrency limiting
-            let shared_limit = SharedConcurrencyLayer::new(shared_semaphore.clone());
+        // Build gRPC server concurrency strategy based on HTTP being enabled:
+        // - If HTTP is enabled, use a shared semaphore so both protocols draw from the same pool.
+        // - If HTTP is disabled, preserve prior gRPC-only behavior (GlobalConcurrencyLimitLayer).
+        let (server, shared_semaphore) = if self.config.http.is_some() {
+            let shared = Arc::new(Semaphore::new(max_concurrent_requests));
+            let shared_limit = SharedConcurrencyLayer::new(shared.clone());
             let mut builder =
                 common::apply_server_tuning(Server::builder(), config).layer(shared_limit);
 
-            // Apply timeout if configured
             if let Some(timeout) = config.timeout {
                 builder = builder.timeout(timeout);
             }
 
-            builder
-                .add_service(logs_server)
-                .add_service(metrics_server)
-                .add_service(traces_server)
+            (
+                builder
+                    .add_service(logs_server)
+                    .add_service(metrics_server)
+                    .add_service(traces_server),
+                Some(shared),
+            )
+        } else {
+            let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
+            let mut builder =
+                common::apply_server_tuning(Server::builder(), config).layer(global_limit);
+
+            if let Some(timeout) = config.timeout {
+                builder = builder.timeout(timeout);
+            }
+
+            (
+                builder
+                    .add_service(logs_server)
+                    .add_service(metrics_server)
+                    .add_service(traces_server),
+                None,
+            )
         };
 
         #[cfg(feature = "experimental-tls")]
@@ -440,7 +442,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     http,
                     ack_registry.clone(),
                     self.metrics.clone(),
-                    Some(shared_semaphore.clone()),
+                    shared_semaphore,
                 ))
             } else {
                 Box::pin(std::future::pending())
@@ -2105,7 +2107,7 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        // No validation needed as request is rejected
+        // No validation needed - request rejected at HTTP layer before reaching the pipeline
         let validation = |mut _ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()>>>
         };
@@ -2419,4 +2421,124 @@ mod tests {
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
-}
+
+    #[test]
+    fn test_shared_concurrency_across_grpc_and_http() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{addr}:{grpc_port}");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.grpc.max_concurrent_requests = 1;
+        config.grpc.wait_for_result = true;
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        });
+
+        // Coordinate between scenario and validation so we only fire the HTTP request once the
+        // gRPC request has definitely reached the receiver (and therefore acquired the shared
+        // permit).
+        let grpc_started = Arc::new(tokio::sync::Notify::new());
+        let grpc_started_scenario = grpc_started.clone();
+        let grpc_started_validation = grpc_started.clone();
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let grpc_started = grpc_started_scenario.clone();
+
+                // Start one gRPC request that will hold the single shared permit.
+                let endpoint = grpc_endpoint.clone();
+                let grpc_handle = tokio::spawn(async move {
+                    let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
+                    client.export(create_logs_service_request()).await
+                });
+
+                // Wait until the validation side observes the gRPC request.
+                timeout(Duration::from_secs(3), grpc_started.notified())
+                    .await
+                    .expect("Timed out waiting for gRPC to start");
+
+                // While gRPC is in-flight, HTTP should be unable to acquire a permit and should
+                // return 503 (permit acquisition timeout).
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let (status, _body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("HTTP request should return a response");
+
+                assert_eq!(
+                    status,
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    "HTTP should be rejected while gRPC holds the shared permit"
+                );
+
+                // The validation side will ACK the gRPC request; it should then complete.
+                let grpc_result = grpc_handle.await.unwrap();
+                assert!(grpc_result.is_ok(), "gRPC request should succeed after ACK");
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let grpc_started = grpc_started_validation.clone();
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for gRPC message")
+                    .expect("No gRPC message received");
+
+                grpc_started.notify_one();
+
+                // Hold the request long enough for the HTTP request to observe permit contention.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    }
