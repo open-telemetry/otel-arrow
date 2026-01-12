@@ -3,11 +3,11 @@
 
 //! Configures the OpenTelemetry meter provider based on the provided configuration.
 
+pub mod otlp_exporter_provider;
 pub mod prometheus_exporter_provider;
 pub mod views_provider;
 
 use opentelemetry::global;
-use opentelemetry_otlp::{Protocol, WithExportConfig};
 use opentelemetry_sdk::{
     Resource,
     metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider},
@@ -15,18 +15,17 @@ use opentelemetry_sdk::{
 use otap_df_config::pipeline::service::telemetry::metrics::{
     MetricsConfig,
     readers::{
-        MetricsReaderConfig, Temporality,
-        periodic::{
-            MetricsPeriodicExporterConfig,
-            otlp::{OtlpExporterConfig, OtlpProtocol},
-        },
+        MetricsReaderConfig, periodic::MetricsPeriodicExporterConfig,
         pull::MetricsPullExporterConfig,
     },
 };
 
 use crate::{
     error::Error,
-    opentelemetry_client::meter_provider::prometheus_exporter_provider::PrometheusExporterProvider,
+    opentelemetry_client::meter_provider::{
+        otlp_exporter_provider::OtlpExporterProvider,
+        prometheus_exporter_provider::PrometheusExporterProvider,
+    },
 };
 
 /// Wrapper around the OpenTelemetry SDK meter provider and its runtime.
@@ -87,12 +86,13 @@ impl MeterProvider {
                             Self::configure_console_metric_exporter(sdk_meter_builder, interval)?;
                     }
                     MetricsPeriodicExporterConfig::Otlp(otlp_config) => {
-                        (sdk_meter_builder, runtime) = Self::configure_otlp_metric_exporter(
-                            sdk_meter_builder,
-                            otlp_config,
-                            interval,
-                            runtime,
-                        )?;
+                        (sdk_meter_builder, runtime) =
+                            OtlpExporterProvider::configure_otlp_metric_exporter(
+                                sdk_meter_builder,
+                                otlp_config,
+                                interval,
+                                runtime,
+                            )?;
                     }
                 }
                 Ok((sdk_meter_builder, runtime))
@@ -108,83 +108,6 @@ impl MeterProvider {
                 }
             },
         }
-    }
-
-    fn configure_otlp_metric_exporter(
-        mut sdk_meter_builder: MeterProviderBuilder,
-        otlp_config: &OtlpExporterConfig,
-        interval: &std::time::Duration,
-        mut runtime: Option<tokio::runtime::Runtime>,
-    ) -> Result<(MeterProviderBuilder, Option<tokio::runtime::Runtime>), Error> {
-        let exporter;
-        match &otlp_config.protocol {
-            OtlpProtocol::Grpc => {
-                (exporter, runtime) = Self::configure_grpc_otlp_exporter(otlp_config, runtime)?
-            }
-            OtlpProtocol::HttpBinary => {
-                exporter = Self::configure_http_exporter(otlp_config, Protocol::HttpBinary)?
-            }
-            OtlpProtocol::HttpJson => {
-                exporter = Self::configure_http_exporter(otlp_config, Protocol::HttpJson)?
-            }
-        };
-        let reader = PeriodicReader::builder(exporter)
-            .with_interval(*interval)
-            .build();
-        sdk_meter_builder = sdk_meter_builder.with_reader(reader);
-
-        //sdk_meter_builder = sdk_meter_builder.with_periodic_exporter(exporter);
-        Ok((sdk_meter_builder, runtime))
-    }
-
-    fn configure_grpc_otlp_exporter(
-        otlp_config: &OtlpExporterConfig,
-        runtime: Option<tokio::runtime::Runtime>,
-    ) -> Result<
-        (
-            opentelemetry_otlp::MetricExporter,
-            Option<tokio::runtime::Runtime>,
-        ),
-        Error,
-    > {
-        // If there is a tokio runtime already, use it. Otherwise, create a new one.
-        let tokio_runtime = match runtime {
-            Some(rt) => rt,
-            None => tokio::runtime::Runtime::new()
-                .map_err(|e| Error::ConfigurationError(e.to_string()))?,
-        };
-
-        let exporter = tokio_runtime
-            .block_on(async {
-                opentelemetry_otlp::MetricExporter::builder()
-                    .with_tonic()
-                    .with_endpoint(&otlp_config.endpoint)
-                    .with_temporality(Self::to_sdk_temporality(&otlp_config.temporality))
-                    .build()
-            })
-            .map_err(|e| Error::ConfigurationError(e.to_string()))?;
-        Ok((exporter, Some(tokio_runtime)))
-    }
-
-    fn to_sdk_temporality(config: &Temporality) -> opentelemetry_sdk::metrics::Temporality {
-        match config {
-            Temporality::Cumulative => opentelemetry_sdk::metrics::Temporality::Cumulative,
-            Temporality::Delta => opentelemetry_sdk::metrics::Temporality::Delta,
-        }
-    }
-
-    fn configure_http_exporter(
-        otlp_config: &OtlpExporterConfig,
-        protocol: Protocol,
-    ) -> Result<opentelemetry_otlp::MetricExporter, Error> {
-        let exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
-            .with_protocol(protocol)
-            .with_endpoint(&otlp_config.endpoint)
-            .with_temporality(Self::to_sdk_temporality(&otlp_config.temporality))
-            .build()
-            .map_err(|e| Error::ConfigurationError(e.to_string()))?;
-        Ok(exporter)
     }
 
     fn configure_console_metric_exporter(
@@ -204,7 +127,9 @@ impl MeterProvider {
 mod tests {
     use super::*;
     use otap_df_config::pipeline::service::telemetry::metrics::readers::{
-        MetricsReaderPeriodicConfig, MetricsReaderPullConfig, pull::PrometheusExporterConfig,
+        MetricsReaderPeriodicConfig, MetricsReaderPullConfig, Temporality,
+        periodic::otlp::{OtlpExporterConfig, OtlpProtocol},
+        pull::PrometheusExporterConfig,
     };
 
     #[test]
@@ -221,6 +146,7 @@ mod tests {
                     protocol: OtlpProtocol::HttpBinary,
                     endpoint: "http://localhost:4318/v1/metrics".to_string(),
                     temporality: Temporality::Cumulative,
+                    tls: None,
                 }),
             }),
             MetricsReaderConfig::Periodic(MetricsReaderPeriodicConfig {
@@ -229,6 +155,7 @@ mod tests {
                     protocol: OtlpProtocol::HttpJson,
                     endpoint: "http://localhost:4318".to_string(),
                     temporality: Temporality::Cumulative,
+                    tls: None,
                 }),
             }),
         ];
@@ -258,6 +185,7 @@ mod tests {
                     protocol: OtlpProtocol::Grpc,
                     endpoint: "http://localhost:4318".to_string(),
                     temporality: Temporality::Cumulative,
+                    tls: None,
                 }),
             }),
             MetricsReaderConfig::Pull(MetricsReaderPullConfig {
@@ -295,51 +223,5 @@ mod tests {
         let interval = std::time::Duration::from_secs(10);
         let result = MeterProvider::configure_console_metric_exporter(sdk_meter_builder, &interval);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_configure_http_binary_exporter() {
-        let sdk_meter_builder = SdkMeterProvider::builder();
-        let otlp_config = OtlpExporterConfig {
-            protocol: OtlpProtocol::HttpBinary,
-            endpoint: "http://localhost:4318/v1/metrics".to_string(),
-            temporality: Temporality::Cumulative,
-        };
-        let result = MeterProvider::configure_otlp_metric_exporter(
-            sdk_meter_builder,
-            &otlp_config,
-            &std::time::Duration::from_secs(10),
-            None,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_configure_http_json_exporter() {
-        let sdk_meter_builder = SdkMeterProvider::builder();
-        let otlp_config = OtlpExporterConfig {
-            protocol: OtlpProtocol::HttpJson,
-            endpoint: "http://localhost:4318/v1/metrics".to_string(),
-            temporality: Temporality::Cumulative,
-        };
-        let result = MeterProvider::configure_otlp_metric_exporter(
-            sdk_meter_builder,
-            &otlp_config,
-            &std::time::Duration::from_secs(10),
-            None,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_to_sdk_temporality() {
-        assert_eq!(
-            MeterProvider::to_sdk_temporality(&Temporality::Cumulative),
-            opentelemetry_sdk::metrics::Temporality::Cumulative
-        );
-        assert_eq!(
-            MeterProvider::to_sdk_temporality(&Temporality::Delta),
-            opentelemetry_sdk::metrics::Temporality::Delta
-        );
     }
 }

@@ -30,7 +30,7 @@ use std::fmt;
 use std::fmt::Write;
 use std::sync::LazyLock;
 
-pub(in crate::otlp) struct ResourceArrays<'a> {
+pub(crate) struct ResourceArrays<'a> {
     pub id: Option<&'a UInt16Array>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
     pub schema_url: Option<StringArrayAccessor<'a>>,
@@ -123,14 +123,14 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
     }
 }
 
-pub(in crate::otlp) struct ScopeArrays<'a> {
+pub(crate) struct ScopeArrays<'a> {
     pub name: Option<StringArrayAccessor<'a>>,
     pub version: Option<StringArrayAccessor<'a>>,
     pub dropped_attributes_count: Option<&'a UInt32Array>,
     pub id: Option<&'a UInt16Array>,
 }
 
-pub static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
+static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
     DataType::Struct(Fields::from(vec![
         Field::new(
             consts::NAME,
@@ -491,11 +491,15 @@ macro_rules! proto_encode_len_delimited_unknown_size {
     }};
 }
 
-pub(crate) fn encode_len_placeholder(buf: &mut ProtoBuffer) {
+/// Write a 4-byte length placeholder for later patching.
+/// Do not use directly, use proto_encode_len_delimited_unknown_size.
+pub fn encode_len_placeholder(buf: &mut ProtoBuffer) {
     buf.buffer.extend_from_slice(&[0x80, 0x80, 0x80, 0x00]);
 }
 
-pub(crate) fn patch_len_placeholder(
+/// Patch a previously written length placeholder with the actual length.
+/// Do not use directly, use proto_encode_len_delimited_unknown_size.
+pub fn patch_len_placeholder(
     buf: &mut ProtoBuffer,
     num_bytes: usize,
     len: usize,

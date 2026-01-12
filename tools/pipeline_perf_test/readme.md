@@ -239,7 +239,7 @@ pip install -r orchestrator/requirements.txt
 Ensure you are in the otel-arrow/tools/pipeline_perf_test directory, then:
 
 ```shell
-python ./orchestrator/run_orchestrator.py --debug --config ./test_suites/integration/continuous/100klrps-docker.yaml
+python ./orchestrator/run_orchestrator.py --config ./test_suites/integration/continuous/100klrps-docker.yaml
 ```
 
 ```shell

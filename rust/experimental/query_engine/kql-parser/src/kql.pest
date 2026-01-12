@@ -232,7 +232,7 @@ invoke_function_argument_expression = {
 }
 invoke_function_expression = { identifier_literal ~ "(" ~ (invoke_function_argument_expression ~ ("," ~ invoke_function_argument_expression)*)? ~ ")" }
 
-/* Note: Order is imporant here. Once Pest has matched something it won't go
+/* Note: Order is important here. Once Pest has matched something it won't go
 backwards. For example if integer_literal is defined before time_expression "1h"
 would be parsed as integer_literal(1) and the remaining "h" would be fed into
 the next rule. */
