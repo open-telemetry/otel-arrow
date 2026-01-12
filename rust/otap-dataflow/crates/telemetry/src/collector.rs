@@ -52,7 +52,7 @@ impl InternalCollector {
             match self.metrics_receiver.recv_async().await {
                 Ok(metrics) => {
                     self.registry
-                        .accumulate_snapshot(metrics.key, &metrics.metrics);
+                        .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
                 }
                 Err(_) => {
                     // Channel closed, exit the loop

@@ -229,3 +229,161 @@ fn attribute_value_equal(left: &AttributeValue, right: &AttributeValue) -> bool 
         _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+
+    static MOCK_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "test_attributes",
+        fields: &[AttributeField {
+            key: "test_key",
+            r#type: AttributeValueType::String,
+            brief: "Test attribute",
+        }],
+    };
+
+    #[derive(Debug)]
+    struct MockAttributeSet {
+        values: Vec<AttributeValue>,
+    }
+
+    impl MockAttributeSet {
+        fn new(value: String) -> Self {
+            Self {
+                values: vec![AttributeValue::String(value)],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for MockAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &MOCK_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
+
+    #[test]
+    fn test_register_dedupes() {
+        let mut registry = EntityRegistry::default();
+
+        let key1 = registry.register(MockAttributeSet::new("value".to_string()));
+        let key2 = registry.register(MockAttributeSet::new("value".to_string()));
+
+        assert_eq!(key1, key2);
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_dedupes_sorted_attributes() {
+        static DESCRIPTOR_A: AttributesDescriptor = AttributesDescriptor {
+            name: "attrs_a",
+            fields: &[
+                AttributeField {
+                    key: "alpha",
+                    r#type: AttributeValueType::String,
+                    brief: "alpha",
+                },
+                AttributeField {
+                    key: "beta",
+                    r#type: AttributeValueType::Int,
+                    brief: "beta",
+                },
+            ],
+        };
+
+        static DESCRIPTOR_B: AttributesDescriptor = AttributesDescriptor {
+            name: "attrs_b",
+            fields: &[
+                AttributeField {
+                    key: "beta",
+                    r#type: AttributeValueType::Int,
+                    brief: "beta",
+                },
+                AttributeField {
+                    key: "alpha",
+                    r#type: AttributeValueType::String,
+                    brief: "alpha",
+                },
+            ],
+        };
+
+        #[derive(Debug)]
+        struct AttributeSetA {
+            values: Vec<AttributeValue>,
+        }
+
+        #[derive(Debug)]
+        struct AttributeSetB {
+            values: Vec<AttributeValue>,
+        }
+
+        impl AttributeSetHandler for AttributeSetA {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &DESCRIPTOR_A
+            }
+
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        impl AttributeSetHandler for AttributeSetB {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &DESCRIPTOR_B
+            }
+
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+        }
+
+        let mut registry = EntityRegistry::default();
+
+        let key1 = registry.register(AttributeSetA {
+            values: vec![
+                AttributeValue::String("value".to_string()),
+                AttributeValue::Int(7),
+            ],
+        });
+        let key2 = registry.register(AttributeSetB {
+            values: vec![
+                AttributeValue::Int(7),
+                AttributeValue::String("value".to_string()),
+            ],
+        });
+
+        assert_eq!(key1, key2);
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_get_attributes() {
+        let mut registry = EntityRegistry::default();
+
+        let key = registry.register(MockAttributeSet::new("value".to_string()));
+        let attrs = registry.get_shared(key).expect("missing attributes");
+
+        let collected: Vec<_> = attrs.iter_attributes().collect();
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].0, "test_key");
+        assert_eq!(*collected[0].1, AttributeValue::String("value".to_string()));
+    }
+
+    #[test]
+    fn test_unregister() {
+        let mut registry = EntityRegistry::default();
+
+        let key = registry.register(MockAttributeSet::new("value".to_string()));
+
+        assert!(registry.unregister(key));
+        assert_eq!(registry.len(), 0);
+        assert!(registry.get_shared(key).is_none());
+        assert!(!registry.unregister(key));
+    }
+}

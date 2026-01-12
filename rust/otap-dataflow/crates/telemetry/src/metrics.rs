@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Core multivariate metrics traits and types.
+//! Core multivariate metrics (aka metric set) traits and types + Metric Set Registry.
 //!
 //! This module intentionally contains no product-specific metrics definitions. Concrete metrics
 //! live in their respective nodes/crates and implement the `MetricSetHandler` trait defined
@@ -364,11 +364,11 @@ impl MetricSetRegistry {
         }
     }
 
-    /// Merges a metrics snapshot (delta) into the registered instance keyed by `metrics_key`.
+    /// Merges a metrics snapshot into the registered instance keyed by `metrics_key`.
     pub(crate) fn accumulate_snapshot(
         &mut self,
         metrics_key: MetricSetKey,
-        metrics_values: &[MetricValue],
+        metrics_values: &[MetricValue], // snapshot values
     ) {
         if let Some(entry) = self.metrics.get_mut(metrics_key) {
             debug_assert_eq!(
@@ -477,5 +477,503 @@ impl MetricSetRegistry {
             attributes,
             metric_sets,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
+        MetricsField, Temporality,
+    };
+    use crate::entity::EntityRegistry;
+    use std::fmt::Debug;
+
+    #[derive(Debug)]
+    struct MockMetricSet {
+        values: Vec<MetricValue>,
+    }
+
+    impl MockMetricSet {
+        fn new() -> Self {
+            Self {
+                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+            }
+        }
+    }
+
+    impl Default for MockMetricSet {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    static MOCK_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test_metrics",
+        metrics: &[
+            MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "counter2",
+                unit: "1",
+                brief: "Test counter 2",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+        ],
+    };
+
+    static MOCK_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "test_attributes",
+        fields: &[AttributeField {
+            key: "test_key",
+            r#type: AttributeValueType::String,
+            brief: "Test attribute",
+        }],
+    };
+
+    impl MetricSetHandler for MockMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &MOCK_METRICS_DESCRIPTOR
+        }
+
+        fn snapshot_values(&self) -> Vec<MetricValue> {
+            self.values.clone()
+        }
+
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(MetricValue::reset);
+        }
+
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&v| !v.is_zero())
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockAttributeSet {
+        values: Vec<AttributeValue>,
+    }
+
+    impl MockAttributeSet {
+        fn new(value: String) -> Self {
+            Self {
+                values: vec![AttributeValue::String(value)],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for MockAttributeSet {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &MOCK_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
+
+    fn register_entity(registry: &mut EntityRegistry, value: &str) -> EntityKey {
+        registry.register(MockAttributeSet::new(value.to_string()))
+    }
+
+    #[test]
+    fn test_register() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        assert_eq!(metric_set.entity_key(), entity_key);
+        assert_eq!(metrics.len(), 1);
+    }
+
+    #[test]
+    fn test_unregister() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        assert!(metrics.unregister(metrics_key));
+        assert_eq!(metrics.len(), 0);
+        assert!(!metrics.unregister(metrics_key));
+    }
+
+    #[test]
+    fn test_multiple_registrations() {
+        let mut entities = EntityRegistry::default();
+        let entity_key1 = register_entity(&mut entities, "value1");
+        let entity_key2 = register_entity(&mut entities, "value2");
+        let mut metrics = MetricSetRegistry::default();
+
+        let _metric_set1: MetricSet<MockMetricSet> = metrics.register(entity_key1);
+        let _metric_set2: MetricSet<MockMetricSet> = metrics.register(entity_key2);
+
+        assert_eq!(metrics.len(), 2);
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_basic() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(15)]);
+
+        let mut accumulated_values = Vec::new();
+        metrics.visit_metrics_and_reset(
+            &entities,
+            |_desc, _attrs, iter| {
+                for (_field, value) in iter {
+                    accumulated_values.push(value);
+                }
+            },
+            false,
+        );
+
+        assert_eq!(
+            accumulated_values,
+            vec![MetricValue::U64(15), MetricValue::U64(35)]
+        );
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_invalid_key() {
+        let mut metrics = MetricSetRegistry::default();
+        let invalid_key = MetricSetKey::default();
+
+        metrics.accumulate_snapshot(invalid_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
+        assert_eq!(metrics.len(), 0);
+    }
+
+    #[cfg(feature = "unchecked-arithmetic")]
+    #[test]
+    fn test_accumulate_snapshot_overflow_wrapping() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[MetricValue::U64(u64::MAX), MetricValue::U64(u64::MAX - 5)],
+        );
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(10)]);
+
+        let mut accumulated_values = Vec::new();
+        metrics.visit_metrics_and_reset(
+            &entities,
+            |_desc, _attrs, iter| {
+                for (_field, value) in iter {
+                    accumulated_values.push(value);
+                }
+            },
+            false,
+        );
+
+        assert_eq!(
+            accumulated_values,
+            vec![MetricValue::U64(9), MetricValue::U64(4)]
+        );
+    }
+
+    #[cfg(not(feature = "unchecked-arithmetic"))]
+    #[test]
+    #[should_panic]
+    fn test_accumulate_snapshot_overflow_panic() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(u64::MAX)]);
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(1)]);
+    }
+
+    #[test]
+    fn test_visit_metrics_and_reset() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(100), MetricValue::U64(0)]);
+
+        let mut visit_count = 0;
+        let mut collected_values = Vec::new();
+
+        metrics.visit_metrics_and_reset(
+            &entities,
+            |desc, _attrs, iter| {
+                visit_count += 1;
+                assert_eq!(desc.name, "test_metrics");
+
+                for (field, value) in iter {
+                    collected_values.push((field.name, value));
+                }
+            },
+            false,
+        );
+
+        assert_eq!(visit_count, 1);
+        assert_eq!(
+            collected_values,
+            vec![
+                ("counter1", MetricValue::U64(100)),
+                ("counter2", MetricValue::U64(0))
+            ]
+        );
+
+        visit_count = 0;
+        collected_values.clear();
+
+        metrics.visit_metrics_and_reset(
+            &entities,
+            |_desc, _attrs, _iter| {
+                visit_count += 1;
+            },
+            false,
+        );
+
+        assert_eq!(visit_count, 0);
+    }
+
+    #[test]
+    fn test_metrics_iterator() {
+        let fields = &[
+            MetricsField {
+                name: "metric1",
+                unit: "1",
+                brief: "Test metric 1",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "metric2",
+                unit: "1",
+                brief: "Test metric 2",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+        ];
+
+        let values = [
+            MetricValue::U64(0),
+            MetricValue::U64(5),
+            MetricValue::U64(0),
+            MetricValue::U64(10),
+            MetricValue::U64(0),
+        ];
+        let mut iter = MetricsIterator::new(fields, &values[..2]);
+
+        let item1 = iter.next().unwrap();
+        assert_eq!(item1.0.name, "metric1");
+        assert_eq!(item1.1, MetricValue::U64(0));
+
+        let item2 = iter.next().unwrap();
+        assert_eq!(item2.0.name, "metric2");
+        assert_eq!(item2.1, MetricValue::U64(5));
+
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_metrics_iterator_size_hint() {
+        let fields = &[MetricsField {
+            name: "metric1",
+            unit: "1",
+            brief: "Test metric 1",
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
+            value_type: MetricValueType::U64,
+        }];
+
+        let values = [MetricValue::U64(10)];
+        let iter = MetricsIterator::new(fields, &values);
+
+        let (lower, upper) = iter.size_hint();
+        assert_eq!(lower, 1);
+        assert_eq!(upper, Some(1));
+    }
+
+    #[test]
+    fn test_metrics_iterator_fused() {
+        let fields = &[MetricsField {
+            name: "metric1",
+            unit: "1",
+            brief: "Test metric 1",
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Delta),
+            value_type: MetricValueType::U64,
+        }];
+
+        let values = [MetricValue::U64(10)];
+        let mut iter = MetricsIterator::new(fields, &values);
+
+        let _first = iter.next();
+
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_gauge_replaces_counter_accumulates() {
+        #[derive(Debug)]
+        struct MockGaugeMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl MockGaugeMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                }
+            }
+        }
+
+        impl Default for MockGaugeMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_GAUGE_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_gauge_metrics",
+            metrics: &[
+                MetricsField {
+                    name: "gauge1",
+                    unit: "1",
+                    brief: "Test gauge 1",
+                    instrument: Instrument::Gauge,
+                    temporality: None,
+                    value_type: MetricValueType::U64,
+                },
+                MetricsField {
+                    name: "counter1",
+                    unit: "1",
+                    brief: "Test counter 1",
+                    instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Delta),
+                    value_type: MetricValueType::U64,
+                },
+            ],
+        };
+
+        impl MetricSetHandler for MockGaugeMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_GAUGE_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockGaugeMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(10)]);
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(2), MetricValue::U64(3)]);
+
+        let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
+        assert_eq!(
+            entry.metric_values,
+            vec![MetricValue::U64(2), MetricValue::U64(13)]
+        );
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_observe_counter_replaces() {
+        #[derive(Debug)]
+        struct MockCumulativeCounterMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl MockCumulativeCounterMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![MetricValue::U64(0)],
+                }
+            }
+        }
+
+        impl Default for MockCumulativeCounterMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_OBSERVED_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_observed_metrics",
+            metrics: &[MetricsField {
+                name: "counter1",
+                unit: "1",
+                brief: "Test counter 1",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+            }],
+        };
+
+        impl MetricSetHandler for MockCumulativeCounterMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_OBSERVED_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "attr");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockCumulativeCounterMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10)]);
+        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(15)]);
+
+        let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
+        assert_eq!(entry.metric_values, vec![MetricValue::U64(15)]);
     }
 }
