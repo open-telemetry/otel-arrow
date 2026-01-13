@@ -478,13 +478,23 @@ pub(crate) fn parse_attribute_selection_expression(
     ))];
 
     for rule in inner_rules {
+        let query_location = to_query_location(&rule);
         match rule.as_rule() {
-            Rule::identifier_expression => {
-                let selection_expr = ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(query_location.clone(), rule.as_str()),
-                ));
-                selections.push(selection_expr);
-            }
+            Rule::member_expression => match parse_member_expression(rule)?.into() {
+                ScalarExpression::Source(source_expr) => {
+                    let mut inner_sel = source_expr.into_value_accessor().into_selectors();
+                    selections.append(&mut inner_sel);
+                }
+                invalid_expr => {
+                    return Err(ParserError::SyntaxNotSupported(
+                        query_location,
+                        format!(
+                            "Invalid expression found parsing member expression: {:?}. Expected Source",
+                            invalid_expr
+                        ),
+                    ));
+                }
+            },
             invalid_rule => {
                 return Err(invalid_child_rule_error(
                     query_location.clone(),
@@ -564,8 +574,8 @@ mod test {
     use crate::parser::{
         Rule,
         expression::{
-            LogicalOrScalarExpr, parse_additive_expression, parse_attribute_selection_expression,
-            parse_expression, parse_multiplicative_expression, parse_rel_expression,
+            LogicalOrScalarExpr, parse_additive_expression, parse_expression,
+            parse_member_expression, parse_multiplicative_expression, parse_rel_expression,
             parse_unary_expression,
         },
         pest::OplPestParser,
@@ -707,9 +717,9 @@ mod test {
     #[test]
     fn test_parse_attribute_selection_expression() {
         let input = "attributes.key.subkey";
-        let mut rules = OplPestParser::parse(Rule::attribute_selection_expression, input).unwrap();
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
-        let result: ScalarExpression = parse_attribute_selection_expression(rules.next().unwrap())
+        let result: ScalarExpression = parse_member_expression(rules.next().unwrap())
             .unwrap()
             .into();
 
@@ -724,6 +734,32 @@ mod test {
                 )),
                 ScalarExpression::Static(StaticScalarExpression::String(
                     StringScalarExpression::new(QueryLocation::new_fake(), "subkey"),
+                )),
+            ]),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_nested_index_expressions() {
+        let input = "resource.attributes[\"key\"]";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: ScalarExpression = parse_member_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "key"),
                 )),
             ]),
         ));
