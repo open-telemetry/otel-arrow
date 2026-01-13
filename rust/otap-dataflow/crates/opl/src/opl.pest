@@ -134,6 +134,24 @@ source = {
     "logs" | "metrics" | "traces" | "signals"
 }
 
+if_condition_expression = {
+    "if" ~ "(" ~ expression ~ ")"
+}
+
+if_else_branch_expression = {
+    pipeline_stage ~ ("|" ~ pipeline_stage)*
+}
+
+else_expression = {
+    "else" ~ "{" ~ if_else_branch_expression ~ "}"
+}
+
+if_else_operator_call = {
+    if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}"
+    ~ ("else" ~ if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}")*
+    ~ (else_expression)?
+}
+
 assignment_expression = {
     (attribute_selection_expression | index_expression | identifier_expression) ~ "=" ~ expression
 }
@@ -148,7 +166,8 @@ where_operator_call = {
 
 operator_call = {
     set_operator_call
-  | where_operator_call
+    | if_else_operator_call
+    | where_operator_call
 }
 
 pipeline_stage = {
