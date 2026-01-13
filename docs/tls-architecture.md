@@ -16,25 +16,30 @@ of TLS/mTLS support for OTLP/OTAP receivers and exporters.
 
 ## Overview
 
-The TLS/mTLS implementation follows industry-standard patterns used by
-production service meshes like Envoy and Linkerd, providing secure
-communication with minimal performance overhead.
+The TLS/mTLS implementation provides secure communication for OTLP and OTAP
+receivers and exporters. It supports both basic TLS and mutual TLS (mTLS),
+following industry-standard patterns to ensure data protection with minimal
+performance overhead.
 
 ### Technology Stack
 
 - **rustls**: Modern TLS 1.2/1.3 implementation (replaces OpenSSL)
 - **tokio-rustls**: Async TLS integration with Tokio runtime
-- **tonic**: gRPC transport layer
+- **tonic**: gRPC framework (existing dependency, now configured for TLS)
 - **notify**: File system watching for certificate hot-reload
 - **arc_swap**: Lock-free atomic pointer swaps
 
 ### Key Features
 
-- Zero-downtime certificate reloading (receivers)
-- Wait-free hot path (no locks or blocking)
-- Concurrent handshake processing
-- DoS protection via timeouts
-- Secure by default
+- **Zero-downtime certificate reloading**: Receivers update certificates
+  without dropping connections.
+- **Wait-free hot path**: TLS handshakes use lock-free atomic pointer loads.
+- **Concurrent handshake processing**: Handles up to 64 parallel handshakes
+  to prevent head-of-line blocking.
+- **DoS protection via timeouts**: Enforces 10s handshake timeout to mitigate
+  slowloris attacks.
+- **Secure by default**: Rejects insecure configurations and requires
+  explicit trust anchors.
 
 ## Design Principles
 
@@ -58,48 +63,55 @@ use atomic pointer loads, providing consistent performance under load.
 
 ### 4. Performance Conscious
 
-- Hot path overhead: ~3-10 nanoseconds (atomic pointer loads)
-- Concurrent handshake processing (up to 64 parallel)
-- Lazy reload checking (only during handshakes)
-- Minimal memory overhead
+- **NUMA Local**: Unique TLS resolver instance per receiver (per-core design)
+  to minimize cross-NUMA traffic.
+- **Concurrent Processing**: Up to 64 parallel handshakes prevented
+  head-of-line blocking.
+- **Minimal Overhead**: Hot path involves single atomic pointer loads
+  (~3-10ns).
+- **Efficient Reload**: Lazy checks during handshakes (server cert) or
+  background threads (client CA).
 
 ## Receiver Architecture
 
-Receivers implement server-side TLS with automatic certificate reloading.
-The architecture separates server certificate management from client CA
-management, each with its own reload mechanism.
+Receivers implement server-side TLS with specific optimizations for
+high-throughput environments. Each receiver instance maintains its own isolated
+TLS state, ensuring that certificate management (and any associated lock
+contention during reloads) remains local to that receiver's execution context.
+
+The architecture separates server certificate management from client CA management:
 
 ### Receiver Component Flow
 
 ```text
-┌─────────────────────────────────────────┐
-│           Client Connection              │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│         TLS Handshake Layer             │
-│                                          │
-│  ┌────────────────────────────────┐     │
-│  │  Server Certificate Resolver   │     │
-│  │  (Lazy Reload)                 │     │
-│  └────────────────────────────────┘     │
-│                                          │
-│  ┌────────────────────────────────┐     │
-│  │  Client CA Verifier (mTLS)     │     │
-│  │  (File Watch / Poll)           │     │
-│  └────────────────────────────────┘     │
-│                                          │
-│  • Concurrent Processing (64 parallel)  │
-│  • Timeout Protection (10s default)     │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│         gRPC Service Layer              │
-│  • OTLP/OTAP Request Handling           │
-│  • Telemetry Processing                 │
-└─────────────────────────────────────────┘
++-----------------------------------------+
+|           Client Connection              |
++--------------+--------------------------+
+               |
+               v
++-----------------------------------------+
+|         TLS Handshake Layer             |
+|                                          |
+|  +--------------------------------+     |
+|  |  Server Certificate Resolver   |     |
+|  |  (Lazy Reload)                 |     |
+|  +--------------------------------+     |
+|                                          |
+|  +--------------------------------+     |
+|  |  Client CA Verifier (mTLS)     |     |
+|  |  (File Watch / Poll)           |     |
+|  +--------------------------------+     |
+|                                          |
+|  * Concurrent Processing (64 parallel)  |
+|  * Timeout Protection (10s default)     |
++--------------+--------------------------+
+               |
+               v
++-----------------------------------------+
+|         gRPC Service Layer              |
+|  * OTLP/OTAP Request Handling           |
+|  * Telemetry Processing                 |
++-----------------------------------------+
 ```
 
 ### Server Certificate Management
@@ -201,11 +213,11 @@ tls:
 **Flow**:
 
 ```text
-TCP Accept → TLS Handshake (with timeout) → TLS Stream → gRPC Handler
-     │              │                              │
-     │              └─ Failed: Log & Drop          │
-     │                                             │
-     └─────────────── Parallel (64 max) ──────────┘
+TCP Accept -> TLS Handshake (with timeout) -> TLS Stream -> gRPC Handler
+     |              |                              |
+     |              +- Failed: Log & Drop          |
+     |                                             |
+     +--------------- Parallel (64 max) ----------+
 ```
 
 ## Exporter Architecture
@@ -216,40 +228,40 @@ Unlike receivers, hot-reload is not currently supported.
 ### Exporter Component Flow
 
 ```text
-┌─────────────────────────────────────────┐
-│      Exporter (OTLP/OTAP)               │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│      TLS Configuration Layer            │
-│                                          │
-│  • Scheme-Driven TLS (https://)         │
-│  • Trust Anchors (System + Custom CAs)  │
-│  • Client Identity (mTLS)               │
-│  • SNI Override                         │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│      gRPC Channel (tonic)               │
-│  • Connection Pooling                   │
-│  • Load Balancing                       │
-│  • Retry Logic                          │
-└──────────────┬──────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────┐
-│      Backend Collector                  │
-└─────────────────────────────────────────┘
++-----------------------------------------+
+|      Exporter (OTLP/OTAP)               |
++--------------+--------------------------+
+               |
+               v
++-----------------------------------------+
+|      TLS Configuration Layer            |
+|                                          |
+|  * Scheme-Driven TLS (https://)         |
+|  * Trust Anchors (System + Custom CAs)  |
+|  * Client Identity (mTLS)               |
+|  * SNI Override                         |
++--------------+--------------------------+
+               |
+               v
++-----------------------------------------+
+|      gRPC Channel (tonic)               |
+|  * Connection Pooling                   |
+|  * Load Balancing                       |
+|  * Retry Logic                          |
++--------------+--------------------------+
+               |
+               v
++-----------------------------------------+
+|      Backend Collector                  |
++-----------------------------------------+
 ```
 
 ### TLS Configuration Strategy
 
 **Scheme-Driven Defaults**:
 
-- `https://` → TLS enabled with system CAs
-- `http://` → Plaintext (no TLS)
+- `https://` -> TLS enabled with system CAs
+- `http://` -> Plaintext (no TLS)
 - Explicit `tls` block overrides scheme defaults
 
 **Trust Anchor Management**:
@@ -305,52 +317,55 @@ exporters today because client-side hot-reload is not implemented.
 #### Server Certificate Reload
 
 ```text
-TLS Handshake → Check interval expired? → Compare mtime → Files changed?
-                       ↓ No                      ↓              ↓ No
+TLS Handshake -> Check interval expired? -> Compare mtime -> Files changed?
+                       | No                      |              | No
                    Use current cert          Return           Use current cert
-                                                ↓ Yes
+                                                | Yes
                                          Spawn async reload
-                                                ↓
+                                                |
                                          Load new cert
-                                                ↓
+                                                |
                                          Atomic swap
-                                                ↓
+                                                |
                                          Log success
 ```
 
 #### Client CA Reload (File Watch)
 
 ```text
-File System Event → Is our CA file? → Wait 50ms (settle)
-       ↓ Yes              ↓ No              ↓
+File System Event -> Is our CA file? -> Wait 50ms (settle)
+       | Yes              | No              |
    Continue            Ignore         Check inode changed?
-                                             ↓ Yes
+                                             | Yes
                                         Debounce (1s)
-                                             ↓
+                                             |
                                         Acquire lock
-                                             ↓
+                                             |
                                         Load new CA
-                                             ↓
+                                             |
                                         Build verifier
-                                             ↓
+                                             |
                                         Atomic swap
-                                             ↓
+                                             |
                                         Log success
 ```
 
 #### Client CA Reload (Poll)
 
 ```text
-Timer tick → Check mtime → Changed? → Acquire lock
-   ↓ Yes         ↓ No         ↓ Yes      ↓
+Timer tick -> Check mtime -> Changed? -> Acquire lock
+   | Yes         | No         | Yes      |
 Continue      Return       Load CA    Build verifier
-                                          ↓
+                                          |
                                      Atomic swap
-                                          ↓
+                                          |
                                      Log success
 ```
 
 ## Performance Characteristics
+
+> **Note**: The timing values below are typical estimates based on modern
+> hardware. Actual performance varies with hardware, load, and configuration.
 
 ### Hot Path Performance
 
@@ -371,22 +386,22 @@ to crypto operations.
 
 | Operation | Time | Frequency |
 |-----------|------|-----------|
-| Interval check | ~1µs | Per handshake (amortized) |
-| File mtime check | ~1µs | When interval expired |
+| Interval check | ~1us | Per handshake (amortized) |
+| File mtime check | ~1us | When interval expired |
 | Certificate reload | ~1-10ms | When file changed (async) |
 
 **Client CA (File Watch)**:
 
 | Operation | Time | Frequency |
 |-----------|------|-----------|
-| Event processing | ~100µs | Per file change |
+| Event processing | ~100us | Per file change |
 | CA reload | ~1-10ms | When file changed |
 
 **Client CA (Poll)**:
 
 | Operation | Time | Frequency |
 |-----------|------|-----------|
-| Poll check | ~1µs | Every interval |
+| Poll check | ~1us | Every interval |
 | CA reload | ~1-10ms | When changed |
 
 ### Memory Overhead
@@ -414,14 +429,17 @@ to crypto operations.
 
 **Server-Side (Receivers)**:
 
-- X.509 certificate chain validation
-- Expiration checking
-- Signature verification
-- Standards-compliant via rustls WebPkiClientVerifier
+- Basic TLS: Server presents certificate; no client validation
+- mTLS (when `client_ca_file` is configured):
+  - X.509 certificate chain validation
+  - Expiration checking
+  - Signature verification
+  - Standards-compliant via rustls WebPkiClientVerifier
 
 **Client-Side (Exporters)**:
 
-- Server certificate verification required (cannot be disabled)
+- Server certificate verification always performed when TLS is enabled
+- `insecure_skip_verify` is not supported (fails at startup)
 - Trust anchors: system CAs + custom CAs
 - Hostname verification via SNI
 - Optional SNI override for IP-based connections
@@ -515,17 +533,23 @@ TLS connector
 
 #### 2. TLS Version and Cipher Suite Configuration
 
-**Proposed**:
+**Proposed Fields**:
 
-- Allow users to specify minimum TLS version
-- Configure allowed cipher suites
-- Balance security with compatibility needs
+- `min_version`: Minimum TLS version (default "1.2")
+- `max_version`: Maximum TLS version
+- `cipher_suites`: Explicit cipher suite list
+- `curve_preferences`: ECDHE curve preferences
+
+**Proposed Implementation**:
+
+- Allow users to specify minimum TLS version (1.2 or 1.3)
+- Configure allowed cipher suites (rustls-supported subset)
+- Validate against rustls capabilities at startup
 
 **Challenges**:
 
-- Security implications of weak ciphers
-- Mapping configuration to rustls internals
-- Comprehensive testing requirements
+- rustls has a fixed, secure cipher suite list
+- Need clear documentation of supported options
 
 #### 3. Certificate Revocation List (CRL) Support
 
@@ -537,15 +561,15 @@ TLS connector
 - CRL hot-reload mechanism
 - OCSP stapling alternative
 
-#### 4. Hardware Security Module (HSM) Integration
+#### 4. Hardware Security Module (HSM) / TPM Integration
 
-**Purpose**: Store private keys in hardware-backed security
+**Purpose**: Store private keys in hardware-backed security (TPM/HSM)
 
 **Challenges**:
 
-- rustls HSM support
-- Platform-specific APIs
-- Performance considerations
+- rustls HSM/TPM support is limited
+- Platform-specific APIs (Linux TPM2, Windows CNG)
+- Performance considerations for key operations
 
 #### 5. Per-Core TLS Acceptor Instances
 
@@ -553,7 +577,7 @@ TLS connector
 
 **Trade-offs**:
 
-- Memory overhead (N × certificate size)
+- Memory overhead (N x certificate size)
 - Reload coordination complexity
 - Marginal performance benefit
 

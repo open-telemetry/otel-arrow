@@ -40,6 +40,9 @@ TLS/mTLS support requires the `experimental-tls` feature flag:
 cargo build --features experimental-tls
 ```
 
+*Note: This feature flag is temporary and will be removed in a future
+release once TLS support is stabilized and enabled by default.*
+
 ## Receivers (Server-Side TLS)
 
 Receivers use TLS to accept secure connections from clients. This section
@@ -266,6 +269,8 @@ becomes available.
 ## Exporters (Client-Side TLS)
 
 Exporters use TLS to connect securely to downstream collectors or backends.
+**Note: Unlike receivers, exporters do not support automatic certificate
+hot-reload; a restart is required for certificate changes.**
 Hot-reload is not implemented for exporters; `reload_interval` is ignored
 and certificate changes require a restart.
 
@@ -285,8 +290,8 @@ exporters:
 
 **Behavior:**
 
-- `https://` → TLS enabled with system root CAs
-- `http://` → Plaintext (no TLS)
+- `https://` -> TLS enabled with system root CAs
+- `http://` -> Plaintext (no TLS)
 
 #### Custom CA Certificate
 
@@ -384,6 +389,17 @@ exporters:
         include_system_ca_certs_pool: false
 ```
 
+#### Insecure Mode Behavior
+
+The `insecure` configuration field interacts with other settings in specific ways:
+
+- **`insecure: true` (no CA):** If no custom CA is configured, TLS
+  configuration is skipped, and the connection depends entirely on the
+  scheme (`https://` or `http://`).
+- **`insecure: true` + `ca_file`:** If a custom CA is present, TLS is
+  **still enabled** and the CA is used. The `insecure` flag does NOT
+  disable TLS when certificates are configured.
+
 #### SNI Override
 
 Override the server name for TLS SNI and certificate verification:
@@ -423,7 +439,8 @@ or implement blue-green deployment strategies.
 #### insecure_skip_verify Not Supported
 
 Certificate verification **cannot be disabled**. Setting
-`insecure_skip_verify: true` causes startup failure.
+`insecure_skip_verify: true` causes startup failure (fail-fast).
+This is a deliberate security decision.
 
 **Alternatives:**
 
