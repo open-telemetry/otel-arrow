@@ -10,29 +10,44 @@ use opentelemetry::KeyValue;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
-    AttributeValue, AttributeValueArray, TelemetryConfig, logs::ProviderMode,
+    AttributeValue, AttributeValueArray, TelemetryConfig,
+    logs::{OutputMode, ProviderMode},
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError};
 
 use crate::{
+    LogsReceiver,
     error::Error,
-    logs::{ImmediateLayer, LogsReporter},
+    logs::{ImmediateLayer, LogsCollector, LogsReporter},
     self_tracing::{ConsoleWriter, RawLoggingLayer},
     telemetry_settings::logger_provider::LoggerProvider,
     telemetry_settings::meter_provider::MeterProvider,
 };
 
-/// Client for the OpenTelemetry SDK.
-pub struct OpentelemetryClient {
+/// Client for the OpenTelemetry SDK and internal telemetry settings.
+///
+/// This struct owns all telemetry infrastructure including:
+/// - OpenTelemetry SDK meter and logger providers
+/// - Internal logs reporter and receiver channels
+/// - Optional logs collector for Direct output mode
+pub struct TelemetrySettings {
     /// The tokio runtime used to run the OpenTelemetry SDK OTLP exporter.
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
     logger_provider: Option<SdkLoggerProvider>,
+    /// Reporter for sending logs through the internal channel.
+    /// Present when global or engine provider mode needs a channel.
+    logs_reporter: Option<LogsReporter>,
+    /// Receiver for the internal logs channel (Internal output mode only).
+    /// The ITR node consumes this to process internal telemetry.
+    logs_receiver: Option<LogsReceiver>,
+    /// Collector for Direct output mode. Must be spawned by the controller.
+    logs_collector: Option<LogsCollector>,
     // TODO: Add traces providers.
 }
 
-impl OpentelemetryClient {
+impl TelemetrySettings {
     /// Create a new OpenTelemetry client from the given configuration.
     ///
     /// Logging-specific notes:
@@ -45,23 +60,45 @@ impl OpentelemetryClient {
     /// Example: `RUST_LOG=info,h2=warn,hyper=warn` enables info level but silences
     /// noisy HTTP/2 and hyper logs.
     ///
-    /// The `logs_reporter` parameter is required when `strategies.global` is set to
-    /// `Immediate`. It should be created via `LogsCollector::new()` and the collector
-    /// should be run on a dedicated thread.
+    /// The logs reporter is created internally based on the configuration:
+    /// - For `Direct` output: creates reporter + collector (collector must be spawned)
+    /// - For `Internal` output: creates reporter + receiver (receiver goes to ITR node)
+    /// - For `Noop` output: no reporter is created
     ///
     /// The logger provider is configured when either global or engine providers
     /// are set to `OpenTelemetry`. This allows the engine to use the same SDK
     /// pipeline even when global uses a different logging strategy.
-    pub fn new(
-        config: &TelemetryConfig,
-        logs_reporter: Option<LogsReporter>,
-    ) -> Result<Self, Error> {
+    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
 
         let (meter_provider, runtime) =
             MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?.into_parts();
+
+        // Determine if we need a logs reporter based on provider modes
+        let providers_need_reporter = config.logs.providers.global.needs_reporter()
+            || config.logs.providers.engine.needs_reporter();
+
+        // Create the logs reporter, receiver, and collector based on output mode
+        let (logs_reporter, logs_receiver, logs_collector) = if providers_need_reporter {
+            match config.logs.output {
+                OutputMode::Direct => {
+                    // Direct mode: logs go to a collector that prints to console
+                    let (collector, reporter) = LogsCollector::new(config.reporting_channel_size);
+                    (Some(reporter), None, Some(collector))
+                }
+                OutputMode::Internal => {
+                    // Internal mode: logs go through channel to ITR node
+                    let (receiver, reporter) =
+                        LogsCollector::channel(config.reporting_channel_size);
+                    (Some(reporter), Some(receiver), None)
+                }
+                OutputMode::Noop => (None, None, None),
+            }
+        } else {
+            (None, None, None)
+        };
 
         let tracing_setup =
             tracing_subscriber::registry().with(crate::get_env_filter(config.logs.level));
@@ -84,8 +121,8 @@ impl OpentelemetryClient {
             (None, runtime)
         };
 
-        // Configure the global subscriber based on strategies.global.
-        // Engine threads override this with BufferWriterLayer via with_default().
+        // Configure the global subscriber based on providers.global.
+        // Engine threads override this with their own subscriber via with_default().
         match config.logs.providers.global {
             ProviderMode::Noop => {
                 // No-op: just install the filter, events are dropped
@@ -102,7 +139,7 @@ impl OpentelemetryClient {
                 }
             }
             ProviderMode::Immediate => {
-                let reporter = logs_reporter.ok_or_else(|| {
+                let reporter = logs_reporter.clone().ok_or_else(|| {
                     Error::ConfigurationError("Immediate logging requires a LogsReporter".into())
                 })?;
                 let channel_layer = ImmediateLayer::new(reporter);
@@ -131,6 +168,9 @@ impl OpentelemetryClient {
             _runtime: runtime,
             meter_provider,
             logger_provider,
+            logs_reporter,
+            logs_receiver,
+            logs_collector,
         })
     }
 
@@ -184,6 +224,35 @@ impl OpentelemetryClient {
         &self.logger_provider
     }
 
+    /// Get a reference to the logs reporter.
+    ///
+    /// Returns `Some` when the configuration requires a channel-based reporter
+    /// (global or engine provider is `Immediate`).
+    #[must_use]
+    pub fn logs_reporter(&self) -> Option<&LogsReporter> {
+        self.logs_reporter.as_ref()
+    }
+
+    /// Take the logs receiver for the internal telemetry pipeline.
+    ///
+    /// Returns `Some` only when output mode is `Internal`. The receiver should
+    /// be passed to the Internal Telemetry Receiver (ITR) node.
+    ///
+    /// This method takes ownership of the receiver (can only be called once).
+    pub fn take_logs_receiver(&mut self) -> Option<LogsReceiver> {
+        self.logs_receiver.take()
+    }
+
+    /// Take the logs collector for Direct output mode.
+    ///
+    /// Returns `Some` only when output mode is `Direct`. The collector should
+    /// be spawned on a dedicated thread to process log records.
+    ///
+    /// This method takes ownership of the collector (can only be called once).
+    pub fn take_logs_collector(&mut self) -> Option<LogsCollector> {
+        self.logs_collector.take()
+    }
+
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
@@ -220,14 +289,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::logs::LogsCollector;
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
     fn test_configure_minimal_telemetry_settings() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let (_collector, reporter) = LogsCollector::new(10);
-        let client = OpentelemetryClient::new(&config, Some(reporter))?;
+        let client = TelemetrySettings::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -261,8 +328,7 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let (_collector, reporter) = LogsCollector::new(10);
-        let client = OpentelemetryClient::new(&config, Some(reporter))?;
+        let client = TelemetrySettings::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -277,31 +343,31 @@ mod tests {
     fn test_to_sdk_value() {
         let string_attr = AttributeValue::String("example".to_string());
         assert_eq!(
-            OpentelemetryClient::to_sdk_value(&string_attr),
+            TelemetrySettings::to_sdk_value(&string_attr),
             opentelemetry::Value::String("example".into())
         );
 
         let bool_attr = AttributeValue::Bool(true);
         assert_eq!(
-            OpentelemetryClient::to_sdk_value(&bool_attr),
+            TelemetrySettings::to_sdk_value(&bool_attr),
             opentelemetry::Value::Bool(true)
         );
 
         let i64_attr = AttributeValue::I64(42);
         assert_eq!(
-            OpentelemetryClient::to_sdk_value(&i64_attr),
+            TelemetrySettings::to_sdk_value(&i64_attr),
             opentelemetry::Value::I64(42)
         );
 
         let f64_attr = AttributeValue::F64(PI);
         assert_eq!(
-            OpentelemetryClient::to_sdk_value(&f64_attr),
+            TelemetrySettings::to_sdk_value(&f64_attr),
             opentelemetry::Value::F64(PI)
         );
 
         let array_attr = AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3]));
         assert_eq!(
-            OpentelemetryClient::to_sdk_value(&array_attr),
+            TelemetrySettings::to_sdk_value(&array_attr),
             opentelemetry::Value::Array(opentelemetry::Array::I64(vec![1, 2, 3]))
         );
     }
