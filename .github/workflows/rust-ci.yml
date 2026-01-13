@@ -150,7 +150,7 @@ jobs:
       - name: cargo test ${{ matrix.folder }}
         run: |
           cargo test
-        working-directory: ./tools/${{ matrix.folder }}
+        working-directory: ./rust/${{ matrix.folder }}
 
   fmt:
     strategy:

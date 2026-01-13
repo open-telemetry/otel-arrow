@@ -3,10 +3,8 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-
-// ToDo: Support transformative processors in a pipeline, 
-// we should be able to know when the assert equivalent will fail 
-
+// ToDo: Support transformative processors in a pipeline,
+// we should be able to know when the assert equivalent will fail
 
 use otap_df_config::PipelineGroupId;
 use otap_df_config::PipelineId;
@@ -526,10 +524,7 @@ mod test {
 
                 let metrics: Vec<OtlpProtoMessage> = (0..MESSAGE_COUNT)
                     .map(|_| {
-                        OtlpProtoMessage::Metrics(fake_otlp_metrics(
-                            METRIC_SIGNAL_COUNT,
-                            &registry,
-                        ))
+                        OtlpProtoMessage::Metrics(fake_otlp_metrics(METRIC_SIGNAL_COUNT, &registry))
                     })
                     .collect();
                 let metrics_output = pipeline_simulator
@@ -540,10 +535,7 @@ mod test {
 
                 let traces: Vec<OtlpProtoMessage> = (0..MESSAGE_COUNT)
                     .map(|_| {
-                        OtlpProtoMessage::Traces(fake_otlp_traces(
-                            TRACE_SIGNAL_COUNT,
-                            &registry,
-                        ))
+                        OtlpProtoMessage::Traces(fake_otlp_traces(TRACE_SIGNAL_COUNT, &registry))
                     })
                     .collect();
                 let traces_output = pipeline_simulator
@@ -551,7 +543,6 @@ mod test {
                     .await
                     .expect("failed to simulate pipeline");
                 assert_equivalent(&traces, &traces_output);
-        
             }
         }
     }
