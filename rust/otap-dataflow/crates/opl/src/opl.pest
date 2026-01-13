@@ -160,7 +160,6 @@ set_operator_call = {
     ("set" | "extend") ~ assignment_expression
 }
 
-
 where_operator_call = {
     "where" ~ expression
 }

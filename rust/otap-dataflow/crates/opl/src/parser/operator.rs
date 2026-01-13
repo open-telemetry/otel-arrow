@@ -2,17 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    DataExpression,
-    TransformExpression,
-    ConditionalDataExpression, ConditionalDataExpressionBranch,
+    ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
     DiscardDataExpression, Expression, LogicalExpression, NotLogicalExpression, QueryLocation,
+    TransformExpression,
 };
 use data_engine_parser_abstractions::{ParserError, to_query_location};
 use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
 use crate::parser::expression::parse_expression;
-use crate::parser::pipeline::{parse_pipeline_stage, PipelineBuilder};
+use crate::parser::pipeline::{PipelineBuilder, parse_pipeline_stage};
 use crate::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_operator_call(
@@ -63,8 +62,6 @@ pub(crate) fn parse_set_operator_call(
     Ok(())
 }
 
-
-
 pub(crate) fn parse_if_else_opeartor_call(
     operator_call_rule: Pair<'_, Rule>,
     pipeline_builder: &mut dyn PipelineBuilder,
@@ -106,7 +103,7 @@ pub(crate) fn parse_if_else_opeartor_call(
                 let branch_loc_end = rule.as_span().end();
 
                 // parse all the rules
-                for inner_rule in rule.into_inner(){
+                for inner_rule in rule.into_inner() {
                     parse_pipeline_stage(inner_rule, &mut next_branch)?;
                 }
 
@@ -212,11 +209,11 @@ pub(crate) fn parse_where_operator_call(
 #[cfg(test)]
 mod tests {
     use data_engine_expressions::{
-        ConditionalDataExpression, ConditionalDataExpressionBranch,
-        DataExpression, DiscardDataExpression, EqualToLogicalExpression, LogicalExpression,
-        MutableValueExpression, NotLogicalExpression, QueryLocation, ScalarExpression,
-        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, TransformExpression, ValueAccessor,
+        ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
+        DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MutableValueExpression,
+        NotLogicalExpression, QueryLocation, ScalarExpression, SetTransformExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TransformExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -257,8 +254,6 @@ mod tests {
 
         assert_eq!(&expressions[0], &expected);
     }
-
-
 
     fn equals_logical_expr(field_name: &'static str, value: &'static str) -> LogicalExpression {
         LogicalExpression::EqualTo(EqualToLogicalExpression::new(
