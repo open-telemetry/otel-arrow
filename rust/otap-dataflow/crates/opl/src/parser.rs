@@ -11,6 +11,7 @@ use data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
 };
 
+mod assignment;
 mod expression;
 mod operator;
 mod pipeline;
