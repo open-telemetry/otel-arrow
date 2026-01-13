@@ -19,9 +19,8 @@ use otap_df_config::pipeline::TelemetrySettings;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_telemetry::logs::LogsFlusher;
+use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{otel_error, otel_warn};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
@@ -183,8 +182,6 @@ pub struct PipelineCtrlMsgManager<PData> {
     event_reporter: ObservedEventReporter,
     /// Global metrics reporter.
     metrics_reporter: MetricsReporter,
-    /// Logs flusher for periodic flush of internal log buffers.
-    logs_flusher: LogsFlusher,
     /// Channel metrics handles for periodic reporting.
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
@@ -202,7 +199,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        logs_flusher: LogsFlusher,
         internal_telemetry: TelemetrySettings,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
@@ -216,7 +212,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             delayed_data: BinaryHeap::new(),
             event_reporter,
             metrics_reporter,
-            logs_flusher,
             channel_metrics,
             telemetry: internal_telemetry,
         }
@@ -354,11 +349,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
 
-                    // Flush internal logs from the thread-local buffer
-                    if let Err(err) = self.logs_flusher.flush() {
-                        otel_error!("logs.flush.fail", error = err.to_string());
-                    }
-
                     // Deliver all accumulated control messages (best-effort)
                     for (node_id, msg) in to_send {
                         self.send(node_id, msg).await;
@@ -433,7 +423,6 @@ mod tests {
     use otap_df_config::pipeline::PipelineSettings;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::logs::LogsFlusher;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
     use tokio::task::LocalSet;
@@ -486,9 +475,6 @@ mod tests {
             thread_id,
         );
 
-        // Create a no-op LogsFlusher for testing
-        let logs_flusher = LogsFlusher::Noop;
-
         let manager = PipelineCtrlMsgManager::new(
             DeployedPipelineKey {
                 pipeline_group_id,
@@ -500,7 +486,6 @@ mod tests {
             control_senders,
             observed_state_store.reporter(),
             metrics_reporter,
-            logs_flusher,
             pipeline_settings.telemetry.clone(),
             Vec::new(),
         );
@@ -907,9 +892,6 @@ mod tests {
                     thread_id,
                 );
 
-                // Create a no-op LogsFlusher for testing
-                let logs_flusher = LogsFlusher::Noop;
-
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
                     pipeline_key,
@@ -918,7 +900,6 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(),
                     metrics_reporter,
-                    logs_flusher,
                     TelemetrySettings::default(),
                     Vec::new(),
                 );

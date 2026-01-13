@@ -101,12 +101,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // - global == Unbuffered (global threads send directly to channel)
         // - engine == Buffered or Unbuffered (engine threads send to channel)
         // Raw provider mode = synchronous console output, no reporter needed.
-        let providers_need_reporter = telemetry_config.logs.providers.global
-            == ProviderMode::Unbuffered
-            || matches!(
-                telemetry_config.logs.providers.engine,
-                ProviderMode::Buffered | ProviderMode::Unbuffered
-            );
+        let providers_need_reporter = telemetry_config.logs.providers.global.needs_reporter()
+            || telemetry_config.logs.providers.engine.needs_reporter();
 
         // Create the reporter if providers need it.
         // The receiver end goes to either:
@@ -178,13 +174,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let engine_logs_setup = match telemetry_config.logs.providers.engine {
             ProviderMode::Noop => EngineLogsSetup::Noop,
             ProviderMode::Raw => EngineLogsSetup::Raw,
-            ProviderMode::Buffered => EngineLogsSetup::Buffered {
-                reporter: logs_reporter
-                    .clone()
-                    .expect("validated: buffered requires reporter"),
-                capacity: 1024, // TODO: make configurable
-            },
-            ProviderMode::Unbuffered => EngineLogsSetup::Unbuffered {
+            ProviderMode::Immediate => EngineLogsSetup::Immediate {
                 reporter: logs_reporter
                     .clone()
                     .expect("validated: unbuffered requires reporter"),
@@ -201,69 +191,72 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Spawn internal pipeline thread if configured
         // The internal pipeline runs on a single unpinned thread and processes
         // internal telemetry (logs from LogsReporter) through its own node graph.
-        let internal_pipeline_thread = if let Some(internal_config) = pipeline.extract_internal_config() {
-            // Internal pipeline only exists when output mode is Internal
-            // The logs_receiver goes to the internal pipeline's ITR node
-            let internal_logs_receiver = logs_receiver.take();
-            let internal_factory = self.pipeline_factory;
-            let internal_pipeline_id: PipelineId = "internal".into();
-            let internal_pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: pipeline_group_id.clone(),
-                pipeline_id: internal_pipeline_id.clone(),
-                core_id: 0, // Virtual core ID for internal pipeline
+        let internal_pipeline_thread =
+            if let Some(internal_config) = pipeline.extract_internal_config() {
+                // Internal pipeline only exists when output mode is Internal
+                // The logs_receiver goes to the internal pipeline's ITR node
+                let internal_logs_receiver = logs_receiver.take();
+                let internal_factory = self.pipeline_factory;
+                let internal_pipeline_id: PipelineId = "internal".into();
+                let internal_pipeline_key = DeployedPipelineKey {
+                    pipeline_group_id: pipeline_group_id.clone(),
+                    pipeline_id: internal_pipeline_id.clone(),
+                    core_id: 0, // Virtual core ID for internal pipeline
+                };
+                let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
+                    pipeline_group_id.clone(),
+                    internal_pipeline_id.clone(),
+                    0, // Virtual core ID
+                    0, // Virtual thread ID
+                );
+                let internal_obs_evt_reporter = obs_evt_reporter.clone();
+                let internal_metrics_reporter = metrics_reporter.clone();
+
+                // Internal pipeline uses Raw logging (direct console output)
+                // to avoid feedback loops - it can't log through itself
+                let internal_engine_logs_setup = EngineLogsSetup::Raw;
+                let internal_log_level = log_level;
+
+                // Create control message channel for internal pipeline
+                let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
+                    internal_config
+                        .pipeline_settings()
+                        .default_pipeline_ctrl_msg_channel_size,
+                );
+
+                let thread_name = "internal-pipeline".to_string();
+                let handle = thread::Builder::new()
+                    .name(thread_name.clone())
+                    .spawn(move || {
+                        Self::run_pipeline_thread(
+                            internal_pipeline_key,
+                            CoreId { id: 0 }, // No pinning for internal pipeline
+                            internal_config,
+                            internal_factory,
+                            internal_pipeline_ctx,
+                            internal_obs_evt_reporter,
+                            internal_metrics_reporter,
+                            internal_engine_logs_setup,
+                            internal_log_level,
+                            internal_logs_receiver,
+                            internal_ctrl_tx,
+                            internal_ctrl_rx,
+                        )
+                    })
+                    .map_err(|e| Error::ThreadSpawnError {
+                        thread_name: thread_name.clone(),
+                        source: e,
+                    })?;
+
+                otel_info!(
+                    "InternalPipeline.Started",
+                    num_nodes = pipeline.internal_nodes().len()
+                );
+
+                Some((thread_name, handle))
+            } else {
+                None
             };
-            let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
-                pipeline_group_id.clone(),
-                internal_pipeline_id.clone(),
-                0, // Virtual core ID
-                0, // Virtual thread ID
-            );
-            let internal_obs_evt_reporter = obs_evt_reporter.clone();
-            let internal_metrics_reporter = metrics_reporter.clone();
-
-            // Internal pipeline uses Raw logging (direct console output)
-            // to avoid feedback loops - it can't log through itself
-            let internal_engine_logs_setup = EngineLogsSetup::Raw;
-            let internal_log_level = log_level;
-
-            // Create control message channel for internal pipeline
-            let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
-                internal_config.pipeline_settings().default_pipeline_ctrl_msg_channel_size,
-            );
-
-            let thread_name = "internal-pipeline".to_string();
-            let handle = thread::Builder::new()
-                .name(thread_name.clone())
-                .spawn(move || {
-                    Self::run_pipeline_thread(
-                        internal_pipeline_key,
-                        CoreId { id: 0 }, // No pinning for internal pipeline
-                        internal_config,
-                        internal_factory,
-                        internal_pipeline_ctx,
-                        internal_obs_evt_reporter,
-                        internal_metrics_reporter,
-                        internal_engine_logs_setup,
-                        internal_log_level,
-                        internal_logs_receiver,
-                        internal_ctrl_tx,
-                        internal_ctrl_rx,
-                    )
-                })
-                .map_err(|e| Error::ThreadSpawnError {
-                    thread_name: thread_name.clone(),
-                    source: e,
-                })?;
-
-            otel_info!(
-                "InternalPipeline.Started",
-                num_nodes = pipeline.internal_nodes().len()
-            );
-
-            Some((thread_name, handle))
-        } else {
-            None
-        };
 
         // Start one thread per requested core
         // Get available CPU cores for pinning
@@ -578,7 +571,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<Vec<()>, Error> {
         // Run with the engine-appropriate tracing subscriber.
         // The closure receives a LogsFlusher for buffered mode.
-        engine_logs_setup.with_engine_subscriber(log_level, |logs_flusher| {
+        engine_logs_setup.with_engine_subscriber(log_level, || {
             // Create a tracing span for this pipeline thread
             // so that all logs within this scope include pipeline context.
             let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
@@ -621,7 +614,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     pipeline_context,
                     obs_evt_reporter,
                     metrics_reporter,
-                    logs_flusher,
                     pipeline_ctrl_msg_tx,
                     pipeline_ctrl_msg_rx,
                 )

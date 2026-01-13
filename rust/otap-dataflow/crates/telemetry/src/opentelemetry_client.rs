@@ -16,7 +16,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::Tr
 
 use crate::{
     error::Error,
-    logs::{LogsReporter, UnbufferedLayer},
+    logs::{ImmediateLayer, LogsReporter},
     opentelemetry_client::logger_provider::LoggerProvider,
     opentelemetry_client::meter_provider::MeterProvider,
     self_tracing::{ConsoleWriter, RawLoggingLayer},
@@ -46,7 +46,7 @@ impl OpentelemetryClient {
     /// noisy HTTP/2 and hyper logs.
     ///
     /// The `logs_reporter` parameter is required when `strategies.global` is set to
-    /// `Unbuffered`. It should be created via `LogsCollector::new()` and the collector
+    /// `Immediate`. It should be created via `LogsCollector::new()` and the collector
     /// should be run on a dedicated thread.
     ///
     /// The logger provider is configured when either global or engine providers
@@ -101,16 +101,11 @@ impl OpentelemetryClient {
                     logerr(err);
                 }
             }
-            ProviderMode::Buffered => {
-                return Err(Error::ConfigurationError(
-                    "global buffered logging not supported".into(),
-                ));
-            }
-            ProviderMode::Unbuffered => {
+            ProviderMode::Immediate => {
                 let reporter = logs_reporter.ok_or_else(|| {
-                    Error::ConfigurationError("Unbuffered logging requires a LogsReporter".into())
+                    Error::ConfigurationError("Immediate logging requires a LogsReporter".into())
                 })?;
-                let channel_layer = UnbufferedLayer::new(reporter);
+                let channel_layer = ImmediateLayer::new(reporter);
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }

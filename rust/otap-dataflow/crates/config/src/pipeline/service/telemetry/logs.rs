@@ -79,27 +79,33 @@ pub enum ProviderMode {
     /// Log events are silently ignored.
     Noop,
 
-    /// Place into a thread-local buffer.
-    Buffered,
-
-    /// Non-blocking, immediate delivery.
-    Unbuffered,
+    /// Immediate delivery to the internal telemetry pipeline.
+    Immediate,
 
     /// Use OTel-Rust as the provider.
     OpenTelemetry,
 
-    /// Use synchronous logging. Note! This can block the producing thread.
+    /// Synchronous console logging. Note! This can block the producing thread.
     Raw,
 }
 
+impl ProviderMode {
+    /// Returns true if this requires a LogsReporter channel for
+    /// asynchronous logging.
+    #[must_use]
+    pub fn needs_reporter(&self) -> bool {
+        matches!(self, Self::Immediate)
+    }
+}
+
 /// Output mode: what the recipient does with received events for
-/// Buffered and Unbuffered provider logging modes.
+/// provider logging modes.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputMode {
-    /// Noop prevents the use of Buffered and Unbuffered modes. This
-    /// output mode can be set when all providers are configured to
-    /// avoid the internal output configuration through Noop, Raw, or
+    /// Noop prevents the use of the Unbuffered mode. This output mode
+    /// can be set when all providers are configured to avoid the
+    /// internal output configuration through Noop, Raw, or
     /// OpenTelemetry settings.
     Noop,
 
@@ -110,10 +116,7 @@ pub enum OutputMode {
     #[default]
     Direct,
 
-    /// Route to Internal Telemetry Receiver node.  The pipeline must
-    /// include a node with INTERNAL_TELEMETRY_RECEIVER_URN.  The
-    /// engine provider mode must be Buffered for internal output.
-    /// This will become default.
+    /// Route to the internal telemetry pipeline.
     Internal,
 }
 
@@ -131,8 +134,8 @@ fn default_internal_provider() -> ProviderMode {
 
 fn default_providers() -> LoggingProviders {
     LoggingProviders {
-        global: ProviderMode::Unbuffered,
-        engine: ProviderMode::Buffered,
+        global: ProviderMode::Immediate,
+        engine: ProviderMode::Immediate,
         internal: default_internal_provider(),
     }
 }
@@ -152,32 +155,26 @@ impl LogsConfig {
     /// Validate the logs configuration.
     ///
     /// Returns an error if:
-    /// - `output` is `Noop` but a provider uses `Buffered` or `Unbuffered`
+    /// - `output` is `Noop` but a provider uses `Unbuffered`
     ///   (logs would be sent but discarded)
-    /// - `output` is `Internal` but engine provider is not `Buffered`
     pub fn validate(&self) -> Result<(), Error> {
+        if self.providers.internal.needs_reporter() {
+            return Err(Error::InvalidUserConfig {
+                error: format!(
+                    "internal provider is invalid: {:?}",
+                    self.providers.internal
+                ),
+            });
+        }
         if self.output == OutputMode::Noop {
-            let global_sends = matches!(
-                self.providers.global,
-                ProviderMode::Buffered | ProviderMode::Unbuffered
-            );
-            let engine_sends = matches!(
-                self.providers.engine,
-                ProviderMode::Buffered | ProviderMode::Unbuffered
-            );
+            let global_reports = self.providers.global.needs_reporter();
+            let engine_reports = self.providers.engine.needs_reporter();
 
-            if global_sends || engine_sends {
+            if global_reports || engine_reports {
                 return Err(Error::InvalidUserConfig {
-                    error: "output mode is 'noop' but a provider uses buffered or unbuffered"
-                        .into(),
+                    error: "output mode is 'noop' but a provider uses an internal reporter".into(),
                 });
             }
-        }
-
-        if self.output == OutputMode::Internal && self.providers.engine != ProviderMode::Buffered {
-            return Err(Error::InvalidUserConfig {
-                error: "output mode is 'internal', engine must use buffered provider".into(),
-            });
         }
 
         Ok(())

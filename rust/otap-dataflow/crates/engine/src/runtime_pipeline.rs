@@ -14,7 +14,6 @@ use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::logs::LogsFlusher;
 
 use crate::context::PipelineContext;
 use otap_df_state::DeployedPipelineKey;
@@ -107,7 +106,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         pipeline_context: PipelineContext,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        logs_flusher: LogsFlusher,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
@@ -195,7 +193,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 control_senders,
                 event_reporter,
                 metrics_reporter,
-                logs_flusher,
                 internal_telemetry,
                 channel_metrics,
             );
