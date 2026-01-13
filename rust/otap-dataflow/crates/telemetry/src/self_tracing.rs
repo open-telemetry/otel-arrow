@@ -9,7 +9,6 @@
 
 pub mod encoder;
 pub mod formatter;
-pub mod raw_log;
 
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;

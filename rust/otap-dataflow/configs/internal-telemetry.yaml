@@ -19,15 +19,6 @@ nodes:
         signals_per_second: 1000
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  internal_telemetry:
-    kind: receiver
-    plugin_urn: "urn:otel:internal:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
-    config: {}
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
@@ -43,6 +34,33 @@ nodes:
     plugin_urn: "urn:otel:noop:exporter"
     config: {}
 
+# Internal telemetry pipeline - separate from main pipeline
+# Uses hardcoded settings: single thread, no admin server
+internal:
+  internal_telemetry:
+    kind: receiver
+    plugin_urn: "urn:otel:internal:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - internal_debug
+        dispatch_strategy: round_robin
+    config: {}
+  internal_debug:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - internal_noop
+        dispatch_strategy: round_robin
+    config:
+      verbosity: detailed
+  internal_noop:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config: {}
+
 service:
   telemetry:
     logs:
@@ -50,4 +68,5 @@ service:
       providers:
         global: unbuffered
         engine: buffered
+        internal: noop  # Avoid feedback in internal pipeline
       output: internal

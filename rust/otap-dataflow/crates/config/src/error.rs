@@ -118,6 +118,34 @@ pub enum Error {
         /// The id of the pipeline that was duplicated.
         pipeline_id: PipelineId,
     },
+
+    /// A receiver in the internal telemetry pipeline has an invalid plugin URN.
+    /// Only Internal Telemetry Receivers (ITR) are allowed in the internal pipeline.
+    #[error(
+        "Invalid receiver in internal pipeline: node `{node_id}` has plugin_urn `{plugin_urn}`, \
+         but only Internal Telemetry Receivers are allowed\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::invalid_internal_receiver), url(docsrs))]
+    InvalidInternalReceiver {
+        /// The context in which the error occurred.
+        context: Context,
+        /// The node id of the invalid receiver.
+        node_id: NodeId,
+        /// The plugin URN of the invalid receiver.
+        plugin_urn: String,
+    },
+
+    /// The internal telemetry pipeline is required but not configured.
+    #[error(
+        "Internal telemetry pipeline required but not configured. \
+         When output mode is 'internal', the `internal` section must be present \
+         with at least one Internal Telemetry Receiver.\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::missing_internal_pipeline), url(docsrs))]
+    MissingInternalPipeline {
+        /// The context in which the error occurred.
+        context: Context,
+    },
 }
 
 /// Information that all errors provide to help identify

@@ -118,3 +118,42 @@ macro_rules! otel_error {
                 )
     };
 }
+
+/// Create a subscriber that writes directly to console (bypassing channels).
+fn raw_logging_subscriber() -> impl tracing::Subscriber {
+    use crate::self_tracing::{ConsoleWriter, RawLoggingLayer};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    tracing_subscriber::registry().with(RawLoggingLayer::new(ConsoleWriter::no_color()))
+}
+
+/// Execute a closure with a raw logging subscriber that writes directly to console.
+#[inline]
+pub fn with_raw_logging<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    tracing::subscriber::with_default(raw_logging_subscriber(), f)
+}
+
+/// Log an error message directly to stderr, bypassing the tracing subscriber.
+#[macro_export]
+macro_rules! raw_error {
+    ($name:expr $(,)?) => {
+        $crate::internal_events::with_raw_logging(|| {
+            $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
+        })
+    };
+    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
+        $crate::internal_events::with_raw_logging(|| {
+            $crate::_private::error!(name: $name,
+                                     target: env!("CARGO_PKG_NAME"),
+                                     name = $name,
+                                     $($key = {
+                                         $value
+                                     }),+,
+                                     ""
+            );
+        })
+    };
+}
