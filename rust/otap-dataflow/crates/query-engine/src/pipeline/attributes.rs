@@ -298,7 +298,6 @@ mod test {
         test_rename_when_no_attrs_batch_present::<OplParser>().await;
     }
 
-
     async fn test_invalid_renames_are_errors<P: Parser>() {
         let invalid_renames = [
             "logs | project-rename attributes[\"y\"] = attributes[\"y\"]",
