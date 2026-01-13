@@ -17,9 +17,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::Tr
 use crate::{
     error::Error,
     logs::{ImmediateLayer, LogsReporter},
-    opentelemetry_client::logger_provider::LoggerProvider,
-    opentelemetry_client::meter_provider::MeterProvider,
     self_tracing::{ConsoleWriter, RawLoggingLayer},
+    telemetry_settings::logger_provider::LoggerProvider,
+    telemetry_settings::meter_provider::MeterProvider,
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -224,7 +224,7 @@ mod tests {
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
-    fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
+    fn test_configure_minimal_telemetry_settings() -> Result<(), Error> {
         let config = TelemetryConfig::default();
         let (_collector, reporter) = LogsCollector::new(10);
         let client = OpentelemetryClient::new(&config, Some(reporter))?;
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn test_configure_opentelemetry_client() -> Result<(), Error> {
+    fn test_configure_telemetry_settings() -> Result<(), Error> {
         let mut resource = std::collections::HashMap::new();
         _ = resource.insert(
             "service.name".to_string(),

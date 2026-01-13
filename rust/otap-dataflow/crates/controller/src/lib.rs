@@ -40,8 +40,8 @@ use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::logs::{EngineLogsSetup, LogsCollector};
-use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::telemetry_settings::OpentelemetryClient;
 use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
@@ -135,8 +135,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Keep the handle alive - dropping it would join the thread and block forever
         let _logs_collector_handle = logs_collector_handle;
 
-        let opentelemetry_client =
-            OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;
+        let telemetry_settings = OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -180,7 +179,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .expect("validated: unbuffered requires reporter"),
             },
             ProviderMode::OpenTelemetry => EngineLogsSetup::OpenTelemetry {
-                logger_provider: opentelemetry_client
+                logger_provider: telemetry_settings
                     .logger_provider()
                     .clone()
                     .expect("validated: opentelemetry engine requires logger_provider from global"),
@@ -441,7 +440,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        opentelemetry_client.shutdown()?;
+        telemetry_settings.shutdown()?;
 
         Ok(())
     }

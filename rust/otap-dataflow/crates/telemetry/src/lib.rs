@@ -42,11 +42,11 @@ pub mod internal_events;
 /// Internal logs collection and transport.
 pub mod logs;
 pub mod metrics;
-pub mod opentelemetry_client;
 pub mod registry;
 pub mod reporter;
 pub mod self_tracing;
 pub mod semconv;
+pub mod telemetry_settings;
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
