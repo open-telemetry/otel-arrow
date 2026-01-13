@@ -281,23 +281,46 @@ exporters today because client-side hot-reload is not implemented.
 
 ### Why No Hot-Reload for Exporters?
 
+Certificate hot-reload is not currently implemented for exporters. This
+affects all certificate types:
+
+- **Client Identity**: Client certificate and key (mTLS)
+- **Trust Anchors**: Custom CA certificates (`ca_file`) and system CAs
+
+When these files change (e.g., certificate rotation or CA bundle updates),
+the process must be restarted to pick up the changes.
+
 **Technical Challenges**:
 
+While the Go OpenTelemetry Collector's exporters support hot-reload for
+client certificates via periodic polling, implementing this for Rust
+exporters is significantly more complex:
+
 1. **gRPC Channel Lifecycle**: tonic's `Channel` doesn't support runtime
-   TLS reconfiguration
-2. **Connection Pool Management**: Would require recreating entire
-   connection pool
-3. **In-Flight Requests**: Risk of disrupting active RPCs during reload
-4. **Integration Complexity**: Requires custom TLS connector with deep
-   tonic integration
+   TLS reconfiguration. Hot-reload would require either:
+   - Recreating the gRPC channel (may disrupt in-flight requests)
+   - Implementing a custom TLS connector with lazy certificate loading
+
+2. **Connection Pool Management**: The entire connection pool would need
+   to be recreated, not just the TLS configuration
+
+3. **In-Flight Requests**: Risk of disrupting active RPCs during reload,
+   requiring careful coordination
+
+4. **Integration Complexity**: Unlike receivers which use
+   `LazyReloadableCertResolver`, exporters would need significant
+   integration work with tonic's transport layer
 
 **Current Approach**: Service restart required for certificate updates
 
 **Future Considerations**:
 
+This feature can be implemented if it becomes an operational requirement.
+Potential approaches include:
+
 - Channel replacement strategy (with graceful shutdown)
-- Custom TLS connector implementation
-- Lazy certificate loading
+- Custom TLS connector with lazy certificate loading
+- Connection pool recreation with request draining
 
 ## Certificate Hot-Reload
 

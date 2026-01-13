@@ -429,12 +429,31 @@ must be restarted.
 
 **Affected certificates:**
 
-- Client certificate and key (mTLS)
-- Custom CA certificates
-- System CA certificates
+- **Client Identity**: Client certificate and key (mTLS)
+- **Trust Anchors**: Custom CA certificates (`ca_file`) and system CAs
 
-**Workaround:** Plan service restarts during certificate rotation windows,
-or implement blue-green deployment strategies.
+When these files change (e.g., certificate rotation or CA bundle updates),
+the process must be restarted to pick up the changes.
+
+**Why not supported?**
+
+While the Go OpenTelemetry Collector supports hot-reload for exporter
+certificates via periodic polling, implementing this for Rust exporters
+requires significant changes to how tonic's gRPC channel manages TLS
+configuration. This would involve either recreating the channel (risking
+disruption to in-flight requests) or implementing a custom TLS connector.
+
+**Workarounds:**
+
+- Plan service restarts during certificate rotation windows
+- Implement blue-green deployment strategies
+- Use longer-lived certificates for exporters
+
+**Future Support:**
+
+Hot-reload support for exporters may be added in a future release if it
+becomes an operational requirement. See the architecture documentation
+for technical details.
 
 #### insecure_skip_verify Not Supported
 
