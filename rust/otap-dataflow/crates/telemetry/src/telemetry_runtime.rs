@@ -20,8 +20,8 @@ use crate::{
     error::Error,
     logs::{ImmediateLayer, LogsCollector, LogsReporter},
     self_tracing::{ConsoleWriter, RawLoggingLayer},
-    telemetry_settings::logger_provider::LoggerProvider,
-    telemetry_settings::meter_provider::MeterProvider,
+    telemetry_runtime::logger_provider::LoggerProvider,
+    telemetry_runtime::meter_provider::MeterProvider,
 };
 
 /// Client for the OpenTelemetry SDK and internal telemetry settings.
@@ -30,7 +30,7 @@ use crate::{
 /// - OpenTelemetry SDK meter and logger providers
 /// - Internal logs reporter and receiver channels
 /// - Optional logs collector for Direct output mode
-pub struct TelemetrySettings {
+pub struct TelemetryRuntime {
     /// The tokio runtime used to run the OpenTelemetry SDK OTLP exporter.
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
@@ -47,7 +47,7 @@ pub struct TelemetrySettings {
     // TODO: Add traces providers.
 }
 
-impl TelemetrySettings {
+impl TelemetryRuntime {
     /// Create a new OpenTelemetry client from the given configuration.
     ///
     /// Logging-specific notes:
@@ -292,9 +292,9 @@ mod tests {
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
-    fn test_configure_minimal_telemetry_settings() -> Result<(), Error> {
+    fn test_configure_minimal_telemetry_runtime() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = TelemetrySettings::new(&config)?;
+        let client = TelemetryRuntime::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn test_configure_telemetry_settings() -> Result<(), Error> {
+    fn test_configure_telemetry_runtime() -> Result<(), Error> {
         let mut resource = std::collections::HashMap::new();
         _ = resource.insert(
             "service.name".to_string(),
@@ -328,7 +328,7 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let client = TelemetrySettings::new(&config)?;
+        let client = TelemetryRuntime::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -343,31 +343,31 @@ mod tests {
     fn test_to_sdk_value() {
         let string_attr = AttributeValue::String("example".to_string());
         assert_eq!(
-            TelemetrySettings::to_sdk_value(&string_attr),
+            TelemetryRuntime::to_sdk_value(&string_attr),
             opentelemetry::Value::String("example".into())
         );
 
         let bool_attr = AttributeValue::Bool(true);
         assert_eq!(
-            TelemetrySettings::to_sdk_value(&bool_attr),
+            TelemetryRuntime::to_sdk_value(&bool_attr),
             opentelemetry::Value::Bool(true)
         );
 
         let i64_attr = AttributeValue::I64(42);
         assert_eq!(
-            TelemetrySettings::to_sdk_value(&i64_attr),
+            TelemetryRuntime::to_sdk_value(&i64_attr),
             opentelemetry::Value::I64(42)
         );
 
         let f64_attr = AttributeValue::F64(PI);
         assert_eq!(
-            TelemetrySettings::to_sdk_value(&f64_attr),
+            TelemetryRuntime::to_sdk_value(&f64_attr),
             opentelemetry::Value::F64(PI)
         );
 
         let array_attr = AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3]));
         assert_eq!(
-            TelemetrySettings::to_sdk_value(&array_attr),
+            TelemetryRuntime::to_sdk_value(&array_attr),
             opentelemetry::Value::Array(opentelemetry::Array::I64(vec![1, 2, 3]))
         );
     }

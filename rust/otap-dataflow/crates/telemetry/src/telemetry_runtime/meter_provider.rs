@@ -22,7 +22,7 @@ use otap_df_config::pipeline::service::telemetry::metrics::{
 
 use crate::{
     error::Error,
-    telemetry_settings::meter_provider::{
+    telemetry_runtime::meter_provider::{
         otlp_exporter_provider::OtlpExporterProvider,
         prometheus_exporter_provider::PrometheusExporterProvider,
     },

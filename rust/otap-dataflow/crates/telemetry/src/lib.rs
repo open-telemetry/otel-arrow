@@ -49,7 +49,7 @@ pub mod registry;
 pub mod reporter;
 pub mod self_tracing;
 pub mod semconv;
-pub mod telemetry_settings;
+pub mod telemetry_runtime;
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates

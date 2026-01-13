@@ -41,7 +41,7 @@ use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::logs::EngineLogsSetup;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::telemetry_settings::TelemetrySettings;
+use otap_df_telemetry::telemetry_runtime::TelemetryRuntime;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
@@ -97,12 +97,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 message: msg.to_string(),
             })?;
 
-        // Create telemetry settings.  This creates logs reporter/receiver internally
-        let mut telemetry_settings = TelemetrySettings::new(telemetry_config)?;
+        // Create telemetry runtime according to the various options.
+        let mut telemetry_runtime = TelemetryRuntime::new(telemetry_config)?;
 
-        // Start the logs collector thread if needed for Direct output mode.
+        // Start the logs collector thread if needed for direct output.
         let _logs_collector_handle =
-            if let Some(logs_collector) = telemetry_settings.take_logs_collector() {
+            if let Some(logs_collector) = telemetry_runtime.take_logs_collector() {
                 Some(spawn_thread_local_task(
                     "logs-collector",
                     move |_cancellation_token| logs_collector.run(),
@@ -112,7 +112,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
 
         // Get logs receiver for Internal output mode (passed to internal pipeline)
-        let mut logs_receiver = telemetry_settings.take_logs_receiver();
+        let mut logs_receiver = telemetry_runtime.take_logs_receiver();
 
         let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
@@ -150,13 +150,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ProviderMode::Noop => EngineLogsSetup::Noop,
             ProviderMode::Raw => EngineLogsSetup::Raw,
             ProviderMode::Immediate => EngineLogsSetup::Immediate {
-                reporter: telemetry_settings
+                reporter: telemetry_runtime
                     .logs_reporter()
                     .cloned()
                     .expect("validated: immediate requires reporter"),
             },
             ProviderMode::OpenTelemetry => EngineLogsSetup::OpenTelemetry {
-                logger_provider: telemetry_settings
+                logger_provider: telemetry_runtime
                     .logger_provider()
                     .clone()
                     .expect("validated: opentelemetry engine requires logger_provider from global"),
@@ -415,7 +415,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        telemetry_settings.shutdown()?;
+        telemetry_runtime.shutdown()?;
 
         Ok(())
     }
