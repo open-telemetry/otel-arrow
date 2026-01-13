@@ -3,10 +3,12 @@
 
 use data_engine_expressions::{
     DataExpression, DiscardDataExpression, LogicalExpression, NotLogicalExpression,
+    TransformExpression,
 };
 use data_engine_parser_abstractions::{ParserError, ParserState, to_query_location};
 use pest::iterators::Pair;
 
+use crate::parser::assignment::parse_assignment_expression;
 use crate::parser::expression::parse_expression;
 use crate::parser::{Rule, invalid_child_rule_error};
 
@@ -16,6 +18,7 @@ pub(crate) fn parse_operator_call(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
+            Rule::set_operator_call => parse_set_operator_call(rule, state)?,
             Rule::where_operator_call => parse_where_operator_call(rule, state)?,
             invalid_rule => {
                 let query_location = to_query_location(&rule);
@@ -26,6 +29,31 @@ pub(crate) fn parse_operator_call(
                 ));
             }
         };
+    }
+
+    Ok(())
+}
+
+pub(crate) fn parse_set_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    state: &mut ParserState,
+) -> Result<(), ParserError> {
+    if let Some(rule) = operator_call_rule.into_inner().next() {
+        match rule.as_rule() {
+            Rule::assignment_expression => {
+                let set_expr = parse_assignment_expression(rule)?;
+                let transform_expr = TransformExpression::Set(set_expr);
+                state.push_expression(DataExpression::Transform(transform_expr));
+            }
+            invalid_rule => {
+                let query_location = to_query_location(&rule);
+                return Err(invalid_child_rule_error(
+                    query_location,
+                    Rule::assignment_expression,
+                    invalid_rule,
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -44,7 +72,7 @@ pub(crate) fn parse_where_operator_call(
                 let discard_expr = DiscardDataExpression::new(operator_call_query_location)
                     .with_predicate(LogicalExpression::Not(NotLogicalExpression::new(
                         rule_query_location,
-                        predicate,
+                        predicate.into(),
                     )));
                 state.push_expression(DataExpression::Discard(discard_expr));
             }
@@ -67,8 +95,9 @@ pub(crate) fn parse_where_operator_call(
 mod tests {
     use data_engine_expressions::{
         DataExpression, DiscardDataExpression, EqualToLogicalExpression, LogicalExpression,
-        NotLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        MutableValueExpression, NotLogicalExpression, QueryLocation, ScalarExpression,
+        SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, TransformExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{ParserOptions, ParserState};
     use pest::Parser as _;
@@ -77,6 +106,38 @@ mod tests {
     use crate::parser::Rule;
     use crate::parser::operator::parse_operator_call;
     use crate::parser::pest::OplPestParser;
+
+    #[test]
+    fn test_parse_set_operator_call() {
+        let query = "set severity_text = \"ERROR\"";
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut state).unwrap();
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "ERROR"),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "severity_text",
+                        )),
+                    )]),
+                )),
+            )));
+
+        assert_eq!(&expressions[0], &expected);
+    }
 
     #[test]
     fn test_parse_where_operator_call() {
