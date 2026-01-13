@@ -118,6 +118,9 @@ impl ValidateContext {
     }
 }
 
+/// The default outport port name that will be configured by the [`TestRuntime`]
+pub const DEFAULT_OUT_PORT: &str = "out";
+
 /// A test runtime for simplifying processor tests.
 ///
 /// This structure encapsulates the common setup logic needed for testing processors,
@@ -224,7 +227,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         // Set the output sender for the processor
         let _ = processor.set_pdata_sender(
             test_node(self.config().name.clone()),
-            "out".into(),
+            DEFAULT_OUT_PORT.into(),
             pdata_sender,
         );
 

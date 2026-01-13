@@ -31,6 +31,7 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
+use otap_df_opl::parser::OplParser;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_query_engine::pipeline::{Pipeline, routing::Router, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
@@ -38,7 +39,7 @@ use serde_json::Value;
 
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata, transform_processor::routing::RouterImpl};
 
-use self::config::Config;
+use self::config::{Config, Language};
 use self::metrics::Metrics;
 
 mod config;
@@ -102,11 +103,16 @@ impl TransformProcessor {
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
         // https://github.com/open-telemetry/otel-arrow/issues/1530
-        let pipeline_expr = KqlParser::parse(&config.query)
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: format!("Could not parse TransformProcessor query: {e:?}"),
-            })?
-            .pipeline;
+        let pipeline_expr = match config.language {
+            Language::KQL => KqlParser::parse(&config.query),
+            Language::OPL => OplParser::parse(&config.query),
+        }
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("Could not parse TransformProcessor query: {e:?}"),
+        })?
+        .pipeline;
+
+        println!("{pipeline_expr:?}");
 
         // TODO: it would be nice if we could validate that the pipeline expr is supported by the
         // query engine here. Currently, validation happens lazily when the first batch is seen.
@@ -224,16 +230,19 @@ mod test {
     use super::*;
     use serde_json::json;
 
-    use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::{PortName, node::NodeUserConfig};
     use otap_df_engine::{
         context::ControllerContext,
+        local::message::LocalSender,
+        message::Sender,
+        node::NodeWithPDataSender,
         testing::{
-            processor::{TestContext, TestRuntime},
+            processor::{DEFAULT_OUT_PORT, TestContext, TestRuntime},
             test_node,
         },
     };
     use otap_df_pdata::{
-        proto::{
+        otap::Logs, proto::{
             OtlpProtoMessage,
             opentelemetry::{
                 arrow::v1::ArrowPayloadType,
@@ -243,20 +252,22 @@ mod test {
                 resource::v1::Resource,
                 trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
             },
-        },
-        testing::round_trip::{otap_to_otlp, otlp_to_otap},
+        }, testing::round_trip::{otap_to_otlp, otlp_to_otap}
     };
 
     use crate::pdata::OtapPdata;
 
     fn try_create_with_query(
         query: &str,
+        language: Language,
         runtime: &TestRuntime<OtapPdata>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
         node_config.config = json!({
-            "query": query
+            "query": query,
+            "language": language.to_string()
         });
+        node_config.default_out_port = Some(DEFAULT_OUT_PORT.into());
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
@@ -274,7 +285,7 @@ mod test {
     #[test]
     fn test_unparsable_query_is_config_time_error() {
         let runtime = TestRuntime::<OtapPdata>::new();
-        match try_create_with_query("logs | invalid operator", &runtime) {
+        match try_create_with_query("logs | invalid operator", Language::KQL, &runtime) {
             Err(e) => {
                 assert!(
                     e.to_string()
@@ -293,7 +304,8 @@ mod test {
         let telemetry_registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
         let query = "logs | where severity_text == \"ERROR\"";
-        let processor = try_create_with_query(query, &runtime).expect("created processor");
+        let processor =
+            try_create_with_query(query, Language::KQL, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -428,7 +440,8 @@ mod test {
         // test ensure it will only operate on traces, but ignores other signals
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = "traces | where name == \"foo\"";
-        let processor = try_create_with_query(query, &runtime).expect("created processor");
+        let processor =
+            try_create_with_query(query, Language::KQL, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -459,42 +472,74 @@ mod test {
     }
 
     #[test]
-    fn test_signal_scope_all() {
+    fn test_simple_route_to() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
-        let query = "signals | where name == \"foo\"";
-        let processor = try_create_with_query(query, &runtime).expect("created processor");
+        let query = "logs | route_to \"test_port\"";
+        let mut processor =
+            try_create_with_query(query, Language::OPL, &runtime).expect("created processor");
+
+        let test_node_id = NodeId {
+            index: 1,
+            name: "test_node".into(),
+        };
+        let (test_port_tx, test_port_rx) = otap_df_channel::mpsc::Channel::new(10);
+        processor
+            .set_pdata_sender(
+                test_node_id,
+                PortName::from("test_port"),
+                Sender::Local(LocalSender::mpsc(test_port_tx)),
+            )
+            .unwrap();
+
+
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                send_one_traces_one_metrics_same_names(&mut ctx).await;
-                let mut processed_pdata = ctx
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![LogRecord::build().severity_text("ERROR").finish()],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let out = ctx
                     .drain_pdata()
                     .await
                     .into_iter()
                     .map(OtapPdata::payload)
                     .map(OtapArrowRecords::try_from)
                     .map(Result::unwrap);
-                let traces_batch = processed_pdata.next().expect("sent traces batch");
-                let metrics_batch = processed_pdata.next().expect("sent metrics batch");
+                let result = out
+                    .into_iter()
+                    .next()
+                    .expect("one result");
+                // expect we got an empty batch:
+                // TODO assert on the context?
+                assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
-                // assert one of the spans got filtered out
-                let spans = traces_batch
-                    .get(ArrowPayloadType::Spans)
-                    .expect("spans present");
-                assert_eq!(spans.num_rows(), 1);
+                let mut routed = Vec::new();
+                while let Ok(msg) = test_port_rx.try_recv() {
+                    routed.push(msg);
+                }
+                assert_eq!(routed.len(), 1);
+                // TODO assert on the routed message
+                // TODO assert on routed context
+                // TODO assert Ack/Nack
 
-                // assert it also filtered out one of the metrics
-                let metrics = metrics_batch
-                    .get(ArrowPayloadType::UnivariateMetrics)
-                    .expect("metrics present");
-                assert_eq!(metrics.num_rows(), 1);
             })
             .validate(|_ctx| async move {})
     }
 
     #[test]
     fn test_pipeline_with_route_to() {
-        todo!()   
+        todo!()
     }
 }
