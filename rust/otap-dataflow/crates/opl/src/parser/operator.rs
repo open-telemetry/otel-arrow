@@ -291,10 +291,11 @@ pub(crate) fn parse_where_operator_call(
 mod tests {
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-        DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MutableValueExpression,
-        NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation,
-        ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, TransformExpression, ValueAccessor,
+        DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MapKeyRenameSelector,
+        MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+        QueryLocation, RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        TransformExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
@@ -542,6 +543,82 @@ mod tests {
             ),
         );
         assert_eq!(expressions[0], expected);
+    }
+
+    #[test]
+    fn test_parse_rename_operator_call() {
+        let query =
+            "rename attributes[\"x\"] = attributes[\"y\"], attributes[\"x2\"] = attributes[\"y2\"]";
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut state).unwrap();
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Transform(TransformExpression::RenameMapKeys(
+            RenameMapKeysTransformExpression::new(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                            )),
+                        ]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                            )),
+                        ]),
+                    ),
+                    MapKeyRenameSelector::new(
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "y2"),
+                            )),
+                        ]),
+                        ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    "attributes",
+                                ),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "x2"),
+                            )),
+                        ]),
+                    ),
+                ],
+            ),
+        ));
+
+        assert_eq!(&expressions[0], &expected);
     }
 
     #[test]
