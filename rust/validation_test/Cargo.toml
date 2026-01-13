@@ -29,15 +29,15 @@ weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = 
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 
 
-otap-df-engine = { path = "../../rust/otap-dataflow/crates/engine" }
-otap-df-engine-macros = { path = "../../rust/otap-dataflow/crates/engine-macros" }
-otap-df-channel = { path = "../../rust/otap-dataflow/crates/channel" }
-otap-df-config = { path = "../../rust/otap-dataflow/crates/config" }
-otap-df-pdata = { path = "../../rust/otap-dataflow/crates/pdata" }
-otap-df-query-engine = { path = "../../rust/otap-dataflow/crates/query-engine" }
-otap-df-telemetry = { path = "../../rust/otap-dataflow/crates/telemetry" }
-otap-df-telemetry-macros = { path = "../../rust/otap-dataflow/crates/telemetry-macros" }
-otap-df-state = { path = "../../rust/otap-dataflow/crates/state" }
-otap-df-otap = { path = "../../rust/otap-dataflow/crates/otap" }
+otap-df-engine = { path = "../otap-dataflow/crates/engine" }
+otap-df-engine-macros = { path = "../otap-dataflow/crates/engine-macros" }
+otap-df-channel = { path = "../otap-dataflow/crates/channel" }
+otap-df-config = { path = "../otap-dataflow/crates/config" }
+otap-df-pdata = { path = "../otap-dataflow/crates/pdata" }
+otap-df-query-engine = { path = "../otap-dataflow/crates/query-engine" }
+otap-df-telemetry = { path = "../otap-dataflow/crates/telemetry" }
+otap-df-telemetry-macros = { path = "../otap-dataflow/crates/telemetry-macros" }
+otap-df-state = { path = "../otap-dataflow/crates/state" }
+otap-df-otap = { path = "../otap-dataflow/crates/otap" }
 
 
