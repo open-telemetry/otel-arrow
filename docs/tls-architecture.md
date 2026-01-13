@@ -133,6 +133,9 @@ tls:
    (lock-free)
 4. **Graceful Failure**: Failed reload keeps existing certificate
    (no downtime)
+5. **Scope**: Hot-reload applies only to file-based certificates
+   (`cert_file`/`key_file`). Inline PEM (`cert_pem`/`key_pem`) is loaded
+   once at startup.
 
 ### Client CA Management (mTLS)
 
@@ -180,6 +183,11 @@ tls:
   watch_client_ca: false
   reload_interval: "1m"
 ```
+
+**Static Inline CA**:
+
+- `client_ca_pem` is supported but does not participate in hot-reload.
+  Changes require a restart.
 
 ### TLS Stream Processing
 
@@ -249,6 +257,9 @@ Unlike receivers, hot-reload is not currently supported.
 1. **System CAs**: Loaded once per process, cached for reuse
 2. **Custom CAs**: Added to trust store alongside system CAs
 3. **Validation**: Ensures at least one trust anchor configured
+
+**Reload Interval Note**: The `reload_interval` field is ignored for
+exporters today because client-side hot-reload is not implemented.
 
 **mTLS Support**:
 
@@ -393,7 +404,7 @@ to crypto operations.
 
 ### Concurrency Limits
 
-- **Max concurrent handshakes**: 64 per receiver (configurable)
+- **Max concurrent handshakes**: 64 per receiver (fixed constant today)
 - **Handshake timeout**: 10 seconds (configurable)
 - **Reload coordination**: Single reload at a time (per certificate type)
 

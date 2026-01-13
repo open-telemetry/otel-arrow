@@ -118,6 +118,10 @@ receivers:
         include_system_ca_certs_pool: true
 ```
 
+System CAs for client authentication are **not** included by default;
+set `include_system_ca_certs_pool: true` to combine them with your custom
+CA bundle.
+
 #### mTLS with Inline CA Certificate
 
 ```yaml
@@ -170,6 +174,10 @@ receivers:
 - For hourly rotations: `reload_interval: "1m"` or `"2m"`
 - Ensure certificate overlap window (deploy new cert before old expires)
 
+*Hot-reload applies only to file-based certificates (`cert_file` and
+`key_file`). Inline PEM (`cert_pem`/`key_pem`) is loaded once at
+startup.*
+
 #### Client CA Certificate Reload (mTLS)
 
 Client CA certificates support two reload mechanisms:
@@ -220,6 +228,9 @@ receivers:
   file watching is unreliable
 - **Compatibility:** Works with all file systems
 
+**Inline CA:** `client_ca_pem` is supported but does not hot-reload;
+changes require a restart.
+
 #### Reload Mechanism Summary
 
 | Certificate Type | Configuration | Reload Method | When Checked |
@@ -255,6 +266,8 @@ becomes available.
 ## Exporters (Client-Side TLS)
 
 Exporters use TLS to connect securely to downstream collectors or backends.
+Hot-reload is not implemented for exporters; `reload_interval` is ignored
+and certificate changes require a restart.
 
 ### Exporter TLS Configuration
 
@@ -495,7 +508,7 @@ receivers:
 
 ### Example 5: Plaintext Fallback
 
-Explicitly disable TLS:
+Let the endpoint scheme decide (no custom CA provided):
 
 ```yaml
 exporters:
@@ -503,11 +516,16 @@ exporters:
     config:
       grpc_endpoint: "http://localhost:4317"
       tls:
-        insecure: true  # Explicitly disable TLS
+        insecure: true  # Defer to the endpoint scheme when no custom CA is set
 ```
 
-**Note:** When `insecure: true` and no custom CA is configured, the
-endpoint scheme determines TLS behavior.
+**Notes:**
+
+- `insecure: true` stops a TLS block from forcing TLS when no CA material
+  is provided; HTTPS endpoints still use TLS, while HTTP endpoints stay
+  plaintext.
+- If a custom CA or client identity is configured, TLS is enabled
+  regardless of `insecure`.
 
 ## Security Best Practices
 
