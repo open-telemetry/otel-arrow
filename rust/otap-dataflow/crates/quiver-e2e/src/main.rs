@@ -35,7 +35,8 @@ use tracing_subscriber::FmtSubscriber;
 use crate::dashboard::Dashboard;
 use crate::stats::parse_duration;
 
-// Use jemalloc for accurate memory tracking
+// Use jemalloc for accurate memory tracking (not supported on Windows)
+#[cfg(not(windows))]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -228,9 +229,11 @@ fn setup_data_dir(args: &Args) -> Result<(Option<TempDir>, PathBuf), Box<dyn std
         Ok((None, dir.clone()))
     } else {
         // Use ~/.quiver-e2e/ instead of system temp dir (/tmp) which may be tmpfs
+        // On Windows, use USERPROFILE; on Unix, use HOME
         let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
             .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            .unwrap_or_else(|_| std::env::temp_dir());
         let base_dir = home.join(".quiver-e2e");
         std::fs::create_dir_all(&base_dir)?;
         let tmp = tempfile::Builder::new()

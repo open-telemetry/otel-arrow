@@ -24,12 +24,14 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 parking_lot.workspace = true
 rand.workspace = true
-tikv-jemallocator.workspace = true
-tikv-jemalloc-ctl = { workspace = true, features = ["stats"] }
 clap.workspace = true
 ratatui = "0.30"
 crossterm = "0.29"
 sysinfo = "0.37"
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator.workspace = true
+tikv-jemalloc-ctl = { workspace = true, features = ["stats"] }
 
 [lints]
 workspace = true
