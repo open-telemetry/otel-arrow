@@ -4,12 +4,12 @@ The validation test validates a OTLP message after
 experiencing various processes such as encoding/decoding
 or going through a pipeline.
 
-### Encoding/Decoding Validation
+## Encoding/Decoding Validation
 
 To validate whether encoding/decoding is working properly
 we comparing the input and output to check that they are equal
 
-### Pipeline Validation
+## Pipeline Validation
 
 To validate pipelines we create a pipeline and check
 the input and output, to confirm that the data has not
@@ -17,7 +17,7 @@ been altered, this assumes that the pipeline doesn't
 use processors that can alter the data. Soon we plan
 to support these processors in the validation test
 
-#### Adding pipelines to the validation process
+### Adding pipelines to the validation process
 
 Use the yaml configuration below to define additional
 pipelines just define non transformative processors to
