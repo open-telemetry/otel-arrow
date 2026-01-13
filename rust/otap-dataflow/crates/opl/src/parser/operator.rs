@@ -3,9 +3,10 @@
 
 use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-    DiscardDataExpression, Expression, LogicalExpression, NotLogicalExpression,
-    OutputDataExpression, OutputExpression, QueryLocation, StaticScalarExpression,
-    TransformExpression,
+    DiscardDataExpression, Expression, LogicalExpression, MapKeyRenameSelector,
+    MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
+    QueryLocation, RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+    SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
@@ -23,6 +24,7 @@ pub(crate) fn parse_operator_call(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
+            Rule::rename_operator_call => parse_rename_operator_call(rule, pipeline_builder)?,
             Rule::if_else_operator_call => parse_if_else_opeartor_call(rule, pipeline_builder)?,
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
@@ -76,15 +78,55 @@ pub(crate) fn parse_route_to_operator_call(
     Ok(())
 }
 
+pub(crate) fn parse_rename_operator_call(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&rule);
+    let inner_rules = rule.into_inner();
+    let mut keys = Vec::with_capacity(inner_rules.len());
+
+    for rule in inner_rules {
+        let (dest, source) = parse_assignment_expression(rule)?;
+        match source {
+            ScalarExpression::Source(source) => keys.push(MapKeyRenameSelector::new(
+                source.into_value_accessor(),
+                dest.into_value_accessor(),
+            )),
+            _ => {
+                todo!("invalid ")
+            }
+        }
+    }
+
+    let transform_expr = TransformExpression::RenameMapKeys(RenameMapKeysTransformExpression::new(
+        query_location.clone(),
+        MutableValueExpression::Source(SourceScalarExpression::new(
+            query_location,
+            ValueAccessor::new(),
+        )),
+        keys,
+    ));
+
+    pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
+
+    Ok(())
+}
+
 pub(crate) fn parse_set_operator_call(
     operator_call_rule: Pair<'_, Rule>,
     pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
     if let Some(rule) = operator_call_rule.into_inner().next() {
         match rule.as_rule() {
             Rule::assignment_expression => {
-                let set_expr = parse_assignment_expression(rule)?;
-                let transform_expr = TransformExpression::Set(set_expr);
+                let (dest, source) = parse_assignment_expression(rule)?;
+                let transform_expr = TransformExpression::Set(SetTransformExpression::new(
+                    query_location,
+                    source,
+                    MutableValueExpression::Source(dest),
+                ));
                 pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
             }
             invalid_rule => {
