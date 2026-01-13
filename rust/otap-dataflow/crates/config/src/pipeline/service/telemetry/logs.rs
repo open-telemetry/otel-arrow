@@ -155,8 +155,11 @@ impl LogsConfig {
     /// Validate the logs configuration.
     ///
     /// Returns an error if:
-    /// - `output` is `Noop` but a provider uses `Unbuffered`
+    /// - `output` is `Noop` but a provider uses `Immediate`
     ///   (logs would be sent but discarded)
+    /// - `engine` is `OpenTelemetry` but `global` is not
+    ///   (current implementation restriction: the SDK logger provider is only
+    ///   configured when global uses OpenTelemetry)
     pub fn validate(&self) -> Result<(), Error> {
         if self.providers.internal.needs_reporter() {
             return Err(Error::InvalidUserConfig {
@@ -175,6 +178,19 @@ impl LogsConfig {
                     error: "output mode is 'noop' but a provider uses an internal reporter".into(),
                 });
             }
+        }
+
+        // Current implementation restriction: engine OpenTelemetry requires global OpenTelemetry.
+        // The SDK logger provider is only created when the global provider is OpenTelemetry.
+        // This could be lifted in the future by creating the logger provider independently.
+        if self.providers.engine == ProviderMode::OpenTelemetry
+            && self.providers.global != ProviderMode::OpenTelemetry
+        {
+            return Err(Error::InvalidUserConfig {
+                error: "engine provider 'opentelemetry' requires global provider to also be \
+                        'opentelemetry' (current implementation restriction)"
+                    .into(),
+            });
         }
 
         Ok(())

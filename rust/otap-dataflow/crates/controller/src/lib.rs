@@ -22,7 +22,7 @@ use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::pipeline::service::telemetry::logs::{
-    INTERNAL_TELEMETRY_RECEIVER_URN, OutputMode, ProviderMode,
+    INTERNAL_TELEMETRY_RECEIVER_URN, ProviderMode,
 };
 use otap_df_config::{
     PipelineGroupId, PipelineId,
@@ -39,9 +39,9 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::logs::{EngineLogsSetup, LogsCollector};
+use otap_df_telemetry::logs::EngineLogsSetup;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::telemetry_settings::OpentelemetryClient;
+use otap_df_telemetry::telemetry_settings::TelemetrySettings;
 use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
@@ -88,7 +88,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
 
-        // Validate logs configuration
+        // Validate logs configuration.
         telemetry_config
             .logs
             .validate()
@@ -96,46 +96,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 message: msg.to_string(),
             })?;
 
-        // Create logs reporter based on provider providers.
-        // LogsReporter is needed when:
-        // - global == Unbuffered (global threads send directly to channel)
-        // - engine == Buffered or Unbuffered (engine threads send to channel)
-        // Raw provider mode = synchronous console output, no reporter needed.
-        let providers_need_reporter = telemetry_config.logs.providers.global.needs_reporter()
-            || telemetry_config.logs.providers.engine.needs_reporter();
+        // Create telemetry settings - this creates logs reporter/receiver internally
+        let mut telemetry_settings = TelemetrySettings::new(telemetry_config)?;
 
-        // Create the reporter if providers need it.
-        // The receiver end goes to either:
-        // - LogsCollector thread (output == Raw): prints to console
-        // - Internal Telemetry Receiver node (output == Internal): emits as OTLP
-        let (logs_reporter, mut logs_receiver, logs_collector_handle) = if providers_need_reporter {
-            match telemetry_config.logs.output {
-                OutputMode::Direct => {
-                    // Start collector thread for Raw output mode
-                    let (logs_collector, reporter) =
-                        LogsCollector::new(telemetry_config.reporting_channel_size);
-                    let logs_collector_handle =
-                        spawn_thread_local_task("logs-collector", move |_cancellation_token| {
-                            logs_collector.run()
-                        })?;
-                    (Some(reporter), None, Some(logs_collector_handle))
-                }
-                OutputMode::Internal => {
-                    // For Internal output, create just the channel.
-                    // The ITR node will receive from it during pipeline build.
-                    let (logs_receiver, reporter) =
-                        LogsCollector::channel(telemetry_config.reporting_channel_size);
-                    (Some(reporter), Some(logs_receiver), None)
-                }
-                OutputMode::Noop => (None, None, None),
-            }
-        } else {
-            (None, None, None)
-        };
-        // Keep the handle alive - dropping it would join the thread and block forever
-        let _logs_collector_handle = logs_collector_handle;
+        // Start the logs collector thread if needed (Direct output mode)
+        let _logs_collector_handle =
+            if let Some(logs_collector) = telemetry_settings.take_logs_collector() {
+                Some(spawn_thread_local_task(
+                    "logs-collector",
+                    move |_cancellation_token| logs_collector.run(),
+                )?)
+            } else {
+                None
+            };
 
-        let telemetry_settings = OpentelemetryClient::new(telemetry_config, logs_reporter.clone())?;
+        // Get logs receiver for Internal output mode (passed to internal pipeline)
+        let mut logs_receiver = telemetry_settings.take_logs_receiver();
+
         let metrics_system = MetricsSystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -167,16 +144,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        // Create engine logs setup based on strategy configuration.
-        // When output is Internal, the logs go through the channel to ITR.
-        // The validation layer ensures that when output=Internal, engine strategy is Buffered.
+        // Create engine logs setup based on provider configuration.
         let engine_logs_setup = match telemetry_config.logs.providers.engine {
             ProviderMode::Noop => EngineLogsSetup::Noop,
             ProviderMode::Raw => EngineLogsSetup::Raw,
             ProviderMode::Immediate => EngineLogsSetup::Immediate {
-                reporter: logs_reporter
-                    .clone()
-                    .expect("validated: unbuffered requires reporter"),
+                reporter: telemetry_settings
+                    .logs_reporter()
+                    .cloned()
+                    .expect("validated: immediate requires reporter"),
             },
             ProviderMode::OpenTelemetry => EngineLogsSetup::OpenTelemetry {
                 logger_provider: telemetry_settings
