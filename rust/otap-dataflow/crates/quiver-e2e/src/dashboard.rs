@@ -59,10 +59,7 @@ fn read_process_syscalls() -> (u64, u64) {
     const IO_BLOCK_SIZE: u64 = 4096;
     let mut sys = System::new();
     let pid = Pid::from_u32(std::process::id());
-    let _ = sys.refresh_processes(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-    );
+    let _ = sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     if let Some(proc) = sys.process(pid) {
         let usage = proc.disk_usage();
         // Convert bytes to estimated operations (divide by 4KB block size)
@@ -80,6 +77,7 @@ fn read_process_syscalls() -> (u64, u64) {
 /// Returns (minflt, majflt) where:
 /// - minflt: minor page faults (page in memory, just needed mapping)
 /// - majflt: major page faults (page read from disk - relevant for mmap I/O)
+///
 /// Note: Windows only provides a single PageFaultCount, returned as (pagefaults, 0).
 #[cfg(not(windows))]
 fn read_process_page_faults() -> (u64, u64) {
