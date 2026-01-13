@@ -265,8 +265,8 @@ Unlike receivers, hot-reload is not currently supported.
 
 **Scheme-Driven Defaults**:
 
-- `https://` → TLS is enabled with system CAs
-- `http://` → Plaintext (no TLS)
+- `https://` -> TLS is enabled with system CAs
+- `http://` -> Plaintext (no TLS)
 - Explicit `tls` block overrides scheme defaults
 
 **Trust Anchor Management**:
