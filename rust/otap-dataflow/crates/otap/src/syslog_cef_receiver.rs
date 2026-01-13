@@ -525,11 +525,10 @@ mod tests {
         #[allow(dead_code)]
         fn new(config: Config) -> Self {
             // Create a standalone metrics set for tests (not bound to a pipeline)
-            let handle = otap_df_telemetry::registry::MetricsRegistryHandle::new();
-            let metric_set =
-                handle.register::<SyslogCefReceiverMetrics>(
-                    otap_df_telemetry::testing::EmptyAttributes(),
-                );
+            let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+            let metric_set = telemetry_registry.register_metric_set::<SyslogCefReceiverMetrics>(
+                otap_df_telemetry::testing::EmptyAttributes(),
+            );
             SyslogCefReceiver {
                 config,
                 metrics: Rc::new(RefCell::new(metric_set)),
@@ -1138,7 +1137,7 @@ mod telemetry_tests {
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::receiver::Receiver;
     use otap_df_engine::testing::{setup_test_runtime, test_node};
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::time::Instant;
     use tokio::net::UdpSocket;
@@ -1149,8 +1148,8 @@ mod telemetry_tests {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
             // Build pipeline context to register metrics on the receiver
-            let registry = MetricsRegistryHandle::new();
-            let controller = ControllerContext::new(registry.clone());
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
                 otap_df_config::PipelineGroupId::from("test-group".to_string()),
                 otap_df_config::PipelineId::from("test-pipeline".to_string()),
@@ -1242,8 +1241,8 @@ mod telemetry_tests {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
             // Build pipeline context
-            let registry = MetricsRegistryHandle::new();
-            let controller = ControllerContext::new(registry.clone());
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
             let pipeline = controller.pipeline_context_with(
                 otap_df_config::PipelineGroupId::from("grp".to_string()),
                 otap_df_config::PipelineId::from("pipe".to_string()),
