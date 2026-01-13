@@ -246,8 +246,8 @@ mod test {
             "query": query
         });
 
-        let metrics_registry_handle = runtime.metrics_registry();
-        let controller_context = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = runtime.metrics_registry();
+        let controller_context = ControllerContext::new(telemetry_registry_handle);
         let pipeline_context =
             controller_context.pipeline_context_with("group_id".into(), "pipeline_id".into(), 0, 0);
         let node_id = test_node("transform-processor");
@@ -278,7 +278,7 @@ mod test {
     #[test]
     fn test_simple_transform_pipeline() {
         let runtime = TestRuntime::<OtapPdata>::new();
-        let registry = runtime.metrics_registry();
+        let telemetry_registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
         let query = "logs | where severity_text == \"ERROR\"";
         let processor = try_create_with_query(query, &runtime).expect("created processor");
@@ -347,7 +347,7 @@ mod test {
 
                 let mut msgs_transformed = 0;
                 let mut msgs_transform_failed = 0;
-                registry.visit_current_metrics(|desc, _attrs, iter| {
+                telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
                     if desc.name == "transform.processor" {
                         for (field, v) in iter {
                             let val = v.to_u64_lossy();

@@ -10,7 +10,7 @@ use crate::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
 #[derive(Clone, Debug)]
 pub struct MetricsReporter {
     /// The sender for reporting metrics.
-    /// The message is a tuple of (MetricsKey, MultivariateMetrics).
+    /// The message is a tuple of (MetricSetKey, MultivariateMetrics).
     /// The metrics key is the aggregation key for the metrics,
     metrics_sender: flume::Sender<MetricSetSnapshot>,
 }

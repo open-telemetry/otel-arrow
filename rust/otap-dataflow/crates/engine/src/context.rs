@@ -9,7 +9,7 @@ use crate::attributes::{
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use std::fmt::Debug;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
@@ -83,7 +83,7 @@ static CONTAINER_ID: LazyLock<Cow<'static, str>> =
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
-    metrics_registry_handle: MetricsRegistryHandle,
+    telemetry_registry_handle: TelemetryRegistryHandle,
     process_instance_id: Cow<'static, str>,
     host_id: Cow<'static, str>,
     container_id: Cow<'static, str>,
@@ -105,9 +105,9 @@ pub struct PipelineContext {
 
 impl ControllerContext {
     /// Creates a new `ControllerContext`.
-    pub fn new(metrics_registry_handle: MetricsRegistryHandle) -> Self {
+    pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
         Self {
-            metrics_registry_handle,
+            telemetry_registry_handle,
             process_instance_id: PROCESS_INSTANCE_ID.clone(),
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
@@ -180,8 +180,8 @@ impl PipelineContext {
         &self,
     ) -> MetricSet<T> {
         self.controller_context
-            .metrics_registry_handle
-            .register::<T>(self.node_attribute_set())
+            .telemetry_registry_handle
+            .register_metric_set::<T>(self.node_attribute_set())
     }
 
     /// Returns the node attribute set for the current node context.
@@ -230,8 +230,8 @@ impl PipelineContext {
 
     /// Returns a metrics registry handle.
     #[must_use]
-    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
-        self.controller_context.metrics_registry_handle.clone()
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
+        self.controller_context.telemetry_registry_handle.clone()
     }
 
     /// Returns a new pipeline context with the given node identifiers.

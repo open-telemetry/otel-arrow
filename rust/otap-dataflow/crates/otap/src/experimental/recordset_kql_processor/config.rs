@@ -19,13 +19,13 @@ mod tests {
 
     use super::*;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
     fn create_test_pipeline_context() -> PipelineContext {
-        let metrics_registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
     }
 
