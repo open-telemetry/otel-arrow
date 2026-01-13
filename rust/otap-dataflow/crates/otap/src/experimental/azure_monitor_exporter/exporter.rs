@@ -167,7 +167,7 @@ impl AzureMonitorExporter {
         let next_token_refresh = token_valid_until - token_expiry_buffer;
         max(
             next_token_refresh,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            tokio::time::Instant::now() + tokio::time::Duration::from_secs(30),
         )
     }
 
@@ -297,6 +297,52 @@ impl AzureMonitorExporter {
         }
     }
 
+    async fn try_refresh_token(&mut self, auth: &Auth) -> AccessToken {
+        let min_delay_secs = 5.0_f64;
+        let max_delay_secs = 30.0_f64;
+        let max_jitter_perc = 0.10_f64; // 10% as decimal
+
+        let mut attempt = 0_i32;
+        loop {
+            attempt += 1;
+
+            match auth.get_token().await {
+                Ok(token) => {
+                    println!(
+                        "[AzureMonitorExporter] Obtained access token, expires on {}",
+                        token.expires_on
+                    );
+                    return token;
+                }
+                Err(e) => {
+                    println!(
+                        "[AzureMonitorExporter] Failed to obtain access token (attempt {}): {e}",
+                        attempt
+                    );
+                }
+            }
+
+            // Calculate exponential backoff: 5s, 10s, 20s, 30s (capped)
+            let base_delay_secs = min_delay_secs * 2.0_f64.powi(attempt - 1);
+            let capped_delay_secs = base_delay_secs.min(max_delay_secs);
+
+            // Add jitter: random value between -max_jitter_perc% and +max_jitter_perc% of the delay
+            let jitter_range = capped_delay_secs * max_jitter_perc;
+            let jitter = if jitter_range > 0.0 {
+                let random_factor = rand::random::<f64>() * 2.0 - 1.0;
+                random_factor * jitter_range
+            } else {
+                0.0
+            };
+
+            let delay_secs = (capped_delay_secs + jitter).max(1.0);
+            let delay = tokio::time::Duration::from_secs_f64(delay_secs);
+
+            println!("[AzureMonitorExporter] Retrying in {:.1}s...", delay_secs);
+            tokio::time::sleep(delay).await;
+        }
+    }
+
     async fn handle_shutdown(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
@@ -410,14 +456,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             message: format!("Failed to create auth handler: {e}"),
         })?;
 
-        let token = auth.get_token().await.map_err(|e| Error::InternalError {
-            message: format!("Failed to refresh token: {e}"),
-        })?;
-
+        let token = self.try_refresh_token(&auth).await;
         self.client_pool
             .initialize(&self.config.api, &auth)
             .await
             .expect("Failed to initialize client pool");
+
         let mut next_token_refresh = Self::get_next_token_refresh(token);
         let mut next_stats_print =
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
@@ -432,11 +476,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 biased;
 
                 _ = tokio::time::sleep_until(next_token_refresh) => {
-                    let token = auth.get_token()
-                        .await
-                        .map_err(|e| Error::InternalError { message: format!("Failed to refresh token: {e}") })?;
-
-                    next_token_refresh = Self::get_next_token_refresh(token);
+                    let new_token = self.try_refresh_token(&auth).await;
+                    next_token_refresh = Self::get_next_token_refresh(new_token);
                 }
 
                 completed = self.in_flight_exports.next_completion() => {
