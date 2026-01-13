@@ -19,6 +19,15 @@ nodes:
         signals_per_second: 1000
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+  internal_telemetry:
+    kind: receiver
+    plugin_urn: "urn:otel:internal:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - debug
+        dispatch_strategy: round_robin
+    config: {}
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
@@ -32,14 +41,13 @@ nodes:
   noop:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
-    config:
+    config: {}
 
 service:
   telemetry:
     logs:
-      # The default level is "info".
       level: "debug"
       strategies:
         global: unbuffered
         engine: buffered
-      output: raw
+      output: internal

@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Internal Telemetry Receiver node URN for internal logging using OTLP bytes.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:otlp:telemetry:receiver";
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal:otlp:receiver";
 
 /// Internal logs configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
