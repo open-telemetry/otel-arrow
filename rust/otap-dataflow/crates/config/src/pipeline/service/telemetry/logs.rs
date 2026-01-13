@@ -103,20 +103,22 @@ pub enum OutputMode {
     /// OpenTelemetry settings.
     Noop,
 
-    /// Raw logging: format and print directly to console
-    /// (stdout/stderr) from the logs collector thread.  ERROR and
-    /// WARN go to stderr, others to stdout.
+    /// Direct console logging: format and print directly to console
+    /// (stdout/stderr) from the logs collector thread, bypasses any
+    /// internal use of the dataflow engine.  ERROR and WARN go to
+    /// stderr, others to stdout.
     #[default]
-    Raw,
+    Direct,
 
     /// Route to Internal Telemetry Receiver node.  The pipeline must
     /// include a nod with INTERNAL_TELEMETRY_RECEIVER_URN.  The
     /// engine provider mode must be Buffered for internal output.
+    /// This will become default.
     Internal,
 }
 
 fn default_output() -> OutputMode {
-    OutputMode::Raw
+    OutputMode::Direct
 }
 
 fn default_level() -> LogLevel {

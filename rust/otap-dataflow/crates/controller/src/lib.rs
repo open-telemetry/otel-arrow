@@ -114,7 +114,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // - Internal Telemetry Receiver node (output == Internal): emits as OTLP
         let (logs_reporter, logs_receiver, logs_collector_handle) = if providers_need_reporter {
             match telemetry_config.logs.output {
-                OutputMode::Raw => {
+                OutputMode::Direct => {
                     // Start collector thread for Raw output mode
                     let (logs_collector, reporter) =
                         LogsCollector::new(telemetry_config.reporting_channel_size);

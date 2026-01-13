@@ -34,7 +34,6 @@ use otap_df_pdata::proto::opentelemetry::{
     trace::v1::TracesData,
 };
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
@@ -374,12 +373,11 @@ impl DebugProcessor {
             .metric_datapoints_consumed
             .add(data_points as u64);
 
-        otel_info!(
-            name: "debug.received.metrics",
-            resource_metrics = resource_metrics,
-            metrics = metrics,
-            data_points = data_points
+        let report_basic = format!(
+            "Received {resource_metrics} resource metrics\nReceived {metrics} metrics\nReceived {data_points} data points\n"
         );
+
+        debug_output.output_message(report_basic.as_str()).await?;
 
         // return early if don't need to output anymore information
         if debug_output.is_basic() {
@@ -425,13 +423,11 @@ impl DebugProcessor {
         self.metrics.span_events_consumed.add(events as u64);
         self.metrics.span_links_consumed.add(links as u64);
 
-        otel_info!(
-            name: "debug.received.traces",
-            resource_spans = resource_spans,
-            spans = spans,
-            events = events,
-            links = links
+        let report_basic = format!(
+            "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
         );
+
+        debug_output.output_message(report_basic.as_str()).await?;
         // return early if don't need to output anymore information
         if debug_output.is_basic() {
             return Ok(());
@@ -472,12 +468,11 @@ impl DebugProcessor {
         self.metrics.log_signals_consumed.add(log_records as u64);
         self.metrics.events_consumed.add(events);
 
-        otel_info!(
-            name: "debug.received.logs",
-            resource_logs = resource_logs,
-            log_records = log_records,
-            events = events
+        let report_basic = format!(
+            "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
         );
+
+        debug_output.output_message(report_basic.as_str()).await?;
 
         // return early if don't need to output anymore information
         if debug_output.is_basic() {
