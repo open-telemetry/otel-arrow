@@ -98,8 +98,9 @@ impl std::error::Error for BudgetConfigError {}
 /// Callback type for reclaiming space when using `DropOldest` policy.
 ///
 /// The callback receives the number of bytes needed and should attempt to
-/// free at least that much space by deleting old segments.
-pub type ReclaimCallback = Box<dyn Fn(u64) + Send + Sync>;
+/// free at least that much space by deleting old segments. Returns the
+/// number of bytes actually freed (0 if no space could be reclaimed).
+pub type ReclaimCallback = Box<dyn Fn(u64) -> u64 + Send + Sync>;
 
 /// Callback type for cleanup (completed segments only, no data loss).
 ///
@@ -325,10 +326,11 @@ impl DiskBudget {
     ///
     /// The callback is invoked when a reservation would exceed the cap and
     /// the policy is `DropOldest`. It receives the number of bytes needed
-    /// and should attempt to free space by deleting old segments.
+    /// and should attempt to free space by deleting old segments. Returns
+    /// the number of bytes actually freed (0 if no space could be reclaimed).
     pub fn set_reclaim_callback<F>(&self, callback: F)
     where
-        F: Fn(u64) + Send + Sync + 'static,
+        F: Fn(u64) -> u64 + Send + Sync + 'static,
     {
         *self.reclaim_callback.lock() = Some(Box::new(callback));
     }
@@ -396,9 +398,17 @@ impl DiskBudget {
                         // Try to reclaim space
                         let needed = new_used - self.cap;
                         if let Some(callback) = self.reclaim_callback.lock().as_ref() {
-                            callback(needed);
-                            // Retry after reclaim attempt
-                            continue;
+                            let freed = callback(needed);
+                            if freed > 0 {
+                                // Reclaim freed some space, retry the reservation
+                                continue;
+                            }
+                            // Reclaim couldn't free any space, fall back to backpressure
+                            return Err(QuiverError::StorageAtCapacity {
+                                requested: bytes,
+                                available: self.cap.saturating_sub(current),
+                                cap: self.cap,
+                            });
                         } else {
                             // No callback registered, fall back to backpressure
                             return Err(QuiverError::StorageAtCapacity {
@@ -617,7 +627,11 @@ mod tests {
             let _ = reclaim_count_clone.fetch_add(1, Ordering::Relaxed);
             // Simulate reclaiming by releasing from budget
             if let Some(b) = budget_for_callback.upgrade() {
-                b.release(needed.min(500)); // Release up to 500 bytes
+                let to_release = needed.min(500); // Release up to 500 bytes
+                b.release(to_release);
+                to_release
+            } else {
+                0
             }
         });
 
@@ -625,6 +639,34 @@ mod tests {
         let pending = budget.try_reserve(200).unwrap();
         assert!(reclaim_count.load(Ordering::Relaxed) >= 1);
         pending.commit(200);
+    }
+
+    #[test]
+    fn drop_oldest_returns_backpressure_when_reclaim_fails() {
+        use std::sync::atomic::AtomicUsize;
+
+        let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::DropOldest));
+        budget.record_existing(900);
+
+        let reclaim_count = Arc::new(AtomicUsize::new(0));
+        let reclaim_count_clone = reclaim_count.clone();
+
+        // This callback doesn't free any space, simulating a failed reclaim
+        budget.set_reclaim_callback(move |_needed| {
+            let _ = reclaim_count_clone.fetch_add(1, Ordering::Relaxed);
+            0 // No space freed
+        });
+
+        // This would exceed cap, reclaim will be tried but returns 0
+        // So we should get a backpressure error (not an infinite loop)
+        let result = budget.try_reserve(200);
+        assert!(result.is_err());
+        match result {
+            Err(QuiverError::StorageAtCapacity { .. }) => {} // Expected
+            _ => panic!("Expected StorageAtCapacity error"),
+        }
+        // Callback was invoked exactly once (no infinite retry)
+        assert_eq!(reclaim_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]

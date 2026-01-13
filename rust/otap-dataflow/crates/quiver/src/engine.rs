@@ -305,17 +305,29 @@ impl QuiverEngine {
         // Wire up reclaim callback for DropOldest policy
         // This enables automatic cleanup when disk budget is exceeded
         let engine_weak = Arc::downgrade(&engine);
+        let budget_weak = Arc::downgrade(&budget);
         budget.set_reclaim_callback(move |_needed_bytes| {
-            if let Some(engine) = engine_weak.upgrade() {
-                // First try to clean up completed segments
-                let completed = engine.cleanup_completed_segments().unwrap_or(0);
+            let Some(engine) = engine_weak.upgrade() else {
+                return 0;
+            };
+            let Some(budget) = budget_weak.upgrade() else {
+                return 0;
+            };
 
-                // If that didn't help, force-drop oldest pending segments
-                // that have no active readers
-                if completed == 0 {
-                    let _ = engine.force_drop_oldest_pending_segments();
-                }
+            // Track how much space we free
+            let used_before = budget.used();
+
+            // First try to clean up completed segments
+            let completed = engine.cleanup_completed_segments().unwrap_or(0);
+
+            // If that didn't help, force-drop oldest pending segments
+            // that have no active readers
+            if completed == 0 {
+                let _ = engine.force_drop_oldest_pending_segments();
             }
+
+            // Return how many bytes we freed
+            used_before.saturating_sub(budget.used())
         });
 
         Ok(engine)
