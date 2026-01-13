@@ -67,7 +67,7 @@ impl<T> LocalSender<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelSenderMetrics>(attrs);
+            .register_metric_set::<ChannelSenderMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
@@ -100,7 +100,7 @@ impl<T> LocalSender<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelSenderMetrics>(attrs);
+            .register_metric_set::<ChannelSenderMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
@@ -199,7 +199,7 @@ impl<T> LocalReceiver<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelReceiverMetrics>(attrs);
+            .register_metric_set::<ChannelReceiverMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));
@@ -236,7 +236,7 @@ impl<T> LocalReceiver<T> {
         );
         let metrics = pipeline_ctx
             .metrics_registry()
-            .register::<ChannelReceiverMetrics>(attrs);
+            .register_metric_set::<ChannelReceiverMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));
