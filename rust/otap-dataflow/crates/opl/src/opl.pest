@@ -134,12 +134,21 @@ source = {
     "logs" | "metrics" | "traces" | "signals"
 }
 
+assignment_expression = {
+    (attribute_selection_expression | index_expression | identifier_expression) ~ "=" ~ expression
+}
+
+set_operator_call = {
+    ("set" | "extend") ~ assignment_expression
+}
+
 where_operator_call = {
     "where" ~ expression
 }
 
 operator_call = {
-    where_operator_call
+    set_operator_call
+  | where_operator_call
 }
 
 pipeline_stage = {
