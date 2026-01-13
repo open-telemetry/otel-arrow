@@ -290,8 +290,8 @@ exporters:
 
 **Behavior:**
 
-- `https://` -> TLS enabled with system root CAs
-- `http://` -> Plaintext (no TLS)
+- `https://` → TLS is enabled with system root CAs
+- `http://` → Plaintext (no TLS)
 
 #### Custom CA Certificate
 

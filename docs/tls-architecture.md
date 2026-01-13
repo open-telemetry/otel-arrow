@@ -56,16 +56,16 @@ use atomic pointer loads, providing consistent performance under load.
 
 ### 3. Secure by Default
 
-- TLS automatically enabled for `https://` endpoints
+- TLS is automatically enabled for `https://` endpoints
 - Certificate verification cannot be disabled
-- System CA certificates included by default
+- System CA certificates are included by default
 - Handshake timeouts prevent DoS attacks
 
 ### 4. Performance Conscious
 
 - **NUMA Local**: Unique TLS resolver instance per receiver (per-core design)
   to minimize cross-NUMA traffic.
-- **Concurrent Processing**: Up to 64 parallel handshakes prevented
+- **Concurrent Processing**: Up to 64 parallel handshakes prevent
   head-of-line blocking.
 - **Minimal Overhead**: Hot path involves single atomic pointer loads
   (~3-10ns).
@@ -260,8 +260,8 @@ Unlike receivers, hot-reload is not currently supported.
 
 **Scheme-Driven Defaults**:
 
-- `https://` -> TLS enabled with system CAs
-- `http://` -> Plaintext (no TLS)
+- `https://` → TLS is enabled with system CAs
+- `http://` → Plaintext (no TLS)
 - Explicit `tls` block overrides scheme defaults
 
 **Trust Anchor Management**:
