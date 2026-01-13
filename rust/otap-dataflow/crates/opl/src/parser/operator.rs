@@ -93,8 +93,13 @@ pub(crate) fn parse_rename_operator_call(
                 source.into_value_accessor(),
                 dest.into_value_accessor(),
             )),
-            _ => {
-                todo!("invalid ")
+            other => {
+                return Err(ParserError::SyntaxNotSupported(
+                    query_location,
+                    format!(
+                        "rename operator call only supports assignment from source. Found {other:?}"
+                    ),
+                ));
             }
         }
     }
