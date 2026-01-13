@@ -57,6 +57,6 @@ service:
     logs:
       level: "debug"
       providers:
-        global: unbuffered
-        engine: buffered
-      output: raw
+        global: immediate
+        engine: immediate
+      output: direct
