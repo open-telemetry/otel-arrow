@@ -1,0 +1,194 @@
+name: Nightly - 100kLRPS Batch Size Variations
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 2-2
+      prometheus:
+        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "3-3"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 3-3
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "1-1"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1  # Matches core-id-range: 1-1
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  # OTLP -> OTLP tests with varying batch sizes
+  - name: OTLP-ATTR-OTLP-BATCH1000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        max_batch_size: 1000
+        observation_interval: 60
+  - name: OTLP-ATTR-OTLP-BATCH5000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        max_batch_size: 5000
+        observation_interval: 60
+  - name: OTLP-ATTR-OTLP-BATCH10000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        max_batch_size: 10000
+        observation_interval: 60
+
+  # OTLP -> OTAP tests with varying batch sizes
+  - name: OTLP-ATTR-OTAP-BATCH1000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otap.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otap
+        max_batch_size: 1000
+        observation_interval: 60
+  - name: OTLP-ATTR-OTAP-BATCH5000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otap.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otap
+        max_batch_size: 5000
+        observation_interval: 60
+  - name: OTLP-ATTR-OTAP-BATCH10000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otlp-attr-otap.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otap
+        max_batch_size: 10000
+        observation_interval: 60
+
+  # OTAP -> OTAP tests with varying batch sizes
+  - name: OTAP-ATTR-OTAP-BATCH1000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        max_batch_size: 1000
+        observation_interval: 60
+  - name: OTAP-ATTR-OTAP-BATCH5000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        max_batch_size: 5000
+        observation_interval: 60
+  - name: OTAP-ATTR-OTAP-BATCH10000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otap
+        max_batch_size: 10000
+        observation_interval: 60
+
+  # OTAP -> OTLP tests with varying batch sizes
+  - name: OTAP-ATTR-OTLP-BATCH1000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp
+        max_batch_size: 1000
+        observation_interval: 60
+  - name: OTAP-ATTR-OTLP-BATCH5000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp
+        max_batch_size: 5000
+        observation_interval: 60
+  - name: OTAP-ATTR-OTLP-BATCH10000
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: nightly_100klrps_batch_sizes
+        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otlp.yaml
+        loadgen_exporter_type: otap
+        backend_receiver_type: otlp
+        max_batch_size: 10000
+        observation_interval: 60
