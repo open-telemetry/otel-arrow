@@ -286,8 +286,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<P
         while let Ok(Some(message_data)) =
             timeout(Duration::from_millis(100), receiver.recv()).await
         {
-            let message: OTLPData = message_data.into();
-            let proto_message = match message {
+            let proto_message = match message_data {
                 OTLPData::Logs(logs) => OtlpProtoMessage::Logs(logs.into()),
                 OTLPData::Metrics(metrics) => OtlpProtoMessage::Metrics(metrics.into()),
                 OTLPData::Traces(traces) => OtlpProtoMessage::Traces(traces.into()),
