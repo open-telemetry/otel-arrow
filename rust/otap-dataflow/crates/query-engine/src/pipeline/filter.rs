@@ -2780,7 +2780,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_by_scope_oql_parser() {
+    async fn test_filter_by_scope_opl_parser() {
         test_filter_by_scope::<OplParser>().await;
     }
 
