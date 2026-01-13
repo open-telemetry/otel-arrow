@@ -2113,8 +2113,7 @@ mod test {
         );
     }
 
-    #[tokio::test]
-    async fn test_filter_by_resources() {
+    async fn test_filter_by_resources<P: Parser>() {
         let input = LogsData {
             resource_logs: vec![
                 ResourceLogs {
@@ -2145,7 +2144,7 @@ mod test {
         };
 
         // test filter by resource properties
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where resource.schema_url == \"schema1\"",
             input.clone(),
         )
@@ -2158,7 +2157,7 @@ mod test {
         );
 
         // test same as above, but with the literal on the right
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where \"schema2\" == resource.schema_url",
             input.clone(),
         )
@@ -2171,7 +2170,7 @@ mod test {
         );
 
         // test filter by resource attributes
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where resource.attributes[\"x\"] == \"a\"",
             input.clone(),
         )
@@ -2182,6 +2181,16 @@ mod test {
                 resource_logs: vec![input.resource_logs[0].clone()],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_resources_kql_parser() {
+        test_filter_by_resources::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_resources_opl_parser() {
+        test_filter_by_resources::<OplParser>().await;
     }
 
     async fn test_simple_filter_traces<P: Parser>() {
@@ -2681,8 +2690,7 @@ mod test {
         test_removes_child_record_batch_if_parent_fully_filtered_out::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_filter_by_scope() {
+    async fn test_filter_by_scope<P: Parser>() {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -2715,7 +2723,7 @@ mod test {
         };
 
         // test filter by resource properties
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where instrumentation_scope.name == \"name1\"",
             input.clone(),
         )
@@ -2732,7 +2740,7 @@ mod test {
         );
 
         // test same as above, but with the literal on the right
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where \"name2\" == instrumentation_scope.name",
             input.clone(),
         )
@@ -2749,7 +2757,7 @@ mod test {
         );
 
         // test filter by resource attributes
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where instrumentation_scope.attributes[\"x\"] == \"a\"",
             input.clone(),
         )
@@ -2764,6 +2772,16 @@ mod test {
                 }],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_scope_kql_parser() {
+        test_filter_by_scope::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_by_scope_oql_parser() {
+        test_filter_by_scope::<OplParser>().await;
     }
 
     async fn test_filter_with_and<P: Parser>() {
@@ -3327,8 +3345,7 @@ mod test {
         test_empty_batch::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_filter_no_attrs() {
+    async fn test_filter_no_attrs<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3345,7 +3362,7 @@ mod test {
         ];
 
         // check that if there are no attributes to filter by then, we get the empty batch
-        let parser_result = KqlParser::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
+        let parser_result = P::parse("logs | where attributes[\"a\"] == \"1234\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3355,7 +3372,7 @@ mod test {
 
         // check that the same result happens when filtering by resource and scope attrs
         let parser_result =
-            KqlParser::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
+            P::parse("logs | where resource.attributes[\"a\"] == \"1234\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3365,8 +3382,7 @@ mod test {
 
         // check that the same result happens when filtering by resource and scope attrs
         let parser_result =
-            KqlParser::parse("logs | where instrumentation_scope.attributes[\"a\"] == \"1234\"")
-                .unwrap();
+            P::parse("logs | where instrumentation_scope.attributes[\"a\"] == \"1234\"").unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3380,12 +3396,22 @@ mod test {
             "logs | where not(resource.attributes[\"a\"] == \"1234\")",
             "logs | where not(instrumentation_scope.attributes[\"a\"] == \"1234\")",
         ] {
-            let parser_result = KqlParser::parse(inverted_attrs_filter).unwrap();
+            let parser_result = P::parse(inverted_attrs_filter).unwrap();
             let mut pipeline = Pipeline::new(parser_result.pipeline);
             let input = to_otap_logs(log_records.clone());
             let result = pipeline.execute(input.clone()).await.unwrap();
             assert_eq!(result, input);
         }
+    }
+
+    #[tokio::test]
+    async fn test_filter_no_attrs_kql_parser() {
+        test_filter_no_attrs::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_no_attrs_opl_parser() {
+        test_filter_no_attrs::<OplParser>().await;
     }
 
     #[tokio::test]

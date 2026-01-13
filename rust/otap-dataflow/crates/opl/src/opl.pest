@@ -49,13 +49,13 @@ index_expression = {
 }
 
 attribute_selection_expression = {
-    identifier_expression ~ ("." ~ identifier_expression)+
+    identifier_expression ~ ("." ~ member_expression)+
 }
 
 member_expression = {
     index_expression
-    | primitive_expression
     | attribute_selection_expression
+    | primitive_expression
     // TODO function calls
 }
 

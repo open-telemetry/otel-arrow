@@ -339,6 +339,10 @@ impl SourceScalarExpression {
         &mut self.accessor
     }
 
+    pub fn into_value_accessor(self) -> ValueAccessor {
+        self.accessor
+    }
+
     pub fn get_value_type(&self) -> Option<ValueType> {
         self.value_type.clone()
     }
