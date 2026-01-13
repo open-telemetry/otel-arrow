@@ -283,6 +283,8 @@ pub struct PipelineSettings {
     pub default_pdata_channel_size: usize,
 
     /// Observed state settings.
+    ///
+    /// TODO: consider this internal logging configuration?
     #[serde(default)]
     pub observed_state: ObservedStateSettings,
 
@@ -297,6 +299,11 @@ pub struct PipelineSettings {
     ///
     /// This is distinct from `service.telemetry`, which configures exporting of OpenTelemetry
     /// signals to external backends.
+    ///
+    /// TODO: fix the overlap with service::telemetry! This has only
+    /// metric configuration That has OpenTelemetry-declarative mixed
+    /// with this PR's LoggingProviders{3xProviderMode} and OutputMode
+    /// choics.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
 }
@@ -501,15 +508,7 @@ impl PipelineConfig {
     /// Extracts the internal pipeline as a separate, independent `PipelineConfig`.
     ///
     /// This creates a complete pipeline configuration from the internal nodes,
-    /// with hardcoded settings appropriate for internal telemetry processing:
-    /// - Smaller channel sizes (suitable for single-threaded operation)
-    /// - Minimal telemetry overhead (no internal metrics to avoid feedback loops)
-    ///
-    /// Returns `None` if no internal pipeline is configured.
-    ///
-    /// The returned config has its own NodeId namespace - completely separate
-    /// from the main pipeline. The only connection between main and internal
-    /// pipelines is through the LogsReporter/LogsReceiver channel.
+    /// with hardcoded settings appropriate for internal telemetry processing.
     #[must_use]
     pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
         if self.internal.is_empty() {
@@ -520,16 +519,14 @@ impl PipelineConfig {
             r#type: self.r#type.clone(),
             settings: Self::internal_pipeline_settings(),
             nodes: self.internal.clone(),
-            internal: PipelineNodes::default(), // Internal pipeline has no nested internal
-            service: ServiceConfig::default(),  // Minimal service config
+            internal: PipelineNodes::default(),
+            service: ServiceConfig::default(),
         })
     }
 
     /// Returns hardcoded settings for the internal telemetry pipeline.
     ///
-    /// These settings are optimized for single-threaded internal telemetry:
-    /// - Smaller channel sizes (50 instead of 100)
-    /// - Telemetry capture disabled to avoid feedback loops
+    /// TODO: these are hard-coded, add configurability.
     #[must_use]
     pub fn internal_pipeline_settings() -> PipelineSettings {
         PipelineSettings {
@@ -539,7 +536,6 @@ impl PipelineConfig {
             observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
             telemetry: TelemetrySettings {
-                // Disable internal metrics for the internal pipeline to avoid feedback
                 pipeline_metrics: false,
                 tokio_metrics: false,
                 channel_metrics: false,

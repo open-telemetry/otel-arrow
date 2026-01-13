@@ -531,7 +531,7 @@ mod tests {
         resource::v1::Resource,
     };
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
 
@@ -599,8 +599,8 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -682,8 +682,8 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -767,8 +767,8 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -843,8 +843,8 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -923,8 +923,8 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -1002,8 +1002,8 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -1063,7 +1063,7 @@ mod telemetry_tests {
         use std::sync::Arc;
 
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
-        let registry = rt.metrics_registry();
+        let telemetry_registry = rt.metrics_registry();
         let metrics_reporter = rt.metrics_reporter();
 
         // 2) Pipeline context sharing the same registry handle
@@ -1160,7 +1160,7 @@ mod telemetry_tests {
                 let mut found_deleted_entries = false;
                 let mut found_domain_signal = false;
 
-                registry.visit_current_metrics(|desc, _attrs, iter| {
+                telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
                     if desc.name == "attributes.processor.metrics" {
                         for (field, v) in iter {
                             match (field.name, v.to_u64_lossy()) {

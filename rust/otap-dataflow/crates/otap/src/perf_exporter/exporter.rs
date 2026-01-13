@@ -281,7 +281,7 @@ mod tests {
     use otap_df_engine::testing::test_node;
     use otap_df_pdata::Consumer;
     use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::future::Future;
     use std::ops::Add;
     use std::sync::Arc;
@@ -366,7 +366,7 @@ mod tests {
 
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
-        metrics_registry_handle: MetricsRegistryHandle,
+        telemetry_registry_handle: TelemetryRegistryHandle,
     ) -> impl FnOnce(
         TestContext<OtapPdata>,
         Result<(), Error>,
@@ -375,7 +375,7 @@ mod tests {
             Box::pin(async move {
                 assert!(exporter_result.is_ok());
 
-                metrics_registry_handle.visit_current_metrics(
+                telemetry_registry_handle.visit_current_metrics(
                     |_metrics_descriptor, _attrs, _metric_values| {
                         // ToDo Check the counters, once the timer tick control message is implemented in the test infrastructure.
                     },
@@ -389,8 +389,8 @@ mod tests {
         let test_runtime = TestRuntime::new();
         let config = Config::new(1000, 0.3, true, true, true, true, true);
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         let exporter = ExporterWrapper::local(
@@ -403,6 +403,6 @@ mod tests {
         test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
-            .run_validation(validation_procedure(metrics_registry_handle));
+            .run_validation(validation_procedure(telemetry_registry_handle));
     }
 }

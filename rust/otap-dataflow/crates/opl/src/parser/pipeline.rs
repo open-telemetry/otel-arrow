@@ -1,11 +1,33 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use data_engine_expressions::DataExpression;
 use data_engine_parser_abstractions::{ParserError, ParserState, to_query_location};
 use pest::iterators::Pair;
 
 use crate::parser::operator::parse_operator_call;
 use crate::parser::{Rule, invalid_child_rule_error};
+
+/// Trait for building pipelines.
+///
+/// This abstracts away the details of how expressions are added to a pipeline, so the same parser
+/// utility functions can be used targetting different pipeline builder. In pratice, this is useful
+/// when building nested pipelines for some expressions which nest pipeline stages, such as if/else
+pub(crate) trait PipelineBuilder {
+    fn push_data_expression(&mut self, data_expression: DataExpression);
+}
+
+impl PipelineBuilder for Vec<DataExpression> {
+    fn push_data_expression(&mut self, data_expression: DataExpression) {
+        self.push(data_expression);
+    }
+}
+
+impl PipelineBuilder for ParserState {
+    fn push_data_expression(&mut self, data_expression: DataExpression) {
+        self.push_expression(data_expression);
+    }
+}
 
 pub(crate) fn parse_pipeline(
     rule: Pair<'_, Rule>,
@@ -32,11 +54,11 @@ pub(crate) fn parse_pipeline(
 
 pub(crate) fn parse_pipeline_stage(
     rule: Pair<'_, Rule>,
-    state: &mut ParserState,
+    pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
-            Rule::operator_call => parse_operator_call(rule, state)?,
+            Rule::operator_call => parse_operator_call(rule, pipeline_builder)?,
             invalid_rule => {
                 let query_location = to_query_location(&rule);
                 return Err(invalid_child_rule_error(

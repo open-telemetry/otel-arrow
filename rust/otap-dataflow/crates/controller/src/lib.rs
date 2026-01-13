@@ -42,7 +42,7 @@ use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::logs::EngineLogsSetup;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::telemetry_settings::TelemetrySettings;
-use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -89,6 +89,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         // Validate logs configuration.
+        // TODO: add metrics, validate the whole config.
         telemetry_config
             .logs
             .validate()
@@ -96,10 +97,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 message: msg.to_string(),
             })?;
 
-        // Create telemetry settings - this creates logs reporter/receiver internally
+        // Create telemetry settings.  This creates logs reporter/receiver internally
         let mut telemetry_settings = TelemetrySettings::new(telemetry_config)?;
 
-        // Start the logs collector thread if needed (Direct output mode)
+        // Start the logs collector thread if needed for Direct output mode.
         let _logs_collector_handle =
             if let Some(logs_collector) = telemetry_settings.take_logs_collector() {
                 Some(spawn_thread_local_task(
@@ -113,7 +114,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Get logs receiver for Internal output mode (passed to internal pipeline)
         let mut logs_receiver = telemetry_settings.take_logs_receiver();
 
-        let metrics_system = MetricsSystem::new(telemetry_config);
+        let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
@@ -122,7 +123,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         // Start the metrics aggregation
-        let metrics_registry = metrics_system.registry();
+        let telemetry_registry = metrics_system.registry();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
                 metrics_system.run(cancellation_token)
@@ -163,9 +164,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         };
         let log_level = telemetry_config.logs.level;
 
-        // Spawn internal pipeline thread if configured
-        // The internal pipeline runs on a single unpinned thread and processes
-        // internal telemetry (logs from LogsReporter) through its own node graph.
+        // Spawn internal pipeline thread if configured.
         let internal_pipeline_thread =
             if let Some(internal_config) = pipeline.extract_internal_config() {
                 // Internal pipeline only exists when output mode is Internal
@@ -318,7 +317,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     admin_settings,
                     obs_state_handle,
                     admin_senders,
-                    metrics_registry,
+                    telemetry_registry,
                     cancellation_token,
                 )
             })?;
