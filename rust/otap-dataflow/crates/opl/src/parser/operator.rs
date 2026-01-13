@@ -97,7 +97,7 @@ pub(crate) fn parse_rename_operator_call(
                 return Err(ParserError::SyntaxNotSupported(
                     query_location,
                     format!(
-                        "rename operator call only supports assignment from source. Found {other:?}"
+                        "rename operator only supports assignment from source. Found {other:?}"
                     ),
                 ));
             }
@@ -112,7 +112,6 @@ pub(crate) fn parse_rename_operator_call(
         )),
         keys,
     ));
-
     pipeline_builder.push_data_expression(DataExpression::Transform(transform_expr));
 
     Ok(())
@@ -556,8 +555,9 @@ mod tests {
 
     #[test]
     fn test_parse_rename_operator_call() {
-        let query =
-            "rename attributes[\"x\"] = attributes[\"y\"], attributes[\"x2\"] = attributes[\"y2\"]";
+        let query = r#"rename
+                attributes["x"] = attributes["y"],
+                resource.attributes["x2"] = resource.attributes["y2"]"#;
         let mut state = ParserState::new(query);
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
@@ -602,6 +602,9 @@ mod tests {
                     MapKeyRenameSelector::new(
                         ValueAccessor::new_with_selectors(vec![
                             ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::String(
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
                                     "attributes",
@@ -612,6 +615,9 @@ mod tests {
                             )),
                         ]),
                         ValueAccessor::new_with_selectors(vec![
+                            ScalarExpression::Static(StaticScalarExpression::String(
+                                StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                            )),
                             ScalarExpression::Static(StaticScalarExpression::String(
                                 StringScalarExpression::new(
                                     QueryLocation::new_fake(),
