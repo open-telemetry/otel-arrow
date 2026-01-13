@@ -111,7 +111,7 @@ pub enum OutputMode {
     Direct,
 
     /// Route to Internal Telemetry Receiver node.  The pipeline must
-    /// include a nod with INTERNAL_TELEMETRY_RECEIVER_URN.  The
+    /// include a node with INTERNAL_TELEMETRY_RECEIVER_URN.  The
     /// engine provider mode must be Buffered for internal output.
     /// This will become default.
     Internal,

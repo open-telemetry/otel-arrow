@@ -112,7 +112,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // The receiver end goes to either:
         // - LogsCollector thread (output == Raw): prints to console
         // - Internal Telemetry Receiver node (output == Internal): emits as OTLP
-        let (logs_reporter, logs_receiver, logs_collector_handle) = if providers_need_reporter {
+        let (logs_reporter, mut logs_receiver, logs_collector_handle) = if providers_need_reporter {
             match telemetry_config.logs.output {
                 OutputMode::Direct => {
                     // Start collector thread for Raw output mode
@@ -197,6 +197,73 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             },
         };
         let log_level = telemetry_config.logs.level;
+
+        // Spawn internal pipeline thread if configured
+        // The internal pipeline runs on a single unpinned thread and processes
+        // internal telemetry (logs from LogsReporter) through its own node graph.
+        let internal_pipeline_thread = if let Some(internal_config) = pipeline.extract_internal_config() {
+            // Internal pipeline only exists when output mode is Internal
+            // The logs_receiver goes to the internal pipeline's ITR node
+            let internal_logs_receiver = logs_receiver.take();
+            let internal_factory = self.pipeline_factory;
+            let internal_pipeline_id: PipelineId = "internal".into();
+            let internal_pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: internal_pipeline_id.clone(),
+                core_id: 0, // Virtual core ID for internal pipeline
+            };
+            let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
+                pipeline_group_id.clone(),
+                internal_pipeline_id.clone(),
+                0, // Virtual core ID
+                0, // Virtual thread ID
+            );
+            let internal_obs_evt_reporter = obs_evt_reporter.clone();
+            let internal_metrics_reporter = metrics_reporter.clone();
+
+            // Internal pipeline uses Raw logging (direct console output)
+            // to avoid feedback loops - it can't log through itself
+            let internal_engine_logs_setup = EngineLogsSetup::Raw;
+            let internal_log_level = log_level;
+
+            // Create control message channel for internal pipeline
+            let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
+                internal_config.pipeline_settings().default_pipeline_ctrl_msg_channel_size,
+            );
+
+            let thread_name = "internal-pipeline".to_string();
+            let handle = thread::Builder::new()
+                .name(thread_name.clone())
+                .spawn(move || {
+                    Self::run_pipeline_thread(
+                        internal_pipeline_key,
+                        CoreId { id: 0 }, // No pinning for internal pipeline
+                        internal_config,
+                        internal_factory,
+                        internal_pipeline_ctx,
+                        internal_obs_evt_reporter,
+                        internal_metrics_reporter,
+                        internal_engine_logs_setup,
+                        internal_log_level,
+                        internal_logs_receiver,
+                        internal_ctrl_tx,
+                        internal_ctrl_rx,
+                    )
+                })
+                .map_err(|e| Error::ThreadSpawnError {
+                    thread_name: thread_name.clone(),
+                    source: e,
+                })?;
+
+            otel_info!(
+                "InternalPipeline.Started",
+                num_nodes = pipeline.internal_nodes().len()
+            );
+
+            Some((thread_name, handle))
+        } else {
+            None
+        };
 
         // Start one thread per requested core
         // Get available CPU cores for pinning
@@ -327,6 +394,42 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         core_id,
                         panic_message: format!("{e:?}"),
                     });
+                }
+            }
+        }
+
+        // Wait for internal pipeline thread if it was spawned
+        if let Some((_thread_name, handle)) = internal_pipeline_thread {
+            let internal_pipeline_id: PipelineId = "internal".into();
+            let pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: internal_pipeline_id,
+                core_id: 0, // Virtual core ID for internal pipeline
+            };
+            match handle.join() {
+                Ok(Ok(_)) => {
+                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
+                }
+                Ok(Err(e)) => {
+                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
+                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                        pipeline_key.clone(),
+                        "Internal pipeline encountered a runtime error.",
+                        err_summary,
+                    ));
+                    // Log but don't fail - internal pipeline errors shouldn't bring down main
+                    otel_warn!(
+                        "InternalPipeline.Error",
+                        message = "Internal telemetry pipeline failed",
+                        error = format!("{e:?}")
+                    );
+                }
+                Err(e) => {
+                    otel_warn!(
+                        "InternalPipeline.Panic",
+                        message = "Internal telemetry pipeline panicked",
+                        panic_message = format!("{e:?}")
+                    );
                 }
             }
         }
