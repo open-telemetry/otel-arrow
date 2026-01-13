@@ -2,7 +2,7 @@
 
 The validation test validates a OTLP message after
 experiencing various processes such as encoding/decoding
-or going through a pipeline. 
+or going through a pipeline.
 
 ### Encoding/Decoding Validation
 
