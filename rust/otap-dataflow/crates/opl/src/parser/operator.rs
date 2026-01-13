@@ -4,9 +4,9 @@
 use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
     DiscardDataExpression, Expression, LogicalExpression, NotLogicalExpression, QueryLocation,
-    TransformExpression,
+    TransformExpression, OutputDataExpression, OutputExpression, StaticScalarExpression,
 };
-use data_engine_parser_abstractions::{ParserError, to_query_location};
+use data_engine_parser_abstractions::{ParserError, parse_standard_string_literal, to_query_location};
 use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
@@ -20,8 +20,9 @@ pub(crate) fn parse_operator_call(
 ) -> Result<(), ParserError> {
     for rule in rule.into_inner() {
         match rule.as_rule() {
-            Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
             Rule::if_else_operator_call => parse_if_else_opeartor_call(rule, pipeline_builder)?,
+            Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
+            Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
             Rule::where_operator_call => parse_where_operator_call(rule, pipeline_builder)?,
             invalid_rule => {
                 let query_location = to_query_location(&rule);
@@ -32,6 +33,41 @@ pub(crate) fn parse_operator_call(
                 ));
             }
         };
+    }
+
+    Ok(())
+}
+
+pub(crate) fn parse_route_to_operator_call(
+    operator_call_rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&operator_call_rule);
+    if let Some(rule) = operator_call_rule.into_inner().next() {
+        let rule_query_location = to_query_location(&rule);
+        let dest = match rule.as_rule() {
+            Rule::string_literal => match parse_standard_string_literal(rule) {
+                StaticScalarExpression::String(string) => string,
+                invalid_expr => {
+                    return Err(ParserError::SyntaxError(
+                        rule_query_location,
+                        format!("Expected static string literal, found {:?}", invalid_expr),
+                    ));
+                }
+            },
+            invalid_rule => {
+                let query_location = to_query_location(&rule);
+                return Err(invalid_child_rule_error(
+                    query_location,
+                    Rule::string_literal,
+                    invalid_rule,
+                ));
+            }
+        };
+
+        let output_expr =
+            OutputDataExpression::new(query_location, OutputExpression::NamedSink(dest));
+        pipeline_builder.push_data_expression(DataExpression::Output(output_expr));
     }
 
     Ok(())
@@ -211,7 +247,7 @@ mod tests {
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
         DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MutableValueExpression,
-        NotLogicalExpression, QueryLocation, ScalarExpression, SetTransformExpression,
+        NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation, ScalarExpression, SetTransformExpression,
         SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
         TransformExpression, ValueAccessor,
     };
@@ -222,6 +258,29 @@ mod tests {
     use crate::parser::operator::parse_operator_call;
     use crate::parser::pest::OplPestParser;
     use crate::parser::{OplParser, Rule};
+
+    #[test]
+    fn test_route_to_operator_call() {
+        let query = "route_to \"test_out_port\"";
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut state).unwrap();
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Output(OutputDataExpression::new(
+            QueryLocation::new_fake(),
+            OutputExpression::NamedSink(StringScalarExpression::new(
+                QueryLocation::new_fake(),
+                "test_out_port",
+            )),
+        ));
+
+        assert_eq!(&expressions[0], &expected);
+    }
 
     #[test]
     fn test_parse_set_operator_call() {
