@@ -48,6 +48,10 @@ impl OpentelemetryClient {
     /// The `logs_reporter` parameter is required when `strategies.global` is set to
     /// `Unbuffered`. It should be created via `LogsCollector::new()` and the collector
     /// should be run on a dedicated thread.
+    ///
+    /// The logger provider is configured when either global or engine providers
+    /// are set to `OpenTelemetry`. This allows the engine to use the same SDK
+    /// pipeline even when global uses a different logging strategy.
     pub fn new(
         config: &TelemetryConfig,
         logs_reporter: Option<LogsReporter>,
@@ -66,15 +70,28 @@ impl OpentelemetryClient {
             crate::raw_error!("tracing.subscriber.init", error = err.to_string());
         };
 
+        // Check if either global or engine needs the OpenTelemetry logger provider
+        let global_needs_otel = config.logs.providers.global == ProviderMode::OpenTelemetry;
+        let engine_needs_otel = config.logs.providers.engine == ProviderMode::OpenTelemetry;
+
+        // Configure the logger provider if either global or engine needs it
+        let (logger_provider, runtime) = if global_needs_otel || engine_needs_otel {
+            let (provider, rt) =
+                LoggerProvider::configure(sdk_resource.clone(), &config.logs, runtime)?
+                    .into_parts();
+            (Some(provider), rt)
+        } else {
+            (None, runtime)
+        };
+
         // Configure the global subscriber based on strategies.global.
         // Engine threads override this with BufferWriterLayer via with_default().
-        let (logger_provider, runtime) = match config.logs.providers.global {
+        match config.logs.providers.global {
             ProviderMode::Noop => {
                 // No-op: just install the filter, events are dropped
                 if let Err(err) = tracing::subscriber::NoSubscriber::new().try_init() {
                     logerr(err);
                 }
-                (None, runtime)
             }
             ProviderMode::Raw => {
                 if let Err(err) = tracing_setup
@@ -83,7 +100,6 @@ impl OpentelemetryClient {
                 {
                     logerr(err);
                 }
-                (None, runtime)
             }
             ProviderMode::Buffered => {
                 return Err(Error::ConfigurationError(
@@ -98,19 +114,18 @@ impl OpentelemetryClient {
                 if let Err(err) = tracing_setup.with(channel_layer).try_init() {
                     logerr(err);
                 }
-                (None, runtime)
             }
             ProviderMode::OpenTelemetry => {
-                let (logger_provider, runtime) =
-                    LoggerProvider::configure(sdk_resource, &config.logs, runtime)?.into_parts();
-
-                let sdk_layer = OpenTelemetryTracingBridge::new(&logger_provider);
+                // logger_provider is guaranteed to be Some here since global_needs_otel is true
+                let sdk_layer = OpenTelemetryTracingBridge::new(
+                    logger_provider
+                        .as_ref()
+                        .expect("logger_provider configured when global is OpenTelemetry"),
+                );
 
                 if let Err(err) = tracing_setup.with(sdk_layer).try_init() {
                     logerr(err)
                 }
-
-                (Some(logger_provider), runtime)
             }
         };
 

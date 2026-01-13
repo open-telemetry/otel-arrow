@@ -189,16 +189,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .clone()
                     .expect("validated: unbuffered requires reporter"),
             },
-            ProviderMode::OpenTelemetry => {
-                // OpenTelemetry mode for engine is not yet supported
-                // Fall back to buffered for now
-                EngineLogsSetup::Buffered {
-                    reporter: logs_reporter
-                        .clone()
-                        .expect("validated: opentelemetry requires reporter"),
-                    capacity: 1024,
-                }
-            }
+            ProviderMode::OpenTelemetry => EngineLogsSetup::OpenTelemetry {
+                logger_provider: opentelemetry_client
+                    .logger_provider()
+                    .clone()
+                    .expect("validated: opentelemetry engine requires logger_provider from global"),
+            },
         };
         let log_level = telemetry_config.logs.level;
 

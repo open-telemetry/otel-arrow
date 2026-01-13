@@ -8,6 +8,8 @@ use crate::self_tracing::{
     ConsoleWriter, DirectLogRecordEncoder, LogRecord, RawLoggingLayer, SavedCallsite,
 };
 use bytes::Bytes;
+use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
+use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::field_num::logs::{
     LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
@@ -378,6 +380,11 @@ pub enum EngineLogsSetup {
         /// Reporter to send singletons through.
         reporter: LogsReporter,
     },
+    /// OpenTelemetry SDK: logs go through the OpenTelemetry logging pipeline.
+    OpenTelemetry {
+        /// The OpenTelemetry SDK logger provider.
+        logger_provider: SdkLoggerProvider,
+    },
 }
 
 /// Handle for flushing buffered logs from the engine thread.
@@ -451,6 +458,11 @@ impl EngineLogsSetup {
             EngineLogsSetup::Unbuffered { reporter } => {
                 let layer = UnbufferedLayer::new(reporter.clone());
                 let subscriber = Registry::default().with(filter).with(layer);
+                tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
+            }
+            EngineLogsSetup::OpenTelemetry { logger_provider } => {
+                let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
+                let subscriber = Registry::default().with(filter).with(sdk_layer);
                 tracing::subscriber::with_default(subscriber, || f(LogsFlusher::Noop))
             }
         }
