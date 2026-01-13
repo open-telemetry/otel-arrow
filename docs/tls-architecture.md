@@ -33,13 +33,15 @@ performance overhead.
 
 - **Zero-downtime certificate reloading**: Receivers update certificates
   without dropping connections.
-- **Wait-free hot path**: TLS handshakes use lock-free atomic pointer loads.
+- **Mostly lock-free handshakes**: Hot path is atomic pointer loads; when the
+  reload interval expires the handshake thread performs a metadata check before
+  spawning an async reload.
 - **Concurrent handshake processing**: Handles up to 64 parallel handshakes
   to prevent head-of-line blocking.
 - **DoS protection via timeouts**: Enforces 10s handshake timeout to mitigate
   slowloris attacks.
 - **Secure by default**: Rejects insecure configurations and requires
-  explicit trust anchors.
+  explicit trust anchors unless the user opts out with `insecure: true`.
 
 ## Design Principles
 
@@ -49,22 +51,24 @@ Certificate updates don't interrupt active connections. Existing connections
 continue using the current certificate while new connections use the updated
 certificate after reload completes.
 
-### 2. Wait-Free Hot Path
+### 2. Lock-Free Hot Path (with periodic metadata check)
 
-TLS handshakes involve no blocking operations or locks. Certificate lookups
-use atomic pointer loads, providing consistent performance under load.
+TLS handshakes avoid locks and use atomic pointer loads for cert/CA access. When
+the reload interval expires, the handshake thread performs a synchronous
+metadata check before kicking off an async reload.
 
 ### 3. Secure by Default
 
 - TLS is automatically enabled for `https://` endpoints
-- Certificate verification cannot be disabled
+- Certificate verification is enforced unless the user explicitly sets
+  `insecure: true`
 - System CA certificates are included by default
 - Handshake timeouts prevent DoS attacks
 
 ### 4. Performance Conscious
 
-- **NUMA Local**: Unique TLS resolver instance per receiver (per-core design)
-  to minimize cross-NUMA traffic.
+- **Single resolver per receiver**: Resolver state is scoped per receiver
+  instance (no per-core sharding implemented today).
 - **Concurrent Processing**: Up to 64 parallel handshakes prevent
   head-of-line blocking.
 - **Minimal Overhead**: Hot path involves single atomic pointer loads
@@ -122,9 +126,9 @@ automatic reloading.
 **Reload Strategy**: Lazy Polling
 
 - Certificates checked during TLS handshakes after reload interval expires
-- File modification times compared to detect changes
-- Reload triggered asynchronously in background
-- Current handshake uses existing certificate (no blocking)
+  - Handshake thread performs a metadata check (sync) to compare file mtimes
+  - Reload triggered asynchronously in background
+  - Current handshake uses existing certificate (no blocking on reload)
 
 **Configuration**:
 
@@ -139,13 +143,14 @@ tls:
 
 1. **Leader Election**: Only one thread checks modification times when
    interval expires (prevents thundering herd)
-2. **Async Reload**: File I/O happens in background task, not on
-   handshake path
-3. **Atomic Swap**: New certificate atomically replaces old certificate
+2. **Synchronous Check**: The leader performs a blocking `std::fs::metadata` check
+   to detect changes (brief I/O on handshake path)
+3. **Async Reload**: Actual file reading and parsing happens in background task
+4. **Atomic Swap**: New certificate atomically replaces old certificate
    (lock-free)
-4. **Graceful Failure**: Failed reload keeps existing certificate
+5. **Graceful Failure**: Failed reload keeps existing certificate
    (no downtime)
-5. **Scope**: Hot-reload applies only to file-based certificates
+6. **Scope**: Hot-reload applies only to file-based certificates
    (`cert_file`/`key_file`). Inline PEM (`cert_pem`/`key_pem`) is loaded
    once at startup.
 
@@ -331,8 +336,8 @@ Potential approaches include:
 | **Reload Support** | Yes | Yes | No |
 | **Detection Method** | Lazy polling | File watch or poll | N/A |
 | **Check Frequency** | During handshake | Immediate or interval | N/A |
-| **Hot Path Impact** | ~5-10ns | ~3-5ns | N/A |
-| **Blocking Operations** | None | None | N/A |
+| **Hot Path Impact** | ~5-10ns (avg) | ~3-5ns | N/A |
+| **Blocking Operations** | Metadata check | None | N/A |
 | **Graceful Failure** | Keep old cert | Keep old CA | N/A |
 
 ### Reload Workflow
@@ -410,7 +415,7 @@ to crypto operations.
 | Operation | Time | Frequency |
 |-----------|------|-----------|
 | Interval check | ~1us | Per handshake (amortized) |
-| File mtime check | ~1us | When interval expired |
+| File mtime check | ~10-100us | When interval expired (blocking) |
 | Certificate reload | ~1-10ms | When file changed (async) |
 
 **Client CA (File Watch)**:
@@ -463,6 +468,8 @@ to crypto operations.
 
 - Server certificate verification always performed when TLS is enabled
 - `insecure_skip_verify` is not supported (fails at startup)
+- **Escape Hatch**: `insecure: true` (without custom CAs) disables TLS entirely,
+  effectively bypassing verification. This allows plaintext connections if needed.
 - Trust anchors: system CAs + custom CAs
 - Hostname verification via SNI
 - Optional SNI override for IP-based connections
