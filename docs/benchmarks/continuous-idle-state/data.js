@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768225968149,
+  "lastUpdate": 1768331229882,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -442,6 +442,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.00111,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb8c398c60b9303a96f385b693c4a0eecf846a1b",
+          "message": "OPL Parser support `if`/`else` statement (#1778)\n\ncloses: #1777 \nrelates to: #1667 \n\nThis is followup from #1722 , where we decided to not implement this\nfeature in KQL parser and instead have OPL implement it's own parser.\n\nAdds parsing support for an if/else if/else expression that gets parsed\ninto the ConditionalDataExpression that was added in\nhttps://github.com/open-telemetry/otel-arrow/pull/1684\n\nThe syntax looks like this.\n```\nlogs |\nif (severity_text == \"ERROR\") { \n    extend attributes[\"important\"] = \"very\" | extend attributes[\"triggers_alarm\"] = \"true\"\n} else if (severity_text == \"WARN\") {\n    extend attributes[\"important\"] = \"somewhat\"\n} else if (severity_text == \"INFO\") {\n    extend attributes[\"important\"] = \"rarely\"\n} else {\n    extend attributes[\"important\"] = \"no\"\n}\n```\n\n`else if` and `else` are optional, so the following expressions are also\nsupported:\n```\nlogs | \nif (severity_text == \"ERROR\") { \n    extend attributes[\"is_error\"] = true\n} else {\n    extend attributes[\"is_not_error\"] = true\n}\n```\n```\nlogs | \nif (severity_text == \"ERROR\") { \n    extend attributes[\"triggers_alarm\"] = \"true\"\n}\n```\n\nIn a future PR, I'll go back and use `OplParser` in columnar query\nengine's [`pipeline/conditional.rs` unit\ntests](https://github.com/open-telemetry/otel-arrow/blob/cf43a4c0ddc170aa1b8ec243f8bb28f0bce591ba/rust/otap-dataflow/crates/query-engine/src/pipeline/conditional.rs#L227-L237).\nThis can happen once\n[#1762](https://github.com/open-telemetry/otel-arrow/issues/1762) is\nalso complete, as those tests use `project-rename`, so support for this\nmust also be added to OPL Parser.",
+          "timestamp": "2026-01-13T18:33:41Z",
+          "tree_id": "eed509f6edcc5799507d75465f411a4c132b9680",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/eb8c398c60b9303a96f385b693c4a0eecf846a1b"
+        },
+        "date": 1768331229499,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 2.210128335777334,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 2.508008482678085,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 625.9910714285714,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 627.1953125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.003023,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.05525699852681512,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.08500052934765687,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 27.475446428571427,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 27.55078125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00076,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
