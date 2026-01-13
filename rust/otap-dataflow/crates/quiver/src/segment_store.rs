@@ -305,12 +305,14 @@ impl SegmentStore {
                 let _ = std::fs::set_permissions(&path, perms);
             }
             std::fs::remove_file(&path)?;
-
-            // Release bytes from budget after successful deletion
-            if let (Some(budget), Some(size)) = (&self.budget, file_size) {
-                budget.release(size);
-            }
         }
+
+        // Release bytes from budget regardless of whether the file existed on disk.
+        // If the file was externally deleted, we still need to release our accounting.
+        if let (Some(budget), Some(size)) = (&self.budget, file_size) {
+            budget.release(size);
+        }
+
         Ok(())
     }
 
