@@ -1,0 +1,6 @@
+tests: 
+  - name: "No Processor"
+    pipeline_config: ./validation_pipelines/no-processor
+    loadgen_exporter_type: otlp
+    backend_receiver_type: otlp
+    transform: false

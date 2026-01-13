@@ -44,39 +44,13 @@ use tokio::time::{Duration, timeout};
 use tonic::transport::server::{Router, Server};
 use tonic::{Request, Response, Status};
 
-const GRPC_INPUT_ENDPOINT: &str = "http://127.0.0.1:4317";
 
-const CONNECTION_MAX_RETRIES: usize = 20;
-const CONNECTION_RETRY_DELAY: Duration = Duration::from_millis(100);
+const SUV_CORE_ID: usize = 0;
+const SUV_THREAD_ID: usize = 0;
 
-async fn connect_with_retry<T, E, F, Fut>(
-    connect_fn: F,
-    max_retries: usize,
-    retry_delay: Duration,
-) -> Result<T, E>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Debug,
-{
-    let mut last_error = None;
-    for attempt in 0..max_retries {
-        match connect_fn().await {
-            Ok(client) => return Ok(client),
-            Err(e) => {
-                last_error = Some(e);
-                if attempt < max_retries - 1 {
-                    tokio::time::sleep(retry_delay).await;
-                }
-            }
-        }
-    }
-    Err(last_error.unwrap())
-}
-const GRPC_OUTPUT_ENDPOINT: &str = "127.0.0.1:4318";
+const LOAD_CORE_ID: usize = 1;
+const LOAD_CORE_ID: usize = 1;
 
-const DEFAULT_CORE_ID: usize = 0;
-const DEFAULT_THREAD_ID: usize = 0;
 const DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE: usize = 100;
 
 /// struct to simulate the otel arrow protocol, uses a producer and consumer to encode and decode a otlp request
@@ -107,6 +81,16 @@ impl OtelProtoSimulator {
     }
 }
 
+
+pub struct PipelineValidation<> {
+    load_gen: PipelineSimulator
+    system_under_validation: PipelineSimulator
+
+}
+
+
+
+
 /// struct to simulate a pipeline running, reads a config and starts a pipeline to send and receive data
 pub struct PipelineSimulator<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     pipeline_factory: &'static PipelineFactory<PData>,
@@ -117,13 +101,44 @@ pub struct PipelineSimulator<PData: 'static + Clone + Send + Sync + std::fmt::De
     pipeline_key: DeployedPipelineKey,
 }
 
+
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> PipelineSimulator<PData> {
     // if pipeline alters the data via a processor that performs some transofmration we should expect the equivalent assert to fail
     // otherwise the assert should succeed
 
-    pub fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
-        let core_id = DEFAULT_CORE_ID;
-        let thread_id = DEFAULT_THREAD_ID;
+    pub fn new_system_under_validation(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
+        let core_id = SUV_CORE_ID_CORE_ID;
+        let thread_id = SUV_THREAD_ID;
+        let metrics_system = MetricsSystem::default();
+        let controller_context = ControllerContext::new(metrics_system.registry());
+        let pipeline_id = PipelineId::default();
+        let pipeline_group_id = PipelineGroupId::default();
+        let pipeline_context = controller_context.pipeline_context_with(
+            pipeline_group_id.clone(),
+            pipeline_id.clone(),
+            core_id,
+            thread_id,
+        );
+
+        let pipeline_key = DeployedPipelineKey {
+            pipeline_group_id: pipeline_group_id.clone(),
+            pipeline_id: pipeline_id.clone(),
+            core_id,
+        };
+
+        Self {
+            pipeline_factory,
+            pipeline_context,
+            pipeline_id,
+            pipeline_group_id,
+            metrics_system,
+            pipeline_key,
+        }
+    }
+
+    pub fn new_load_gen(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
+        let core_id = LOAD_CORE_ID;
+        let thread_id = LOAD_THREAD_ID;
         let metrics_system = MetricsSystem::default();
         let controller_context = ControllerContext::new(metrics_system.registry());
         let pipeline_id = PipelineId::default();
@@ -545,5 +560,14 @@ mod test {
                 assert_equivalent(&traces, &traces_output);
             }
         }
+    }
+
+    async fn validate_pipelines() {
+        read from the validate_pipelines.yaml file
+        iterate for each pipeline
+        create traffic-gen with otlp/otap exporter -> this last
+        pipeline created second
+        create collector with otlp/otap receiver -> this first
+
     }
 }
