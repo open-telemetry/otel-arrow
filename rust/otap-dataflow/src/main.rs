@@ -5,10 +5,12 @@
 
 use clap::Parser;
 use otap_df_config::pipeline::PipelineConfig;
+use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_telemetry::{get_env_filter, raw_error};
 use otap_df_telemetry::self_tracing::{ConsoleWriter, RawLoggingLayer};
 use std::path::PathBuf;
 use sysinfo::System;
@@ -117,6 +119,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
 
+    // Set up raw logging as the global default subscriber for the main thread.
+    // Engine threads will set their own thread-local subscribers based on config.
+    let raw_subscriber = Registry::default()
+        .with(get_env_filter(LogLevel::Debug))
+        .with(RawLoggingLayer::new(ConsoleWriter::color()));
+    tracing::subscriber::set_global_default(raw_subscriber)
+        .expect("Failed to set global default subscriber");
+
     let args = Args::parse();
 
     // For now, we predefine pipeline group and pipeline IDs.
@@ -124,16 +134,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
     let pipeline_id: PipelineId = "default_pipeline".into();
 
-    // Load pipeline configuration with early logging so parse errors are readable.
-    // Use with_default for a thread-local subscriber during config loading only.
-    let early_subscriber = Registry::default().with(RawLoggingLayer::new(ConsoleWriter::color()));
-    let pipeline_cfg = tracing::subscriber::with_default(early_subscriber, || {
-        PipelineConfig::from_file(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            &args.pipeline,
-        )
-    })?;
+    // Load pipeline configuration
+    let pipeline_cfg = PipelineConfig::from_file(
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
+        &args.pipeline,
+    )?;
 
     tracing::info!("{}", system_info());
 
@@ -155,8 +161,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print the requested core configuration
     match &quota.core_allocation {
-        CoreAllocation::AllCores => println!("Requested core allocation: all available cores"),
-        CoreAllocation::CoreCount { count } => println!("Requested core allocation: {count} cores"),
+        CoreAllocation::AllCores => tracing::info!("Requested core allocation: all available cores"),
+        CoreAllocation::CoreCount { count } => {
+            tracing::info!("Requested core allocation: {count} cores")
+        }
         CoreAllocation::CoreSet { .. } => {
             tracing::info!("Requested core allocation: {}", quota.core_allocation);
         }
@@ -178,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(0);
         }
         Err(e) => {
-            tracing::error!("Pipeline failed to run: {e}");
+            raw_error!("Pipeline failed to run", error = format!("{e}"));
             std::process::exit(1);
         }
     }

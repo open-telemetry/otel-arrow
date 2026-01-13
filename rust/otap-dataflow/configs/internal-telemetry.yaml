@@ -37,7 +37,7 @@ nodes:
           - noop
         dispatch_strategy: round_robin
     config:
-      verbosity: basic
+      verbosity: detailed
   noop:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
@@ -47,7 +47,7 @@ service:
   telemetry:
     logs:
       level: "debug"
-      strategies:
+      providers:
         global: unbuffered
         engine: buffered
       output: internal

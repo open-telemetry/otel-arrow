@@ -160,10 +160,11 @@ impl Default for MetricsSystem {
     }
 }
 
-// If RUST_LOG is set, use it for fine-grained control.
-// Otherwise, fall back to the config level with some noisy dependencies silenced.
-// Users can override by setting RUST_LOG explicitly.
-pub(crate) fn get_env_filter(level: LogLevel) -> EnvFilter {
+/// Creates an `EnvFilter` for the given log level.
+///
+/// If `RUST_LOG` is set in the environment, it takes precedence for fine-grained control.
+/// Otherwise, falls back to the config level with known noisy dependencies (h2, hyper) silenced.
+pub fn get_env_filter(level: LogLevel) -> EnvFilter {
     let level = match level {
         LogLevel::Off => LevelFilter::OFF,
         LogLevel::Debug => LevelFilter::DEBUG,
