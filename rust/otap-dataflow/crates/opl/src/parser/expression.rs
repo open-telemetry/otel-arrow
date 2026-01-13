@@ -482,7 +482,7 @@ fn parse_attribute_selection_expression(
                     return Err(ParserError::SyntaxNotSupported(
                         query_location,
                         format!(
-                            "Invalid expression found parsing member expression: {:?}. Exected Source",
+                            "Invalid expression found parsing member expression: {:?}. Expected Source",
                             invalid_expr
                         ),
                     ));
