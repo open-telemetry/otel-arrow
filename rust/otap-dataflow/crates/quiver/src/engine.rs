@@ -499,7 +499,7 @@ impl QuiverEngine {
         // First attempt
         let first_result = {
             let mut writer = self.wal_writer.lock();
-            writer.append_bundle(bundle)
+            writer.append_bundle_sync(bundle)
         };
 
         match first_result {
@@ -511,7 +511,7 @@ impl QuiverEngine {
 
                 // Retry the append after finalization freed space
                 let mut writer = self.wal_writer.lock();
-                writer.append_bundle(bundle).map_err(Into::into)
+                writer.append_bundle_sync(bundle).map_err(Into::into)
             }
             Err(e) => Err(e.into()),
         }
@@ -613,7 +613,7 @@ impl QuiverEngine {
         // Step 5: Advance WAL cursor now that segment is durable
         {
             let mut wal_writer = self.wal_writer.lock();
-            wal_writer.persist_cursor(&cursor)?;
+            wal_writer.persist_cursor_sync(&cursor)?;
         }
 
         // Step 6: Register segment with store (triggers subscriber notification)
@@ -888,7 +888,7 @@ fn initialize_wal_writer(
         .with_max_rotated_files(config.wal.max_rotated_files as usize)
         .with_rotation_target(config.wal.rotation_target_bytes.get())
         .with_budget(budget.clone());
-    Ok(WalWriter::open(options)?)
+    Ok(WalWriter::open_sync(options)?)
 }
 
 fn wal_path(config: &QuiverConfig) -> PathBuf {

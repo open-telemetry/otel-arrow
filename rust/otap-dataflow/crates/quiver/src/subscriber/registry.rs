@@ -114,9 +114,7 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
     /// Segment data provider.
     segment_provider: Arc<P>,
-    /// Condvar for notifying waiting subscribers when new segments arrive.
-    /// The `Mutex<bool>` tracks whether there's pending data (set true on segment
-    /// finalization, reset to false when checked).
+    /// Notify for waking waiting subscribers when new segments arrive.
     bundle_available: (Mutex<bool>, Condvar),
 }
 
@@ -316,8 +314,10 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Notify waiting subscribers that new bundles are available
         let (lock, cvar) = &self.bundle_available;
-        let mut available = lock.lock();
-        *available = true;
+        {
+            let mut available = lock.lock();
+            *available = true;
+        }
         let _ = cvar.notify_all();
     }
 

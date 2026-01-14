@@ -24,7 +24,10 @@
 //! backwards compatibility. Readers should read `header_size` bytes total and
 //! ignore any unknown trailing fields.
 
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::SeekFrom;
+
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use super::{WAL_MAGIC, WalError};
 
@@ -100,42 +103,23 @@ impl WalHeader {
         buf
     }
 
-    pub fn write_to(&self, file: &mut (impl Write + Seek)) -> Result<(), WalError> {
+    /// Writes the header to a file synchronously.
+    /// 
+    /// Used by tests that need to create malformed WAL files for error testing.
+    #[cfg(test)]
+    pub fn write_to(&self, file: &mut std::fs::File) -> Result<(), WalError> {
+        use std::io::{Seek, Write};
         let _ = file.seek(SeekFrom::Start(0))?;
         file.write_all(&self.encode())?;
         file.flush()?;
         Ok(())
     }
 
-    /// Reads the header size from a file without consuming the full header.
-    /// Returns the header size in bytes.
-    pub fn read_header_size(file: &mut (impl Read + Seek)) -> Result<u16, WalError> {
-        let _ = file.seek(SeekFrom::Start(0))?;
-        let mut buf = [0u8; WAL_HEADER_MIN_LEN];
-        file.read_exact(&mut buf)?;
-
-        // Validate magic
-        if &buf[0..WAL_MAGIC.len()] != WAL_MAGIC {
-            return Err(WalError::InvalidHeader("magic mismatch"));
-        }
-
-        // Validate version
-        let version = u16::from_le_bytes([buf[WAL_MAGIC.len()], buf[WAL_MAGIC.len() + 1]]);
-        if version != WAL_VERSION {
-            return Err(WalError::InvalidHeader("unsupported version"));
-        }
-
-        // Read header size
-        let header_size = u16::from_le_bytes([buf[WAL_MAGIC.len() + 2], buf[WAL_MAGIC.len() + 3]]);
-
-        if (header_size as usize) < WAL_HEADER_MIN_LEN {
-            return Err(WalError::InvalidHeader("header size too small"));
-        }
-
-        Ok(header_size)
-    }
-
-    pub fn read_from(file: &mut (impl Read + Seek)) -> Result<Self, WalError> {
+    /// Reads the header from a file synchronously.
+    /// 
+    /// Used by tests that verify header contents after async writes.
+    pub fn read_from(file: &mut std::fs::File) -> Result<Self, WalError> {
+        use std::io::{Read, Seek};
         let _ = file.seek(SeekFrom::Start(0))?;
 
         // First read minimum header to get the actual header size
@@ -174,6 +158,84 @@ impl WalHeader {
 
         Self::decode(&full_buf)
     }
+
+    /// Writes the header to a file asynchronously.
+    pub async fn write_to_async(&self, file: &mut File) -> Result<(), WalError> {
+        let _ = file.seek(SeekFrom::Start(0)).await?;
+        file.write_all(&self.encode()).await?;
+        file.flush().await?;
+        Ok(())
+    }
+
+    /// Reads the header size from a file without consuming the full header.
+    /// Returns the header size in bytes.
+    pub async fn read_header_size_async(file: &mut File) -> Result<u16, WalError> {
+        let _ = file.seek(SeekFrom::Start(0)).await?;
+        let mut buf = [0u8; WAL_HEADER_MIN_LEN];
+        let _ = file.read_exact(&mut buf).await?;
+
+        // Validate magic
+        if &buf[0..WAL_MAGIC.len()] != WAL_MAGIC {
+            return Err(WalError::InvalidHeader("magic mismatch"));
+        }
+
+        // Validate version
+        let version = u16::from_le_bytes([buf[WAL_MAGIC.len()], buf[WAL_MAGIC.len() + 1]]);
+        if version != WAL_VERSION {
+            return Err(WalError::InvalidHeader("unsupported version"));
+        }
+
+        // Read header size
+        let header_size = u16::from_le_bytes([buf[WAL_MAGIC.len() + 2], buf[WAL_MAGIC.len() + 3]]);
+
+        if (header_size as usize) < WAL_HEADER_MIN_LEN {
+            return Err(WalError::InvalidHeader("header size too small"));
+        }
+
+        Ok(header_size)
+    }
+
+    /// Reads the header from a file asynchronously.
+    pub async fn read_from_async(file: &mut File) -> Result<Self, WalError> {
+        let _ = file.seek(SeekFrom::Start(0)).await?;
+
+        // First read minimum header to get the actual header size
+        let mut min_buf = [0u8; WAL_HEADER_MIN_LEN];
+        let _ = file.read_exact(&mut min_buf).await?;
+
+        // Validate magic
+        if &min_buf[0..WAL_MAGIC.len()] != WAL_MAGIC {
+            return Err(WalError::InvalidHeader("magic mismatch"));
+        }
+
+        // Validate version
+        let version = u16::from_le_bytes([min_buf[WAL_MAGIC.len()], min_buf[WAL_MAGIC.len() + 1]]);
+        if version != WAL_VERSION {
+            return Err(WalError::InvalidHeader("unsupported version"));
+        }
+
+        // Read header size
+        let header_size =
+            u16::from_le_bytes([min_buf[WAL_MAGIC.len() + 2], min_buf[WAL_MAGIC.len() + 3]]);
+        let header_size = header_size as usize;
+
+        if header_size < WAL_HEADER_MIN_LEN {
+            return Err(WalError::InvalidHeader("header size too small"));
+        }
+
+        // Now read the remaining bytes
+        let remaining = header_size - WAL_HEADER_MIN_LEN;
+        let mut remaining_buf = vec![0u8; remaining];
+        let _ = file.read_exact(&mut remaining_buf).await?;
+
+        // Combine into full buffer for decoding
+        let mut full_buf = Vec::with_capacity(header_size);
+        full_buf.extend_from_slice(&min_buf);
+        full_buf.extend_from_slice(&remaining_buf);
+
+        Self::decode(&full_buf)
+    }
+
 
     pub fn decode(buf: &[u8]) -> Result<Self, WalError> {
         if buf.len() < WAL_HEADER_MIN_LEN {
