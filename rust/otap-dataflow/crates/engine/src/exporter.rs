@@ -11,6 +11,7 @@ use crate::channel_metrics::{CHANNEL_KIND_CONTROL, ChannelMetricsRegistry, contr
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -47,6 +48,8 @@ pub enum ExporterWrapper<PData> {
         control_receiver: Option<LocalReceiver<NodeControlMsg<PData>>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<Receiver<PData>>,
+        /// Telemetry guard for node lifecycle cleanup.
+        telemetry: Option<NodeTelemetryGuard>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -64,6 +67,8 @@ pub enum ExporterWrapper<PData> {
         control_receiver: Option<SharedReceiver<NodeControlMsg<PData>>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
+        /// Telemetry guard for node lifecycle cleanup.
+        telemetry: Option<NodeTelemetryGuard>,
     },
 }
 
@@ -103,6 +108,7 @@ impl<PData> ExporterWrapper<PData> {
             control_sender: LocalSender::mpsc(control_sender),
             control_receiver: Some(LocalReceiver::mpsc(control_receiver)),
             pdata_receiver: None, // This will be set later
+            telemetry: None,
         }
     }
 
@@ -128,6 +134,57 @@ impl<PData> ExporterWrapper<PData> {
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: Some(SharedReceiver::mpsc(control_receiver)),
             pdata_receiver: None, // This will be set later
+            telemetry: None,
+        }
+    }
+
+    pub(crate) fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        match self {
+            ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                ..
+            } => ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry: Some(guard),
+            },
+            ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                ..
+            } => ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry: Some(guard),
+            },
+        }
+    }
+
+    pub(crate) fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
+        match self {
+            ExporterWrapper::Local { telemetry, .. } => telemetry.take(),
+            ExporterWrapper::Shared { telemetry, .. } => telemetry.take(),
         }
     }
 
@@ -149,6 +206,7 @@ impl<PData> ExporterWrapper<PData> {
                 user_config,
                 exporter,
                 pdata_receiver,
+                telemetry,
                 ..
             } => {
                 let channel_id = control_channel_id(&node_id);
@@ -185,6 +243,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_sender,
                     control_receiver,
                     pdata_receiver,
+                    telemetry,
                 }
             }
             ExporterWrapper::Shared {
@@ -195,6 +254,7 @@ impl<PData> ExporterWrapper<PData> {
                 user_config,
                 exporter,
                 pdata_receiver,
+                telemetry,
                 ..
             } => {
                 let channel_id = control_channel_id(&node_id);
@@ -231,6 +291,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_sender,
                     control_receiver,
                     pdata_receiver,
+                    telemetry,
                 }
             }
         }

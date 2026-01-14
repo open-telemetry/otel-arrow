@@ -63,9 +63,7 @@ impl<T> SharedSender<T> {
             CHANNEL_TYPE_MPSC,
             CHANNEL_IMPL_TOKIO,
         );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set::<ChannelSenderMetrics>(attrs);
+        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelSenderMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
@@ -96,9 +94,7 @@ impl<T> SharedSender<T> {
             CHANNEL_TYPE_MPMC,
             CHANNEL_IMPL_FLUME,
         );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set::<ChannelSenderMetrics>(attrs);
+        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelSenderMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
@@ -203,9 +199,7 @@ impl<T> SharedReceiver<T> {
             CHANNEL_TYPE_MPSC,
             CHANNEL_IMPL_TOKIO,
         );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set::<ChannelReceiverMetrics>(attrs);
+        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));
@@ -240,9 +234,7 @@ impl<T> SharedReceiver<T> {
             CHANNEL_TYPE_MPMC,
             CHANNEL_IMPL_FLUME,
         );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set::<ChannelReceiverMetrics>(attrs);
+        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));

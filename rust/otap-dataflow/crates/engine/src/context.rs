@@ -6,10 +6,11 @@
 use crate::attributes::{
     ChannelAttributeSet, EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet,
 };
+use crate::entity_context::current_node_telemetry_handle;
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use std::fmt::Debug;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
@@ -179,29 +180,92 @@ impl PipelineContext {
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.register_metric_set::<T>()
+        } else {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_metric_set::<T>(self.node_attribute_set())
+        }
+    }
+
+    /// Registers a metric set for the given entity key and tracks it in node telemetry if present.
+    #[must_use]
+    pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        entity_key: EntityKey,
+    ) -> MetricSet<T> {
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_for_entity::<T>(entity_key);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    /// Registers a metric set for the given attributes and tracks it in node telemetry if present.
+    #[must_use]
+    pub fn register_metric_set_with_attrs<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        attrs: impl otap_df_telemetry::attributes::AttributeSetHandler + Send + Sync + 'static,
+    ) -> MetricSet<T> {
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set::<T>(attrs);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    /// Registers (or reuses) the pipeline entity for this context.
+    #[must_use]
+    pub fn register_pipeline_entity(&self) -> EntityKey {
         self.controller_context
             .telemetry_registry_handle
-            .register_metric_set::<T>(self.node_attribute_set())
+            .register_entity(self.pipeline_attribute_set())
+    }
+
+    /// Registers (or reuses) the node entity for this context.
+    #[must_use]
+    pub fn register_node_entity(&self) -> EntityKey {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(self.node_attribute_set())
+    }
+
+    fn engine_attribute_set(&self) -> EngineAttributeSet {
+        use crate::attributes::ResourceAttributeSet;
+
+        EngineAttributeSet {
+            resource_attrs: ResourceAttributeSet {
+                process_instance_id: self.controller_context.process_instance_id.clone(),
+                host_id: self.controller_context.host_id.clone(),
+                container_id: self.controller_context.container_id.clone(),
+            },
+            core_id: self.core_id,
+            numa_node_id: self.controller_context.numa_node_id,
+        }
+    }
+
+    /// Returns the pipeline attribute set for the current pipeline context.
+    #[must_use]
+    pub fn pipeline_attribute_set(&self) -> PipelineAttributeSet {
+        PipelineAttributeSet {
+            engine_attrs: self.engine_attribute_set(),
+            pipeline_id: self.pipeline_id.clone(),
+            pipeline_group_id: self.pipeline_group_id.clone(),
+        }
     }
 
     /// Returns the node attribute set for the current node context.
     #[must_use]
     pub fn node_attribute_set(&self) -> NodeAttributeSet {
-        use crate::attributes::ResourceAttributeSet;
-
         NodeAttributeSet {
-            pipeline_attrs: PipelineAttributeSet {
-                engine_attrs: EngineAttributeSet {
-                    resource_attrs: ResourceAttributeSet {
-                        process_instance_id: self.controller_context.process_instance_id.clone(),
-                        host_id: self.controller_context.host_id.clone(),
-                        container_id: self.controller_context.container_id.clone(),
-                    },
-                    core_id: self.core_id,
-                    numa_node_id: self.controller_context.numa_node_id,
-                },
-                pipeline_id: self.pipeline_id.clone(),
-            },
+            pipeline_attrs: self.pipeline_attribute_set(),
             node_id: self.node_id.clone(),
             node_urn: self.node_urn.clone(),
             node_type: self.node_kind.into(),

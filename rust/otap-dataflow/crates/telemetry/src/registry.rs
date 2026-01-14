@@ -99,10 +99,27 @@ impl TelemetryRegistryHandle {
         registry.metrics.register(entity_key)
     }
 
+    /// Registers a metric set type for an existing entity key.
+    pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        entity_key: EntityKey,
+    ) -> MetricSet<T> {
+        let mut registry = self.registry.lock();
+        let retained = registry.entities.retain(entity_key);
+        debug_assert!(retained, "entity key must be registered before metrics");
+        registry.metrics.register(entity_key)
+    }
+
     /// Unregisters a metric set by key.
     #[must_use]
     pub fn unregister_metric_set(&self, metrics_key: MetricSetKey) -> bool {
-        self.registry.lock().metrics.unregister(metrics_key)
+        let mut reg = self.registry.lock();
+        if let Some(entity_key) = reg.metrics.unregister(metrics_key) {
+            let _ = reg.entities.unregister(entity_key);
+            true
+        } else {
+            false
+        }
     }
 
     /// Adds a new metrics snapshot to the aggregator for the given key.

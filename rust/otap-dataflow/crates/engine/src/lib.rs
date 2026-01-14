@@ -8,6 +8,7 @@ use crate::{
     channel_metrics::{CHANNEL_KIND_PDATA, ChannelMetricsRegistry},
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
+    entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::Error,
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
@@ -45,6 +46,7 @@ pub mod config;
 pub mod context;
 pub mod control;
 pub mod effect_handler;
+pub mod entity_context;
 pub mod local;
 pub mod node;
 pub mod pipeline_ctrl;
@@ -323,58 +325,93 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            let pipeline_ctx = pipeline_ctx.with_node_context(
+            let base_ctx = pipeline_ctx.with_node_context(
                 name.clone(),
                 node_config.plugin_urn.clone(),
                 node_config.kind,
             );
-            let _ = node_contexts.insert(name.clone(), pipeline_ctx.clone());
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
-                    let wrapper = self.create_receiver(
-                        &pipeline_ctx,
-                        &mut receiver_names,
-                        &mut nodes,
-                        receivers.len(),
-                        name.clone(),
-                        node_config.clone(),
+                    let node_entity_key = base_ctx.register_node_entity();
+                    let node_telemetry_handle =
+                        NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
+                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
+                    let wrapper = with_node_telemetry_handle(
+                        node_telemetry_handle.clone(),
+                        || -> Result<ReceiverWrapper<PData>, Error> {
+                            let wrapper = self.create_receiver(
+                                &base_ctx,
+                                &mut receiver_names,
+                                &mut nodes,
+                                receivers.len(),
+                                name.clone(),
+                                node_config.clone(),
+                            )?;
+                            Ok(wrapper.with_control_channel_metrics(
+                                &base_ctx,
+                                &mut channel_metrics,
+                                channel_metrics_enabled,
+                            ))
+                        },
                     )?;
-                    receivers.push(wrapper.with_control_channel_metrics(
-                        &pipeline_ctx,
-                        &mut channel_metrics,
-                        channel_metrics_enabled,
-                    ));
+                    let wrapper = wrapper
+                        .with_node_telemetry_guard(NodeTelemetryGuard::new(node_telemetry_handle));
+                    receivers.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Processor => {
-                    let wrapper = self.create_processor(
-                        &pipeline_ctx,
-                        &mut processor_names,
-                        &mut nodes,
-                        processors.len(),
-                        name.clone(),
-                        node_config.clone(),
+                    let node_entity_key = base_ctx.register_node_entity();
+                    let node_telemetry_handle =
+                        NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
+                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
+                    let wrapper = with_node_telemetry_handle(
+                        node_telemetry_handle.clone(),
+                        || -> Result<ProcessorWrapper<PData>, Error> {
+                            let wrapper = self.create_processor(
+                                &base_ctx,
+                                &mut processor_names,
+                                &mut nodes,
+                                processors.len(),
+                                name.clone(),
+                                node_config.clone(),
+                            )?;
+                            Ok(wrapper.with_control_channel_metrics(
+                                &base_ctx,
+                                &mut channel_metrics,
+                                channel_metrics_enabled,
+                            ))
+                        },
                     )?;
-                    processors.push(wrapper.with_control_channel_metrics(
-                        &pipeline_ctx,
-                        &mut channel_metrics,
-                        channel_metrics_enabled,
-                    ));
+                    let wrapper = wrapper
+                        .with_node_telemetry_guard(NodeTelemetryGuard::new(node_telemetry_handle));
+                    processors.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Exporter => {
-                    let wrapper = self.create_exporter(
-                        &pipeline_ctx,
-                        &mut exporter_names,
-                        &mut nodes,
-                        exporters.len(),
-                        name.clone(),
-                        node_config.clone(),
+                    let node_entity_key = base_ctx.register_node_entity();
+                    let node_telemetry_handle =
+                        NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
+                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
+                    let wrapper = with_node_telemetry_handle(
+                        node_telemetry_handle.clone(),
+                        || -> Result<ExporterWrapper<PData>, Error> {
+                            let wrapper = self.create_exporter(
+                                &base_ctx,
+                                &mut exporter_names,
+                                &mut nodes,
+                                exporters.len(),
+                                name.clone(),
+                                node_config.clone(),
+                            )?;
+                            Ok(wrapper.with_control_channel_metrics(
+                                &base_ctx,
+                                &mut channel_metrics,
+                                channel_metrics_enabled,
+                            ))
+                        },
                     )?;
-                    exporters.push(wrapper.with_control_channel_metrics(
-                        &pipeline_ctx,
-                        &mut channel_metrics,
-                        channel_metrics_enabled,
-                    ));
+                    let wrapper = wrapper
+                        .with_node_telemetry_guard(NodeTelemetryGuard::new(node_telemetry_handle));
+                    exporters.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.

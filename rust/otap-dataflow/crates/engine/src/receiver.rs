@@ -11,6 +11,7 @@ use crate::channel_metrics::{CHANNEL_KIND_CONTROL, ChannelMetricsRegistry, contr
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
@@ -50,6 +51,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
+        /// Telemetry guard for node lifecycle cleanup.
+        telemetry: Option<NodeTelemetryGuard>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -69,6 +72,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
+        /// Telemetry guard for node lifecycle cleanup.
+        telemetry: Option<NodeTelemetryGuard>,
     },
 }
 
@@ -108,6 +113,7 @@ impl<PData> ReceiverWrapper<PData> {
             control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
+            telemetry: None,
         }
     }
 
@@ -133,6 +139,61 @@ impl<PData> ReceiverWrapper<PData> {
             control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
+            telemetry: None,
+        }
+    }
+
+    pub(crate) fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        match self {
+            ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                ..
+            } => ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry: Some(guard),
+            },
+            ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                ..
+            } => ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry: Some(guard),
+            },
+        }
+    }
+
+    pub(crate) fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
+        match self {
+            ReceiverWrapper::Local { telemetry, .. } => telemetry.take(),
+            ReceiverWrapper::Shared { telemetry, .. } => telemetry.take(),
         }
     }
 
@@ -155,6 +216,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver,
                 pdata_senders,
                 pdata_receiver,
+                telemetry,
                 ..
             } => {
                 let channel_id = control_channel_id(&node_id);
@@ -189,6 +251,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     pdata_receiver,
+                    telemetry,
                 }
             }
             ReceiverWrapper::Shared {
@@ -200,6 +263,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver,
                 pdata_senders,
                 pdata_receiver,
+                telemetry,
                 ..
             } => {
                 let channel_id = control_channel_id(&node_id);
@@ -234,6 +298,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     pdata_receiver,
+                    telemetry,
                 }
             }
         }

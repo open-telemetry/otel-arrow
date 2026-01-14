@@ -24,8 +24,14 @@ pub struct EntityAttributeSet {
 /// A registry that maintains de-duplicated attribute sets for entities.
 #[derive(Default)]
 pub struct EntityRegistry {
-    entities: SlotMap<EntityKey, Arc<EntityAttributeSet>>,
+    entities: SlotMap<EntityKey, EntityEntry>,
     entities_by_signature: HashMap<EntityAttributeSet, EntityKey>,
+}
+
+#[derive(Clone)]
+struct EntityEntry {
+    attrs: Arc<EntityAttributeSet>,
+    refs: usize,
 }
 
 impl AttributeSetHandler for EntityAttributeSet {
@@ -129,25 +135,45 @@ impl EntityRegistry {
     pub fn register(&mut self, attrs: impl AttributeSetHandler) -> EntityKey {
         let entity = EntityAttributeSet::new(attrs);
         if let Some(existing) = self.entities_by_signature.get(&entity) {
+            if let Some(entry) = self.entities.get_mut(*existing) {
+                entry.refs = entry.refs.saturating_add(1);
+            }
             return *existing;
         }
 
         let attrs = Arc::new(entity.clone());
 
-        let entity_key = self.entities.insert(attrs);
+        let entity_key = self.entities.insert(EntityEntry { attrs, refs: 1 });
         let _ = self.entities_by_signature.insert(entity, entity_key);
         entity_key
     }
 
-    /// Unregisters an entity by key. Returns true if the entity was found and removed.
+    /// Increments the reference count for an existing entity key.
     #[must_use]
-    pub fn unregister(&mut self, entity_key: EntityKey) -> bool {
-        if let Some(attrs) = self.entities.remove(entity_key) {
-            let _ = self.entities_by_signature.remove(attrs.as_ref());
+    pub fn retain(&mut self, entity_key: EntityKey) -> bool {
+        if let Some(entry) = self.entities.get_mut(entity_key) {
+            entry.refs = entry.refs.saturating_add(1);
             true
         } else {
             false
         }
+    }
+
+    /// Unregisters an entity by key. Returns true if the key was found.
+    #[must_use]
+    pub fn unregister(&mut self, entity_key: EntityKey) -> bool {
+        let Some(entry) = self.entities.get_mut(entity_key) else {
+            return false;
+        };
+
+        if entry.refs > 1 {
+            entry.refs -= 1;
+            return true;
+        }
+
+        let entry = self.entities.remove(entity_key).expect("entry exists");
+        let _ = self.entities_by_signature.remove(entry.attrs.as_ref());
+        true
     }
 
     /// Returns the total number of registered entities.
@@ -165,13 +191,13 @@ impl EntityRegistry {
     /// Returns a reference to the attribute set for the given key, if it exists.
     #[must_use]
     pub fn get(&self, key: EntityKey) -> Option<&EntityAttributeSet> {
-        self.entities.get(key).map(|attrs| attrs.as_ref())
+        self.entities.get(key).map(|entry| entry.attrs.as_ref())
     }
 
     /// Returns a shared attribute set handle for the given key, if it exists.
     #[must_use]
     pub fn get_shared(&self, key: EntityKey) -> Option<Arc<EntityAttributeSet>> {
-        self.entities.get(key).cloned()
+        self.entities.get(key).map(|entry| entry.attrs.clone())
     }
 
     /// Visits all registered entities.
@@ -180,7 +206,7 @@ impl EntityRegistry {
         F: FnMut(EntityKey, &dyn AttributeSetHandler),
     {
         for (key, attrs) in self.entities.iter() {
-            f(key, attrs.as_ref());
+            f(key, attrs.attrs.as_ref());
         }
     }
 }
@@ -380,7 +406,11 @@ mod tests {
         let mut registry = EntityRegistry::default();
 
         let key = registry.register(MockAttributeSet::new("value".to_string()));
+        let _dup = registry.register(MockAttributeSet::new("value".to_string()));
 
+        assert!(registry.unregister(key));
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get_shared(key).is_some());
         assert!(registry.unregister(key));
         assert_eq!(registry.len(), 0);
         assert!(registry.get_shared(key).is_none());
