@@ -41,6 +41,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Semaphore, oneshot};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use zstd::stream::read::Decoder as ZstdDecoder;
 
 #[cfg(feature = "experimental-tls")]
@@ -720,6 +722,7 @@ pub async fn serve(
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
     shared_semaphore: Option<Arc<Semaphore>>,
+    shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     let listener = effect_handler
         .tcp_listener(settings.listening_addr)
@@ -734,70 +737,132 @@ pub async fn serve(
         Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)))
     });
 
+    let tracker = TaskTracker::new();
+
     #[cfg(feature = "experimental-tls")]
     let maybe_tls_acceptor = build_tls_acceptor(settings.tls.as_ref()).await?;
 
     loop {
-        let (stream, peer_addr) = listener.accept().await?;
-
-        // Apply socket options. If this fails for a single connection, log and skip
-        // that connection rather than terminating the entire server.
-        let stream = match socket_options::apply_socket_options(
-            stream,
-            settings.tcp_nodelay,
-            settings.tcp_keepalive,
-            settings.tcp_keepalive_interval,
-            settings.tcp_keepalive_retries,
-        ) {
-            Ok(s) => s,
-            Err(e) => {
-                otap_df_telemetry::otel_warn!(
-                    "HttpSocketOptionsFailed",
-                    peer = peer_addr.to_string(),
-                    error = e.to_string(),
-                    message = "Failed to apply socket options to connection, skipping"
-                );
-                continue; // Skip this connection, continue accepting others
+        tokio::select! {
+            _ = shutdown.cancelled() => {
+                break;
             }
-        };
+            accept_result = listener.accept() => {
+                let (stream, peer_addr) = accept_result?;
 
-        let handler = HttpHandler {
-            effect_handler: effect_handler.clone(),
-            ack_registry: ack_registry.clone(),
-            metrics: metrics.clone(),
-            settings: settings.clone(),
-            semaphore: semaphore.clone(),
-        };
+                // Apply socket options. If this fails for a single connection, log and skip
+                // that connection rather than terminating the entire server.
+                let stream = match socket_options::apply_socket_options(
+                    stream,
+                    settings.tcp_nodelay,
+                    settings.tcp_keepalive,
+                    settings.tcp_keepalive_interval,
+                    settings.tcp_keepalive_retries,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        otap_df_telemetry::otel_warn!(
+                            "HttpSocketOptionsFailed",
+                            peer = peer_addr.to_string(),
+                            error = e.to_string(),
+                            message = "Failed to apply socket options to connection, skipping"
+                        );
+                        continue; // Skip this connection, continue accepting others
+                    }
+                };
 
-        #[cfg(feature = "experimental-tls")]
-        {
-            if let Some(acceptor) = maybe_tls_acceptor.clone() {
-                _ = tokio::spawn(async move {
-                    let tls_stream = match acceptor.accept(stream).await {
-                        Ok(s) => s,
-                        Err(_) => return,
-                    };
-                    let io = TokioIo::new(tls_stream);
+                let handler = HttpHandler {
+                    effect_handler: effect_handler.clone(),
+                    ack_registry: ack_registry.clone(),
+                    metrics: metrics.clone(),
+                    settings: settings.clone(),
+                    semaphore: semaphore.clone(),
+                };
+
+                #[cfg(feature = "experimental-tls")]
+                {
+                    if let Some(acceptor) = maybe_tls_acceptor.clone() {
+                        let shutdown = shutdown.clone();
+                        let _ = tracker.spawn(async move {
+                            let tls_stream = match acceptor.accept(stream).await {
+                                Ok(s) => s,
+                                Err(_) => return,
+                            };
+                            let io = TokioIo::new(tls_stream);
+                            let conn = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
+
+                            let mut conn = std::pin::pin!(conn);
+
+                            tokio::select! {
+                                res = &mut conn => {
+                                    if let Err(err) = res {
+                                        otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                    }
+                                },
+                                _ = shutdown.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                }
+                            }
+                        });
+                        continue;
+                    }
+                }
+
+                let shutdown = shutdown.clone();
+                let _ = tracker.spawn(async move {
+                    let io = TokioIo::new(stream);
                     let conn = hyper::server::conn::http1::Builder::new()
                         .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
-                    let _ = conn.await;
+
+                    let mut conn = std::pin::pin!(conn);
+
+                    tokio::select! {
+                        res = &mut conn => {
+                            if let Err(err) = res {
+                                otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                            }
+                        },
+                        _ = shutdown.cancelled() => {
+                            conn.as_mut().graceful_shutdown();
+                            let _ = conn.await;
+                        }
+                    }
                 });
-                continue;
             }
         }
-
-        _ = tokio::spawn(async move {
-            let io = TokioIo::new(stream);
-            let conn = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
-            let _ = conn.await;
-        });
     }
+
+    let _ = tracker.close();
+
+    // Bound shutdown latency to the configured request timeout (or the default) so shutdown
+    // cannot hang indefinitely on misbehaving clients.
+    let drain_timeout = settings.timeout.unwrap_or_else(|| {
+        // default_http_timeout is private; mirror its value (30s) to avoid code duplication.
+        Duration::from_secs(30)
+    });
+
+    if tokio::time::timeout(drain_timeout, tracker.wait())
+        .await
+        .is_err()
+    {
+        otap_df_telemetry::otel_warn!(
+            "HttpShutdownTimeout",
+            timeout_ms = drain_timeout.as_millis() as u64,
+            message = "Timed out waiting for in-flight HTTP requests to drain"
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::HashMap;
+    use std::time::Duration;
 
     #[test]
     fn maps_paths() {
@@ -805,5 +870,128 @@ mod tests {
         assert_eq!(map_path_to_signal("/v1/metrics"), Some(SignalType::Metrics));
         assert_eq!(map_path_to_signal("/v1/traces"), Some(SignalType::Traces));
         assert_eq!(map_path_to_signal("/nope"), None);
+    }
+
+    #[tokio::test]
+    async fn drains_inflight_requests_on_shutdown() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+        use otap_df_engine::shared::message::SharedSender;
+        use otap_df_engine::testing::test_node;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = portpicker::pick_unused_port().expect("free port");
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        // Minimal shared receiver plumbing.
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler =
+            EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 4,
+            wait_for_result: true, // Use wait_for_result to hold the request open
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = otap_df_telemetry::registry::MetricsRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        let metrics = Arc::new(Mutex::new(
+            pipeline_ctx.register_metrics::<crate::otlp_receiver::OtlpReceiverMetrics>(),
+        ));
+
+        let ack_registry = AckRegistry::new(Some(AckSlot::new(4)), None, None);
+
+        let server = tokio::spawn(serve(
+            effect_handler.clone(),
+            settings.clone(),
+            ack_registry.clone(),
+            metrics,
+            None,
+            shutdown.clone(),
+        ));
+
+        // Wait for server to start.
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        let _ = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest::default()
+            .encode(&mut request_bytes)
+            .unwrap();
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let response = tokio::spawn(async move {
+            let resp = sender.send_request(req).await.unwrap();
+            let status = resp.status();
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (status, body)
+        });
+
+        // Wait for message to reach pipeline
+        let received = tokio::time::timeout(Duration::from_secs(1), msg_rx.recv())
+            .await
+            .expect("message delivered")
+            .expect("channel open");
+
+        // Now initiate shutdown while request is waiting for ACK
+        shutdown.cancel();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !server.is_finished(),
+            "server should wait for in-flight request waiting for ACK"
+        );
+
+        // Send ACK back
+        if let Some((_, ack)) = Context::next_ack(otap_df_engine::control::AckMsg::new(received)) {
+            let _ = crate::otap_grpc::common::route_ack_response(&ack_registry, ack);
+        }
+
+        let (status, _) = response.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
     }
 }

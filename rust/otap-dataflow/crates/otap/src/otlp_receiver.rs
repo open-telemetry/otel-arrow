@@ -56,6 +56,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::util::Either;
@@ -361,7 +362,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         // - If HTTP is disabled, preserve prior gRPC-only behavior (GlobalConcurrencyLimitLayer).
         let (limit_layer, shared_semaphore) = if self.config.http.is_some() {
             let shared = Arc::new(Semaphore::new(max_concurrent_requests));
-            (Either::Left(SharedConcurrencyLayer::new(shared.clone())), Some(shared))
+            (
+                Either::Left(SharedConcurrencyLayer::new(shared.clone())),
+                Some(shared),
+            )
         } else {
             (
                 Either::Right(GlobalConcurrencyLimitLayer::new(max_concurrent_requests)),
@@ -420,6 +424,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             }
         };
 
+        let http_enabled = self.config.http.is_some();
+        let http_shutdown = CancellationToken::new();
         let mut http_task: Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>> =
             if let Some(http) = self.config.http.clone() {
                 // Pass the shared semaphore to HTTP server so both protocols
@@ -430,10 +436,14 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     ack_registry.clone(),
                     self.metrics.clone(),
                     shared_semaphore,
+                    http_shutdown.clone(),
                 ))
             } else {
                 Box::pin(std::future::pending())
             };
+
+        let mut http_task_done = false;
+        let terminal_state: TerminalState;
 
         loop {
             tokio::select! {
@@ -446,7 +456,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                                 .handle_control_message(msg, &ack_registry, &mut telemetry_cancel_handle)
                                 .await?
                             {
-                                return Ok(terminal);
+                                http_shutdown.cancel();
+                                terminal_state = terminal;
+                                break;
                             }
                         }
                         Err(e) => {
@@ -467,6 +479,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(&effect_handler, error));
                     }
+                    terminal_state = TerminalState::new(
+                        Instant::now().add(Duration::from_secs(1)),
+                        [self.metrics.lock().snapshot()],
+                    );
+                    http_shutdown.cancel();
                     break;
                 }
 
@@ -479,15 +496,26 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(&effect_handler, error));
                     }
+                    http_task_done = true;
+                    terminal_state = TerminalState::new(
+                        Instant::now().add(Duration::from_secs(1)),
+                        [self.metrics.lock().snapshot()],
+                    );
                     break;
                 }
             }
         }
 
-        Ok(TerminalState::new(
-            Instant::now().add(Duration::from_secs(1)),
-            [self.metrics.lock().snapshot()],
-        ))
+        http_shutdown.cancel();
+
+        if http_enabled && !http_task_done {
+            if let Err(error) = http_task.await {
+                self.metrics.lock().transport_errors.inc();
+                return Err(self.map_transport_error(&effect_handler, error));
+            }
+        }
+
+        Ok(terminal_state)
     }
 }
 
@@ -2513,8 +2541,7 @@ mod tests {
                 // Hold the request long enough for the HTTP request to observe permit contention.
                 tokio::time::sleep(Duration::from_millis(300)).await;
 
-                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata))
-                {
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata)) {
                     ctx.send_control_msg(NodeControlMsg::Ack(ack))
                         .await
                         .expect("Failed to send Ack");
@@ -2527,5 +2554,4 @@ mod tests {
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
-
-    }
+}

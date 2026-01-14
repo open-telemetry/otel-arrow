@@ -59,6 +59,7 @@ tower-service.workspace = true
 fluke-hpack.workspace = true
 serde.workspace = true
 tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 async-stream.workspace = true
 humantime.workspace = true
 weaver_semconv.workspace = true
@@ -134,3 +135,4 @@ wiremock.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
+tokio-stream.workspace = true

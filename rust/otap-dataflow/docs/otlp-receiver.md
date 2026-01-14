@@ -58,6 +58,15 @@ and HTTP/1.1 protocols with unified concurrency control.
                           +---------------------------+
 ```
 
+### Graceful Shutdown
+
+The receiver implements a robust shutdown mechanism to ensure no in-flight data is lost when the process terminates:
+
+1.  **Stop Accepting:** The listener loop is broken immediately, stopping new connections.
+2.  **Drain Idle:** HTTP/1.1 Keep-Alive connections are signaled to close after their current request completes.
+3.  **Wait for Active:** A `TaskTracker` waits for all currently executing request handlers to finish (e.g., waiting for pipeline ACKs).
+4.  **Timeout:** A hard deadline (default 30s) prevents the server from hanging indefinitely if a handler stalls.
+
 ## Key Design Principles
 
 ### Zero-Deserialization Path
@@ -347,5 +356,15 @@ is safe because the OTLP service implementations:
 
 See [shared concurrency implementation][shared-concurrency] for detailed
 documentation on service compatibility requirements.
+
+### Memory Usage & Future Improvements
+
+The current HTTP implementation uses a "buffer-then-decompress" strategy:
+1.  Collect the full compressed body (up to `max_request_body_size`).
+2.  Decompress into a separate buffer (also limited by `max_request_body_size`).
+
+**Impact:** Peak memory usage per request is roughly `compressed_size + decompressed_size`, bounded by `2 * max_request_body_size`. For the default 4MiB limit, this means ~8MiB peak per concurrent request.
+
+**Future Optimization:** A streaming decompression implementation (wrapping the `Incoming` body stream directly) could reduce this to just `decompressed_size`, avoiding the double buffering. This is a potential optimization if memory constraints become tighter or default body limits need to increase significantly.
 
 [shared-concurrency]: ../crates/otap/src/shared_concurrency.rs
