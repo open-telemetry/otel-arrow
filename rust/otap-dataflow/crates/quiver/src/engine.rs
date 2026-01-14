@@ -880,11 +880,39 @@ impl QuiverEngine {
     /// 1. Flushes dirty subscriber progress to disk
     /// 2. Deletes fully-processed segment files
     ///
+    /// For async contexts, prefer [`maintain_async`](Self::maintain_async).
+    ///
     /// # Errors
     ///
     /// Returns an error if either operation fails.
     pub fn maintain(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
         let flushed = self.flush_progress()?;
+        let deleted = self.cleanup_completed_segments()?;
+        Ok(MaintenanceStats { flushed, deleted })
+    }
+
+    /// Asynchronously flushes dirty subscriber progress to disk.
+    ///
+    /// Returns the number of subscribers whose progress was flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any progress file cannot be written.
+    pub async fn flush_progress_async(&self) -> std::result::Result<usize, SubscriberError> {
+        self.registry.flush_progress_async().await
+    }
+
+    /// Performs combined maintenance asynchronously.
+    ///
+    /// This is the async version of [`maintain`](Self::maintain). It:
+    /// 1. Flushes dirty subscriber progress to disk (async)
+    /// 2. Deletes fully-processed segment files (sync - file deletes are fast)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either operation fails.
+    pub async fn maintain_async(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
+        let flushed = self.flush_progress_async().await?;
         let deleted = self.cleanup_completed_segments()?;
         Ok(MaintenanceStats { flushed, deleted })
     }
@@ -2967,5 +2995,62 @@ mod tests {
 
         // All three bundles should have sequential indices
         // (we can't check indices directly since we already acked, but test completes successfully)
+    }
+
+    #[tokio::test]
+    async fn async_flush_progress_writes_dirty_subscribers() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 5).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("flush-test").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Consume a bundle to make the subscriber dirty
+        let handle = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)))
+            .await
+            .expect("next_bundle")
+            .expect("bundle");
+        handle.ack();
+
+        // Flush progress asynchronously
+        let flushed = engine.flush_progress_async().await.expect("flush_progress");
+        assert_eq!(flushed, 1, "should have flushed one subscriber");
+
+        // Flush again - should be 0 since nothing is dirty now
+        let flushed2 = engine.flush_progress_async().await.expect("flush_progress 2");
+        assert_eq!(flushed2, 0, "should have flushed zero subscribers");
+    }
+
+    #[tokio::test]
+    async fn async_maintain_flushes_and_cleans() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and consume all bundles
+        let sub_id = SubscriberId::new("maintain-test").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Consume all bundles
+        loop {
+            match engine
+                .next_bundle(&sub_id, Some(Duration::from_millis(100)))
+                .await
+            {
+                Ok(Some(h)) => h.ack(),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Run async maintain
+        let stats = engine.maintain_async().await.expect("maintain");
+
+        // Should have flushed at least the one dirty subscriber
+        assert!(stats.flushed >= 1, "should have flushed at least one subscriber");
+        // deleted can be any non-negative number (usize)
     }
 }
