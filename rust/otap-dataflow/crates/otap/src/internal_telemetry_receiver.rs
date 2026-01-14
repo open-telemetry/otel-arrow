@@ -31,15 +31,9 @@ use std::sync::Arc;
 pub use otap_df_config::pipeline::service::telemetry::logs::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Configuration for the internal telemetry receiver.
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 /// A receiver that consumes internal logs from the logging channel and emits OTLP logs.
 pub struct InternalTelemetryReceiver {

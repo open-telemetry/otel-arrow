@@ -1,7 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! An alternative to Tokio fmt::layer().
+//! Log formatting primitives for console output.
+//!
+//! This module provides shared formatting infrastructure used by:
+//! - `RawLoggingLayer`: Flat format for tracing events before OTLP pipeline is ready
+//! - Console exporter: Hierarchical format for OTLP log data with tree structure
+//!
+//! The core abstraction is [`ConsoleWriter`] which provides methods for formatting
+//! timestamps, levels, bodies, and attributes. The [`ConsoleWriter::format_log_line`]
+//! method accepts a callback for customizing the "level" section, enabling different
+//! output formats (flat vs hierarchical) while sharing all other formatting logic.
 
 use super::{LogRecord, SavedCallsite};
 use bytes::Bytes;
@@ -23,55 +32,34 @@ pub const LOG_BUFFER_SIZE: usize = 4096;
 /// ANSI codes a.k.a. "Select Graphic Rendition" codes.
 #[derive(Clone, Copy)]
 #[repr(u8)]
-enum AnsiCode {
+pub enum AnsiCode {
+    /// Reset all attributes.
     Reset = 0,
+    /// Bold text.
     Bold = 1,
+    /// Dim/faint text.
     Dim = 2,
+    /// Red foreground.
     Red = 31,
+    /// Green foreground.
     Green = 32,
+    /// Yellow foreground.
     Yellow = 33,
+    /// Blue foreground.
     Blue = 34,
+    /// Magenta foreground.
     Magenta = 35,
+    /// Cyan foreground.
+    Cyan = 36,
 }
 
 /// Color mode for console output.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorMode {
     /// Enable ANSI color codes.
     Color,
     /// Disable ANSI color codes.
     NoColor,
-}
-
-impl ColorMode {
-    /// Write an ANSI escape sequence (no-op for NoColor).
-    #[inline]
-    fn write_ansi(self, w: &mut BufWriter<'_>, code: AnsiCode) {
-        if let ColorMode::Color = self {
-            let _ = write!(w, "\x1b[{}m", code as u8);
-        }
-    }
-
-    /// Write level with color and padding.
-    #[inline]
-    fn write_level(self, w: &mut BufWriter<'_>, level: &Level) {
-        self.write_ansi(w, Self::color(level));
-        let _ = w.write_all(level.as_str().as_bytes());
-        self.write_ansi(w, AnsiCode::Reset);
-        let _ = w.write_all(b"  ");
-    }
-
-    /// Get ANSI color code for a severity level.
-    #[inline]
-    fn color(level: &Level) -> AnsiCode {
-        match *level {
-            Level::ERROR => AnsiCode::Red,
-            Level::WARN => AnsiCode::Yellow,
-            Level::INFO => AnsiCode::Green,
-            Level::DEBUG => AnsiCode::Blue,
-            Level::TRACE => AnsiCode::Magenta,
-        }
-    }
 }
 
 /// Console writes formatted text to stdout or stderr.
@@ -121,65 +109,27 @@ impl ConsoleWriter {
         }
     }
 
-    /// Format a LogRecord as a human-readable string (for testing/compatibility).
-    ///
-    /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
-    pub fn format_log_record(&self, record: &LogRecord, callsite: &SavedCallsite) -> String {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.write_log_record(&mut buf, record, callsite);
-        // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
-        String::from_utf8_lossy(&buf[..len]).into_owned()
+    /// Returns the color mode.
+    #[must_use]
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
     }
 
-    /// Write a LogRecord to stdout or stderr (based on level).
-    ///
-    /// ERROR and WARN go to stderr, others go to stdout.
-    /// This is the same routing logic used by RawLoggingLayer.
-    pub fn raw_print(&self, record: &LogRecord, callsite: &SavedCallsite) {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.write_log_record(&mut buf, record, callsite);
-        self.write_line(callsite.level(), &buf[..len]);
-    }
+    // ========================================================================
+    // Core formatting primitives - used by both flat and hierarchical formats
+    // ========================================================================
 
-    /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
-    pub(crate) fn write_log_record(
-        &self,
-        buf: &mut [u8],
-        record: &LogRecord,
-        callsite: &SavedCallsite,
-    ) -> usize {
-        let mut w = Cursor::new(buf);
-        let cm = self.color_mode;
-
-        cm.write_ansi(&mut w, AnsiCode::Dim);
-        Self::write_timestamp(&mut w, record.timestamp_ns);
-        cm.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b"  ");
-        cm.write_level(&mut w, callsite.level());
-        cm.write_ansi(&mut w, AnsiCode::Bold);
-        Self::write_event_name(&mut w, callsite);
-        cm.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b": ");
-        Self::write_body_attrs(&mut w, &record.body_attrs_bytes);
-        let _ = w.write_all(b"\n");
-
-        w.position() as usize
-    }
-
-    /// Write callsite details as event_name to buffer.
+    /// Write an ANSI escape sequence (no-op for NoColor mode).
     #[inline]
-    fn write_event_name(w: &mut BufWriter<'_>, callsite: &SavedCallsite) {
-        let _ = w.write_all(callsite.target().as_bytes());
-        let _ = w.write_all(b"::");
-        let _ = w.write_all(callsite.name().as_bytes());
-        if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-            let _ = write!(w, " ({}:{})", file, line);
+    pub fn write_ansi(&self, w: &mut BufWriter<'_>, code: AnsiCode) {
+        if self.color_mode == ColorMode::Color {
+            let _ = write!(w, "\x1b[{}m", code as u8);
         }
     }
 
     /// Write nanosecond timestamp as ISO 8601 (UTC) to buffer.
     #[inline]
-    fn write_timestamp(w: &mut BufWriter<'_>, nanos: u64) {
+    pub fn write_timestamp(w: &mut BufWriter<'_>, nanos: u64) {
         let secs = (nanos / 1_000_000_000) as i64;
         let subsec_nanos = (nanos % 1_000_000_000) as u32;
 
@@ -204,55 +154,76 @@ impl ConsoleWriter {
         }
     }
 
-    /// Write body+attrs bytes to buffer using LogRecordView.
-    fn write_body_attrs(w: &mut BufWriter<'_>, bytes: &Bytes) {
-        if bytes.is_empty() {
-            return;
-        }
-
-        // A partial protobuf message (just body + attributes) is still a valid message.
-        // We can use the RawLogRecord view to access just the fields we encoded.
-        let record = RawLogRecord::new(bytes.as_ref());
-
-        // Write body if present
-        if let Some(body) = record.body() {
-            Self::write_any_value(w, &body);
-        }
-
-        // Write attributes if present
-        let mut attrs = record.attributes().peekable();
-        if attrs.peek().is_some() {
-            let _ = w.write_all(b" [");
-            let mut first = true;
-            for attr in attrs {
-                if Self::is_full(w) {
-                    break;
-                }
-                if !first {
-                    let _ = w.write_all(b", ");
-                }
-                first = false;
-                let _ = w.write_all(attr.key());
-                let _ = w.write_all(b"=");
-                match attr.value() {
-                    Some(v) => Self::write_any_value(w, &v),
-                    None => {
-                        let _ = w.write_all(b"<?>");
-                    }
-                }
-            }
-            let _ = w.write_all(b"]");
+    /// Write a tracing level with color and padding.
+    ///
+    /// Format: `INFO  ` (level string + padding to 6 chars total)
+    #[inline]
+    pub fn write_level(&self, w: &mut BufWriter<'_>, level: &Level) {
+        self.write_ansi(w, Self::level_color(level));
+        let _ = w.write_all(level.as_str().as_bytes());
+        self.write_ansi(w, AnsiCode::Reset);
+        // Pad to 6 chars total (longest is "ERROR" = 5, plus 1 space minimum)
+        let padding = 6 - level.as_str().len();
+        for _ in 0..padding {
+            let _ = w.write_all(b" ");
         }
     }
 
-    /// Check if the buffer is full (position >= capacity).
+    /// Get ANSI color code for a tracing level.
     #[inline]
-    fn is_full(w: &BufWriter<'_>) -> bool {
-        w.position() as usize >= w.get_ref().len()
+    #[must_use]
+    pub fn level_color(level: &Level) -> AnsiCode {
+        match *level {
+            Level::ERROR => AnsiCode::Red,
+            Level::WARN => AnsiCode::Yellow,
+            Level::INFO => AnsiCode::Green,
+            Level::DEBUG => AnsiCode::Blue,
+            Level::TRACE => AnsiCode::Magenta,
+        }
+    }
+
+    /// Write OTLP severity with color and padding.
+    ///
+    /// Converts OTLP severity number to level string and writes with appropriate color.
+    /// Format: `INFO  ` (level string + padding to 6 chars total)
+    #[inline]
+    pub fn write_severity(&self, w: &mut BufWriter<'_>, severity: Option<i32>) {
+        let (text, color) = Self::severity_to_text_and_color(severity);
+        self.write_ansi(w, color);
+        let _ = w.write_all(text.as_bytes());
+        self.write_ansi(w, AnsiCode::Reset);
+        // Pad to 6 chars total (longest is "ERROR" = 5, plus 1 space minimum)
+        let padding = 6 - text.len();
+        for _ in 0..padding {
+            let _ = w.write_all(b" ");
+        }
+    }
+
+    /// Convert OTLP severity number to display text and ANSI color.
+    ///
+    /// See: <https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber>
+    #[inline]
+    #[must_use]
+    pub fn severity_to_text_and_color(severity: Option<i32>) -> (&'static str, AnsiCode) {
+        match severity {
+            Some(n) if n >= 17 => ("ERROR", AnsiCode::Red), // FATAL, ERROR
+            Some(n) if n >= 13 => ("WARN", AnsiCode::Yellow), // WARN
+            Some(n) if n >= 9 => ("INFO", AnsiCode::Green), // INFO
+            Some(n) if n >= 5 => ("DEBUG", AnsiCode::Blue), // DEBUG
+            Some(_) => ("TRACE", AnsiCode::Magenta),        // TRACE
+            None => ("INFO", AnsiCode::Green),              // Default to INFO
+        }
+    }
+
+    /// Check if OTLP severity indicates error or warning (for stderr routing).
+    #[inline]
+    #[must_use]
+    pub fn severity_is_error_or_warn(severity: Option<i32>) -> bool {
+        matches!(severity, Some(n) if n >= 13)
     }
 
     /// Write an AnyValue to buffer.
-    fn write_any_value<'a>(w: &mut BufWriter<'_>, value: &impl AnyValueView<'a>) {
+    pub fn write_any_value<'a>(w: &mut BufWriter<'_>, value: &impl AnyValueView<'a>) {
         match value.value_type() {
             ValueType::String => {
                 if let Some(s) = value.as_string() {
@@ -276,14 +247,7 @@ impl ConsoleWriter {
             }
             ValueType::Bytes => {
                 if let Some(bytes) = value.as_bytes() {
-                    let _ = w.write_all(b"[");
-                    for (i, b) in bytes.iter().enumerate() {
-                        if i > 0 {
-                            let _ = w.write_all(b", ");
-                        }
-                        let _ = write!(w, "{}", b);
-                    }
-                    let _ = w.write_all(b"]");
+                    let _ = write!(w, "<{} bytes>", bytes.len());
                 }
             }
             ValueType::Array => {
@@ -322,14 +286,189 @@ impl ConsoleWriter {
         }
     }
 
-    /// Write a log line to stdout or stderr.
-    pub(crate) fn write_line(&self, level: &Level, data: &[u8]) {
+    /// Write attributes in `[key=value, ...]` format.
+    ///
+    /// Writes nothing if the iterator is empty.
+    pub fn write_attrs<A, I>(w: &mut BufWriter<'_>, attrs: I)
+    where
+        A: AttributeView,
+        I: Iterator<Item = A>,
+    {
+        let mut attrs = attrs.peekable();
+        if attrs.peek().is_some() {
+            let _ = w.write_all(b" [");
+            let mut first = true;
+            for attr in attrs {
+                if Self::is_full(w) {
+                    break;
+                }
+                if !first {
+                    let _ = w.write_all(b", ");
+                }
+                first = false;
+                let _ = w.write_all(attr.key());
+                let _ = w.write_all(b"=");
+                match attr.value() {
+                    Some(v) => Self::write_any_value(w, &v),
+                    None => {
+                        let _ = w.write_all(b"<?>");
+                    }
+                }
+            }
+            let _ = w.write_all(b"]");
+        }
+    }
+
+    /// Check if the buffer is full (position >= capacity).
+    #[inline]
+    #[must_use]
+    pub fn is_full(w: &BufWriter<'_>) -> bool {
+        w.position() as usize >= w.get_ref().len()
+    }
+
+    /// Write a log line to stdout or stderr based on level.
+    ///
+    /// ERROR and WARN go to stderr, others go to stdout.
+    pub fn write_output(&self, level: &Level, data: &[u8]) {
         let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
         let _ = if use_stderr {
             std::io::stderr().write_all(data)
         } else {
             std::io::stdout().write_all(data)
         };
+    }
+
+    // ========================================================================
+    // Generic log line formatting with customizable level section
+    // ========================================================================
+
+    /// Format a log line from a `LogRecordView` with customizable level formatting.
+    ///
+    /// This is the core formatting method used by both:
+    /// - Flat format (tracing events): callback writes `INFO  ` with color
+    /// - Hierarchical format (OTLP): callback writes tree chars + `RESOURCE`/`SCOPE`/level
+    ///
+    /// Output format: `<timestamp>  <level_callback>  <event_name>: <body> [attrs]`
+    ///
+    /// # Arguments
+    /// * `w` - Buffer to write to
+    /// * `timestamp_ns` - Timestamp in nanoseconds since UNIX epoch
+    /// * `event_name` - Event name to display (e.g., "target::name" or "v1.Resource")
+    /// * `record` - LogRecordView providing body() and attributes()
+    /// * `format_level` - Callback to format the level section; receives (writer, console_writer)
+    pub fn format_log_line<V, F>(
+        &self,
+        w: &mut BufWriter<'_>,
+        timestamp_ns: u64,
+        event_name: &str,
+        record: &V,
+        format_level: F,
+    ) where
+        V: LogRecordView,
+        F: FnOnce(&mut BufWriter<'_>, &Self),
+    {
+        // Dim timestamp
+        self.write_ansi(w, AnsiCode::Dim);
+        Self::write_timestamp(w, timestamp_ns);
+        self.write_ansi(w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+
+        // Level section (delegated to callback)
+        format_level(w, self);
+
+        // Bold event name
+        self.write_ansi(w, AnsiCode::Bold);
+        let _ = w.write_all(event_name.as_bytes());
+        self.write_ansi(w, AnsiCode::Reset);
+        let _ = w.write_all(b": ");
+
+        // Body
+        if let Some(body) = record.body() {
+            Self::write_any_value(w, &body);
+        }
+
+        // Attributes
+        Self::write_attrs(w, record.attributes());
+
+        let _ = w.write_all(b"\n");
+    }
+
+    // ========================================================================
+    // Tracing-specific methods (for RawLoggingLayer compatibility)
+    // ========================================================================
+
+    /// Format a LogRecord as a human-readable string (for testing/compatibility).
+    ///
+    /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
+    pub fn format_log_record(&self, record: &LogRecord, callsite: &SavedCallsite) -> String {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = self.write_log_record(&mut buf, record, callsite);
+        // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
+        String::from_utf8_lossy(&buf[..len]).into_owned()
+    }
+
+    /// Write a LogRecord to stdout or stderr (based on level).
+    ///
+    /// ERROR and WARN go to stderr, others go to stdout.
+    /// This is the same routing logic used by RawLoggingLayer.
+    pub fn raw_print(&self, record: &LogRecord, callsite: &SavedCallsite) {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = self.write_log_record(&mut buf, record, callsite);
+        self.write_output(callsite.level(), &buf[..len]);
+    }
+
+    /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
+    pub(crate) fn write_log_record(
+        &self,
+        buf: &mut [u8],
+        record: &LogRecord,
+        callsite: &SavedCallsite,
+    ) -> usize {
+        let mut w = Cursor::new(buf);
+
+        self.write_ansi(&mut w, AnsiCode::Dim);
+        Self::write_timestamp(&mut w, record.timestamp_ns);
+        self.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+        self.write_level(&mut w, callsite.level());
+        self.write_ansi(&mut w, AnsiCode::Bold);
+        Self::write_event_name(&mut w, callsite);
+        self.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b": ");
+        Self::write_body_attrs(&mut w, &record.body_attrs_bytes);
+        let _ = w.write_all(b"\n");
+
+        w.position() as usize
+    }
+
+    /// Write callsite details as event_name to buffer.
+    #[inline]
+    fn write_event_name(w: &mut BufWriter<'_>, callsite: &SavedCallsite) {
+        let _ = w.write_all(callsite.target().as_bytes());
+        let _ = w.write_all(b"::");
+        let _ = w.write_all(callsite.name().as_bytes());
+        if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
+            let _ = write!(w, " ({}:{})", file, line);
+        }
+    }
+
+    /// Write body+attrs bytes to buffer using LogRecordView.
+    fn write_body_attrs(w: &mut BufWriter<'_>, bytes: &Bytes) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        // A partial protobuf message (just body + attributes) is still a valid message.
+        // We can use the RawLogRecord view to access just the fields we encoded.
+        let record = RawLogRecord::new(bytes.as_ref());
+
+        // Write body if present
+        if let Some(body) = record.body() {
+            Self::write_any_value(w, &body);
+        }
+
+        // Write attributes if present
+        Self::write_attrs(w, record.attributes());
     }
 
     /// Write a raw error message directly to stderr, bypassing tracing entirely.
@@ -345,7 +484,6 @@ impl ConsoleWriter {
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let mut w = Cursor::new(buf.as_mut_slice());
-        let cm = self.color_mode;
 
         // Timestamp
         let nanos = SystemTime::now()
@@ -353,20 +491,20 @@ impl ConsoleWriter {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        cm.write_ansi(&mut w, AnsiCode::Dim);
+        self.write_ansi(&mut w, AnsiCode::Dim);
         Self::write_timestamp(&mut w, nanos);
-        cm.write_ansi(&mut w, AnsiCode::Reset);
+        self.write_ansi(&mut w, AnsiCode::Reset);
         let _ = w.write_all(b"  ");
 
         // Level (always ERROR for raw_write_error)
-        cm.write_level(&mut w, &Level::ERROR);
+        self.write_level(&mut w, &Level::ERROR);
 
         // Event name (target::name)
-        cm.write_ansi(&mut w, AnsiCode::Bold);
+        self.write_ansi(&mut w, AnsiCode::Bold);
         let _ = w.write_all(target.as_bytes());
         let _ = w.write_all(b"::");
         let _ = w.write_all(name.as_bytes());
-        cm.write_ansi(&mut w, AnsiCode::Reset);
+        self.write_ansi(&mut w, AnsiCode::Reset);
         let _ = w.write_all(b": ");
 
         // Message body
