@@ -49,6 +49,9 @@ pub mod filter_processor;
 /// Implementation of a noop exporter that acts as a exporter placeholder
 pub mod noop_exporter;
 
+/// Console exporter that prints OTLP data with hierarchical formatting
+pub mod console_exporter;
+
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
