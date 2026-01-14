@@ -623,4 +623,116 @@ mod test {
             })
             .validate(|_ctx| async move {})
     }
+
+    #[test]
+    fn test_conditional_route_to() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            } else if (severity_text == "INFO") {
+                route_to "info_port"
+            }"#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        let test_node_id = NodeId {
+            index: 1,
+            name: "test_node".into(),
+        };
+        let (error_port_tx, error_port_rx) = otap_df_channel::mpsc::Channel::new(10);
+        processor
+            .set_pdata_sender(
+                test_node_id.clone(),
+                PortName::from("error_port"),
+                Sender::Local(LocalSender::mpsc(error_port_tx)),
+            )
+            .unwrap();
+        let (info_port_tx, info_port_rx) = otap_df_channel::mpsc::Channel::new(10);
+        processor
+            .set_pdata_sender(
+                test_node_id.clone(),
+                PortName::from("info_port"),
+                Sender::Local(LocalSender::mpsc(info_port_tx)),
+            )
+            .unwrap();
+
+        fn assert_logs_records_equal(otap_batch: OtapArrowRecords, log_record: LogRecord) {
+            let result = otap_to_otlp(&otap_batch);
+            match result {
+                OtlpProtoMessage::Logs(logs) => {
+                    assert_eq!(
+                        &logs.resource_logs[0].scope_logs[0].log_records,
+                        &[log_record]
+                    )
+                }
+                _ => panic!("unexpected result"),
+            }
+        }
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let other_log_record = LogRecord::build().severity_text("DEBUG").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                error_log_record.clone(),
+                                info_log_record.clone(),
+                                other_log_record.clone(),
+                            ],
+                        )],
+                    )],
+                }));
+                let pdata = OtapPdata::new_default(input.clone().into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // check anything not routed get outputted to the default port
+                let out = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let default_result = out.into_iter().next().expect("one result");
+                assert_logs_records_equal(default_result, other_log_record);
+
+                // check error log record got routed to correct out pot
+                let mut routed = Vec::new();
+                while let Ok(msg) = error_port_rx.try_recv() {
+                    routed.push(msg);
+                }
+                assert_eq!(routed.len(), 1);
+                let (_context, payload) = routed.pop().unwrap().into_parts();
+                match payload {
+                    OtapPayload::OtapArrowRecords(result) => {
+                        assert_logs_records_equal(result, error_log_record);
+                    }
+                    _ => panic!("unexpected payload type"),
+                }
+
+                // check error log record got routed to correct out pot
+                let mut routed = Vec::new();
+                while let Ok(msg) = info_port_rx.try_recv() {
+                    routed.push(msg);
+                }
+                assert_eq!(routed.len(), 1);
+                let (_context, payload) = routed.pop().unwrap().into_parts();
+                match payload {
+                    OtapPayload::OtapArrowRecords(result) => {
+                        assert_logs_records_equal(result, info_log_record);
+                    }
+                    _ => panic!("unexpected payload type"),
+                }
+            })
+            .validate(|_ctx| async move {})
+    }
 }
