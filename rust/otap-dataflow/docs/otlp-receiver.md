@@ -58,22 +58,6 @@ and HTTP/1.1 protocols with unified concurrency control.
                           +---------------------------+
 ```
 
-### Graceful Shutdown
-
-The receiver implements a robust shutdown mechanism to ensure no in-flight data
-is lost when the process terminates:
-
-1. **Stop Accepting:** The listener loop is broken immediately, stopping new
-   connections.
-2. **Drain Idle:** HTTP/1.1 Keep-Alive connections are signaled to close after
-   their current request completes.
-3. **Wait for Active:** A `TaskTracker` waits for all currently executing request
-   handlers to finish (e.g., waiting for pipeline ACKs).
-4. **Timeout:** A hard deadline (default 30s) prevents the server from hanging
-   indefinitely if a handler stalls. The HTTP drain timeout is tied to the HTTP
-   request timeout (default 30s) and coded in sync with it; if the default
-   changes in code, update this doc accordingly.
-
 ## Key Design Principles
 
 ### Zero-Deserialization Path
@@ -365,6 +349,20 @@ is safe because the OTLP service implementations:
 See [shared concurrency implementation][shared-concurrency] for detailed
 documentation on service compatibility requirements.
 
+### Thread-per-Core vs `Send` Tax
+
+- **Execution model today:** Each pipeline runs on a single-threaded Tokio runtime
+  (`new_current_thread` + `LocalSet`), so scheduling remains thread-per-core.
+- **Why `Send` is required:** The gRPC path uses tonic, which requires `Send`
+  futures/services. Shared metrics/state are therefore `Arc`-backed, and the HTTP
+  path shares that state and uses `tokio::spawn` via `TaskTracker`, which also
+  imposes `Send`.
+- **Trade-off:** Even though tasks stay on one OS thread, the shared `Send`
+  bounds mean we pay the `Arc`/atomic tax instead of using `Rc`/`!Send` types.
+- **Potential improvement:** An HTTP-only `!Send` path (local task tracker +
+  `spawn_local`, `Rc` metrics) would drop the `Send` tax, but would require
+  separating HTTP state from the tonic-driven `Send` path.
+
 ### Memory Usage & Future Improvements
 
 The current HTTP implementation uses a "buffer-then-decompress" strategy:
@@ -381,5 +379,21 @@ For the default 4MiB limit, this means ~8MiB peak per concurrent request.
 avoiding the double buffering. This is a potential optimization if memory
 constraints become tighter or default body limits need to increase
 significantly.
+
+### Graceful Shutdown
+
+The receiver implements a robust shutdown mechanism to ensure no in-flight data
+is lost when the process terminates:
+
+1. **Stop Accepting:** The listener loop is broken immediately, stopping new
+   connections.
+2. **Drain Idle:** HTTP/1.1 Keep-Alive connections are signaled to close after
+   their current request completes.
+3. **Wait for Active:** A `TaskTracker` waits for all currently executing
+   request handlers to finish (e.g., waiting for pipeline ACKs).
+4. **Timeout:** A hard deadline (default 30s) prevents the server from hanging
+   indefinitely if a handler stalls. The HTTP drain timeout is tied to the HTTP
+   request timeout (default 30s) and coded in sync with it; if the default
+   changes in code, update this doc accordingly.
 
 [shared-concurrency]: ../crates/otap/src/shared_concurrency.rs
