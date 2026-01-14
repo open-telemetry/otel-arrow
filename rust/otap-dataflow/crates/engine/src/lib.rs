@@ -297,13 +297,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// - `pipeline_ctx`: The pipeline context for this build.
     /// - `config`: The pipeline configuration.
     /// - `logs_receiver`: Optional tuple of (URN, receiver) for internal logs channel.
-    ///   When provided, the receiver is injected into any receiver node matching the URN,
-    ///   enabling collection of logs from all threads via the channel.
+    ///   When provided, the receiver and resource bytes are injected into any receiver
+    ///   node matching the URN, enabling collection of logs from all threads via the channel.
     pub fn build(
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
         config: PipelineConfig,
-        logs_receiver: Option<(&str, receiver::LogsReceiver)>,
+        internal_telemetry: Option<receiver::InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
@@ -349,10 +349,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         node_config.clone(),
                     )?;
 
-                    // Inject logs receiver if this is the target node
-                    if let Some((target_urn, ref logs_rx)) = logs_receiver {
-                        if node_config.plugin_urn.as_ref() == target_urn {
-                            wrapper.set_logs_receiver(logs_rx.clone());
+                    // Inject internal telemetry settings if this is the target node
+                    if let Some(ref settings) = internal_telemetry {
+                        if node_config.plugin_urn.as_ref() == settings.target_urn {
+                            wrapper.set_logs_receiver(settings.logs_receiver.clone());
+                            wrapper.set_resource_bytes(settings.resource_bytes.clone());
                         }
                     }
 

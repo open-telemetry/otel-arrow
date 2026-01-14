@@ -70,6 +70,7 @@ pub use tracing::warn_span as otel_warn_span;
 // Re-export commonly used logs types for convenience.
 pub use logs::{
     ImmediateLayer, LogBatch, LogPayload, LogsCollector, LogsReceiver, LogsReporter, TelemetrySetup,
+    encode_resource_bytes,
 };
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.

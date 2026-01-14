@@ -11,11 +11,19 @@ use bytes::Bytes;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
+use otap_df_config::pipeline::service::telemetry::AttributeValue;
 use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_pdata::proto::consts::field_num::logs::{
-    LOGS_DATA_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
+use otap_df_pdata::proto::consts::field_num::common::{
+    ANY_VALUE_BOOL_VALUE, ANY_VALUE_DOUBLE_VALUE, ANY_VALUE_INT_VALUE, ANY_VALUE_STRING_VALUE,
+    KEY_VALUE_KEY, KEY_VALUE_VALUE,
 };
+use otap_df_pdata::proto::consts::field_num::logs::{
+    LOGS_DATA_RESOURCE, RESOURCE_LOGS_RESOURCE, RESOURCE_LOGS_SCOPE_LOGS, SCOPE_LOGS_LOG_RECORDS,
+};
+use otap_df_pdata::proto::consts::field_num::resource::RESOURCE_ATTRIBUTES;
+use otap_df_pdata::proto::consts::wire_types;
 use otap_df_pdata::proto_encode_len_delimited_unknown_size;
+use std::collections::HashMap;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::{Context, Layer as TracingLayer, SubscriberExt};
@@ -27,6 +35,74 @@ pub struct LogBatch {
     pub records: Vec<LogRecord>,
     /// Number of records dropped in the same period.
     pub dropped_count: usize,
+}
+
+/// Pre-encode resource bytes for use in OTLP log messages.
+///
+/// This encodes the resource attributes into a protobuf fragment that can be
+/// inserted directly into ResourceLogs messages. The returned bytes include
+/// the `RESOURCE_LOGS_RESOURCE` field tag and length-delimited Resource message.
+///
+/// This is a one-time operation at startup; the resulting bytes can be reused
+/// for all subsequent log batches.
+#[must_use]
+pub fn encode_resource_bytes(resource_attributes: &HashMap<String, AttributeValue>) -> Bytes {
+    if resource_attributes.is_empty() {
+        return Bytes::new();
+    }
+
+    let mut buf = ProtoBuffer::with_capacity(resource_attributes.len() * 64);
+
+    // Encode: field 1 (RESOURCE_LOGS_RESOURCE) -> Resource message
+    proto_encode_len_delimited_unknown_size!(
+        RESOURCE_LOGS_RESOURCE,
+        {
+            // Resource { attributes: [ KeyValue, ... ] }
+            for (key, value) in resource_attributes {
+                encode_resource_attribute(&mut buf, key, value);
+            }
+        },
+        &mut buf
+    );
+
+    buf.into_bytes()
+}
+
+/// Encode a single resource attribute as a KeyValue message.
+fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &AttributeValue) {
+    proto_encode_len_delimited_unknown_size!(
+        RESOURCE_ATTRIBUTES,
+        {
+            buf.encode_string(KEY_VALUE_KEY, key);
+            proto_encode_len_delimited_unknown_size!(
+                KEY_VALUE_VALUE,
+                {
+                    match value {
+                        AttributeValue::String(s) => {
+                            buf.encode_string(ANY_VALUE_STRING_VALUE, s);
+                        }
+                        AttributeValue::Bool(b) => {
+                            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+                            buf.encode_varint(u64::from(*b));
+                        }
+                        AttributeValue::I64(i) => {
+                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                            buf.encode_varint(*i as u64);
+                        }
+                        AttributeValue::F64(f) => {
+                            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+                            buf.extend_from_slice(&f.to_le_bytes());
+                        }
+                        AttributeValue::Array(_) => {
+                            // Arrays not supported for resource attributes
+                        }
+                    }
+                },
+                buf
+            );
+        },
+        buf
+    );
 }
 
 impl LogBatch {
@@ -44,14 +120,25 @@ impl LogBatch {
     /// - All log records from the batch
     #[must_use]
     pub fn encode_export_logs_request(&self) -> Bytes {
-        let mut buf = ProtoBuffer::with_capacity(self.records.len() * 256);
+        self.encode_export_logs_request_with_resource(&Bytes::new())
+    }
+
+    /// Encode this batch as an OTLP ExportLogsServiceRequest with pre-encoded resource.
+    ///
+    /// The `resource_bytes` should be pre-encoded using [`encode_resource_bytes`].
+    /// This allows efficient reuse of the same resource for all log batches.
+    #[must_use]
+    pub fn encode_export_logs_request_with_resource(&self, resource_bytes: &Bytes) -> Bytes {
+        let mut buf = ProtoBuffer::with_capacity(self.records.len() * 256 + resource_bytes.len());
 
         // ExportLogsServiceRequest { resource_logs: [ ResourceLogs { ... } ] }
         proto_encode_len_delimited_unknown_size!(
             LOGS_DATA_RESOURCE, // field 1: resource_logs (same field number)
             {
+                // Insert pre-encoded resource (field 1: resource)
+                buf.extend_from_slice(resource_bytes);
+
                 // ResourceLogs { scope_logs: [ ScopeLogs { ... } ] }
-                // Note: we skip resource (field 1) to use empty/default resource
                 proto_encode_len_delimited_unknown_size!(
                     RESOURCE_LOGS_SCOPE_LOGS, // field 2: scope_logs
                     {

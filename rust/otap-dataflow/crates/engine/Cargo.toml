@@ -41,6 +41,7 @@ uuid = { workspace = true }
 once_cell = { workspace = true }
 data-encoding = { workspace = true }
 prost = { workspace = true }
+bytes = { workspace = true }
 libmimalloc-sys = { workspace = true }
 byte-unit = { workspace = true }
 cpu-time = { workspace = true }

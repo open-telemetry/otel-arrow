@@ -135,6 +135,8 @@ pub struct EffectHandler<PData> {
     default_sender: Option<LocalSender<PData>>,
     /// Receiver for internal logs (for internal telemetry receiver).
     logs_receiver: Option<LogsReceiver>,
+    /// Pre-encoded resource bytes for OTLP log encoding (for internal telemetry receiver).
+    resource_bytes: Option<bytes::Bytes>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -148,6 +150,7 @@ impl<PData> EffectHandler<PData> {
         node_request_sender: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
         logs_receiver: Option<LogsReceiver>,
+        resource_bytes: Option<bytes::Bytes>,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
@@ -166,6 +169,7 @@ impl<PData> EffectHandler<PData> {
             msg_senders,
             default_sender,
             logs_receiver,
+            resource_bytes,
         }
     }
 
@@ -176,6 +180,15 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn logs_receiver(&self) -> Option<&LogsReceiver> {
         self.logs_receiver.as_ref()
+    }
+
+    /// Returns the pre-encoded resource bytes, if configured.
+    ///
+    /// This is used by the Internal Telemetry Receiver to include resource
+    /// attributes in the OTLP log encoding.
+    #[must_use]
+    pub fn resource_bytes(&self) -> Option<&bytes::Bytes> {
+        self.resource_bytes.as_ref()
     }
 
     /// Returns the id of the receiver associated with this handler.
@@ -341,6 +354,7 @@ mod tests {
             ctrl_tx,
             metrics_reporter,
             None,
+            None,
         );
 
         eh.send_message_to("b", 42).await.unwrap();
@@ -369,6 +383,7 @@ mod tests {
             ctrl_tx,
             metrics_reporter,
             None,
+            None,
         );
 
         eh.send_message(7).await.unwrap();
@@ -392,6 +407,7 @@ mod tests {
             Some("a".into()),
             ctrl_tx,
             metrics_reporter,
+            None,
             None,
         );
 
@@ -422,6 +438,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            None,
             None,
         );
 
@@ -458,6 +475,7 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
+            None,
             None,
         );
 

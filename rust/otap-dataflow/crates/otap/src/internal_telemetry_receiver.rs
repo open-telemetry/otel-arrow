@@ -153,7 +153,12 @@ impl InternalTelemetryReceiver {
         };
 
         if !batch.records.is_empty() {
-            let bytes = batch.encode_export_logs_request();
+            // Use resource bytes if available, otherwise encode without resource
+            let bytes = if let Some(resource_bytes) = effect_handler.resource_bytes() {
+                batch.encode_export_logs_request_with_resource(resource_bytes)
+            } else {
+                batch.encode_export_logs_request()
+            };
             let pdata =
                 OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
             effect_handler.send_message(pdata).await?;

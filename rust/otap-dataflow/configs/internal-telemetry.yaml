@@ -74,3 +74,6 @@ service:
         engine: immediate
         internal: noop  # Avoid feedback in internal pipeline
       output: internal
+    resource:
+      service.id: 1234
+      service.name: test

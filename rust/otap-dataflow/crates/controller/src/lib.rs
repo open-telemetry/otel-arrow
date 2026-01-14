@@ -33,11 +33,12 @@ use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
+use otap_df_engine::receiver::InternalTelemetrySettings;
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::logs::TelemetrySetup;
+use otap_df_telemetry::logs::{TelemetrySetup, encode_resource_bytes};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::telemetry_runtime::TelemetryRuntime;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
@@ -113,6 +114,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Get logs receiver for Internal output mode (passed to internal pipeline)
         let mut logs_receiver = telemetry_runtime.take_logs_receiver();
 
+        // Pre-encode resource bytes once for all log batches
+        let resource_bytes = encode_resource_bytes(&telemetry_config.resource);
+
         let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -155,8 +159,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let internal_pipeline_thread = if let Some(internal_config) =
             pipeline.extract_internal_config()
         {
-            // TODO: this is a bunch of placeholder values!
-            let internal_logs_receiver = logs_receiver.take();
+            // Create internal telemetry settings if we have a logs receiver
+            let internal_telemetry_settings = logs_receiver.take().map(|rx| {
+                InternalTelemetrySettings {
+                    target_urn: INTERNAL_TELEMETRY_RECEIVER_URN,
+                    logs_receiver: rx,
+                    resource_bytes: resource_bytes.clone(),
+                }
+            });
             let internal_factory = self.pipeline_factory;
             let internal_pipeline_id: PipelineId = "internal".into();
             let internal_pipeline_key = DeployedPipelineKey {
@@ -199,7 +209,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         internal_metrics_reporter,
                         internal_telemetry_setup,
                         log_level, // TODO: separate log level for internal pipeline.
-                        internal_logs_receiver,
+                        internal_telemetry_settings,
                         internal_ctrl_tx,
                         internal_ctrl_rx,
                         startup_tx,
@@ -277,7 +287,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             );
             let metrics_reporter = metrics_reporter.clone();
             let telemetry_setup = engine_telemetry_setup.clone();
-            let logs_receiver = logs_receiver.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
             let obs_evt_reporter = obs_evt_reporter.clone();
@@ -294,7 +303,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         metrics_reporter,
                         telemetry_setup,
                         log_level,
-                        logs_receiver,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
                     )
@@ -550,7 +558,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: MetricsReporter,
         telemetry_setup: TelemetrySetup,
         log_level: otap_df_config::pipeline::service::telemetry::logs::LogLevel,
-        logs_receiver: Option<otap_df_telemetry::LogsReceiver>,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
@@ -577,11 +584,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ));
 
             // Build the runtime pipeline from the configuration
-            // Pass logs_receiver for injection into ITR node (if present)
-            let logs_receiver_param = logs_receiver
-                .map(|rx| (INTERNAL_TELEMETRY_RECEIVER_URN, rx));
+            // Regular pipelines don't need ITR injection - that's only for the internal pipeline
             let runtime_pipeline = pipeline_factory
-                .build(pipeline_context.clone(), pipeline_config.clone(), logs_receiver_param)
+                .build(pipeline_context.clone(), pipeline_config.clone(), None)
                 .map_err(|e| {
                     Error::PipelineRuntimeError {
                         source: Box::new(e),
@@ -626,7 +631,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: MetricsReporter,
         telemetry_setup: TelemetrySetup,
         log_level: otap_df_config::pipeline::service::telemetry::logs::LogLevel,
-        logs_receiver: Option<otap_df_telemetry::LogsReceiver>,
+        internal_telemetry: Option<InternalTelemetrySettings>,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
         startup_tx: std_mpsc::Sender<Result<(), Error>>,
@@ -645,13 +650,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ));
 
             // Build the runtime pipeline from the configuration
-            // Pass logs_receiver for injection into ITR node
-            let logs_receiver_param = logs_receiver.map(|rx| (INTERNAL_TELEMETRY_RECEIVER_URN, rx));
-
             let runtime_pipeline = match pipeline_factory.build(
                 pipeline_context.clone(),
                 pipeline_config.clone(),
-                logs_receiver_param,
+                internal_telemetry,
             ) {
                 Ok(pipeline) => pipeline,
                 Err(e) => {

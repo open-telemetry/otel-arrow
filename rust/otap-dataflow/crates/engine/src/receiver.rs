@@ -19,6 +19,7 @@ use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
 use crate::terminal_state::TerminalState;
+use bytes::Bytes;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -29,6 +30,19 @@ use std::sync::Arc;
 
 /// Type alias for the internal logs receiver channel.
 pub type LogsReceiver = otap_df_telemetry::LogsReceiver;
+
+/// Runtime settings for internal telemetry injection into a receiver.
+///
+/// This struct bundles the logs receiver channel and pre-encoded resource bytes
+/// that should be injected into the Internal Telemetry Receiver node.
+pub struct InternalTelemetrySettings {
+    /// The URN of the receiver to inject into.
+    pub target_urn: &'static str,
+    /// The logs receiver channel.
+    pub logs_receiver: LogsReceiver,
+    /// Pre-encoded resource bytes for OTLP log encoding.
+    pub resource_bytes: Bytes,
+}
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -55,6 +69,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<LocalReceiver<PData>>,
         /// Receiver for internal logs (for internal telemetry receiver).
         logs_receiver: Option<LogsReceiver>,
+        /// Pre-encoded resource bytes for internal telemetry (for internal telemetry receiver).
+        resource_bytes: Option<Bytes>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -76,6 +92,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Receiver for internal logs (for internal telemetry receiver).
         logs_receiver: Option<LogsReceiver>,
+        /// Pre-encoded resource bytes for internal telemetry (for internal telemetry receiver).
+        resource_bytes: Option<Bytes>,
     },
 }
 
@@ -116,6 +134,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             logs_receiver: None,
+            resource_bytes: None,
         }
     }
 
@@ -142,6 +161,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             logs_receiver: None,
+            resource_bytes: None,
         }
     }
 
@@ -165,6 +185,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 logs_receiver,
+                resource_bytes,
             } => {
                 let channel_id = control_channel_id(&node_id);
                 let control_sender = match control_sender.into_mpsc() {
@@ -199,6 +220,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     logs_receiver,
+                    resource_bytes,
                 }
             }
             ReceiverWrapper::Shared {
@@ -211,6 +233,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 logs_receiver,
+                resource_bytes,
             } => {
                 let channel_id = control_channel_id(&node_id);
                 let control_sender = match control_sender.into_mpsc() {
@@ -245,6 +268,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     logs_receiver,
+                    resource_bytes,
                 }
             }
         }
@@ -265,6 +289,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     user_config,
                     logs_receiver,
+                    resource_bytes,
                     ..
                 },
                 metrics_reporter,
@@ -288,6 +313,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                     logs_receiver,
+                    resource_bytes,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -401,6 +427,29 @@ impl<PData> ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::Local { logs_receiver, .. } => logs_receiver.take(),
             ReceiverWrapper::Shared { logs_receiver, .. } => logs_receiver.take(),
+        }
+    }
+
+    /// Set the pre-encoded resource bytes for internal telemetry.
+    ///
+    /// This is used by the Internal Telemetry Receiver to include resource
+    /// attributes in the encoded OTLP log messages.
+    pub fn set_resource_bytes(&mut self, bytes: Bytes) {
+        match self {
+            ReceiverWrapper::Local { resource_bytes, .. } => {
+                *resource_bytes = Some(bytes);
+            }
+            ReceiverWrapper::Shared { resource_bytes, .. } => {
+                *resource_bytes = Some(bytes);
+            }
+        }
+    }
+
+    /// Take the pre-encoded resource bytes, if set.
+    pub fn take_resource_bytes(&mut self) -> Option<Bytes> {
+        match self {
+            ReceiverWrapper::Local { resource_bytes, .. } => resource_bytes.take(),
+            ReceiverWrapper::Shared { resource_bytes, .. } => resource_bytes.take(),
         }
     }
 }
