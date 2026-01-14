@@ -6,24 +6,14 @@ use serde::Deserialize;
 /// Configuration for the [`TransformProcessor`](super::TransformProcessor)
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// the query that defines the transformation to be applied
-    pub query: String,
-
-    /// the language that defines the transformation to be applied
-    pub language: Language,
+    #[serde(flatten)]
+    pub query: Query,
 }
 
 #[derive(Debug, Deserialize)]
-pub enum Language {
-    OPL,
-    KQL,
-}
-
-impl ToString for Language {
-    fn to_string(&self) -> String {
-        match self {
-            Language::OPL => "OPL".to_string(),
-            Language::KQL => "KQL".to_string(),
-        }
-    }
+#[serde(rename_all = "snake_case")]
+pub enum Query {
+    KqlQuery(String),
+    OplQuery(String),
+    // TODO - add section to allow transforms to be specified in OTTL
 }

@@ -16,11 +16,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::Engine;
 use data_engine_expressions::{Expression, PipelineExpression};
 use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
-use otap_df_config::{PortName, SignalType, error::Error as ConfigError, node::NodeUserConfig};
+use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
@@ -34,11 +33,7 @@ use otap_df_engine::{
 };
 use otap_df_opl::parser::OplParser;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_query_engine::pipeline::{
-    Pipeline,
-    routing::{Router, RouterExtType},
-    state::ExecutionState,
-};
+use otap_df_query_engine::pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
@@ -48,7 +43,7 @@ use crate::{
     transform_processor::routing::RouterImpl,
 };
 
-use self::config::{Config, Language};
+use self::config::{Config, Query};
 use self::metrics::Metrics;
 
 mod config;
@@ -112,16 +107,14 @@ impl TransformProcessor {
         // TODO we should pass some context to the parser so we can determine if there are valid
         // identifiers when checking the config:
         // https://github.com/open-telemetry/otel-arrow/issues/1530
-        let pipeline_expr = match config.language {
-            Language::KQL => KqlParser::parse(&config.query),
-            Language::OPL => OplParser::parse(&config.query),
+        let pipeline_expr = match &config.query {
+            Query::KqlQuery(query) => KqlParser::parse(query),
+            Query::OplQuery(query) => OplParser::parse(query),
         }
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("Could not parse TransformProcessor query: {e:?}"),
         })?
         .pipeline;
-
-        println!("{pipeline_expr:?}");
 
         // TODO: it would be nice if we could validate that the pipeline expr is supported by the
         // query engine here. Currently, validation happens lazily when the first batch is seen.
@@ -154,12 +147,17 @@ impl TransformProcessor {
             .execution_state
             .get_extension_mut::<RouterExtType>()
             .and_then(|router| router.as_any_mut().downcast_mut::<RouterImpl>())
-            .unwrap(); // TODO no unwray
+            .ok_or_else(|| EngineError::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                source_detail: "Router not found in pipeline exec state".into(),
+                error: "Routing error:".into(),
+            })?;
 
         for (route_name, otap_batch) in router_impl.routed.drain(..) {
             let payload = OtapPayload::OtapArrowRecords(otap_batch);
             // TODO -- need to properly handle Ack/Nack here by creating a new context, subscribing
-            // interests, and juggling the incoming/outgoing contexts/Ack/Nack messages correctly
+            // interests, and juggling the incoming/outgoing contexts & Ack/Nack messages correctly
             let pdata = OtapPdata::new(Context::default(), payload);
 
             // Find the port name based on the route name. We need to since do this, rather
@@ -169,12 +167,15 @@ impl TransformProcessor {
                 .connected_ports()
                 .iter()
                 .find(|p| p.as_ref() == route_name.as_str())
-                .unwrap() // TODO no unwrap
+                .ok_or_else(|| EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Transport,
+                    error: "Routing error: ".into(),
+                    source_detail: format!("out_port name {} not configured", route_name),
+                })?
                 .clone();
-            effect_handler
-                .send_message_to(port_name, pdata)
-                .await
-                .unwrap(); // TODO no unwrap
+
+            effect_handler.send_message_to(port_name, pdata).await?;
         }
 
         Ok(())
@@ -279,7 +280,7 @@ mod test {
         message::Sender,
         node::NodeWithPDataSender,
         testing::{
-            processor::{DEFAULT_OUT_PORT, TestContext, TestRuntime},
+            processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
             test_node,
         },
     };
@@ -301,17 +302,13 @@ mod test {
 
     use crate::pdata::OtapPdata;
 
-    fn try_create_with_query(
-        query: &str,
-        language: Language,
+    fn try_create_with_config(
+        config: Value,
         runtime: &TestRuntime<OtapPdata>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
-        node_config.config = json!({
-            "query": query,
-            "language": language.to_string()
-        });
-        node_config.default_out_port = Some(DEFAULT_OUT_PORT.into());
+        node_config.config = config;
+        node_config.default_out_port = Some(TEST_OUT_PORT_NAME.into());
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
@@ -326,10 +323,24 @@ mod test {
         )
     }
 
+    fn try_create_with_kql_query(
+        query: &str,
+        runtime: &TestRuntime<OtapPdata>,
+    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+        try_create_with_config(json!({ "kql_query": query }), runtime)
+    }
+
+    fn try_create_with_opl_query(
+        query: &str,
+        runtime: &TestRuntime<OtapPdata>,
+    ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+        try_create_with_config(json!({ "opl_query": query }), runtime)
+    }
+
     #[test]
     fn test_unparsable_query_is_config_time_error() {
         let runtime = TestRuntime::<OtapPdata>::new();
-        match try_create_with_query("logs | invalid operator", Language::KQL, &runtime) {
+        match try_create_with_kql_query("logs | invalid operator", &runtime) {
             Err(e) => {
                 assert!(
                     e.to_string()
@@ -348,8 +359,7 @@ mod test {
         let telemetry_registry = runtime.metrics_registry();
         let metrics_reporter = runtime.metrics_reporter();
         let query = "logs | where severity_text == \"ERROR\"";
-        let processor =
-            try_create_with_query(query, Language::KQL, &runtime).expect("created processor");
+        let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -484,8 +494,7 @@ mod test {
         // test ensure it will only operate on traces, but ignores other signals
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = "traces | where name == \"foo\"";
-        let processor =
-            try_create_with_query(query, Language::KQL, &runtime).expect("created processor");
+        let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -516,12 +525,46 @@ mod test {
     }
 
     #[test]
+    fn test_signal_scope_all() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "signals | where name == \"foo\"";
+        let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                send_one_traces_one_metrics_same_names(&mut ctx).await;
+                let mut processed_pdata = ctx
+                    .drain_pdata()
+                    .await
+                    .into_iter()
+                    .map(OtapPdata::payload)
+                    .map(OtapArrowRecords::try_from)
+                    .map(Result::unwrap);
+                let traces_batch = processed_pdata.next().expect("sent traces batch");
+                let metrics_batch = processed_pdata.next().expect("sent metrics batch");
+
+                // assert one of the spans got filtered out
+                let spans = traces_batch
+                    .get(ArrowPayloadType::Spans)
+                    .expect("spans present");
+                assert_eq!(spans.num_rows(), 1);
+
+                // assert it also filtered out one of the metrics
+                let metrics = metrics_batch
+                    .get(ArrowPayloadType::UnivariateMetrics)
+                    .expect("metrics present");
+                assert_eq!(metrics.num_rows(), 1);
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
     fn test_simple_route_to() {
         // test ensure it will only operate on all signals
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = "logs | route_to \"test_port\"";
-        let mut processor =
-            try_create_with_query(query, Language::OPL, &runtime).expect("created processor");
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
 
         let test_node_id = NodeId {
             index: 1,
@@ -539,7 +582,7 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(
                         Resource::default(),
                         vec![ScopeLogs::new(
@@ -548,7 +591,7 @@ mod test {
                         )],
                     )],
                 }));
-                let pdata = OtapPdata::new_default(otap_batch.into());
+                let pdata = OtapPdata::new_default(input.clone().into());
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
@@ -561,24 +604,25 @@ mod test {
                     .map(OtapArrowRecords::try_from)
                     .map(Result::unwrap);
                 let result = out.into_iter().next().expect("one result");
+
                 // expect we got an empty batch:
-                // TODO assert on the context?
                 assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
+                // TODO when we support Ack/Nack here assert on the context of this message
 
                 let mut routed = Vec::new();
                 while let Ok(msg) = test_port_rx.try_recv() {
                     routed.push(msg);
                 }
                 assert_eq!(routed.len(), 1);
-                // TODO assert on the routed message
-                // TODO assert on routed context
-                // TODO assert Ack/Nack
+                let (_context, payload) = routed.pop().unwrap().into_parts();
+                match payload {
+                    OtapPayload::OtapArrowRecords(result) => {
+                        assert_eq!(result, input)
+                    }
+                    _ => panic!("unexpected payload type"),
+                }
+                // TODO when we support Ack/Nack here assert on routed context
             })
             .validate(|_ctx| async move {})
-    }
-
-    #[test]
-    fn test_pipeline_with_route_to() {
-        todo!()
     }
 }

@@ -1,6 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Routing for columnar query engine.
+//!
+//! This module contains the pipeline stage that OTAP batches to some destination.
+//! The routing implementation is customizable, using the `Router` trait which the
+//! pipeline stage implementation will use to send the data to the appropriate route.
+
 use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;

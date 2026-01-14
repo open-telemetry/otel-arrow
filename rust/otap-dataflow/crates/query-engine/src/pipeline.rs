@@ -29,9 +29,7 @@ mod filter;
 mod functions;
 mod planner;
 
-/// TODO docs
 pub mod routing;
-/// TODO docs
 pub mod state;
 
 /// A stage in the pipeline.
@@ -206,11 +204,6 @@ impl Pipeline {
 
     /// Execute the pipeline on a batch of telemetry data.
     ///
-    /// Any query planning happens during the first call to execute, including setting up any
-    /// DataFusion SessionContext, TaskContext, etc. Subsequent calls will not have to redo
-    /// the full planning, although individual stages may do light re-plannings to adapt to
-    /// changing OTAP batch schemas.
-    ///
     /// # Arguments
     /// - `otap_batch`: The input telemetry data to process
     ///
@@ -221,7 +214,19 @@ impl Pipeline {
         self.execute_with_state(otap_batch, &mut exec_state).await
     }
 
-    /// TODO comments
+    /// Execute the pipeline on a batch of telemetry data, using the provided execution state.
+    ///
+    /// Any query planning happens during the first call to execute, including setting up any
+    /// DataFusion SessionContext, TaskContext, etc. Subsequent calls will not have to redo
+    /// the full planning, although individual stages may do light re-plannings to adapt to
+    /// changing OTAP batch schemas.
+    ///
+    /// # Arguments
+    /// - `otap_batch`: The input telemetry data to process
+    /// - `exec_state`: The execution state to use for the pipeline execution
+    ///
+    /// # Returns
+    /// The transformed telemetry data after all stages have executed
     pub async fn execute_with_state(
         &mut self,
         mut otap_batch: OtapArrowRecords,
