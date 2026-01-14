@@ -134,7 +134,8 @@ struct Args {
     retention_policy: RetentionPolicy,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Parse duration
@@ -153,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = tracing::subscriber::set_global_default(tracing_sub);
     }
 
-    run_steady_state_mode(&args, duration)
+    run_steady_state_mode(&args, duration).await
 }
 
 /// Runs steady-state stress test: single long-running QuiverEngine with concurrent ingest/consume.
@@ -164,7 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// - Uses a shared SubscriberRegistry for all subscribers to enable coordinated cleanup
 /// - Periodically cleans up completed segments from disk
 /// - Tests whether disk/memory stabilize over time
-fn run_steady_state_mode(
+async fn run_steady_state_mode(
     args: &Args,
     duration: Duration,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -214,7 +215,7 @@ fn run_steady_state_mode(
     };
 
     // Run the unified steady-state test
-    steady_state::run(config, tmp, data_dir, output_mode)
+    steady_state::run(config, tmp, data_dir, output_mode).await
 }
 
 /// Sets up the data directory (temp or persistent).

@@ -3,6 +3,8 @@
 
 //! Subscriber simulation utilities.
 
+use std::time::Duration;
+
 /// Delay configuration for simulating slow subscribers.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SubscriberDelay {
@@ -16,10 +18,10 @@ impl SubscriberDelay {
         Self { per_bundle_ms }
     }
 
-    /// Applies the delay if configured.
-    pub fn apply(&self) {
+    /// Applies the delay asynchronously if configured.
+    pub async fn apply(&self) {
         if self.per_bundle_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(self.per_bundle_ms));
+            tokio::time::sleep(Duration::from_millis(self.per_bundle_ms)).await;
         }
     }
 }

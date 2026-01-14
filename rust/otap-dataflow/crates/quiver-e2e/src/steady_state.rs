@@ -10,7 +10,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use quiver::SegmentReadMode;
@@ -19,6 +18,7 @@ use quiver::config::RetentionPolicy;
 use quiver::subscriber::SubscriberId;
 use quiver::{QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::bundle;
@@ -157,7 +157,7 @@ pub struct SteadyStateTestConfig {
 }
 
 /// Run the unified steady-state stress test.
-pub fn run(
+pub async fn run(
     config: SteadyStateTestConfig,
     tmp: Option<TempDir>,
     data_dir: PathBuf,
@@ -254,63 +254,36 @@ pub fn run(
     }
 
     // Create per-engine resources (engine owns segment store and registry)
-    let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(config.engines);
-    let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
+    // Engine creation must happen in a blocking context because WalWriter::open_sync uses block_on
+    let num_engines = config.engines;
+    let subscribers_per_engine = config.subscribers;
+    let segment_size_mb = config.segment_size_mb;
+    let wal_flush_interval_ms = config.wal_flush_interval_ms;
+    let no_wal = config.no_wal;
+    let read_mode = config.read_mode;
+    let disk_budget_mb = config.disk_budget_mb;
+    let retention_policy = config.retention_policy;
+    let data_dir_clone = data_dir.clone();
+    let is_tui = output.is_tui();
 
-    for engine_idx in 0..config.engines {
-        // Each engine gets its own subdirectory
-        let engine_dir = if config.engines > 1 {
-            data_dir.join(format!("engine_{}", engine_idx))
-        } else {
-            data_dir.clone()
-        };
-        std::fs::create_dir_all(&engine_dir)?;
-
-        // Create engine with staggered timing to avoid synchronized I/O
-        let engine_config = create_engine_config(
-            &engine_dir,
-            config.segment_size_mb,
-            config.wal_flush_interval_ms,
-            config.no_wal,
-            config.read_mode,
-            engine_idx,
-            config.engines,
-        );
-
-        // Log staggered config for multi-engine runs
-        if config.engines > 1 && !output.is_tui() {
-            let seg_mb = engine_config.segment.target_size_bytes.get() / 1024 / 1024;
-            let flush_ms = engine_config.wal.flush_interval.as_millis();
-            let startup_delay_ms = 100 * engine_idx;
-            output.log(&format!(
-                "  Engine {}: segment={}MB, wal_flush={}ms, startup_delay={}ms",
-                engine_idx, seg_mb, flush_ms, startup_delay_ms
-            ));
-        }
-
-        // Create per-engine disk budget (Phase 1: static quota per engine)
-        // Each engine gets global_cap / num_engines, enforced independently
-        // WAL max size is typically 2x rotation target to allow one rotated file
-        let wal_size_mb = if config.no_wal { 0 } else { 128 }; // 2 * 64MB rotation target
-        let budget = create_per_engine_budget(
-            config.disk_budget_mb,
-            config.engines,
-            config.retention_policy,
-            config.segment_size_mb,
-            wal_size_mb,
-        )?;
-
-        // Engine now owns segment store and registry internally
-        let engine = QuiverEngine::new(engine_config, budget)?;
-
-        // Register subscribers using engine's unified API
-        let sub_ids = register_subscribers_on_engine(&engine, config.subscribers)?;
-        for sub_id in sub_ids {
-            all_sub_ids.push((engine_idx, sub_id));
-        }
-
-        engines.push(engine);
-    }
+    let (engines, all_sub_ids): (Vec<Arc<QuiverEngine>>, Vec<(usize, SubscriberId)>) =
+        tokio::task::spawn_blocking(move || {
+            create_engines_sync(
+                num_engines,
+                subscribers_per_engine,
+                segment_size_mb,
+                wal_flush_interval_ms,
+                no_wal,
+                read_mode,
+                disk_budget_mb,
+                retention_policy,
+                &data_dir_clone,
+                is_tui,
+            )
+        })
+        .await
+        .map_err(|e| format!("Engine creation task failed: {}", e))?
+        .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
 
     output.log(&format!(
         "Started {} engine(s) with {} total subscribers",
@@ -323,7 +296,7 @@ pub fn run(
     let mut last_cleanup = Instant::now();
     let mut last_report = Instant::now();
 
-    // Spawn ingest threads (one per engine) with staggered startup delays
+    // Spawn ingest tasks (one per engine) with staggered startup delays
     // to desynchronize segment writes across engines
     let mut ingest_handles = Vec::with_capacity(config.engines);
     for (engine_idx, engine) in engines.iter().enumerate() {
@@ -335,7 +308,7 @@ pub fn run(
         } else {
             0
         };
-        let handle = spawn_ingest_thread(
+        let handle = spawn_ingest_task(
             engine.clone(),
             test_bundles.clone(),
             ingest_running.clone(),
@@ -346,7 +319,7 @@ pub fn run(
         ingest_handles.push(handle);
     }
 
-    // Spawn subscriber threads (distributed across engines)
+    // Spawn subscriber tasks (distributed across engines)
     let mut subscriber_handles = Vec::new();
     for (engine_idx, sub_id) in &all_sub_ids {
         let engine = engines[*engine_idx].clone();
@@ -356,28 +329,29 @@ pub fn run(
         let maintain_interval_ms = config.maintain_interval_ms;
         let sub_id_clone = sub_id.clone();
 
-        let handle = thread::spawn(move || {
+        let handle = tokio::spawn(async move {
             let delay = SubscriberDelay::new(delay_ms);
             let maintain_interval = Duration::from_millis(maintain_interval_ms);
             let mut last_maintain = Instant::now();
 
             while sub_running.load(Ordering::Relaxed) {
-                // Use engine's unified subscriber API
-                let bundle_handle = match engine.next_bundle_blocking(&sub_id_clone, None, || {
-                    !sub_running.load(Ordering::Relaxed)
-                }) {
+                // Use engine's async subscriber API
+                let bundle_handle = match engine
+                    .next_bundle(&sub_id_clone, Some(Duration::from_millis(100)))
+                    .await
+                {
                     Ok(Some(h)) => h,
-                    Ok(None) => continue,
+                    Ok(None) => continue, // Timeout, check running flag
                     Err(_) => break,
                 };
 
-                delay.apply();
+                delay.apply().await;
                 bundle_handle.ack();
                 let _ = sub_consumed.fetch_add(1, Ordering::Relaxed);
 
                 // Time-based maintenance: flush progress + cleanup (0 = disabled)
                 if maintain_interval_ms > 0 && last_maintain.elapsed() >= maintain_interval {
-                    let _ = engine.maintain_sync();
+                    let _ = engine.maintain().await;
                     last_maintain = Instant::now();
                 }
             }
@@ -389,7 +363,7 @@ pub fn run(
     // Main monitoring loop
     let mut quit_requested = false;
     while start.elapsed() < config.duration && !quit_requested {
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Check for quit key (TUI mode only)
         if output.check_quit()? {
@@ -476,16 +450,27 @@ pub fn run(
     // 1. Stop ingestion first
     ingest_running.store(false, Ordering::SeqCst);
     for handle in ingest_handles {
-        let _ = handle.join();
+        let _ = handle.await;
     }
 
     let final_ingested = total_ingested.load(Ordering::Relaxed);
 
     // 2. Finalize any remaining open segments (all engines)
-    for engine in &engines {
-        if let Err(e) = engine.shutdown() {
-            output.log_warn(&format!("Engine shutdown error: {}", e));
+    // Must run in blocking context because shutdown() uses block_on internally
+    let engines_for_shutdown = engines.clone();
+    let shutdown_errors = tokio::task::spawn_blocking(move || {
+        let mut errors = Vec::new();
+        for engine in &engines_for_shutdown {
+            if let Err(e) = engine.shutdown() {
+                errors.push(format!("Engine shutdown error: {}", e));
+            }
         }
+        errors
+    })
+    .await
+    .unwrap_or_default();
+    for err in shutdown_errors {
+        output.log_warn(&err);
     }
 
     // 3. Final segment count (total written, monotonically increasing)
@@ -512,7 +497,7 @@ pub fn run(
         if consumed >= final_ingested {
             break;
         }
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     let post_drain_consumed = total_consumed.load(Ordering::Relaxed);
@@ -526,12 +511,12 @@ pub fn run(
     // 5. Stop subscribers
     running.store(false, Ordering::SeqCst);
     for handle in subscriber_handles {
-        let _ = handle.join();
+        let _ = handle.await;
     }
 
     // Flush final progress (all engines)
     for engine in &engines {
-        let _ = engine.flush_progress_sync();
+        let _ = engine.flush_progress().await;
     }
 
     // 6. Final cleanup (all engines)
@@ -647,22 +632,27 @@ pub fn run(
 
 // === Helper functions ===
 
-fn register_subscribers_on_engine(
+/// Register subscribers on engine (sync version for use in spawn_blocking context).
+fn register_subscribers_on_engine_sync(
     engine: &Arc<QuiverEngine>,
     count: usize,
-) -> Result<Vec<SubscriberId>, Box<dyn std::error::Error>> {
+) -> Result<Vec<SubscriberId>, String> {
     let mut sub_ids = Vec::with_capacity(count);
     for sub_id in 0..count {
         let sub_name = format!("subscriber-{}", sub_id);
-        let id = SubscriberId::new(&sub_name)?;
-        engine.register_subscriber(id.clone())?;
-        engine.activate_subscriber(&id)?;
+        let id = SubscriberId::new(&sub_name).map_err(|e| format!("Invalid subscriber id: {}", e))?;
+        engine
+            .register_subscriber(id.clone())
+            .map_err(|e| format!("Failed to register subscriber: {}", e))?;
+        engine
+            .activate_subscriber(&id)
+            .map_err(|e| format!("Failed to activate subscriber: {}", e))?;
         sub_ids.push(id);
     }
     Ok(sub_ids)
 }
 
-fn spawn_ingest_thread(
+fn spawn_ingest_task(
     engine: Arc<QuiverEngine>,
     test_bundles: Arc<Vec<bundle::TestBundle>>,
     ingest_running: Arc<AtomicBool>,
@@ -670,42 +660,46 @@ fn spawn_ingest_thread(
     backpressure_count: Arc<AtomicU64>,
     startup_delay_ms: u64,
 ) -> JoinHandle<()> {
-    thread::spawn(move || {
-        // Staggered startup to desynchronize segment writes
-        if startup_delay_ms > 0 {
-            thread::sleep(Duration::from_millis(startup_delay_ms));
-        }
-        while ingest_running.load(Ordering::Relaxed) {
-            for test_bundle in test_bundles.iter() {
-                if !ingest_running.load(Ordering::Relaxed) {
-                    break;
-                }
-                // Retry loop for backpressure handling
-                loop {
-                    match engine.ingest(test_bundle) {
-                        Ok(()) => {
-                            let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
-                            break; // Success, move to next bundle
-                        }
-                        Err(e) if e.is_at_capacity() => {
-                            // Backpressure: wait for consumers to catch up
-                            let _ = backpressure_count.fetch_add(1, Ordering::Relaxed);
-                            thread::sleep(Duration::from_millis(10));
-                            // Check if we should stop
-                            if !ingest_running.load(Ordering::Relaxed) {
+    // Ingest is CPU-bound work with sync I/O, so run in blocking thread pool
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            // Staggered startup to desynchronize segment writes
+            if startup_delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(startup_delay_ms));
+            }
+            while ingest_running.load(Ordering::Relaxed) {
+                for test_bundle in test_bundles.iter() {
+                    if !ingest_running.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // Retry loop for backpressure handling
+                    loop {
+                        match engine.ingest(test_bundle) {
+                            Ok(()) => {
+                                let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
+                                break; // Success, move to next bundle
+                            }
+                            Err(e) if e.is_at_capacity() => {
+                                // Backpressure: wait for consumers to catch up
+                                let _ = backpressure_count.fetch_add(1, Ordering::Relaxed);
+                                std::thread::sleep(Duration::from_millis(10));
+                                // Check if we should stop
+                                if !ingest_running.load(Ordering::Relaxed) {
+                                    return;
+                                }
+                                // Retry this bundle
+                                continue;
+                            }
+                            Err(_) => {
+                                // Other error: stop ingestion
                                 return;
                             }
-                            // Retry this bundle
-                            continue;
-                        }
-                        Err(_) => {
-                            // Other error: stop ingestion
-                            return;
                         }
                     }
                 }
             }
-        }
+        })
+        .await;
     })
 }
 
@@ -764,4 +758,72 @@ fn create_engine_config(
     config.wal.flush_interval = Duration::from_millis(staggered_flush_ms);
 
     config
+}
+
+/// Creates engines synchronously in a blocking context.
+///
+/// This is called via `spawn_blocking` because `WalWriter::open_sync` uses `block_on`
+/// internally, which conflicts with an async runtime.
+#[allow(clippy::too_many_arguments)]
+fn create_engines_sync(
+    num_engines: usize,
+    subscribers_per_engine: usize,
+    segment_size_mb: u64,
+    wal_flush_interval_ms: u64,
+    no_wal: bool,
+    read_mode: SegmentReadMode,
+    disk_budget_mb: u64,
+    retention_policy: RetentionPolicy,
+    data_dir: &std::path::Path,
+    _is_tui: bool,
+) -> Result<(Vec<Arc<QuiverEngine>>, Vec<(usize, SubscriberId)>), String>
+{
+    let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(num_engines);
+    let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
+
+    for engine_idx in 0..num_engines {
+        // Each engine gets its own subdirectory
+        let engine_dir = if num_engines > 1 {
+            data_dir.join(format!("engine_{}", engine_idx))
+        } else {
+            data_dir.to_path_buf()
+        };
+        std::fs::create_dir_all(&engine_dir)
+            .map_err(|e| format!("Failed to create engine dir: {}", e))?;
+
+        // Create engine with staggered timing to avoid synchronized I/O
+        let engine_config = create_engine_config(
+            &engine_dir,
+            segment_size_mb,
+            wal_flush_interval_ms,
+            no_wal,
+            read_mode,
+            engine_idx,
+            num_engines,
+        );
+
+        // Create per-engine disk budget (Phase 1: static quota per engine)
+        let wal_size_mb = if no_wal { 0 } else { 128 };
+        let budget = create_per_engine_budget(
+            disk_budget_mb,
+            num_engines,
+            retention_policy,
+            segment_size_mb,
+            wal_size_mb,
+        )?;
+
+        // Engine now owns segment store and registry internally
+        let engine = QuiverEngine::new(engine_config, budget)
+            .map_err(|e| format!("Failed to create engine: {}", e))?;
+
+        // Register subscribers using engine's unified API
+        let sub_ids = register_subscribers_on_engine_sync(&engine, subscribers_per_engine)?;
+        for sub_id in sub_ids {
+            all_sub_ids.push((engine_idx, sub_id));
+        }
+
+        engines.push(engine);
+    }
+
+    Ok((engines, all_sub_ids))
 }
