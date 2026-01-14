@@ -24,7 +24,6 @@ use std::hash::{BuildHasherDefault, Hasher};
 // to initialize in the default case.
 #[derive(Default)]
 pub struct ExecutionState {
-    // TODO comments
     extensions: Option<ExtensionMap>,
 }
 
