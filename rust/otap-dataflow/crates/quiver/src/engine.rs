@@ -661,7 +661,8 @@ impl QuiverEngine {
     /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
     /// or `defer()` before being dropped.
     ///
-    /// For blocking behavior, use [`next_bundle_blocking`](Self::next_bundle_blocking).
+    /// For async waiting, use [`next_bundle`](Self::next_bundle).
+    /// For sync blocking behavior, use [`next_bundle_blocking`](Self::next_bundle_blocking).
     pub fn poll_next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
@@ -670,10 +671,55 @@ impl QuiverEngine {
         self.registry.poll_next_bundle(id)
     }
 
-    /// Waits for the next available bundle with a timeout.
+    /// Waits asynchronously for the next available bundle.
+    ///
+    /// This is the primary async API for consuming bundles. It awaits until
+    /// a bundle becomes available or the timeout expires.
+    ///
+    /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
+    /// or `defer()` before being dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subscriber ID
+    /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(handle))` - A bundle is available
+    /// * `Ok(None)` - Timeout expired with no bundle available
+    /// * `Err(_)` - Subscriber not found or not active
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::time::Duration;
+    ///
+    /// // Wait up to 5 seconds for a bundle
+    /// let handle = engine
+    ///     .next_bundle(&subscriber_id, Some(Duration::from_secs(5)))
+    ///     .await?;
+    ///
+    /// if let Some(bundle) = handle {
+    ///     // Process the bundle...
+    ///     bundle.ack();
+    /// }
+    /// ```
+    pub async fn next_bundle(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        timeout: Option<Duration>,
+    ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
+    {
+        self.registry.next_bundle(id, timeout).await
+    }
+
+    /// Waits for the next available bundle with a timeout (blocking).
     ///
     /// Blocking: waits up to `timeout` for a bundle to become available.
     /// Returns `None` on timeout or if `should_stop` returns true.
+    ///
+    /// For async waiting, prefer [`next_bundle`](Self::next_bundle).
     ///
     /// # Arguments
     ///
@@ -2762,5 +2808,164 @@ mod tests {
                 "should only see unacked bundles from previous run"
             );
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Async API tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Helper to create an engine and ingest data in a blocking context.
+    /// This is needed because WalWriter::open_sync uses block_on internally.
+    async fn setup_engine_with_data(
+        dir: &std::path::Path,
+        bundle_count: usize,
+    ) -> Arc<QuiverEngine> {
+        let path = dir.to_path_buf();
+        let budget = test_budget();
+        tokio::task::spawn_blocking(move || {
+            let config = QuiverConfig::builder()
+                .data_dir(&path)
+                .build()
+                .expect("config");
+            let engine = QuiverEngine::new(config, budget).expect("engine");
+
+            for _ in 0..bundle_count {
+                let bundle = DummyBundle::with_rows(100);
+                engine.ingest(&bundle).expect("ingest");
+            }
+            if bundle_count > 0 {
+                engine.flush().expect("flush");
+            }
+            engine
+        })
+        .await
+        .expect("spawn_blocking")
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_returns_available_bundle() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("async-test").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Use async next_bundle
+        let handle = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(5)))
+            .await
+            .expect("next_bundle")
+            .expect("should have bundle");
+
+        assert_eq!(handle.bundle_ref().bundle_index.raw(), 0);
+        handle.ack();
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_timeout_when_no_bundles() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 0).await;
+
+        // Register and activate subscriber (but don't ingest anything)
+        let sub_id = SubscriberId::new("timeout-test").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Async next_bundle should timeout quickly
+        let result = engine
+            .next_bundle(&sub_id, Some(Duration::from_millis(100)))
+            .await
+            .expect("next_bundle");
+
+        assert!(result.is_none(), "should timeout with no bundles");
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_wakes_on_segment_finalized() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 0).await;
+
+        // Register and activate subscriber before any data
+        let sub_id = SubscriberId::new("wake-test").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        let got_bundle = Arc::new(AtomicBool::new(false));
+        let got_bundle_clone = got_bundle.clone();
+        let engine_clone = engine.clone();
+        let sub_id_clone = sub_id.clone();
+
+        // Spawn async task to wait for bundle
+        let consumer = tokio::spawn(async move {
+            let result = engine_clone
+                .next_bundle(&sub_id_clone, Some(Duration::from_secs(10)))
+                .await
+                .expect("next_bundle");
+            if result.is_some() {
+                got_bundle_clone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Give consumer time to start waiting
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Now ingest data and flush in blocking context (which finalizes segment and notifies)
+        let engine_for_ingest = engine.clone();
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(100);
+                engine_for_ingest.ingest(&bundle).expect("ingest");
+            }
+            engine_for_ingest.flush().expect("flush");
+        })
+        .await
+        .expect("spawn_blocking");
+
+        // Consumer should complete
+        let result = tokio::time::timeout(Duration::from_secs(5), consumer).await;
+        assert!(result.is_ok(), "consumer task should complete");
+        assert!(
+            got_bundle.load(Ordering::Relaxed),
+            "should have received bundle"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_interleaves_with_poll() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("interleave-test").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Alternate between async and poll methods
+        let h1 = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)))
+            .await
+            .expect("async 1")
+            .expect("bundle 1");
+        h1.ack();
+
+        let h2 = engine
+            .poll_next_bundle(&sub_id)
+            .expect("poll 1")
+            .expect("bundle 2");
+        h2.ack();
+
+        let h3 = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)))
+            .await
+            .expect("async 2")
+            .expect("bundle 3");
+        h3.ack();
+
+        // All three bundles should have sequential indices
+        // (we can't check indices directly since we already acked, but test completes successfully)
     }
 }
