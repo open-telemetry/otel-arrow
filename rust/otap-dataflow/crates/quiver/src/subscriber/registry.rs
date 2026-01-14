@@ -48,8 +48,8 @@ use crate::segment::{ReconstructedBundle, SegmentSeq};
 use super::error::{Result, SubscriberError};
 use super::handle::{BundleHandle, ResolutionCallback};
 use super::progress::{
-    delete_progress_file, progress_file_path, read_progress_file, scan_progress_files,
-    write_progress_file,
+    delete_progress_file_sync, progress_file_path, read_progress_file, scan_progress_files,
+    write_progress_file_sync,
 };
 use super::state::SubscriberState;
 use super::types::{AckOutcome, BundleRef, SubscriberId};
@@ -296,7 +296,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         }
 
         // Delete progress file
-        delete_progress_file(&self.config.data_dir, id)?;
+        delete_progress_file_sync(&self.config.data_dir, id)?;
 
         Ok(())
     }
@@ -328,14 +328,18 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         self.bundle_available_async.notify_waiters();
     }
 
-    /// Returns the next pending bundle for a subscriber.
+    /// Polls for the next pending bundle without blocking.
     ///
-    /// Claims the bundle and returns a handle for resolution.
+    /// Claims the bundle and returns a handle for resolution. Returns `None`
+    /// immediately if no bundle is available.
+    ///
+    /// For blocking behavior, use [`next_bundle_blocking`](Self::next_bundle_blocking)
+    /// (sync) or [`next_bundle`](Self::next_bundle) (async).
     ///
     /// # Errors
     ///
     /// Returns an error if the subscriber is not registered or not active.
-    pub fn next_bundle(
+    pub fn poll_next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
     ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
@@ -383,8 +387,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
     /// Returns the next pending bundle, blocking until one is available.
     ///
-    /// This is more efficient than polling `next_bundle` in a loop with sleeps,
-    /// as it uses a condvar to wait for new segment notifications.
+    /// This is the sync blocking API. For async code, use [`next_bundle`](Self::next_bundle)
+    /// instead.
     ///
     /// # Arguments
     ///
@@ -416,7 +420,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             }
 
             // Try to get a bundle
-            match self.next_bundle(id)? {
+            match self.poll_next_bundle(id)? {
                 Some(handle) => return Ok(Some(handle)),
                 None => {
                     // No bundle available, wait for notification
@@ -454,22 +458,20 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
     /// Returns the next pending bundle, waiting asynchronously until one is available.
     ///
-    /// This is the async version of [`next_bundle_blocking`](Self::next_bundle_blocking).
-    /// It uses tokio's async notification instead of a condvar.
+    /// This is the primary async API for receiving bundles. It uses tokio's
+    /// async notification to efficiently wait for new bundles.
     ///
     /// # Arguments
     ///
     /// * `id` - The subscriber ID
     /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
-    /// * `cancellation` - A future that resolves when the operation should be cancelled
-    ///   (e.g., for shutdown). Use `std::future::pending()` if no cancellation is needed.
     ///
     /// # Returns
     ///
     /// * `Ok(Some(handle))` - A bundle is available
-    /// * `Ok(None)` - Timeout expired or cancellation requested
+    /// * `Ok(None)` - Timeout expired
     /// * `Err(_)` - Subscriber not found or not active
-    pub async fn next_bundle_async(
+    pub async fn next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
         timeout: Option<Duration>,
@@ -479,7 +481,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         loop {
             // Try to get a bundle
-            match self.next_bundle(id)? {
+            match self.poll_next_bundle(id)? {
                 Some(handle) => return Ok(Some(handle)),
                 None => {
                     // No bundle available, wait for notification or timeout
@@ -744,7 +746,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 (entries, oldest)
             };
 
-            match write_progress_file(&self.config.data_dir, &sub_id, oldest_incomplete, &entries) {
+            match write_progress_file_sync(&self.config.data_dir, &sub_id, oldest_incomplete, &entries) {
                 Ok(()) => {
                     flushed += 1;
                 }
@@ -1041,7 +1043,7 @@ mod tests {
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
 
-        let result = registry.next_bundle(&id).unwrap();
+        let result = registry.poll_next_bundle(&id).unwrap();
         assert!(result.is_none());
     }
 
@@ -1055,7 +1057,7 @@ mod tests {
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
 
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
         assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
 
@@ -1073,11 +1075,11 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get first bundle (claims it)
-        let handle1 = registry.next_bundle(&id).unwrap().unwrap();
+        let handle1 = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle1.bundle_ref().bundle_index, BundleIndex::new(0));
 
         // Next should skip the claimed one
-        let handle2 = registry.next_bundle(&id).unwrap().unwrap();
+        let handle2 = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle2.bundle_ref().bundle_index, BundleIndex::new(1));
 
         handle1.ack();
@@ -1098,7 +1100,7 @@ mod tests {
             registry.register(id.clone()).unwrap();
             registry.activate(&id).unwrap();
 
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             handle.ack();
 
             // Flush progress files before closing
@@ -1112,7 +1114,7 @@ mod tests {
             registry.activate(&id).unwrap();
 
             // First bundle should be skipped (already acked)
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
@@ -1132,7 +1134,7 @@ mod tests {
             registry.register(id.clone()).unwrap();
             registry.activate(&id).unwrap();
 
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             handle.reject(); // Dropped
 
             // Flush progress files before closing
@@ -1146,7 +1148,7 @@ mod tests {
             registry.activate(&id).unwrap();
 
             // First bundle should be skipped (dropped)
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
@@ -1163,12 +1165,12 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get and defer first bundle
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         let bundle_ref = handle.defer();
         assert_eq!(bundle_ref.bundle_index, BundleIndex::new(0));
 
         // Should be able to get it again
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
         handle.ack();
     }
@@ -1184,7 +1186,7 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get and defer
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         let bundle_ref = handle.defer();
 
         // Explicitly claim it
@@ -1204,7 +1206,7 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get and ack
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         let bundle_ref = handle.bundle_ref();
         handle.ack();
 
@@ -1235,7 +1237,7 @@ mod tests {
         registry.segment_provider.add_segment(1, 5);
 
         // Should be able to get bundles
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
         handle.ack();
     }
@@ -1256,7 +1258,7 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Should see the segment (added during activate)
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
         handle.ack();
     }
@@ -1280,8 +1282,8 @@ mod tests {
         registry.activate(&id2).unwrap();
 
         // Both should get bundle 0
-        let h1 = registry.next_bundle(&id1).unwrap().unwrap();
-        let h2 = registry.next_bundle(&id2).unwrap().unwrap();
+        let h1 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+        let h2 = registry.poll_next_bundle(&id2).unwrap().unwrap();
 
         assert_eq!(h1.bundle_ref().bundle_index, BundleIndex::new(0));
         assert_eq!(h2.bundle_ref().bundle_index, BundleIndex::new(0));
@@ -1312,7 +1314,7 @@ mod tests {
         );
 
         // Sub1 completes segment 1
-        let h = registry.next_bundle(&id1).unwrap().unwrap();
+        let h = registry.poll_next_bundle(&id1).unwrap().unwrap();
         h.ack();
 
         // Still waiting on sub2
@@ -1322,7 +1324,7 @@ mod tests {
         );
 
         // Sub2 completes segment 1
-        let h = registry.next_bundle(&id2).unwrap().unwrap();
+        let h = registry.poll_next_bundle(&id2).unwrap().unwrap();
         h.ack();
 
         // Now segment 2 is oldest incomplete
@@ -1461,5 +1463,141 @@ mod tests {
             got_bundle.load(Ordering::Relaxed),
             "Consumer should have received bundle"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Async method tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn async_next_bundle_returns_bundle_when_available() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 1);
+
+        let id = SubscriberId::new("async-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Async next_bundle should return the bundle (use timeout to avoid hang if test fails)
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .await
+            .unwrap();
+        assert!(result.is_some(), "should get bundle");
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_waits_for_segment_notification() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::time::Duration as TokioDuration;
+
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+
+        let id = SubscriberId::new("wait-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        let registry_for_notify = registry.clone();
+        let got_bundle = Arc::new(AtomicBool::new(false));
+        let got_bundle_clone = got_bundle.clone();
+        let id_clone = id.clone();
+
+        // Spawn an async task to wait for the bundle with a timeout
+        let consumer = tokio::spawn(async move {
+            let result = registry
+                .next_bundle(&id_clone, Some(Duration::from_secs(5)))
+                .await
+                .expect("next_bundle should succeed");
+            if result.is_some() {
+                got_bundle_clone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Give consumer task time to start waiting
+        tokio::time::sleep(TokioDuration::from_millis(50)).await;
+
+        // Now add a segment and notify
+        provider.add_segment(1, 1);
+        registry_for_notify.on_segment_finalized(SegmentSeq::new(1), 1);
+
+        // Consumer should complete within reasonable time
+        let result = tokio::time::timeout(TokioDuration::from_secs(10), consumer).await;
+        assert!(result.is_ok(), "consumer should complete");
+        assert!(
+            got_bundle.load(Ordering::Relaxed),
+            "consumer should have received bundle"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_timeout_returns_none() {
+        let (registry, _dir) = setup_registry();
+        // No segments added - will timeout
+
+        let id = SubscriberId::new("timeout-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // next_bundle with short timeout should return None
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_millis(100)))
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "should return None on timeout with no bundles"
+        );
+
+        // Verify we can still use the registry after timeout
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 1);
+        // Need to notify the registry about the new segment
+        registry.on_segment_finalized(SegmentSeq::new(1), 1);
+
+        let result2 = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .await
+            .unwrap();
+        assert!(result2.is_some(), "should get bundle after segment added");
+    }
+
+    #[tokio::test]
+    async fn async_next_bundle_sequences_correctly() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3); // Segment with 3 bundles
+
+        let id = SubscriberId::new("sequence-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Get first bundle with async method (use timeout to avoid hang if test fails)
+        let handle1 = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("should get first bundle");
+        assert_eq!(handle1.bundle_ref().bundle_index, BundleIndex::new(0));
+        handle1.ack();
+
+        // Get second bundle with poll method
+        let handle2 = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle2.bundle_ref().bundle_index, BundleIndex::new(1));
+        handle2.ack();
+
+        // Get third bundle with async method again
+        let handle3 = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .expect("should get third bundle");
+        assert_eq!(handle3.bundle_ref().bundle_index, BundleIndex::new(2));
+        handle3.ack();
+
+        // No more bundles
+        let result = registry.poll_next_bundle(&id).unwrap();
+        assert!(result.is_none());
     }
 }

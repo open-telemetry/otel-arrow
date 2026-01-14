@@ -64,7 +64,7 @@
 //!
 //! // Write directly to disk (streaming serialization)
 //! let writer = SegmentWriter::new(SegmentSeq::new(1));
-//! let (bytes_written, checksum) = writer.write_segment(&path, open_segment)?;
+//! let (bytes_written, checksum) = writer.write_segment_sync(&path, open_segment)?;
 //! ```
 //!
 //! [`OpenSegment`]: super::OpenSegment
@@ -137,7 +137,10 @@ impl SegmentWriter {
     /// Writes an open segment directly to disk with streaming serialization.
     ///
     /// This method streams each stream's IPC data directly to disk, avoiding
-    /// the need to buffer all serialized data in memory.
+    /// Writes an open segment to disk synchronously.
+    ///
+    /// This is the synchronous version of [`write_segment`](Self::write_segment).
+    /// Prefer the async version when running in an async context.
     ///
     /// # Arguments
     ///
@@ -153,7 +156,7 @@ impl SegmentWriter {
     /// Returns [`SegmentError::Io`] if file operations fail.
     /// Returns [`SegmentError::Arrow`] if IPC encoding fails.
     /// Returns [`SegmentError::EmptySegment`] if the segment has no bundles.
-    pub fn write_segment(
+    pub fn write_segment_sync(
         &self,
         path: impl AsRef<Path>,
         segment: super::OpenSegment,
@@ -180,11 +183,12 @@ impl SegmentWriter {
         Ok(result)
     }
 
-    /// Writes an open segment to disk asynchronously.
+    /// Writes an open segment to disk.
     ///
-    /// This is the async version of [`write_segment`](Self::write_segment).
-    /// It uses tokio's async file I/O for fsync operations while the actual
-    /// Arrow IPC serialization runs synchronously (Arrow doesn't support async I/O).
+    /// This method streams each stream's IPC data directly to disk, avoiding
+    /// the need to buffer all serialized data in memory. Uses async I/O for
+    /// fsync while Arrow IPC serialization runs synchronously (Arrow doesn't
+    /// support async I/O).
     ///
     /// # Arguments
     ///
@@ -200,7 +204,7 @@ impl SegmentWriter {
     /// Returns [`SegmentError::Io`] if file operations fail.
     /// Returns [`SegmentError::Arrow`] if IPC encoding fails.
     /// Returns [`SegmentError::EmptySegment`] if the segment has no bundles.
-    pub async fn write_segment_async(
+    pub async fn write_segment(
         &self,
         path: impl AsRef<Path>,
         segment: super::OpenSegment,
@@ -611,7 +615,7 @@ mod tests {
         let open_segment = OpenSegment::new();
 
         // Empty segment should fail
-        let result = writer.write_segment(&path, open_segment);
+        let result = writer.write_segment_sync(&path, open_segment);
         assert!(matches!(result, Err(SegmentError::EmptySegment)));
     }
 
@@ -638,7 +642,7 @@ mod tests {
         let _ = open_segment.append(&bundle2).unwrap();
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).unwrap();
+        let (bytes_written, _crc) = writer.write_segment_sync(&path, open_segment).unwrap();
 
         // File should be non-empty
         assert!(bytes_written > 0);
@@ -682,7 +686,7 @@ mod tests {
         let _ = open_segment.append(&bundle).unwrap();
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).unwrap();
+        let (bytes_written, _crc) = writer.write_segment_sync(&path, open_segment).unwrap();
 
         // File should be non-empty
         assert!(bytes_written > 0);
@@ -711,7 +715,7 @@ mod tests {
 
         // Write using the streaming API
         let writer = SegmentWriter::new(SegmentSeq::new(42));
-        let (bytes_written, crc) = writer.write_segment(&path, open_segment).unwrap();
+        let (bytes_written, crc) = writer.write_segment_sync(&path, open_segment).unwrap();
 
         assert!(bytes_written > 0);
         assert!(crc != 0);
@@ -875,5 +879,77 @@ mod tests {
         assert_eq!(SEGMENT_VERSION, 1);
         assert_eq!(TRAILER_SIZE, 16);
         assert_eq!(FOOTER_V1_SIZE, 34);
+    }
+
+    #[tokio::test]
+    async fn async_write_segment_with_single_stream() {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("async_test.qseg");
+
+        let schema = test_schema();
+        let batch1 = make_batch(&schema, &[1, 2], &["a", "b"]);
+        let batch2 = make_batch(&schema, &[3], &["c"]);
+
+        // Build an open segment with two batches in the same stream
+        let mut open_segment = OpenSegment::new();
+        let fp = test_fingerprint();
+
+        let bundle1 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch1);
+        let bundle2 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
+
+        let _ = open_segment.append(&bundle1).unwrap();
+        let _ = open_segment.append(&bundle2).unwrap();
+
+        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
+
+        // File should be non-empty
+        assert!(bytes_written > 0);
+
+        // Verify file exists and has content
+        let metadata = tokio::fs::metadata(&path).await.expect("file should exist");
+        assert_eq!(metadata.len(), bytes_written);
+    }
+
+    #[tokio::test]
+    async fn async_write_segment_matches_sync_output() {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
+
+        let dir = tempdir().unwrap();
+        let sync_path = dir.path().join("sync.qseg");
+        let async_path = dir.path().join("async.qseg");
+
+        let schema = test_schema();
+        let batch = make_batch(&schema, &[1, 2, 3], &["a", "b", "c"]);
+
+        let fp = test_fingerprint();
+        let bundle = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch);
+
+        // Write with sync method
+        let mut open_segment_sync = OpenSegment::new();
+        let _ = open_segment_sync.append(&bundle).unwrap();
+        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let (sync_bytes, sync_crc) = writer
+            .write_segment_sync(&sync_path, open_segment_sync)
+            .unwrap();
+
+        // Write with async method (same data)
+        let batch2 = make_batch(&schema, &[1, 2, 3], &["a", "b", "c"]);
+        let bundle2 = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch2);
+        let mut open_segment_async = OpenSegment::new();
+        let _ = open_segment_async.append(&bundle2).unwrap();
+        let writer2 = SegmentWriter::new(SegmentSeq::new(1));
+        let (async_bytes, async_crc) = writer2
+            .write_segment(&async_path, open_segment_async)
+            .await
+            .unwrap();
+
+        // Both should produce the same size and CRC
+        assert_eq!(sync_bytes, async_bytes);
+        assert_eq!(sync_crc, async_crc);
     }
 }

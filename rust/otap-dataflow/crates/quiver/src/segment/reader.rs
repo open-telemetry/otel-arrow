@@ -1074,7 +1074,7 @@ mod tests {
             let bundle_count = open_segment.bundle_count();
 
             let writer = SegmentWriter::new(SegmentSeq::new(1));
-            let _ = writer.write_segment(&path, open_segment).expect("write");
+            let _ = writer.write_segment_sync(&path, open_segment).expect("write");
 
             Self {
                 dir,
@@ -1313,7 +1313,7 @@ mod tests {
         let _ = open_segment.append(&bundle);
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_segment(&path, open_segment).expect("write");
+        let _ = writer.write_segment_sync(&path, open_segment).expect("write");
 
         // Read back and verify
         let reader = SegmentReader::open(&path).expect("open");
@@ -1412,7 +1412,7 @@ mod tests {
         let _ = open_segment.append(&bundle);
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_segment(&path, open_segment).expect("write");
+        let _ = writer.write_segment_sync(&path, open_segment).expect("write");
 
         // Read back
         let reader = SegmentReader::open(&path).expect("open");
@@ -1516,7 +1516,7 @@ mod tests {
         let _ = open_segment.append(&bundle);
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_segment(&path, open_segment).expect("write");
+        let _ = writer.write_segment_sync(&path, open_segment).expect("write");
 
         // Read back with mmap
         let reader = SegmentReader::open_mmap(&path).expect("open_mmap");

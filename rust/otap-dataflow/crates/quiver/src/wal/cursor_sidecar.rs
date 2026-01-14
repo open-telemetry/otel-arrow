@@ -179,8 +179,8 @@ impl CursorSidecar {
         Ok(size)
     }
 
-    /// Reads the cursor sidecar from a file asynchronously.
-    pub async fn read_from_async(path: &Path) -> WalResult<Self> {
+    /// Reads the cursor sidecar from a file.
+    pub async fn read_from(path: &Path) -> WalResult<Self> {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let size = Self::read_size_async(&mut file).await?;
         let mut buf = vec![0u8; size];
@@ -188,8 +188,8 @@ impl CursorSidecar {
         Self::decode(&buf)
     }
 
-    /// Writes the cursor sidecar to a file asynchronously using atomic rename.
-    pub async fn write_to_async(path: &Path, value: &Self) -> WalResult<()> {
+    /// Writes the cursor sidecar to a file using atomic rename.
+    pub async fn write_to(path: &Path, value: &Self) -> WalResult<()> {
         let tmp_path = temporary_path(path);
         {
             let mut file = OpenOptions::new()
@@ -218,7 +218,7 @@ impl CursorSidecar {
     ///
     /// Used by tests that verify cursor state after async writes.
     #[cfg(test)]
-    pub fn read_from(path: &Path) -> WalResult<Self> {
+    pub fn read_from_sync(path: &Path) -> WalResult<Self> {
         use std::io::Read;
         let mut file = std::fs::File::open(path)?;
         let size = Self::read_size_sync(&mut file)?;
@@ -253,8 +253,8 @@ impl CursorSidecar {
     /// Writes the cursor sidecar to a file synchronously using atomic rename.
     ///
     /// Used by tests that need to create cursor sidecar files for testing.
-    #[allow(dead_code)] // Used in tests
-    pub fn write_to(path: &Path, value: &Self) -> WalResult<()> {
+    #[cfg(test)]
+    pub fn write_to_sync(path: &Path, value: &Self) -> WalResult<()> {
         use std::io::Write;
         let tmp_path = temporary_path(path);
         {
@@ -339,8 +339,8 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("quiver.wal.cursor");
         let value = sample_sidecar();
-        CursorSidecar::write_to_async(&path, &value).await.expect("write");
-        let loaded = CursorSidecar::read_from_async(&path).await.expect("read");
+        CursorSidecar::write_to(&path, &value).await.expect("write");
+        let loaded = CursorSidecar::read_from(&path).await.expect("read");
         assert_eq!(loaded, value);
     }
 

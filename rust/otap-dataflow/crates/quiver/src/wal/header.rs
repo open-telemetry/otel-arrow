@@ -104,10 +104,10 @@ impl WalHeader {
     }
 
     /// Writes the header to a file synchronously.
-    /// 
+    ///
     /// Used by tests that need to create malformed WAL files for error testing.
     #[cfg(test)]
-    pub fn write_to(&self, file: &mut std::fs::File) -> Result<(), WalError> {
+    pub fn write_to_sync(&self, file: &mut std::fs::File) -> Result<(), WalError> {
         use std::io::{Seek, Write};
         let _ = file.seek(SeekFrom::Start(0))?;
         file.write_all(&self.encode())?;
@@ -116,9 +116,9 @@ impl WalHeader {
     }
 
     /// Reads the header from a file synchronously.
-    /// 
-    /// Used by tests that verify header contents after async writes.
-    pub fn read_from(file: &mut std::fs::File) -> Result<Self, WalError> {
+    ///
+    /// Used by sync readers like [`WalReader`](super::WalReader).
+    pub fn read_from_sync(file: &mut std::fs::File) -> Result<Self, WalError> {
         use std::io::{Read, Seek};
         let _ = file.seek(SeekFrom::Start(0))?;
 
@@ -159,8 +159,8 @@ impl WalHeader {
         Self::decode(&full_buf)
     }
 
-    /// Writes the header to a file asynchronously.
-    pub async fn write_to_async(&self, file: &mut File) -> Result<(), WalError> {
+    /// Writes the header to a file.
+    pub async fn write_to(&self, file: &mut File) -> Result<(), WalError> {
         let _ = file.seek(SeekFrom::Start(0)).await?;
         file.write_all(&self.encode()).await?;
         file.flush().await?;
@@ -169,7 +169,7 @@ impl WalHeader {
 
     /// Reads the header size from a file without consuming the full header.
     /// Returns the header size in bytes.
-    pub async fn read_header_size_async(file: &mut File) -> Result<u16, WalError> {
+    pub async fn read_header_size(file: &mut File) -> Result<u16, WalError> {
         let _ = file.seek(SeekFrom::Start(0)).await?;
         let mut buf = [0u8; WAL_HEADER_MIN_LEN];
         let _ = file.read_exact(&mut buf).await?;
@@ -195,8 +195,8 @@ impl WalHeader {
         Ok(header_size)
     }
 
-    /// Reads the header from a file asynchronously.
-    pub async fn read_from_async(file: &mut File) -> Result<Self, WalError> {
+    /// Reads the header from a file.
+    pub async fn read_from(file: &mut File) -> Result<Self, WalError> {
         let _ = file.seek(SeekFrom::Start(0)).await?;
 
         // First read minimum header to get the actual header size
@@ -433,5 +433,76 @@ mod tests {
             err,
             WalError::InvalidHeader("buffer shorter than declared header size")
         ));
+    }
+
+    #[tokio::test]
+    async fn async_write_and_read_roundtrip() {
+        use tokio::fs::File as TokioFile;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.wal");
+        let header = WalHeader::new(sample_hash());
+
+        // Write using async method
+        {
+            let mut file = TokioFile::create(&path).await.expect("create file");
+            header.write_to(&mut file).await.expect("write header");
+        }
+
+        // Read using async method
+        {
+            let mut file = TokioFile::open(&path).await.expect("open file");
+            let loaded = WalHeader::read_from(&mut file).await.expect("read header");
+            assert_eq!(loaded.segment_cfg_hash, sample_hash());
+            assert_eq!(loaded.wal_position_start, 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_read_header_size_returns_correct_size() {
+        use tokio::fs::File as TokioFile;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test.wal");
+        let header = WalHeader::new(sample_hash());
+
+        // Write header
+        {
+            let mut file = TokioFile::create(&path).await.expect("create file");
+            header.write_to(&mut file).await.expect("write header");
+        }
+
+        // Read just the header size
+        {
+            let mut file = TokioFile::open(&path).await.expect("open file");
+            let size = WalHeader::read_header_size(&mut file)
+                .await
+                .expect("read header size");
+            assert_eq!(size, header.encoded_len() as u16);
+        }
+    }
+
+    #[tokio::test]
+    async fn async_write_and_read_with_base_offset() {
+        use tokio::fs::File as TokioFile;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test_offset.wal");
+        let base_offset: u64 = 123456789;
+        let header = WalHeader::with_base_offset(sample_hash(), base_offset);
+
+        // Write using async method
+        {
+            let mut file = TokioFile::create(&path).await.expect("create file");
+            header.write_to(&mut file).await.expect("write header");
+        }
+
+        // Read using async method
+        {
+            let mut file = TokioFile::open(&path).await.expect("open file");
+            let loaded = WalHeader::read_from(&mut file).await.expect("read header");
+            assert_eq!(loaded.segment_cfg_hash, sample_hash());
+            assert_eq!(loaded.wal_position_start, base_offset);
+        }
     }
 }

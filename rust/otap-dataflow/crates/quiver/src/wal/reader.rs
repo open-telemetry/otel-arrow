@@ -77,7 +77,7 @@ impl WalReader {
     pub fn open(path: impl Into<PathBuf>) -> WalResult<Self> {
         let path = path.into();
         let mut file = File::open(&path)?;
-        let header = WalHeader::read_from(&mut file)?;
+        let header = WalHeader::read_from_sync(&mut file)?;
         let header_size = header.header_size as u64;
         let _ = file.seek(SeekFrom::Start(header_size))?;
 

@@ -533,9 +533,10 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
 // Writing Progress Files
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Writes a subscriber progress file atomically.
+/// Writes a subscriber progress file atomically (sync version).
 ///
 /// Uses write-to-temp → fsync → rename pattern for crash safety.
+/// Prefer the async version when running in an async context.
 ///
 /// # Errors
 ///
@@ -543,7 +544,7 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
 /// - The directory doesn't exist
 /// - The file cannot be written
 /// - fsync fails
-pub fn write_progress_file(
+pub fn write_progress_file_sync(
     dir: &Path,
     subscriber_id: &SubscriberId,
     oldest_incomplete_seg: SegmentSeq,
@@ -613,10 +614,10 @@ pub fn write_progress_file(
     Ok(())
 }
 
-/// Writes a subscriber progress file atomically (async version).
+/// Writes a subscriber progress file atomically.
 ///
 /// Uses write-to-temp → fsync → rename pattern for crash safety.
-/// This async version uses tokio for file I/O operations.
+/// Uses tokio for async file I/O operations.
 ///
 /// # Errors
 ///
@@ -624,8 +625,7 @@ pub fn write_progress_file(
 /// - The directory doesn't exist
 /// - The file cannot be written
 /// - fsync fails
-#[allow(dead_code)] // Will be used when registry is async
-pub async fn write_progress_file_async(
+pub async fn write_progress_file(
     dir: &Path,
     subscriber_id: &SubscriberId,
     oldest_incomplete_seg: SegmentSeq,
@@ -694,12 +694,14 @@ pub async fn write_progress_file_async(
     Ok(())
 }
 
-/// Deletes a subscriber's progress file.
+/// Deletes a subscriber's progress file (sync version).
+///
+/// Prefer the async version when running in an async context.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be deleted (but not if it doesn't exist).
-pub fn delete_progress_file(dir: &Path, subscriber_id: &SubscriberId) -> Result<()> {
+pub fn delete_progress_file_sync(dir: &Path, subscriber_id: &SubscriberId) -> Result<()> {
     let path = progress_file_path(dir, subscriber_id);
 
     match fs::remove_file(&path) {
@@ -709,13 +711,12 @@ pub fn delete_progress_file(dir: &Path, subscriber_id: &SubscriberId) -> Result<
     }
 }
 
-/// Deletes a subscriber's progress file (async version).
+/// Deletes a subscriber's progress file.
 ///
 /// # Errors
 ///
 /// Returns an error if the file cannot be deleted (but not if it doesn't exist).
-#[allow(dead_code)] // Will be used when registry is async
-pub async fn delete_progress_file_async(dir: &Path, subscriber_id: &SubscriberId) -> Result<()> {
+pub async fn delete_progress_file(dir: &Path, subscriber_id: &SubscriberId) -> Result<()> {
     let path = progress_file_path(dir, subscriber_id);
 
     match tokio::fs::remove_file(&path).await {
@@ -915,7 +916,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, entries) = read_progress_file(&path).unwrap();
@@ -940,7 +941,7 @@ mod tests {
 
         let entries = vec![entry1.clone(), entry2.clone()];
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(10), &entries).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(10), &entries).unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, read_entries) = read_progress_file(&path).unwrap();
@@ -956,7 +957,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(5), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(5), &[]).unwrap();
 
         // Corrupt a byte in the header
         let path = progress_file_path(dir.path(), &sub_id);
@@ -976,7 +977,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         // Truncate the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -995,7 +996,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         // Corrupt the header_size field to claim a size larger than the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -1026,7 +1027,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         // Corrupt the entry_count field to claim more entries than exist
         let path = progress_file_path(dir.path(), &sub_id);
@@ -1083,16 +1084,16 @@ mod tests {
     }
 
     #[test]
-    fn delete_progress_file_works() {
+    fn delete_progress_file_sync_works() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         assert!(path.exists());
 
-        delete_progress_file(dir.path(), &sub_id).unwrap();
+        delete_progress_file_sync(dir.path(), &sub_id).unwrap();
         assert!(!path.exists());
     }
 
@@ -1102,7 +1103,7 @@ mod tests {
         let sub_id = SubscriberId::new("nonexistent").unwrap();
 
         // Should not error
-        delete_progress_file(dir.path(), &sub_id).unwrap();
+        delete_progress_file_sync(dir.path(), &sub_id).unwrap();
     }
 
     #[test]
@@ -1113,9 +1114,9 @@ mod tests {
         let sub2 = SubscriberId::new("backup-s3").unwrap();
         let sub3 = SubscriberId::new("metrics-sink").unwrap();
 
-        write_progress_file(dir.path(), &sub1, SegmentSeq::new(0), &[]).unwrap();
-        write_progress_file(dir.path(), &sub2, SegmentSeq::new(5), &[]).unwrap();
-        write_progress_file(dir.path(), &sub3, SegmentSeq::new(10), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub1, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub2, SegmentSeq::new(5), &[]).unwrap();
+        write_progress_file_sync(dir.path(), &sub3, SegmentSeq::new(10), &[]).unwrap();
 
         // Create a temp file that should be ignored
         fs::write(dir.path().join("quiver.sub.temp-file.tmp"), b"temp").unwrap();
@@ -1158,7 +1159,7 @@ mod tests {
 
         // Write initial state
         let initial_entry = SegmentProgressEntry::new(SegmentSeq::new(1), 10);
-        write_progress_file(
+        write_progress_file_sync(
             dir.path(),
             &sub_id,
             SegmentSeq::new(1),
@@ -1174,7 +1175,7 @@ mod tests {
 
         // Write updated state
         let updated_entry = SegmentProgressEntry::new(SegmentSeq::new(2), 20);
-        write_progress_file(
+        write_progress_file_sync(
             dir.path(),
             &sub_id,
             SegmentSeq::new(2),
@@ -1187,5 +1188,98 @@ mod tests {
         assert_eq!(oldest, SegmentSeq::new(2));
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], updated_entry);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Async method tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn async_write_and_read_progress_file() {
+        let dir = tempdir().unwrap();
+        let sub_id = SubscriberId::new("async-test").unwrap();
+
+        let entry = SegmentProgressEntry::new(SegmentSeq::new(1), 100);
+        write_progress_file(
+            dir.path(),
+            &sub_id,
+            SegmentSeq::new(1),
+            std::slice::from_ref(&entry),
+        )
+        .await
+        .unwrap();
+
+        // Verify file was written
+        let path = progress_file_path(dir.path(), &sub_id);
+        let (oldest, entries) = read_progress_file(&path).unwrap();
+        assert_eq!(oldest, SegmentSeq::new(1));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], entry);
+    }
+
+    #[tokio::test]
+    async fn async_delete_progress_file_removes_file() {
+        let dir = tempdir().unwrap();
+        let sub_id = SubscriberId::new("delete-test").unwrap();
+
+        // Create a progress file
+        let entry = SegmentProgressEntry::new(SegmentSeq::new(1), 50);
+        write_progress_file(
+            dir.path(),
+            &sub_id,
+            SegmentSeq::new(1),
+            std::slice::from_ref(&entry),
+        )
+        .await
+        .unwrap();
+
+        let path = progress_file_path(dir.path(), &sub_id);
+        assert!(path.exists(), "file should exist before delete");
+
+        // Delete using async method
+        delete_progress_file(dir.path(), &sub_id).await.unwrap();
+
+        assert!(!path.exists(), "file should not exist after delete");
+    }
+
+    #[tokio::test]
+    async fn async_write_progress_matches_sync_output() {
+        let dir = tempdir().unwrap();
+        let sub_id_sync = SubscriberId::new("sync-sub").unwrap();
+        let sub_id_async = SubscriberId::new("async-sub").unwrap();
+
+        let entry = SegmentProgressEntry::new(SegmentSeq::new(5), 200);
+
+        // Write with sync
+        write_progress_file_sync(
+            dir.path(),
+            &sub_id_sync,
+            SegmentSeq::new(5),
+            std::slice::from_ref(&entry),
+        )
+        .unwrap();
+
+        // Write with async
+        write_progress_file(
+            dir.path(),
+            &sub_id_async,
+            SegmentSeq::new(5),
+            std::slice::from_ref(&entry),
+        )
+        .await
+        .unwrap();
+
+        // Read both and compare
+        let sync_path = progress_file_path(dir.path(), &sub_id_sync);
+        let async_path = progress_file_path(dir.path(), &sub_id_async);
+
+        use std::fs::read;
+        let sync_contents = read(&sync_path).unwrap();
+        let async_contents = read(&async_path).unwrap();
+
+        assert_eq!(
+            sync_contents, async_contents,
+            "sync and async should produce identical files"
+        );
     }
 }

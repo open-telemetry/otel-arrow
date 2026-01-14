@@ -189,7 +189,7 @@ fn write_single_entry(body: &[u8]) -> (tempfile::TempDir, PathBuf) {
         .open(&path)
         .expect("create wal file");
     let header = WalHeader::new([0xEE; 16]);
-    header.write_to(&mut file).expect("write header");
+    header.write_to_sync(&mut file).expect("write header");
     let len = u32::try_from(body.len()).expect("body fits u32");
     let _ = file.seek(SeekFrom::End(0)).expect("seek end");
     file.write_all(&len.to_le_bytes()).expect("write len");
@@ -466,7 +466,7 @@ fn wal_writer_reopens_with_matching_header() {
             .open(&wal_path)
             .expect("create file");
         WalHeader::new(original_hash)
-            .write_to(&mut file)
+            .write_to_sync(&mut file)
             .expect("write header");
         file.flush().expect("flush");
     }
@@ -480,7 +480,7 @@ fn wal_writer_reopens_with_matching_header() {
         .read(true)
         .open(&wal_path)
         .expect("open for read");
-    let header = WalHeader::read_from(&mut file).expect("read header");
+    let header = WalHeader::read_from_sync(&mut file).expect("read header");
     assert_eq!(header.segment_cfg_hash, original_hash);
 }
 
@@ -566,7 +566,7 @@ fn wal_writer_records_cursor_without_truncating() {
     );
 
     let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
-    let sidecar = CursorSidecar::read_from(&sidecar_path).expect("sidecar");
+    let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(
         sidecar.wal_position,
         first_entry.next_offset // Already global coordinate
@@ -628,7 +628,7 @@ fn wal_writer_enforces_safe_offset_boundaries() {
     drop(writer);
 
     let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
-    let sidecar = CursorSidecar::read_from(&sidecar_path).expect("sidecar");
+    let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(
         sidecar.wal_position,
         first_entry.next_offset // Already global coordinate
@@ -655,7 +655,7 @@ fn wal_writer_persists_consumer_cursor_sidecar() {
     drop(writer);
 
     let sidecar_path = wal_path.parent().expect("dir").join("quiver.wal.cursor");
-    let state = CursorSidecar::read_from(&sidecar_path).expect("sidecar");
+    let state = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(state.wal_position, offset.next_offset);
 }
 
@@ -690,7 +690,7 @@ fn wal_writer_rotates_when_target_exceeded() {
     let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
     // Sidecar should exist after rotation (even if no cursor has been recorded yet)
     assert!(sidecar_path.exists(), "sidecar should exist after rotation");
-    let sidecar = CursorSidecar::read_from(&sidecar_path).expect("sidecar should be readable");
+    let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar should be readable");
     // wal_position is 0 because no consumer cursor has been recorded yet
     assert_eq!(sidecar.wal_position, 0);
 }
@@ -869,7 +869,7 @@ fn wal_writer_ignores_invalid_cursor_sidecar() {
     writer.persist_cursor_sync(&cursor).expect("record cursor");
     drop(writer);
 
-    let state = CursorSidecar::read_from(&sidecar_path).expect("sidecar");
+    let state = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(state.wal_position, offset.next_offset);
 }
 
@@ -977,7 +977,7 @@ fn wal_reader_iterator_stays_finished_after_eof() {
             .open(&wal_path)
             .expect("create wal");
         WalHeader::new([0x44; 16])
-            .write_to(&mut file)
+            .write_to_sync(&mut file)
             .expect("header");
     }
 
@@ -1131,7 +1131,7 @@ fn wal_reader_errors_on_truncated_entry_length() {
             .open(&wal_path)
             .expect("create wal");
         WalHeader::new([0x55; 16])
-            .write_to(&mut file)
+            .write_to_sync(&mut file)
             .expect("header");
         file.write_all(&[0xAA, 0xBB])
             .expect("write partial entry length");
@@ -1925,7 +1925,7 @@ fn assert_crash_recovery(
         .expect("wal dir")
         .join("quiver.wal.cursor");
     if sidecar_path.exists() {
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("sidecar readable");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar readable");
         let total_logical = total_logical_bytes(&options.path);
         assert!(
             sidecar.wal_position <= total_logical,
@@ -2245,7 +2245,7 @@ fn wal_recovery_clamps_stale_sidecar_offset() {
 
     // Now write a sidecar with an absurdly large offset
     let stale_sidecar = CursorSidecar::new(u64::MAX / 2);
-    CursorSidecar::write_to(&sidecar_path, &stale_sidecar).expect("write stale sidecar");
+    CursorSidecar::write_to_sync(&sidecar_path, &stale_sidecar).expect("write stale sidecar");
 
     // Reopen the writer - it should clamp the offset internally and not panic
     let mut writer = WalWriter::open_sync(WalWriterOptions::new(
@@ -2275,7 +2275,7 @@ fn wal_recovery_clamps_stale_sidecar_offset() {
 
     // Verify the sidecar now has a valid offset
     let wal_len = std::fs::metadata(&wal_path).expect("metadata").len();
-    let recovered_sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+    let recovered_sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
     let max_logical = wal_len.saturating_sub(test_header_size());
     assert!(
         recovered_sidecar.wal_position <= max_logical,
@@ -2303,7 +2303,7 @@ fn wal_recovery_handles_rotated_files_with_gaps_in_ids() {
             .open(&rotated_path)
             .expect("create rotated file");
         WalHeader::new([0x77; 16])
-            .write_to(&mut file)
+            .write_to_sync(&mut file)
             .expect("write header");
         file.flush().expect("flush");
     }

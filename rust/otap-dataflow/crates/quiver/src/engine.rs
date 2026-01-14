@@ -600,7 +600,7 @@ impl QuiverEngine {
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
-        let (bytes_written, _checksum) = writer.write_segment(&segment_path, segment)?;
+        let (bytes_written, _checksum) = writer.write_segment_sync(&segment_path, segment)?;
 
         // Track cumulative bytes (never decreases, for accurate throughput measurement)
         let _ = self
@@ -655,17 +655,19 @@ impl QuiverEngine {
         self.registry.activate(id)
     }
 
-    /// Returns the next available bundle for the subscriber, if any.
+    /// Polls for the next available bundle for the subscriber.
     ///
-    /// Non-blocking: returns `None` if no bundles are available.
+    /// Non-blocking: returns `None` immediately if no bundles are available.
     /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
     /// or `defer()` before being dropped.
-    pub fn next_bundle(
+    ///
+    /// For blocking behavior, use [`next_bundle_blocking`](Self::next_bundle_blocking).
+    pub fn poll_next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
     ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
     {
-        self.registry.next_bundle(id)
+        self.registry.poll_next_bundle(id)
     }
 
     /// Waits for the next available bundle with a timeout.
@@ -1233,7 +1235,7 @@ mod tests {
 
         // === Verify WAL cursor was advanced ===
         let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // The cursor should be > 0 (advanced past the header)
         assert!(
@@ -1459,7 +1461,7 @@ mod tests {
 
         // === Verify cursor is at or past the last finalized segment ===
         let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Cursor should be > 0 (some segments were finalized)
         assert!(
@@ -1746,7 +1748,7 @@ mod tests {
         // === Verify WAL + cursor state ===
         let wal_dir = temp_dir.path().join("wal");
         let sidecar_path = wal_dir.join("quiver.wal.cursor");
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Count WAL files and sizes
         let wal_files: Vec<_> = fs::read_dir(&wal_dir)
@@ -2399,7 +2401,7 @@ mod tests {
         engine.flush().expect("flush");
 
         // Consume all bundles to mark segments as complete
-        while let Ok(Some(handle)) = engine.next_bundle(&sub_id) {
+        while let Ok(Some(handle)) = engine.poll_next_bundle(&sub_id) {
             handle.ack();
         }
 
@@ -2472,7 +2474,7 @@ mod tests {
 
         // Can still consume remaining bundles
         let mut consumed = 0;
-        while let Ok(Some(handle)) = engine.next_bundle(&sub_id) {
+        while let Ok(Some(handle)) = engine.poll_next_bundle(&sub_id) {
             handle.ack();
             consumed += 1;
         }
@@ -2515,7 +2517,7 @@ mod tests {
 
         // Claim a bundle from the oldest segment (creating an active reader)
         let handle = engine
-            .next_bundle(&sub_id)
+            .poll_next_bundle(&sub_id)
             .expect("next_bundle succeeds")
             .expect("bundle available");
 
@@ -2628,7 +2630,7 @@ mod tests {
 
             // Should be able to consume bundles from recovered segments
             let mut consumed = 0;
-            while let Some(handle) = engine.next_bundle(&sub_id).expect("next_bundle") {
+            while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("next_bundle") {
                 handle.ack();
                 consumed += 1;
             }
@@ -2663,7 +2665,7 @@ mod tests {
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // next_bundle should return None (no bundles available)
-        let bundle = engine.next_bundle(&sub_id).expect("next_bundle");
+        let bundle = engine.poll_next_bundle(&sub_id).expect("next_bundle");
         assert!(bundle.is_none(), "should have no bundles");
     }
 
@@ -2712,7 +2714,7 @@ mod tests {
             // Consume and ack some bundles (but not all)
             let mut acked = 0;
             for _ in 0..3 {
-                if let Some(handle) = engine.next_bundle(&sub_id).expect("next_bundle") {
+                if let Some(handle) = engine.poll_next_bundle(&sub_id).expect("next_bundle") {
                     handle.ack();
                     acked += 1;
                 }
@@ -2748,7 +2750,7 @@ mod tests {
 
             // Count remaining bundles to consume
             let mut remaining = 0;
-            while let Some(handle) = engine.next_bundle(&sub_id).expect("next_bundle") {
+            while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("next_bundle") {
                 handle.ack();
                 remaining += 1;
             }

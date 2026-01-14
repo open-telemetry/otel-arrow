@@ -439,13 +439,13 @@ impl WalWriter {
         // Read or create header, extracting wal_position_start and header_size
         let (active_wal_start, active_header_size) = if is_new_file {
             let header = WalHeader::new(options.segment_cfg_hash);
-            header.write_to_async(&mut file).await?;
+            header.write_to(&mut file).await?;
             file.flush().await?;
             (0, header.encoded_len()) // New file starts at WAL position 0
         } else if metadata.len() < WAL_HEADER_MIN_LEN as u64 {
             return Err(WalError::InvalidHeader("file smaller than minimum header"));
         } else {
-            let header = WalHeader::read_from_async(&mut file).await?;
+            let header = WalHeader::read_from(&mut file).await?;
             if header.segment_cfg_hash != options.segment_cfg_hash {
                 return Err(WalError::SegmentConfigMismatch {
                     expected: options.segment_cfg_hash,
@@ -1164,7 +1164,7 @@ impl WalCoordinator {
             let path = rotated_wal_path(&self.options.path, *rotation_id);
             // Read header to get actual header size for this file
             let mut file = File::open(&path).await?;
-            let header_size = WalHeader::read_header_size_async(&mut file).await? as u64;
+            let header_size = WalHeader::read_header_size(&mut file).await? as u64;
 
             aggregate = aggregate.saturating_add(*len);
             let data_bytes = len.saturating_sub(header_size);
@@ -1274,7 +1274,7 @@ impl WalCoordinator {
         self.entry_boundaries.clear();
         self.rotation_count = self.rotation_count.saturating_add(1);
 
-        CursorSidecar::write_to_async(&self.sidecar_path, &self.cursor_state).await?;
+        CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state).await?;
         Ok(())
     }
 
@@ -1358,7 +1358,7 @@ impl WalCoordinator {
             return Ok(());
         }
         self.cursor_state.wal_position = wal_pos;
-        CursorSidecar::write_to_async(&self.sidecar_path, &self.cursor_state).await
+        CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state).await
     }
 
     async fn purge_rotated_files_async(&mut self) -> WalResult<()> {
@@ -1465,7 +1465,7 @@ fn cursor_sidecar_path(wal_path: &Path) -> PathBuf {
 }
 
 async fn load_cursor_state_async(path: &Path) -> WalResult<CursorSidecar> {
-    match CursorSidecar::read_from_async(path).await {
+    match CursorSidecar::read_from(path).await {
         Ok(state) => Ok(state),
         Err(WalError::InvalidCursorSidecar(_)) => Ok(default_cursor_state()),
         Err(WalError::Io(err))
@@ -1550,7 +1550,7 @@ async fn reopen_wal_file_async(
         .open(path)
         .await?;
     WalHeader::with_base_offset(segment_hash, wal_position_start)
-        .write_to_async(&mut file)
+        .write_to(&mut file)
         .await?;
     Ok(file)
 }

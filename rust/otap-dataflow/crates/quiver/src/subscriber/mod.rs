@@ -65,8 +65,9 @@ mod types;
 pub use error::{Result, SubscriberError};
 pub use handle::{BundleHandle, ResolutionCallback};
 pub use progress::{
-    SegmentProgressEntry, SubscriberProgress, delete_progress_file, progress_file_path,
-    read_progress_file, scan_progress_files, write_progress_file,
+    SegmentProgressEntry, SubscriberProgress, delete_progress_file, delete_progress_file_sync,
+    progress_file_path, read_progress_file, scan_progress_files, write_progress_file,
+    write_progress_file_sync,
 };
 pub use registry::{RegistryCallback, RegistryConfig, SegmentProvider, SubscriberRegistry};
 pub use state::SubscriberState;
