@@ -650,46 +650,44 @@ fn spawn_ingest_task(
     backpressure_count: Arc<AtomicU64>,
     startup_delay_ms: u64,
 ) -> JoinHandle<()> {
-    // Ingest is CPU-bound work with sync I/O, so run in blocking thread pool
+    // Now that wal_writer uses tokio::sync::Mutex, the ingest() future is Send
+    // and we can use tokio::spawn directly.
     tokio::spawn(async move {
-        let _ = tokio::task::spawn_blocking(move || {
-            // Staggered startup to desynchronize segment writes
-            if startup_delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(startup_delay_ms));
-            }
-            while ingest_running.load(Ordering::Relaxed) {
-                for test_bundle in test_bundles.iter() {
-                    if !ingest_running.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    // Retry loop for backpressure handling
-                    loop {
-                        match engine.ingest_sync(test_bundle) {
-                            Ok(()) => {
-                                let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
-                                break; // Success, move to next bundle
-                            }
-                            Err(e) if e.is_at_capacity() => {
-                                // Backpressure: wait for consumers to catch up
-                                let _ = backpressure_count.fetch_add(1, Ordering::Relaxed);
-                                std::thread::sleep(Duration::from_millis(10));
-                                // Check if we should stop
-                                if !ingest_running.load(Ordering::Relaxed) {
-                                    return;
-                                }
-                                // Retry this bundle
-                                continue;
-                            }
-                            Err(_) => {
-                                // Other error: stop ingestion
+        // Staggered startup to desynchronize segment writes
+        if startup_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(startup_delay_ms)).await;
+        }
+        while ingest_running.load(Ordering::Relaxed) {
+            for test_bundle in test_bundles.iter() {
+                if !ingest_running.load(Ordering::Relaxed) {
+                    break;
+                }
+                // Retry loop for backpressure handling
+                loop {
+                    match engine.ingest(test_bundle).await {
+                        Ok(()) => {
+                            let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
+                            break; // Success, move to next bundle
+                        }
+                        Err(e) if e.is_at_capacity() => {
+                            // Backpressure: wait for consumers to catch up
+                            let _ = backpressure_count.fetch_add(1, Ordering::Relaxed);
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            // Check if we should stop
+                            if !ingest_running.load(Ordering::Relaxed) {
                                 return;
                             }
+                            // Retry this bundle
+                            continue;
+                        }
+                        Err(_) => {
+                            // Other error: stop ingestion
+                            return;
                         }
                     }
                 }
             }
-        })
-        .await;
+        }
     })
 }
 

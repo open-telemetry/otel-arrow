@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
 use crate::error::{QuiverError, Result};
@@ -80,8 +81,8 @@ pub struct QuiverEngine {
     budget: Arc<crate::budget::DiskBudget>,
     /// Metrics for observability.
     metrics: PersistenceMetrics,
-    /// Write-ahead log writer.
-    wal_writer: Mutex<WalWriter>,
+    /// Write-ahead log writer (uses tokio mutex for async lock across await points).
+    wal_writer: TokioMutex<WalWriter>,
     /// Current open segment accumulator.
     open_segment: Mutex<OpenSegment>,
     /// Cursor representing all entries in the current open segment.
@@ -89,6 +90,8 @@ pub struct QuiverEngine {
     segment_cursor: Mutex<WalConsumerCursor>,
     /// Next segment sequence number to assign.
     next_segment_seq: AtomicU64,
+    /// Cumulative bytes written to WAL (never decreases, even after rotation/purge).
+    cumulative_wal_bytes: AtomicU64,
     /// Cumulative bytes written to segments (never decreases, even after cleanup).
     cumulative_segment_bytes: AtomicU64,
     /// Count of segments force-dropped due to DropOldest policy.
@@ -271,10 +274,11 @@ impl QuiverEngine {
         let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
-            wal_writer: Mutex::new(wal_writer),
+            wal_writer: TokioMutex::new(wal_writer),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(0),
+            cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
@@ -392,10 +396,11 @@ impl QuiverEngine {
         let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
-            wal_writer: Mutex::new(wal_writer),
+            wal_writer: TokioMutex::new(wal_writer),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(0),
+            cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
@@ -466,8 +471,7 @@ impl QuiverEngine {
     /// This value never decreases, even as WAL files are rotated and purged.
     /// Useful for accurate throughput measurement without file system sampling.
     pub fn wal_bytes_written(&self) -> u64 {
-        let writer = self.wal_writer.lock();
-        writer.cumulative_bytes_written()
+        self.cumulative_wal_bytes.load(Ordering::Relaxed)
     }
 
     /// Returns the cumulative bytes written to segments since engine creation.
@@ -510,7 +514,7 @@ impl QuiverEngine {
     /// Call this before dropping the engine to capture final stats.
     #[cfg(test)]
     pub(crate) fn wal_stats(&self) -> WalStats {
-        let writer = self.wal_writer.lock();
+        let writer = self.wal_writer.blocking_lock();
         WalStats {
             rotation_count: writer.rotation_count(),
             purge_count: writer.purge_count(),
@@ -553,6 +557,12 @@ impl QuiverEngine {
         // segment finalization. Only segment bytes are budget-tracked.
         if self.config.durability == DurabilityMode::Wal {
             let wal_offset = self.append_to_wal_with_capacity_handling_async(bundle).await?;
+
+            // Track cumulative WAL bytes for throughput measurement
+            let wal_entry_bytes = wal_offset.next_offset.saturating_sub(wal_offset.position);
+            let _ = self
+                .cumulative_wal_bytes
+                .fetch_add(wal_entry_bytes, Ordering::Relaxed);
 
             // Step 2: Update cursor to include this entry
             let cursor = WalConsumerCursor::from_offset(&wal_offset);
@@ -625,6 +635,12 @@ impl QuiverEngine {
         if self.config.durability == DurabilityMode::Wal {
             let wal_offset = self.append_to_wal_with_capacity_handling(bundle)?;
 
+            // Track cumulative WAL bytes for throughput measurement
+            let wal_entry_bytes = wal_offset.next_offset.saturating_sub(wal_offset.position);
+            let _ = self
+                .cumulative_wal_bytes
+                .fetch_add(wal_entry_bytes, Ordering::Relaxed);
+
             // Step 2: Update cursor to include this entry
             let cursor = WalConsumerCursor::from_offset(&wal_offset);
             {
@@ -679,7 +695,7 @@ impl QuiverEngine {
     ) -> Result<crate::wal::WalOffset> {
         // First attempt
         let first_result = {
-            let mut writer = self.wal_writer.lock();
+            let mut writer = self.wal_writer.blocking_lock();
             writer.append_bundle_sync(bundle)
         };
 
@@ -691,7 +707,7 @@ impl QuiverEngine {
                 self.finalize_current_segment()?;
 
                 // Retry the append after finalization freed space
-                let mut writer = self.wal_writer.lock();
+                let mut writer = self.wal_writer.blocking_lock();
                 writer.append_bundle_sync(bundle).map_err(Into::into)
             }
             Err(e) => Err(e.into()),
@@ -705,7 +721,7 @@ impl QuiverEngine {
     ) -> Result<crate::wal::WalOffset> {
         // First attempt
         let first_result = {
-            let mut writer = self.wal_writer.lock();
+            let mut writer = self.wal_writer.lock().await;
             writer.append_bundle(bundle).await
         };
 
@@ -717,7 +733,7 @@ impl QuiverEngine {
                 self.finalize_current_segment_async().await?;
 
                 // Retry the append after finalization freed space
-                let mut writer = self.wal_writer.lock();
+                let mut writer = self.wal_writer.lock().await;
                 writer.append_bundle(bundle).await.map_err(Into::into)
             }
             Err(e) => Err(e.into()),
@@ -835,7 +851,7 @@ impl QuiverEngine {
 
         // Step 5: Advance WAL cursor now that segment is durable
         {
-            let mut wal_writer = self.wal_writer.lock();
+            let mut wal_writer = self.wal_writer.blocking_lock();
             wal_writer.persist_cursor_sync(&cursor)?;
         }
 
@@ -897,7 +913,7 @@ impl QuiverEngine {
 
         // Step 5: Advance WAL cursor now that segment is durable
         {
-            let mut wal_writer = self.wal_writer.lock();
+            let mut wal_writer = self.wal_writer.lock().await;
             wal_writer.persist_cursor(&cursor).await?;
         }
 

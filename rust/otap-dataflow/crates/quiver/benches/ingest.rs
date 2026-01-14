@@ -10,6 +10,8 @@
 //!
 //! Benchmark directories are created in `~/.quiver-benchmarks/` to avoid
 //! `/tmp` which may be tmpfs (RAM-backed) and would not reflect real disk I/O.
+//!
+//! Uses tokio runtime to call async APIs via `block_on`.
 
 #![allow(missing_docs)]
 #![allow(unused_results)]
@@ -28,6 +30,7 @@ use quiver::config::{QuiverConfig, RetentionPolicy, SegmentConfig, WalConfig};
 use quiver::engine::QuiverEngine;
 use quiver::record_bundle::{BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId};
 use tempfile::TempDir;
+use tokio::runtime::Runtime;
 
 /// Creates a large test budget (1 GB) for benchmarks.
 fn bench_budget() -> Arc<DiskBudget> {
@@ -140,6 +143,7 @@ fn bench_config(temp_dir: &std::path::Path, segment_size_mb: u64) -> QuiverConfi
 /// - 8,192: OTel Collector default `send_batch_size`
 fn ingest_single(c: &mut Criterion) {
     let mut group = c.benchmark_group("ingest_single");
+    let rt = Runtime::new().expect("tokio runtime");
 
     for num_rows in [100, 1_000, 8_192] {
         let bundle = BenchBundle::with_rows(num_rows);
@@ -153,11 +157,15 @@ fn ingest_single(c: &mut Criterion) {
                 || {
                     let temp_dir = bench_tempdir();
                     let config = bench_config(temp_dir.path(), 100); // Large segment to avoid finalization
-                    let engine = QuiverEngine::new(config, bench_budget()).expect("engine");
+                    let engine = rt.block_on(async {
+                        QuiverEngine::open(config, bench_budget()).await.expect("engine")
+                    });
                     (engine, temp_dir)
                 },
                 |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
-                    engine.ingest_sync(bundle).expect("ingest succeeds");
+                    rt.block_on(async {
+                        engine.ingest(bundle).await.expect("ingest succeeds");
+                    });
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -173,6 +181,7 @@ fn ingest_single(c: &mut Criterion) {
 fn ingest_sustained(c: &mut Criterion) {
     let mut group = c.benchmark_group("ingest_sustained");
     group.sample_size(20); // Fewer samples for longer-running benchmark
+    let rt = Runtime::new().expect("tokio runtime");
 
     // Ingest 100 bundles of 1,000 rows each = 100,000 total rows
     let num_bundles = 100;
@@ -189,14 +198,18 @@ fn ingest_sustained(c: &mut Criterion) {
                 // Create fresh temp dir per iteration to avoid read-only segment conflicts
                 let temp_dir = bench_tempdir();
                 let config = bench_config(temp_dir.path(), 1); // 1 MB segments
-                let engine = QuiverEngine::new(config, bench_budget()).expect("engine");
+                let engine = rt.block_on(async {
+                    QuiverEngine::open(config, bench_budget()).await.expect("engine")
+                });
                 (engine, temp_dir) // Keep temp_dir alive
             },
             |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
-                for _ in 0..num_bundles {
-                    engine.ingest_sync(&bundle).expect("ingest succeeds");
-                }
-                engine.shutdown_sync().expect("shutdown succeeds");
+                rt.block_on(async {
+                    for _ in 0..num_bundles {
+                        engine.ingest(&bundle).await.expect("ingest succeeds");
+                    }
+                    engine.shutdown().await.expect("shutdown succeeds");
+                });
             },
             criterion::BatchSize::PerIteration,
         );
@@ -211,6 +224,7 @@ fn ingest_sustained(c: &mut Criterion) {
 fn ingest_with_frequent_writes(c: &mut Criterion) {
     let mut group = c.benchmark_group("ingest_finalization");
     group.sample_size(30);
+    let rt = Runtime::new().expect("tokio runtime");
 
     let bundle = BenchBundle::with_rows(1_000);
 
@@ -237,14 +251,18 @@ fn ingest_with_frequent_writes(c: &mut Criterion) {
                     })
                     .build()
                     .expect("valid config");
-                let engine = QuiverEngine::new(config, bench_budget()).expect("engine");
+                let engine = rt.block_on(async {
+                    QuiverEngine::open(config, bench_budget()).await.expect("engine")
+                });
                 (engine, temp_dir) // Keep temp_dir alive
             },
             |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
-                for _ in 0..20 {
-                    engine.ingest_sync(&bundle).expect("ingest succeeds");
-                }
-                engine.shutdown_sync().expect("shutdown succeeds");
+                rt.block_on(async {
+                    for _ in 0..20 {
+                        engine.ingest(&bundle).await.expect("ingest succeeds");
+                    }
+                    engine.shutdown().await.expect("shutdown succeeds");
+                });
             },
             criterion::BatchSize::PerIteration,
         );
