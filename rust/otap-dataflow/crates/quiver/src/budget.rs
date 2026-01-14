@@ -148,6 +148,7 @@ impl std::fmt::Debug for DiskBudget {
         f.debug_struct("DiskBudget")
             .field("cap", &self.cap)
             .field("used", &self.used.load(Ordering::Relaxed))
+            .field("reserved_headroom", &self.reserved_headroom)
             .field("policy", &self.policy)
             .finish_non_exhaustive()
     }
@@ -263,7 +264,7 @@ impl DiskBudget {
     ///
     /// See [`for_engine`](Self::for_engine) for rationale.
     #[must_use]
-    pub fn calculate_headroom(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
+    pub const fn calculate_headroom(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
         segment_size_bytes + (wal_max_size_bytes / 4)
     }
 
@@ -271,14 +272,14 @@ impl DiskBudget {
     ///
     /// This is `reserved_headroom + segment_size` (need room for at least one segment).
     #[must_use]
-    pub fn minimum_cap(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
+    pub const fn minimum_cap(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
         let reserved = Self::calculate_headroom(segment_size_bytes, wal_max_size_bytes);
         reserved + segment_size_bytes
     }
 
     /// Returns the configured cap.
     #[must_use]
-    pub fn cap(&self) -> u64 {
+    pub const fn cap(&self) -> u64 {
         self.cap
     }
 
@@ -296,7 +297,7 @@ impl DiskBudget {
 
     /// Returns the reserved headroom for internal operations.
     #[must_use]
-    pub fn reserved_headroom(&self) -> u64 {
+    pub const fn reserved_headroom(&self) -> u64 {
         self.reserved_headroom
     }
 
@@ -448,7 +449,7 @@ impl DiskBudget {
     /// Called during startup to account for files from previous runs.
     /// This can exceed the cap (to accurately reflect reality).
     pub fn record_existing(&self, bytes: u64) {
-        let _ = self.used.fetch_add(bytes, Ordering::Relaxed);
+        let _ = self.used.fetch_add(bytes, Ordering::Release);
     }
 
     /// Releases bytes when files are deleted.
@@ -458,7 +459,7 @@ impl DiskBudget {
         // Saturating sub to avoid underflow if accounting is slightly off
         let _ = self
             .used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
                 Some(current.saturating_sub(bytes))
             });
     }
@@ -477,7 +478,7 @@ pub struct PendingWrite {
 impl PendingWrite {
     /// Returns the number of bytes reserved.
     #[must_use]
-    pub fn reserved(&self) -> u64 {
+    pub const fn reserved(&self) -> u64 {
         self.reserved
     }
 
