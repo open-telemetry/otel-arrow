@@ -169,10 +169,8 @@ impl AttributesProcessor {
                         Value::Number(n) => {
                             if let Some(i) = n.as_i64() {
                                 Some(LiteralValue::Int(i))
-                            } else if let Some(f) = n.as_f64() {
-                                Some(LiteralValue::Double(f))
                             } else {
-                                None
+                                n.as_f64().map(LiteralValue::Double)
                             }
                         }
                         Value::Bool(b) => Some(LiteralValue::Bool(b)),
@@ -808,7 +806,7 @@ mod tests {
         });
 
         // Create a proper pipeline context for the test
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
