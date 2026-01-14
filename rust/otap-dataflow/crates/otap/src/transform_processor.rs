@@ -16,10 +16,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::Engine;
 use data_engine_expressions::{Expression, PipelineExpression};
 use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
-use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
+use otap_df_config::{PortName, SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{
     ProcessorFactory,
     config::ProcessorConfig,
@@ -33,11 +34,19 @@ use otap_df_engine::{
 };
 use otap_df_opl::parser::OplParser;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_query_engine::pipeline::{Pipeline, routing::Router, state::ExecutionState};
+use otap_df_query_engine::pipeline::{
+    Pipeline,
+    routing::{Router, RouterExtType},
+    state::ExecutionState,
+};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 
-use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata, transform_processor::routing::RouterImpl};
+use crate::{
+    OTAP_PROCESSOR_FACTORIES,
+    pdata::{Context, OtapPdata},
+    transform_processor::routing::RouterImpl,
+};
 
 use self::config::{Config, Language};
 use self::metrics::Metrics;
@@ -119,9 +128,7 @@ impl TransformProcessor {
         // https://github.com/open-telemetry/otel-arrow/issues/1634
 
         let mut execution_state = ExecutionState::new();
-        // TODO should `Box<dyn Router>` be a type alias exposed by the routing module?
-        // so we don't accidentally set the wrong type here
-        execution_state.set_extension::<Box<dyn Router>>(Box::new(RouterImpl::new()));
+        execution_state.set_extension::<RouterExtType>(Box::new(RouterImpl::new()));
 
         Ok(Self {
             signal_scope: SignalScope::try_from(&pipeline_expr)?,
@@ -137,6 +144,40 @@ impl TransformProcessor {
             SignalScope::All => true,
             SignalScope::Signal(signal_type) => signal_type == pdata.signal_type(),
         }
+    }
+
+    async fn handle_routed_messages(
+        &mut self,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        let router_impl = self
+            .execution_state
+            .get_extension_mut::<RouterExtType>()
+            .and_then(|router| router.as_any_mut().downcast_mut::<RouterImpl>())
+            .unwrap(); // TODO no unwray
+
+        for (route_name, otap_batch) in router_impl.routed.drain(..) {
+            let payload = OtapPayload::OtapArrowRecords(otap_batch);
+            // TODO -- need to properly handle Ack/Nack here by creating a new context, subscribing
+            // interests, and juggling the incoming/outgoing contexts/Ack/Nack messages correctly
+            let pdata = OtapPdata::new(Context::default(), payload);
+
+            // Find the port name based on the route name. We need to since do this, rather
+            // than just passing route_name directly, b/c `send_message_to` expects a `PortName`
+            // which must be Into<Cow<'static.. and route_name doesn't have this lifetime.
+            let port_name = effect_handler
+                .connected_ports()
+                .iter()
+                .find(|p| p.as_ref() == route_name.as_str())
+                .unwrap() // TODO no unwrap
+                .clone();
+            effect_handler
+                .send_message_to(port_name, pdata)
+                .await
+                .unwrap(); // TODO no unwrap
+        }
+
+        Ok(())
     }
 }
 
@@ -201,6 +242,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                     {
                         Ok(otap_batch) => {
                             self.metrics.msgs_transformed.inc();
+                            self.handle_routed_messages(effect_handler).await?;
                             otap_batch.into()
                         }
                         Err(e) => {
@@ -242,7 +284,8 @@ mod test {
         },
     };
     use otap_df_pdata::{
-        otap::Logs, proto::{
+        otap::Logs,
+        proto::{
             OtlpProtoMessage,
             opentelemetry::{
                 arrow::v1::ArrowPayloadType,
@@ -252,7 +295,8 @@ mod test {
                 resource::v1::Resource,
                 trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
             },
-        }, testing::round_trip::{otap_to_otlp, otlp_to_otap}
+        },
+        testing::round_trip::{otap_to_otlp, otlp_to_otap},
     };
 
     use crate::pdata::OtapPdata;
@@ -492,7 +536,6 @@ mod test {
             )
             .unwrap();
 
-
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -517,10 +560,7 @@ mod test {
                     .map(OtapPdata::payload)
                     .map(OtapArrowRecords::try_from)
                     .map(Result::unwrap);
-                let result = out
-                    .into_iter()
-                    .next()
-                    .expect("one result");
+                let result = out.into_iter().next().expect("one result");
                 // expect we got an empty batch:
                 // TODO assert on the context?
                 assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
@@ -533,7 +573,6 @@ mod test {
                 // TODO assert on the routed message
                 // TODO assert on routed context
                 // TODO assert Ack/Nack
-
             })
             .validate(|_ctx| async move {})
     }

@@ -6,15 +6,15 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// Additional state that may be carried along during the execution of a pipeline.
-/// 
+///
 /// This can be used to store arbitrary extensions that may be needed by custom pipeline stages.
 /// Extensions are stored in a type-map and pipeline stages can retrieve them by a known type.
-/// 
+///
 // Note: this is similar to datafusion's `ExecutionState`, which it also uses for extensions, but
 // without the need for `Send + Sync` bounds, as those are not required in this context due to these
 // pipeline stages executing in a single threaded runtime. This also means that pipeline
 // stages can get mutable references to extensions if needed.
-// 
+//
 // In the future, this may be expanded to include other execution-related state like metrics
 //
 // Also note that when the pipeline is executed without an ExecutionState being provided, a default

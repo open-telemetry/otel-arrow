@@ -4,26 +4,25 @@
 use std::any::Any;
 
 use async_trait::async_trait;
-use otap_df_engine::local::processor::EffectHandler;
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_query_engine::{
-    error::{Error, Result},
-    pipeline::routing::Router,
+    error::Result,
+    pipeline::routing::{RouteName, Router},
 };
 
-use crate::pdata::{Context, OtapPdata};
-
-pub struct RouterImpl {}
+/// implementation of [`Router`] used by [`TransformProcessor`]
+pub(super) struct RouterImpl {
+    pub routed: Vec<(RouteName, OtapArrowRecords)>,
+}
 
 impl RouterImpl {
     pub fn new() -> Self {
-        Self {}
+        Self { routed: Vec::new() }
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Router for RouterImpl {
-
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -32,14 +31,9 @@ impl Router for RouterImpl {
         self
     }
 
-    async fn send(&mut self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()> {
-        todo!()
-        // // TODO this isn't the correct handling for context
-        // let pdata = OtapPdata::new(
-        //     Context::default(),
-        //     OtapPayload::OtapArrowRecords(otap_batch)
-        // );
-        // self.effect_handler.send_message_to(route_name, pdata).await?;
-        // Ok(())
+    async fn send(&mut self, route_name: RouteName, otap_batch: OtapArrowRecords) -> Result<()> {
+        self.routed.push((route_name, otap_batch));
+
+        Ok(())
     }
 }

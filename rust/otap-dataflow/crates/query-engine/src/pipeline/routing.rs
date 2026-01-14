@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::any::Any;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -19,13 +20,13 @@ use crate::pipeline::state::ExecutionState;
 ///
 /// The pipeline stage that handles routing will look for an implementation of this trait
 /// in the `ExecutionState` extensions, and invoke it to send the data to the appropriate route.
-/// 
+///
 /// The trait also provides methods to allow down-casting to concrete implementations. This means
 /// the execution state can own the router as a trait object, but the pipeline caller can retrieve
 /// it, downcast it to a concrete type, and inspect any state it may have or call other methods.
 /// This is useful for implementations that buffer batches before sending them.
 ///
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Router {
     /// returns a reference as `Any` for down-casting
     fn as_any(&self) -> &dyn Any;
@@ -34,23 +35,35 @@ pub trait Router {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
     /// Send OTAP batch to the specified route.
-    async fn send(&mut self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()>;
+    async fn send(&mut self, route_name: RouteName, otap_batch: OtapArrowRecords) -> Result<()>;
 }
 
-/// [`PipelineStage`] that routes OTAP batches to a specified route. 
-/// 
+/// Route name type
+// `Rc` is used here for `Router` implementations that buffer batches to route, so they could own the
+// route name without having to clone a string
+pub type RouteName = Rc<String>;
+
+/// Extension type for `Router` implementations used by this pipeline stage.
+///
+/// For [`Pipeline`](super::Pipeline) callers that invoke pipeline supporting routing outputs,
+/// this type is used to provide a reference to the `Router` implementation in the
+/// `ExecutionState` extensions.
+pub type RouterExtType = Box<dyn Router>;
+
+/// [`PipelineStage`] that routes OTAP batches to a specified route.
+///
 /// This stage looks for a `Router` implementation in the `ExecutionState` extensions,
 /// and invokes it to send the batch to the specified route. [`Pipeline`s](super::Pipeline)
 /// that include this stage must ensure that a `Router` is set in the execution state.
 pub struct RouteToPipelineStage {
-    route_name: String,
+    route_name: RouteName,
 }
 
 impl RouteToPipelineStage {
     /// Create a new `RouteToPipelineStage` that routes to the specified route name.
     pub fn new(route_name: &str) -> Self {
         Self {
-            route_name: route_name.to_string(),
+            route_name: route_name.to_string().into(),
         }
     }
 }
@@ -66,9 +79,9 @@ impl PipelineStage for RouteToPipelineStage {
         exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let root_payload_type = otap_batch.root_payload_type();
-        match exec_state.get_extension_mut::<Box<dyn Router>>() {
+        match exec_state.get_extension_mut::<RouterExtType>() {
             Some(router) => {
-                router.send(&self.route_name, otap_batch).await?;
+                router.send(self.route_name.clone(), otap_batch).await?;
             }
             None => {
                 return Err(Error::ExecutionError {
@@ -99,10 +112,10 @@ mod test {
     use super::*;
 
     struct TestRouter {
-        routed: Vec<(String, OtapArrowRecords)>,
+        routed: Vec<(RouteName, OtapArrowRecords)>,
     }
 
-    #[async_trait]
+    #[async_trait(?Send)]
     impl Router for TestRouter {
         fn as_any(&self) -> &dyn Any {
             self
@@ -112,8 +125,12 @@ mod test {
             self
         }
 
-        async fn send(&mut self, route_name: &str, otap_batch: OtapArrowRecords) -> Result<()> {
-            self.routed.push((route_name.to_string(), otap_batch));
+        async fn send(
+            &mut self,
+            route_name: RouteName,
+            otap_batch: OtapArrowRecords,
+        ) -> Result<()> {
+            self.routed.push((route_name, otap_batch));
             Ok(())
         }
     }
@@ -151,7 +168,7 @@ mod test {
         match router.as_any_mut().downcast_mut::<TestRouter>() {
             Some(test_router) => {
                 assert_eq!(test_router.routed.len(), 1);
-                assert_eq!(test_router.routed[0].0, "test_sink");
+                assert_eq!(test_router.routed[0].0.as_str(), "test_sink");
             }
             None => panic!("Failed to downcast router to TestRouter"),
         }
