@@ -232,12 +232,8 @@ mod tests {
                 stream_name: "mystream".to_string(),
                 dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
-                    resource_mapping: HashMap::from([
-                        ("service.name".into(), "Name".into()),
-                    ]),
-                    scope_mapping: HashMap::from([
-                        ("scope.name".into(), "Name".into()),
-                    ]),
+                    resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
                     log_record_mapping: HashMap::from([
                         ("body".into(), json!("Body")),
                         ("severity_text".into(), json!("Body")),
@@ -308,9 +304,10 @@ mod tests {
                 schema: SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
-                    log_record_mapping: HashMap::from([
-                        ("body".into(), json!({"nested": "NotAllowed"})),
-                    ]),
+                    log_record_mapping: HashMap::from([(
+                        "body".into(),
+                        json!({"nested": "NotAllowed"}),
+                    )]),
                 },
             },
             auth: AuthConfig::default(),

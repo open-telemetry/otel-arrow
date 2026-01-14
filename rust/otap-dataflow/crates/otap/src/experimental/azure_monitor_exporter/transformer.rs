@@ -100,16 +100,11 @@ impl ParsedSchema {
                 }
             } else {
                 // Parse field mapping
-                let source = LogRecordField::from_str(key).ok_or_else(|| {
-                    Error::UnknownLogRecordField {
-                        field: key.clone(),
-                    }
-                })?;
+                let source = LogRecordField::from_str(key)
+                    .ok_or_else(|| Error::UnknownLogRecordField { field: key.clone() })?;
                 let dest = value
                     .as_str()
-                    .ok_or_else(|| Error::InvalidFieldMapping {
-                        field: key.clone(),
-                    })?
+                    .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?
                     .to_string();
                 field_mappings.push(FieldMapping { source, dest });
             }
@@ -675,7 +670,12 @@ mod tests {
 
         let result = Transformer::try_new(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown log record field"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown log record field")
+        );
     }
 
     #[test]

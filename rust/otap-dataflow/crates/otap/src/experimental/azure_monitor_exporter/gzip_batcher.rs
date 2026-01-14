@@ -146,7 +146,9 @@ impl GzipBatcher {
             return Ok(FinalizeResult::Empty);
         }
 
-        self.buf.write_all(b"]").map_err(Error::BatchFinalizeFailed)?;
+        self.buf
+            .write_all(b"]")
+            .map_err(Error::BatchFinalizeFailed)?;
 
         let old_buf = std::mem::replace(&mut self.buf, Self::new_encoder());
 

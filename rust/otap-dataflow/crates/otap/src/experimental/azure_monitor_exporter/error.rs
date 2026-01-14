@@ -2,14 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::config::AuthMethod;
-use http::header::InvalidHeaderValue;
 use http::StatusCode;
+use http::header::InvalidHeaderValue;
 
 /// Error definitions for azure monitor exporter.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     // ==================== Configuration Errors ====================
-
     /// Error during configuration of a component.
     #[error("Configuration error: {0}")]
     Config(String),
@@ -22,7 +21,6 @@ pub enum Error {
     },
 
     // ==================== Authentication Errors ====================
-
     /// Authentication/authorization error.
     #[error("Auth error ({kind})")]
     Auth {
@@ -36,7 +34,6 @@ pub enum Error {
     },
 
     // ==================== HTTP/Network Errors ====================
-
     /// Failed to create HTTP client.
     #[error("Failed to create HTTP client")]
     CreateClient(#[source] reqwest::Error),
@@ -56,7 +53,6 @@ pub enum Error {
     },
 
     // ==================== Server Response Errors ====================
-
     /// Payload too large (413).
     #[error("Payload too large")]
     PayloadTooLarge,
@@ -91,7 +87,6 @@ pub enum Error {
     },
 
     // ==================== Export Errors ====================
-
     /// Export failed after retries.
     #[error("Export failed after {attempts} attempts")]
     ExportFailed {
@@ -103,7 +98,6 @@ pub enum Error {
     },
 
     // ==================== Internal Errors ====================
-
     /// Log entry too large to export.
     #[error("Log entry too large to export")]
     LogEntryTooLarge,
@@ -137,7 +131,6 @@ pub enum Error {
     ClientPoolInit(#[source] Box<Error>),
 
     // ==================== Transformer Errors ====================
-
     /// Unknown log record field encountered during transformation.
     #[error("Unknown log record field: {field}")]
     UnknownLogRecordField {
@@ -204,6 +197,7 @@ impl std::fmt::Display for NetworkErrorKind {
 
 impl Error {
     /// Returns true if this error is retryable.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -218,6 +212,7 @@ impl Error {
     }
 
     /// Returns the retry-after duration if specified by the server.
+    #[must_use]
     pub fn retry_after(&self) -> Option<std::time::Duration> {
         match self {
             Error::RateLimited { retry_after, .. } => *retry_after,
@@ -230,6 +225,7 @@ impl Error {
 // Convenience constructors
 impl Error {
     /// Creates a network error from a reqwest error, classifying the error kind.
+    #[must_use]
     pub fn network(source: reqwest::Error) -> Self {
         let kind = if source.is_timeout() {
             NetworkErrorKind::Timeout
@@ -247,6 +243,7 @@ impl Error {
     }
 
     /// Creates a credential creation error.
+    #[must_use]
     pub fn create_credential(method: AuthMethod, source: azure_core::error::Error) -> Self {
         Self::Auth {
             kind: AuthErrorKind::CreateCredential { method },
@@ -256,6 +253,7 @@ impl Error {
     }
 
     /// Creates a token acquisition error.
+    #[must_use]
     pub fn token_acquisition(source: azure_core::error::Error) -> Self {
         Self::Auth {
             kind: AuthErrorKind::TokenAcquisition,
@@ -265,9 +263,10 @@ impl Error {
     }
 
     /// Creates a token refresh error.
-    pub fn token_refresh(source: Box<Error>) -> Self {
+    #[must_use]
+    pub fn token_refresh(source: Error) -> Self {
         // Unwrap the inner auth error source if possible
-        let inner_source = match *source {
+        let inner_source = match source {
             Error::Auth { source, .. } => source,
             _ => None,
         };
@@ -280,6 +279,7 @@ impl Error {
     }
 
     /// Creates an unauthorized (401) error.
+    #[must_use]
     pub fn unauthorized(body: String) -> Self {
         Self::Auth {
             kind: AuthErrorKind::Unauthorized,
@@ -289,6 +289,7 @@ impl Error {
     }
 
     /// Creates a forbidden (403) error.
+    #[must_use]
     pub fn forbidden(body: String) -> Self {
         Self::Auth {
             kind: AuthErrorKind::Forbidden,
@@ -388,7 +389,7 @@ mod tests {
             azure_core::error::ErrorKind::Credential,
             "refresh failed",
         ));
-        let error = Error::token_refresh(Box::new(inner));
+        let error = Error::token_refresh(inner);
         assert_eq!(error.to_string(), "Auth error (token refresh)");
     }
 
@@ -455,31 +456,39 @@ mod tests {
     fn test_is_retryable() {
         // Retryable
         assert!(Error::unauthorized(String::new()).is_retryable());
-        assert!(Error::RateLimited {
-            body: String::new(),
-            retry_after: None
-        }
-        .is_retryable());
-        assert!(Error::ServerError {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            body: String::new(),
-            retry_after: None
-        }
-        .is_retryable());
+        assert!(
+            Error::RateLimited {
+                body: String::new(),
+                retry_after: None
+            }
+            .is_retryable()
+        );
+        assert!(
+            Error::ServerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: String::new(),
+                retry_after: None
+            }
+            .is_retryable()
+        );
 
         // Not retryable
         assert!(!Error::forbidden(String::new()).is_retryable());
         assert!(!Error::PayloadTooLarge.is_retryable());
-        assert!(!Error::UnexpectedStatus {
-            status: StatusCode::BAD_REQUEST,
-            body: String::new()
-        }
-        .is_retryable());
-        assert!(!Error::token_acquisition(azure_core::error::Error::with_message(
-            azure_core::error::ErrorKind::Credential,
-            "test"
-        ))
-        .is_retryable());
+        assert!(
+            !Error::UnexpectedStatus {
+                status: StatusCode::BAD_REQUEST,
+                body: String::new()
+            }
+            .is_retryable()
+        );
+        assert!(
+            !Error::token_acquisition(azure_core::error::Error::with_message(
+                azure_core::error::ErrorKind::Credential,
+                "test"
+            ))
+            .is_retryable()
+        );
     }
 
     // ==================== Display Tests ====================
@@ -502,7 +511,10 @@ mod tests {
             .to_string(),
             "create credential: ManagedIdentity"
         );
-        assert_eq!(AuthErrorKind::TokenAcquisition.to_string(), "token acquisition");
+        assert_eq!(
+            AuthErrorKind::TokenAcquisition.to_string(),
+            "token acquisition"
+        );
         assert_eq!(AuthErrorKind::TokenRefresh.to_string(), "token refresh");
         assert_eq!(AuthErrorKind::Unauthorized.to_string(), "unauthorized");
         assert_eq!(AuthErrorKind::Forbidden.to_string(), "forbidden");
@@ -520,5 +532,96 @@ mod tests {
     fn test_error_implements_std_error() {
         fn assert_std_error<T: StdError>() {}
         assert_std_error::<Error>();
+    }
+
+    // ==================== Internal Error Tests ====================
+
+    #[test]
+    fn test_log_entry_too_large_message() {
+        let error = Error::LogEntryTooLarge;
+        assert_eq!(error.to_string(), "Log entry too large to export");
+    }
+
+    #[test]
+    fn test_batch_push_failed_message() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "write failed");
+        let error = Error::BatchPushFailed(io_error);
+        assert_eq!(error.to_string(), "Failed to add log entry to batch");
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn test_batch_finalize_failed_message() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "flush failed");
+        let error = Error::BatchFinalizeFailed(io_error);
+        assert_eq!(error.to_string(), "Failed to finalize batch");
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn test_logs_view_creation_failed_message() {
+        let error = Error::LogsViewCreationFailed {
+            source: otap_df_pdata::error::Error::ColumnNotFound {
+                name: "test_column".to_string(),
+            },
+        };
+        assert_eq!(error.to_string(), "Failed to create logs view");
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn test_channel_recv_message() {
+        let recv_error = otap_df_channel::error::RecvError::Closed;
+        let error = Error::ChannelRecv(recv_error);
+        assert_eq!(error.to_string(), "Channel receive error");
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn test_auth_handler_creation_message() {
+        let inner = Error::Config("test".to_string());
+        let error = Error::AuthHandlerCreation(Box::new(inner));
+        assert_eq!(error.to_string(), "Failed to create auth handler");
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn test_client_pool_init_message() {
+        let inner = Error::Config("test".to_string());
+        let error = Error::ClientPoolInit(Box::new(inner));
+        assert_eq!(error.to_string(), "Client pool initialization failed");
+        assert!(error.source().is_some());
+    }
+
+    // ==================== HTTP/Network Error Tests ====================
+
+    #[test]
+    fn test_invalid_header_message() {
+        // Create an invalid header value error
+        let invalid_value = http::header::HeaderValue::from_bytes(b"\x00invalid").unwrap_err();
+        let error = Error::InvalidHeader(invalid_value);
+        assert_eq!(error.to_string(), "Invalid HTTP header");
+        assert!(error.source().is_some());
+    }
+
+    // ==================== Transformer Error Tests ====================
+
+    #[test]
+    fn test_unknown_log_record_field_message() {
+        let error = Error::UnknownLogRecordField {
+            field: "invalid_field".to_string(),
+        };
+        assert_eq!(error.to_string(), "Unknown log record field: invalid_field");
+    }
+
+    #[test]
+    fn test_invalid_field_mapping_message() {
+        let error = Error::InvalidFieldMapping {
+            field: "body".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "Field mapping for 'body' must be a string"
+        );
     }
 }

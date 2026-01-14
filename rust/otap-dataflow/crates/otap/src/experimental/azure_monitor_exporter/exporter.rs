@@ -21,9 +21,9 @@ use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 
 use super::auth::Auth;
-use super::error::Error;
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
+use super::error::Error;
 use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::in_flight_exports::{CompletedExport, InFlightExports};
@@ -148,7 +148,10 @@ impl AzureMonitorExporter {
 
         for (_, context, payload) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(error.to_string(), OtapPdata::new(context, payload)))
+                .notify_nack(NackMsg::new(
+                    error.to_string(),
+                    OtapPdata::new(context, payload),
+                ))
                 .await?;
         }
         Ok(())
@@ -758,12 +761,7 @@ mod tests {
         };
 
         let _ = exporter
-            .handle_export_failure(
-                &effect_handler,
-                batch_id,
-                10.0,
-                error,
-            )
+            .handle_export_failure(&effect_handler, batch_id, 10.0, error)
             .await;
 
         // Verify stats

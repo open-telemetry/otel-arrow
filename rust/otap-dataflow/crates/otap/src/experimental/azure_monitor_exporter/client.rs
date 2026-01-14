@@ -154,10 +154,7 @@ impl LogsIngestionClient {
 
     /// Refresh the token and update the pre-formatted header
     pub async fn refresh_token(&mut self) -> Result<(), Error> {
-        let token = self
-            .auth
-            .get_token()
-            .await?;
+        let token = self.auth.get_token().await?;
 
         // Pre-format the authorization header to avoid repeated allocation
         self.auth_header = HeaderValue::from_str(&format!("Bearer {}", token.token.secret()))
@@ -292,7 +289,7 @@ impl LogsIngestionClient {
                 self.auth.invalidate_token().await;
                 self.ensure_valid_token()
                     .await
-                    .map_err(|e| Error::token_refresh(Box::new(e)))?;
+                    .map_err(Error::token_refresh)?;
 
                 Err(Error::unauthorized(body))
             }
@@ -403,8 +400,10 @@ mod tests {
         };
 
         let (credential, _) = MockCredential::new("test_token", 60);
-        let auth =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "https://monitor.azure.com/.default".to_string());
+        let auth = Auth::from_credential(
+            credential as Arc<dyn TokenCredential>,
+            "https://monitor.azure.com/.default".to_string(),
+        );
         let http_client = create_test_http_client();
 
         let client = LogsIngestionClient::new(&api_config, http_client, auth)
@@ -426,7 +425,8 @@ mod tests {
         };
 
         let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
         let http_client = create_test_http_client();
 
         let client = LogsIngestionClient::new(&api_config, http_client, auth).unwrap();
@@ -457,7 +457,8 @@ mod tests {
     #[test]
     fn test_new_initial_state() {
         let (credential, call_count) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
         let http_client = create_test_http_client();
         let api_config = create_test_api_config();
 
@@ -490,7 +491,8 @@ mod tests {
     #[test]
     fn test_pool_take_and_release_single() {
         let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(1);
@@ -510,7 +512,8 @@ mod tests {
     #[test]
     fn test_pool_take_and_release_multiple() {
         let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(3);
@@ -539,7 +542,8 @@ mod tests {
     #[test]
     fn test_pool_release_beyond_capacity() {
         let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth =
+            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(1);
@@ -676,7 +680,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let credential = Arc::new(FailingCredential {
             call_count: call_count.clone(),
-        }) as Arc<dyn TokenCredential>;  // <-- cast here
+        }) as Arc<dyn TokenCredential>; // <-- cast here
 
         let mut client = LogsIngestionClient::from_parts(
             create_test_http_client(),
@@ -688,7 +692,12 @@ mod tests {
         let result = client.refresh_token().await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("token acquisition"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("token acquisition")
+        );
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
@@ -697,7 +706,7 @@ mod tests {
         let call_count = Arc::new(AtomicUsize::new(0));
         let credential = Arc::new(FailingCredential {
             call_count: call_count.clone(),
-        }) as Arc<dyn TokenCredential>;  // <-- cast here
+        }) as Arc<dyn TokenCredential>; // <-- cast here
 
         let mut client = LogsIngestionClient::from_parts(
             create_test_http_client(),
@@ -709,7 +718,12 @@ mod tests {
         let result = client.ensure_valid_token().await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("token acquisition"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("token acquisition")
+        );
     }
 
     // ==================== Clone Tests ====================
