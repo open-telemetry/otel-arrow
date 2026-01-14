@@ -613,6 +613,87 @@ pub fn write_progress_file(
     Ok(())
 }
 
+/// Writes a subscriber progress file atomically (async version).
+///
+/// Uses write-to-temp → fsync → rename pattern for crash safety.
+/// This async version uses tokio for file I/O operations.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The directory doesn't exist
+/// - The file cannot be written
+/// - fsync fails
+#[allow(dead_code)] // Will be used when registry is async
+pub async fn write_progress_file_async(
+    dir: &Path,
+    subscriber_id: &SubscriberId,
+    oldest_incomplete_seg: SegmentSeq,
+    entries: &[SegmentProgressEntry],
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let final_path = progress_file_path(dir, subscriber_id);
+    let temp_path = temp_progress_file_path(dir, subscriber_id);
+
+    // Build the complete file content (in memory - typically small)
+    let mut content = Vec::new();
+
+    // Header
+    let header = ProgressHeader::new(oldest_incomplete_seg, entries.len() as u32);
+    content.extend_from_slice(&header.serialize());
+
+    // Entries
+    for entry in entries {
+        content.extend_from_slice(&entry.serialize());
+    }
+
+    // CRC (of header + entries)
+    let mut hasher = Crc32Hasher::new();
+    hasher.update(&content);
+    let crc = hasher.finalize();
+    content.extend_from_slice(&crc.to_le_bytes());
+
+    // Write to temp file using tokio
+    {
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .await
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+
+        file.write_all(&content)
+            .await
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+
+        file.flush()
+            .await
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+
+        // Sync to disk
+        file.sync_all()
+            .await
+            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
+    }
+
+    // Atomic rename
+    tokio::fs::rename(&temp_path, &final_path)
+        .await
+        .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
+
+    // Sync parent directory to ensure rename is durable
+    #[cfg(unix)]
+    if let Some(parent) = final_path.parent() {
+        if let Ok(dir_file) = tokio::fs::File::open(parent).await {
+            let _ = dir_file.sync_all().await;
+        }
+    }
+
+    Ok(())
+}
+
 /// Deletes a subscriber's progress file.
 ///
 /// # Errors
@@ -622,6 +703,22 @@ pub fn delete_progress_file(dir: &Path, subscriber_id: &SubscriberId) -> Result<
     let path = progress_file_path(dir, subscriber_id);
 
     match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(SubscriberError::progress_io(&path, e)),
+    }
+}
+
+/// Deletes a subscriber's progress file (async version).
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be deleted (but not if it doesn't exist).
+#[allow(dead_code)] // Will be used when registry is async
+pub async fn delete_progress_file_async(dir: &Path, subscriber_id: &SubscriberId) -> Result<()> {
+    let path = progress_file_path(dir, subscriber_id);
+
+    match tokio::fs::remove_file(&path).await {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(SubscriberError::progress_io(&path, e)),

@@ -180,6 +180,57 @@ impl SegmentWriter {
         Ok(result)
     }
 
+    /// Writes an open segment to disk asynchronously.
+    ///
+    /// This is the async version of [`write_segment`](Self::write_segment).
+    /// It uses tokio's async file I/O for fsync operations while the actual
+    /// Arrow IPC serialization runs synchronously (Arrow doesn't support async I/O).
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where the segment file will be written.
+    /// * `segment` - The open segment to finalize and write.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of (bytes_written, crc32_checksum).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SegmentError::Io`] if file operations fail.
+    /// Returns [`SegmentError::Arrow`] if IPC encoding fails.
+    /// Returns [`SegmentError::EmptySegment`] if the segment has no bundles.
+    pub async fn write_segment_async(
+        &self,
+        path: impl AsRef<Path>,
+        segment: super::OpenSegment,
+    ) -> Result<(u64, u32), SegmentError> {
+        let path = path.as_ref();
+        let (accumulators, manifest) = segment.into_parts()?;
+
+        // Create file and write data (sync - Arrow IPC doesn't support async)
+        let file = File::create(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+        let mut writer = BufWriter::new(file);
+
+        let result = self.write_streaming(&mut writer, accumulators, manifest, path)?;
+
+        // Extract the underlying file for async fsync
+        let file = writer
+            .into_inner()
+            .map_err(|e| SegmentError::io(path.to_path_buf(), e.into_error()))?;
+
+        // Convert to tokio File for async fsync
+        let async_file = tokio::fs::File::from_std(file);
+        async_file
+            .sync_all()
+            .await
+            .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+
+        Self::set_readonly(path)?;
+
+        Ok(result)
+    }
+
     /// Sets the file to read-only after writing to enforce immutability.
     fn set_readonly(path: &Path) -> Result<(), SegmentError> {
         #[cfg(unix)]

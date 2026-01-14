@@ -23,6 +23,15 @@ pub enum QuiverError {
         /// Context string identifying the missing component.
         context: &'static str,
     },
+    /// Raised when an operation is cancelled, typically due to shutdown.
+    ///
+    /// This is a graceful cancellation, not an error. Operations that receive
+    /// this should clean up and return without considering it a failure.
+    #[error("operation cancelled: {reason}")]
+    Cancelled {
+        /// Reason for the cancellation (e.g., "shutdown requested").
+        reason: Cow<'static, str>,
+    },
     /// Raised when storage capacity is exhausted (backpressure signal).
     ///
     /// Callers should slow down or pause ingestion until space is reclaimed.
@@ -69,6 +78,22 @@ impl QuiverError {
         Self::Unimplemented { context }
     }
 
+    /// Helper for creating [`QuiverError::Cancelled`] values.
+    #[must_use]
+    pub fn cancelled(reason: impl Into<Cow<'static, str>>) -> Self {
+        Self::Cancelled {
+            reason: reason.into(),
+        }
+    }
+
+    /// Returns `true` if this error indicates a graceful cancellation.
+    ///
+    /// Cancelled operations should clean up and return without logging errors.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled { .. })
+    }
+
     /// Returns `true` if this is a backpressure signal (storage at capacity).
     ///
     /// Callers can use this to distinguish recoverable capacity errors from
@@ -83,5 +108,18 @@ impl QuiverError {
             Self::Wal { source } => source.is_at_capacity(),
             _ => false,
         }
+    }
+
+    /// Returns `true` if this error is recoverable (retry may succeed).
+    ///
+    /// Recoverable errors include:
+    /// - Capacity errors (retry after space is freed)
+    /// - Cancelled operations (not really an error)
+    ///
+    /// Non-recoverable errors include configuration errors, I/O failures,
+    /// and data corruption.
+    #[must_use]
+    pub fn is_recoverable(&self) -> bool {
+        self.is_at_capacity() || self.is_cancelled()
     }
 }

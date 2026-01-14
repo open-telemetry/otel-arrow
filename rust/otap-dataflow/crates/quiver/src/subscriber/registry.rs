@@ -41,6 +41,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::{Condvar, Mutex, RwLock};
+use tokio::sync::Notify;
 
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
@@ -114,8 +115,10 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
     /// Segment data provider.
     segment_provider: Arc<P>,
-    /// Notify for waking waiting subscribers when new segments arrive.
+    /// Notify for waking waiting subscribers when new segments arrive (sync API).
     bundle_available: (Mutex<bool>, Condvar),
+    /// Async notification for waking waiting subscribers when new segments arrive.
+    bundle_available_async: Arc<Notify>,
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -176,6 +179,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
             bundle_available: (Mutex::new(false), Condvar::new()),
+            bundle_available_async: Arc::new(Notify::new()),
         });
 
         Ok(registry)
@@ -312,13 +316,16 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             }
         }
 
-        // Notify waiting subscribers that new bundles are available
+        // Notify waiting subscribers that new bundles are available (sync)
         let (lock, cvar) = &self.bundle_available;
         {
             let mut available = lock.lock();
             *available = true;
         }
         let _ = cvar.notify_all();
+
+        // Notify async waiters
+        self.bundle_available_async.notify_waiters();
     }
 
     /// Returns the next pending bundle for a subscriber.
@@ -440,6 +447,64 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
                     // Reset the flag since we're about to check
                     *available = false;
+                }
+            }
+        }
+    }
+
+    /// Returns the next pending bundle, waiting asynchronously until one is available.
+    ///
+    /// This is the async version of [`next_bundle_blocking`](Self::next_bundle_blocking).
+    /// It uses tokio's async notification instead of a condvar.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subscriber ID
+    /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    /// * `cancellation` - A future that resolves when the operation should be cancelled
+    ///   (e.g., for shutdown). Use `std::future::pending()` if no cancellation is needed.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(handle))` - A bundle is available
+    /// * `Ok(None)` - Timeout expired or cancellation requested
+    /// * `Err(_)` - Subscriber not found or not active
+    pub async fn next_bundle_async(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        timeout: Option<Duration>,
+    ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
+        let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+        let notify = self.bundle_available_async.clone();
+
+        loop {
+            // Try to get a bundle
+            match self.next_bundle(id)? {
+                Some(handle) => return Ok(Some(handle)),
+                None => {
+                    // No bundle available, wait for notification or timeout
+                    let wait_future = notify.notified();
+
+                    if let Some(deadline) = deadline {
+                        let now = tokio::time::Instant::now();
+                        if now >= deadline {
+                            return Ok(None);
+                        }
+
+                        // Wait for notification or timeout
+                        match tokio::time::timeout_at(deadline, wait_future).await {
+                            Ok(()) => {
+                                // Notified, loop around to try getting a bundle
+                            }
+                            Err(_) => {
+                                // Timeout expired
+                                return Ok(None);
+                            }
+                        }
+                    } else {
+                        // No timeout, just wait for notification
+                        wait_future.await;
+                    }
                 }
             }
         }
