@@ -306,15 +306,20 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
-                    logs_receiver,
-                    resource_bytes,
                 );
+                // Inject internal telemetry settings if configured
+                if let Some(logs_rx) = logs_receiver {
+                    effect_handler.set_logs_receiver(logs_rx);
+                }
+                if let Some(res_bytes) = resource_bytes {
+                    effect_handler.set_resource_bytes(res_bytes);
+                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (

@@ -59,7 +59,7 @@ internal:
         min_size: 1000
         sizer: items
       flush_timeout: 3s
-      format: otlp
+      format: otap
   console:
     kind: exporter
     plugin_urn: "urn:otel:console:exporter"

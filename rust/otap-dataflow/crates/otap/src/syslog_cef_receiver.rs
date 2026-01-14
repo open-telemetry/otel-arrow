@@ -1184,7 +1184,6 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
-                None,
             );
 
             let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(16);
@@ -1277,7 +1276,6 @@ mod telemetry_tests {
                 None,
                 pipe_tx,
                 reporter.clone(),
-                None,
             );
 
             let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(8);

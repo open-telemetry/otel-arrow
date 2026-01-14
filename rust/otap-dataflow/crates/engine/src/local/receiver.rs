@@ -149,8 +149,6 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
         node_request_sender: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-        logs_receiver: Option<LogsReceiver>,
-        resource_bytes: Option<bytes::Bytes>,
     ) -> Self {
         let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(node_request_sender);
@@ -168,9 +166,25 @@ impl<PData> EffectHandler<PData> {
             core,
             msg_senders,
             default_sender,
-            logs_receiver,
-            resource_bytes,
+            logs_receiver: None,
+            resource_bytes: None,
         }
+    }
+
+    /// Sets the logs receiver for internal telemetry.
+    ///
+    /// This is called by the engine when starting an Internal Telemetry Receiver
+    /// that has been configured with a logs channel.
+    pub fn set_logs_receiver(&mut self, logs_receiver: LogsReceiver) {
+        self.logs_receiver = Some(logs_receiver);
+    }
+
+    /// Sets the pre-encoded resource bytes for internal telemetry.
+    ///
+    /// This is called by the engine when starting an Internal Telemetry Receiver
+    /// that has been configured with resource attributes.
+    pub fn set_resource_bytes(&mut self, resource_bytes: bytes::Bytes) {
+        self.resource_bytes = Some(resource_bytes);
     }
 
     /// Returns the logs receiver, if configured.
@@ -353,8 +367,6 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
-            None,
-            None,
         );
 
         eh.send_message_to("b", 42).await.unwrap();
@@ -382,8 +394,6 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
-            None,
-            None,
         );
 
         eh.send_message(7).await.unwrap();
@@ -407,8 +417,6 @@ mod tests {
             Some("a".into()),
             ctrl_tx,
             metrics_reporter,
-            None,
-            None,
         );
 
         eh.send_message(11).await.unwrap();
@@ -438,8 +446,6 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
-            None,
-            None,
         );
 
         let res = eh.send_message(5).await;
@@ -475,8 +481,6 @@ mod tests {
             None,
             ctrl_tx,
             metrics_reporter,
-            None,
-            None,
         );
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();

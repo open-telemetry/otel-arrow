@@ -146,7 +146,7 @@ impl HierarchicalFormatter {
         self.writer.write_ansi(&mut w, AnsiCode::Bold);
         let _ = w.write_all(b"RESOURCE");
         self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b"   v1.Resource:\n");
+        let _ = w.write_all(b"    v1.Resource:\n");
 
         let len = w.position() as usize;
         let _ = std::io::stdout().write_all(&buf[..len]);
