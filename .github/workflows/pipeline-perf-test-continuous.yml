@@ -88,10 +88,14 @@ jobs:
         - name: Run pipeline performance test log suite - Saturation
           run: |
             cd tools/pipeline_perf_test
-            for config in test_suites/integration/continuous/saturation-*.yaml; do
-              echo "Running saturation test: $config"
-              python orchestrator/run_orchestrator.py --config "$config"
-            done
+            ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
+              | tee saturation-scaling-report.txt
+            # Add scaling report to job summary
+            echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Extract just the analysis section from the report
+            sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
 
         - name: Run idle state performance tests
           run: |
@@ -110,6 +114,12 @@ jobs:
           with:
             name: benchmark-results-saturation
             path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
+
+        - name: Upload scaling efficiency metrics
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: benchmark-results-scaling-efficiency
+            path: tools/pipeline_perf_test/results/scaling-efficiency.json
 
         - name: Upload benchmark results for processing (Idle State)
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -146,6 +156,12 @@ jobs:
               pattern: benchmark-results-saturation*
               merge-multiple: true
               path: results-saturation
+
+          - name: Download scaling efficiency metrics
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              name: benchmark-results-scaling-efficiency
+              path: results-scaling-efficiency
 
           - name: Download benchmark artifacts (Idle State)
             uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
@@ -190,6 +206,18 @@ jobs:
               auto-push: true
               save-data-file: true
 
+          - name: Update scaling efficiency data and deploy to GitHub Pages
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customBiggerIsBetter"
+              output-file-path: results-scaling-efficiency/scaling-efficiency.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/continuous-scaling-efficiency"
+              auto-push: true
+              save-data-file: true
+
           - name: Update idle state benchmark data and deploy to GitHub Pages
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
             with:
@@ -207,4 +235,5 @@ jobs:
               echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
               echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
               echo "[View the saturation benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-saturation/)" >> $GITHUB_STEP_SUMMARY
+              echo "[View the scaling efficiency results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-scaling-efficiency/)" >> $GITHUB_STEP_SUMMARY
               echo "[View the idle state benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/)" >> $GITHUB_STEP_SUMMARY
