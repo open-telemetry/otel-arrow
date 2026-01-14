@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_batch_push_failed_message() {
-        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "write failed");
+        let io_error = std::io::Error::other("write failed");
         let error = Error::BatchPushFailed(io_error);
         assert_eq!(error.to_string(), "Failed to add log entry to batch");
         assert!(error.source().is_some());
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn test_batch_finalize_failed_message() {
-        let io_error = std::io::Error::new(std::io::ErrorKind::Other, "flush failed");
+        let io_error = std::io::Error::other("flush failed");
         let error = Error::BatchFinalizeFailed(io_error);
         assert_eq!(error.to_string(), "Failed to finalize batch");
         assert!(error.source().is_some());
