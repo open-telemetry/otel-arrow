@@ -92,7 +92,7 @@ All benchmark tests measure the following metrics:
 - **RAM** - Average and maximum memory usage
 - **Normalized CPU** - Average and maximum CPU usage, normalized to 0-100% where
   100% represents full utilization of all available cores. For example, in a
-  4-core test, 80% means 3.2 cores are being used (0.8 × 4 cores)
+  4-core test, 80% means 3.2 cores are being used (0.8 X 4 cores)
 - **Network bytes/sec** - Input and output network bandwidth
 
 ### Learn More About Phase 2
