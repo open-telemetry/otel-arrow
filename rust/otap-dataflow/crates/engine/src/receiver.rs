@@ -7,11 +7,15 @@
 //! For more details on the `!Send` implementation of a receiver, see [`local::Receiver`].
 //! See [`shared::Receiver`] for the Send implementation.
 
-use crate::channel_metrics::{CHANNEL_KIND_CONTROL, ChannelMetricsRegistry, control_channel_id};
+use crate::channel_metrics::{
+    CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_CONTROL, CHANNEL_MODE_LOCAL,
+    CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPSC, ChannelMetricsRegistry, ChannelReceiverMetrics,
+    ChannelSenderMetrics, control_channel_id,
+};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::NodeTelemetryGuard;
+use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
 use crate::error::{Error, ProcessorErrorKind, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
@@ -219,27 +223,53 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 ..
             } => {
-                let channel_id = control_channel_id(&node_id);
-                let control_sender = match control_sender.into_mpsc() {
-                    Ok(sender) => LocalSender::mpsc_with_metrics(
-                        sender,
-                        pipeline_ctx,
-                        channel_metrics,
-                        channel_id.clone(),
-                        CHANNEL_KIND_CONTROL,
-                    ),
-                    Err(sender) => sender,
-                };
-                let control_receiver = match control_receiver.into_mpsc() {
-                    Ok(receiver) => LocalReceiver::mpsc_with_metrics(
-                        receiver,
-                        pipeline_ctx,
-                        channel_metrics,
-                        channel_id,
-                        CHANNEL_KIND_CONTROL,
-                        runtime_config.control_channel.capacity as u64,
-                    ),
-                    Err(receiver) => receiver,
+                let control_sender = control_sender.into_mpsc();
+                let control_receiver = control_receiver.into_mpsc();
+                let (control_sender, control_receiver) = match (control_sender, control_receiver) {
+                    (Ok(sender), Ok(receiver)) => {
+                        let channel_entity_key = pipeline_ctx.register_channel_entity(
+                            control_channel_id(&node_id),
+                            CHANNEL_KIND_CONTROL,
+                            CHANNEL_MODE_LOCAL,
+                            CHANNEL_TYPE_MPSC,
+                            CHANNEL_IMPL_INTERNAL,
+                        );
+                        if let Some(telemetry) = current_node_telemetry_handle() {
+                            telemetry.set_control_channel_key(channel_entity_key);
+                        }
+                        let sender_metrics = pipeline_ctx
+                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
+                                channel_entity_key,
+                            );
+                        let receiver_metrics = pipeline_ctx
+                            .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                channel_entity_key,
+                            );
+                        (
+                            LocalSender::mpsc_with_metrics(
+                                sender,
+                                channel_metrics,
+                                sender_metrics,
+                            ),
+                            LocalReceiver::mpsc_with_metrics(
+                                receiver,
+                                channel_metrics,
+                                receiver_metrics,
+                                runtime_config.control_channel.capacity as u64,
+                            ),
+                        )
+                    }
+                    (sender, receiver) => {
+                        let sender = match sender {
+                            Ok(sender) => LocalSender::mpsc(sender),
+                            Err(sender) => sender,
+                        };
+                        let receiver = match receiver {
+                            Ok(receiver) => LocalReceiver::mpsc(receiver),
+                            Err(receiver) => receiver,
+                        };
+                        (sender, receiver)
+                    }
                 };
 
                 ReceiverWrapper::Local {
@@ -266,27 +296,53 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 ..
             } => {
-                let channel_id = control_channel_id(&node_id);
-                let control_sender = match control_sender.into_mpsc() {
-                    Ok(sender) => SharedSender::mpsc_with_metrics(
-                        sender,
-                        pipeline_ctx,
-                        channel_metrics,
-                        channel_id.clone(),
-                        CHANNEL_KIND_CONTROL,
-                    ),
-                    Err(sender) => sender,
-                };
-                let control_receiver = match control_receiver.into_mpsc() {
-                    Ok(receiver) => SharedReceiver::mpsc_with_metrics(
-                        receiver,
-                        pipeline_ctx,
-                        channel_metrics,
-                        channel_id,
-                        CHANNEL_KIND_CONTROL,
-                        runtime_config.control_channel.capacity as u64,
-                    ),
-                    Err(receiver) => receiver,
+                let control_sender = control_sender.into_mpsc();
+                let control_receiver = control_receiver.into_mpsc();
+                let (control_sender, control_receiver) = match (control_sender, control_receiver) {
+                    (Ok(sender), Ok(receiver)) => {
+                        let channel_entity_key = pipeline_ctx.register_channel_entity(
+                            control_channel_id(&node_id),
+                            CHANNEL_KIND_CONTROL,
+                            CHANNEL_MODE_SHARED,
+                            CHANNEL_TYPE_MPSC,
+                            CHANNEL_IMPL_TOKIO,
+                        );
+                        if let Some(telemetry) = current_node_telemetry_handle() {
+                            telemetry.set_control_channel_key(channel_entity_key);
+                        }
+                        let sender_metrics = pipeline_ctx
+                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
+                                channel_entity_key,
+                            );
+                        let receiver_metrics = pipeline_ctx
+                            .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                channel_entity_key,
+                            );
+                        (
+                            SharedSender::mpsc_with_metrics(
+                                sender,
+                                channel_metrics,
+                                sender_metrics,
+                            ),
+                            SharedReceiver::mpsc_with_metrics(
+                                receiver,
+                                channel_metrics,
+                                receiver_metrics,
+                                runtime_config.control_channel.capacity as u64,
+                            ),
+                        )
+                    }
+                    (sender, receiver) => {
+                        let sender = match sender {
+                            Ok(sender) => SharedSender::mpsc(sender),
+                            Err(sender) => sender,
+                        };
+                        let receiver = match receiver {
+                            Ok(receiver) => SharedReceiver::mpsc(receiver),
+                            Err(receiver) => receiver,
+                        };
+                        (sender, receiver)
+                    }
                 };
 
                 ReceiverWrapper::Shared {

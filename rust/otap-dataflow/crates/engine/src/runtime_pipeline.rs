@@ -7,9 +7,7 @@ use crate::channel_metrics::ChannelMetricsHandle;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
-use crate::entity_context::{
-    instrument_with_node_entity_key, instrument_with_node_telemetry_handle,
-};
+use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
@@ -159,18 +157,24 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 result
             };
             if let Some(handle) = telemetry_handle {
-                if let Some(key) = node_entity_key {
-                    futures.push(local_tasks.spawn_local(instrument_with_node_entity_key(
-                        key,
-                        instrument_with_node_telemetry_handle(handle, fut),
-                    )));
-                } else {
-                    futures.push(
-                        local_tasks.spawn_local(instrument_with_node_telemetry_handle(handle, fut)),
-                    );
-                }
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx = NodeTaskContext::new(
+                    node_entity_key,
+                    Some(handle),
+                    input_key,
+                    output_keys,
+                );
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(
+                    node_ctx,
+                    fut,
+                )));
             } else if let Some(key) = node_entity_key {
-                futures.push(local_tasks.spawn_local(instrument_with_node_entity_key(key, fut)));
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(
+                    node_ctx,
+                    fut,
+                )));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
             }
@@ -196,18 +200,24 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 result
             };
             if let Some(handle) = telemetry_handle {
-                if let Some(key) = node_entity_key {
-                    futures.push(local_tasks.spawn_local(instrument_with_node_entity_key(
-                        key,
-                        instrument_with_node_telemetry_handle(handle, fut),
-                    )));
-                } else {
-                    futures.push(
-                        local_tasks.spawn_local(instrument_with_node_telemetry_handle(handle, fut)),
-                    );
-                }
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx = NodeTaskContext::new(
+                    node_entity_key,
+                    Some(handle),
+                    input_key,
+                    output_keys,
+                );
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(
+                    node_ctx,
+                    fut,
+                )));
             } else if let Some(key) = node_entity_key {
-                futures.push(local_tasks.spawn_local(instrument_with_node_entity_key(key, fut)));
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(
+                    node_ctx,
+                    fut,
+                )));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
             }
@@ -237,18 +247,24 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 result
             };
             if let Some(handle) = telemetry_handle {
-                if let Some(key) = node_entity_key {
-                    futures.push(local_tasks.spawn_local(instrument_with_node_entity_key(
-                        key,
-                        instrument_with_node_telemetry_handle(handle, fut),
-                    )));
-                } else {
-                    futures.push(
-                        local_tasks.spawn_local(instrument_with_node_telemetry_handle(handle, fut)),
-                    );
-                }
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx = NodeTaskContext::new(
+                    node_entity_key,
+                    Some(handle),
+                    input_key,
+                    output_keys,
+                );
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(
+                    node_ctx,
+                    fut,
+                )));
             } else if let Some(key) = node_entity_key {
-                futures.push(local_tasks.spawn_local(instrument_with_node_entity_key(key, fut)));
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(
+                    node_ctx,
+                    fut,
+                )));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
             }

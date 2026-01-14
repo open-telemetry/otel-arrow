@@ -4,14 +4,12 @@
 //! Abstraction to represent generic shared senders and receivers.
 
 use crate::channel_metrics::{
-    CHANNEL_IMPL_FLUME, CHANNEL_IMPL_TOKIO, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC,
-    CHANNEL_TYPE_MPSC, ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
+    ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
     SharedChannelReceiverMetricsHandle, SharedChannelSenderMetricsHandle,
 };
-use crate::context::PipelineContext;
 use otap_df_channel::error::{RecvError, SendError};
-use std::borrow::Cow;
+use otap_df_telemetry::metrics::MetricSet;
 use std::sync::{Arc, Mutex};
 
 enum SharedSenderInner<T> {
@@ -51,19 +49,9 @@ impl<T> SharedSender<T> {
     /// Creates a new shared MPSC sender with metrics attached.
     pub(crate) fn mpsc_with_metrics(
         sender: tokio::sync::mpsc::Sender<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelSenderMetrics>,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_SHARED,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_TOKIO,
-        );
-        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelSenderMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
@@ -82,19 +70,9 @@ impl<T> SharedSender<T> {
     /// Creates a new shared MPMC sender with metrics attached.
     pub(crate) fn mpmc_with_metrics(
         sender: flume::Sender<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelSenderMetrics>,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_SHARED,
-            CHANNEL_TYPE_MPMC,
-            CHANNEL_IMPL_FLUME,
-        );
-        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelSenderMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::SharedSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
@@ -186,20 +164,10 @@ impl<T> SharedReceiver<T> {
     /// Creates a new shared MPSC receiver with metrics attached.
     pub(crate) fn mpsc_with_metrics(
         receiver: tokio::sync::mpsc::Receiver<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelReceiverMetrics>,
         capacity: u64,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_SHARED,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_TOKIO,
-        );
-        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));
@@ -221,20 +189,10 @@ impl<T> SharedReceiver<T> {
     /// Creates a new shared MPMC receiver with metrics attached.
     pub(crate) fn mpmc_with_metrics(
         receiver: flume::Receiver<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelReceiverMetrics>,
         capacity: u64,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_SHARED,
-            CHANNEL_TYPE_MPMC,
-            CHANNEL_IMPL_FLUME,
-        );
-        let metrics = pipeline_ctx.register_metric_set_with_attrs::<ChannelReceiverMetrics>(attrs);
         let handle = Arc::new(Mutex::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));

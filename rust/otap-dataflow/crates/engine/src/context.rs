@@ -307,6 +307,28 @@ impl PipelineContext {
         }
     }
 
+    /// Registers (or reuses) a channel entity for the given channel attributes.
+    #[must_use]
+    pub fn register_channel_entity(
+        &self,
+        channel_id: Cow<'static, str>,
+        channel_kind: &'static str,
+        channel_mode: &'static str,
+        channel_type: &'static str,
+        channel_impl: &'static str,
+    ) -> EntityKey {
+        let attrs = self.channel_attribute_set(
+            channel_id,
+            channel_kind,
+            channel_mode,
+            channel_type,
+            channel_impl,
+        );
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(attrs)
+    }
+
     /// Returns a metrics registry handle.
     #[must_use]
     pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
