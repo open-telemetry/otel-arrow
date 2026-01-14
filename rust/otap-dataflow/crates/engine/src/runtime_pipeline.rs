@@ -111,6 +111,8 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     ) -> Result<Vec<()>, Error> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
+        eprintln!("DEBUG: run_forever - pipeline_key: {:?}, num_receivers: {}", pipeline_key, self.receivers.len());
+
         let RuntimePipeline {
             config,
             receivers,

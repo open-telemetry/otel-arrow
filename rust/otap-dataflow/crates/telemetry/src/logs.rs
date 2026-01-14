@@ -167,6 +167,10 @@ impl LogsReporter {
     }
 
     /// Try to send a payload, non-blocking.
+    ///
+    /// Returns:
+    /// - `Ok(())` if the payload was sent
+    /// - `Err` if the channel is full or disconnected
     pub fn try_report(&self, payload: LogPayload) -> Result<(), Error> {
         self.sender
             .try_send(payload)

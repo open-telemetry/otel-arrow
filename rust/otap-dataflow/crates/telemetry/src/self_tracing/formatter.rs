@@ -331,6 +331,83 @@ impl ConsoleWriter {
             std::io::stdout().write_all(data)
         };
     }
+
+    /// Write a raw error message directly to stderr, bypassing tracing entirely.
+    ///
+    /// This method is safe to call from within tracing subscriber callbacks
+    /// (e.g., `on_event`) where calling `tracing::subscriber::with_default`
+    /// would cause a "RefCell already borrowed" panic.
+    ///
+    /// Output format matches the standard log format:
+    /// `2026-01-06T10:30:45.123Z  ERROR  target::name: message [key=value, ...]`
+    pub fn raw_write_error(&self, target: &str, name: &str, message: &str, attrs: &[(&str, &str)]) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut w = Cursor::new(buf.as_mut_slice());
+        let cm = self.color_mode;
+
+        // Timestamp
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        cm.write_ansi(&mut w, AnsiCode::Dim);
+        Self::write_timestamp(&mut w, nanos);
+        cm.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+
+        // Level (always ERROR for raw_write_error)
+        cm.write_level(&mut w, &Level::ERROR);
+
+        // Event name (target::name)
+        cm.write_ansi(&mut w, AnsiCode::Bold);
+        let _ = w.write_all(target.as_bytes());
+        let _ = w.write_all(b"::");
+        let _ = w.write_all(name.as_bytes());
+        cm.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b": ");
+
+        // Message body
+        let _ = w.write_all(message.as_bytes());
+
+        // Attributes
+        if !attrs.is_empty() {
+            let _ = w.write_all(b" [");
+            for (i, (key, value)) in attrs.iter().enumerate() {
+                if i > 0 {
+                    let _ = w.write_all(b", ");
+                }
+                let _ = w.write_all(key.as_bytes());
+                let _ = w.write_all(b"=");
+                let _ = w.write_all(value.as_bytes());
+            }
+            let _ = w.write_all(b"]");
+        }
+
+        let _ = w.write_all(b"\n");
+
+        // Always write to stderr for errors
+        let len = w.position() as usize;
+        let _ = std::io::stderr().write_all(&buf[..len]);
+    }
+}
+
+impl RawLoggingLayer {
+    /// Process a tracing Event directly, bypassing the dispatcher.
+    ///
+    /// This method is safe to call from within tracing subscriber callbacks
+    /// (e.g., `on_event`) where calling `tracing::subscriber::with_default`
+    /// would cause a "RefCell already borrowed" panic.
+    ///
+    /// It performs the same formatting as the Layer's on_event, writing
+    /// directly to stdout/stderr based on the event's level.
+    pub fn dispatch_event(&self, event: &Event<'_>) {
+        let record = LogRecord::new(event);
+        let callsite = SavedCallsite::new(event.metadata());
+        self.writer.raw_print(&record, &callsite);
+    }
 }
 
 impl<S> TracingLayer<S> for RawLoggingLayer

@@ -269,6 +269,7 @@ impl<PData> ReceiverWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
+                eprintln!("DEBUG: ReceiverWrapper::start - Local, node_id: {:?}, logs_receiver.is_some(): {:?}", node_id, logs_receiver.is_some());
                 let msg_senders = if pdata_senders.is_empty() {
                     return Err(Error::ReceiverError {
                         receiver: node_id.clone(),
@@ -386,11 +387,14 @@ impl<PData> ReceiverWrapper<PData> {
     /// This is used by the Internal Telemetry Receiver to receive logs
     /// from all threads via the logs channel.
     pub fn set_logs_receiver(&mut self, receiver: LogsReceiver) {
+        eprintln!("DEBUG: ReceiverWrapper::set_logs_receiver called");
         match self {
             ReceiverWrapper::Local { logs_receiver, .. } => {
+                eprintln!("DEBUG: set_logs_receiver - Local variant");
                 *logs_receiver = Some(receiver);
             }
             ReceiverWrapper::Shared { logs_receiver, .. } => {
+                eprintln!("DEBUG: set_logs_receiver - Shared variant");
                 *logs_receiver = Some(receiver);
             }
         }

@@ -5,12 +5,11 @@
 
 use clap::Parser;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_telemetry::{get_env_filter, raw_error};
+use otap_df_telemetry::raw_error;
 use otap_df_telemetry::self_tracing::{ConsoleWriter, RawLoggingLayer};
 use std::path::PathBuf;
 use sysinfo::System;
@@ -119,14 +118,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
 
-    // Set up raw logging as the global default subscriber for the main thread.
-    // Engine threads will set their own thread-local subscribers based on config.
-    let raw_subscriber = Registry::default()
-        .with(get_env_filter(LogLevel::Debug))
-        .with(RawLoggingLayer::new(ConsoleWriter::color()));
-    tracing::subscriber::set_global_default(raw_subscriber)
-        .expect("Failed to set global default subscriber");
-
     let args = Args::parse();
 
     // For now, we predefine pipeline group and pipeline IDs.
@@ -134,45 +125,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
     let pipeline_id: PipelineId = "default_pipeline".into();
 
-    // Load pipeline configuration
-    let pipeline_cfg = PipelineConfig::from_file(
-        pipeline_group_id.clone(),
-        pipeline_id.clone(),
-        &args.pipeline,
-    )?;
+    // Use with_default for a thread-local subscriber during startup.
+    // This covers config loading and early info logging.
+    // TelemetryRuntime::new() (called inside run_forever) will set the actual global subscriber.
+    let early_subscriber = Registry::default().with(RawLoggingLayer::new(ConsoleWriter::color()));
+    let (pipeline_cfg, quota, admin_settings) =
+        tracing::subscriber::with_default(early_subscriber, || {
+            // Load pipeline configuration
+            let pipeline_cfg = PipelineConfig::from_file(
+                pipeline_group_id.clone(),
+                pipeline_id.clone(),
+                &args.pipeline,
+            )?;
 
-    tracing::info!("{}", system_info());
+            tracing::info!("{}", system_info());
+
+            // Map CLI arguments to the core allocation enum
+            let core_allocation = if let Some(range) = args.core_id_range.clone() {
+                range
+            } else if args.num_cores == 0 {
+                CoreAllocation::AllCores
+            } else {
+                CoreAllocation::CoreCount {
+                    count: args.num_cores,
+                }
+            };
+
+            let quota = Quota { core_allocation };
+
+            // Print the requested core configuration
+            match &quota.core_allocation {
+                CoreAllocation::AllCores => {
+                    tracing::info!("Requested core allocation: all available cores")
+                }
+                CoreAllocation::CoreCount { count } => {
+                    tracing::info!("Requested core allocation: {count} cores")
+                }
+                CoreAllocation::CoreSet { .. } => {
+                    tracing::info!("Requested core allocation: {}", quota.core_allocation);
+                }
+            }
+
+            let admin_settings = otap_df_config::engine::HttpAdminSettings {
+                bind_address: args.http_admin_bind.clone(),
+            };
+
+            Ok::<_, Box<dyn std::error::Error>>((pipeline_cfg, quota, admin_settings))
+        })?;
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
 
-    // Map CLI arguments to the core allocation enum
-    let core_allocation = if let Some(range) = args.core_id_range {
-        range
-    } else if args.num_cores == 0 {
-        CoreAllocation::AllCores
-    } else {
-        CoreAllocation::CoreCount {
-            count: args.num_cores,
-        }
-    };
-
-    let quota = Quota { core_allocation };
-
-    // Print the requested core configuration
-    match &quota.core_allocation {
-        CoreAllocation::AllCores => tracing::info!("Requested core allocation: all available cores"),
-        CoreAllocation::CoreCount { count } => {
-            tracing::info!("Requested core allocation: {count} cores")
-        }
-        CoreAllocation::CoreSet { .. } => {
-            tracing::info!("Requested core allocation: {}", quota.core_allocation);
-        }
-    }
-
-    let admin_settings = otap_df_config::engine::HttpAdminSettings {
-        bind_address: args.http_admin_bind,
-    };
     let result = controller.run_forever(
         pipeline_group_id,
         pipeline_id,

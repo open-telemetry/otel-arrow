@@ -38,7 +38,7 @@ mod formatter;
 use formatter::HierarchicalFormatter;
 
 /// The URN for the console exporter
-pub const CONSOLE_EXPORTER_URN: &str = "urn:otap:console:exporter";
+pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:console:exporter";
 
 /// Configuration for the console exporter
 #[derive(Debug, Clone, Default, serde::Deserialize)]

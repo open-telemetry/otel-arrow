@@ -16,10 +16,11 @@ use otap_df_config::pipeline::service::telemetry::{
 use crate::{
     LogsReceiver,
     error::Error,
-    logs::{LogsCollector, LogsReporter},
+    logs::{LogsCollector, LogsReporter, TelemetrySetup},
     telemetry_runtime::logger_provider::LoggerProvider,
     telemetry_runtime::meter_provider::MeterProvider,
 };
+use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 
 /// Client for the OpenTelemetry SDK and internal telemetry settings.
 ///
@@ -41,6 +42,11 @@ pub struct TelemetryRuntime {
     logs_receiver: Option<LogsReceiver>,
     /// Collector for Direct output mode. Must be spawned by the controller.
     logs_collector: Option<LogsCollector>,
+    /// Deferred global subscriber setup. Must be initialized by controller
+    /// AFTER the internal pipeline is started (so the channel is being consumed).
+    global_setup: Option<TelemetrySetup>,
+    /// Log level for the global subscriber.
+    global_log_level: LogLevel,
     // TODO: Add traces providers.
 }
 
@@ -83,12 +89,14 @@ impl TelemetryRuntime {
                 OutputMode::Direct => {
                     // Direct mode: logs go to a collector that prints to console
                     let (collector, reporter) = LogsCollector::new(config.reporting_channel_size);
+                    eprintln!("DEBUG: TelemetryRuntime::new - Direct mode, no receiver");
                     (Some(reporter), None, Some(collector))
                 }
                 OutputMode::Internal => {
                     // Internal mode: logs go through channel to ITR node
                     let (receiver, reporter) =
                         LogsCollector::channel(config.reporting_channel_size);
+                    eprintln!("DEBUG: TelemetryRuntime::new - Internal mode, receiver created");
                     (Some(reporter), Some(receiver), None)
                 }
                 OutputMode::Noop => (None, None, None),
@@ -111,19 +119,14 @@ impl TelemetryRuntime {
             (None, runtime)
         };
 
-        // Configure the global subscriber based on providers.global.
-        // Engine threads override this with their own subscriber via with_default().
+        // Build the global setup but DO NOT initialize it yet.
+        // The controller must call init_global_subscriber() after the internal
+        // pipeline is started, so the channel receiver is being consumed.
         let global_setup = Self::make_telemetry_setup(
             config.logs.providers.global,
             logs_reporter.as_ref(),
             logger_provider.as_ref(),
         )?;
-        if let Err(err) = global_setup.try_init_global(config.logs.level) {
-            crate::raw_error!("tracing.subscriber.init", error = err.to_string());
-        }
-
-        // Note: Any span-level detail, typically through a traces provider, has
-        // to be configured via the try_init() cases above.
 
         Ok(Self {
             _runtime: runtime,
@@ -132,6 +135,8 @@ impl TelemetryRuntime {
             logs_reporter,
             logs_receiver,
             logs_collector,
+            global_setup: Some(global_setup),
+            global_log_level: config.logs.level,
         })
     }
 
@@ -214,6 +219,21 @@ impl TelemetryRuntime {
         self.logs_collector.take()
     }
 
+    /// Initialize the global tracing subscriber.
+    ///
+    /// This MUST be called AFTER the internal pipeline is started (when using
+    /// Internal output mode), so the channel receiver is being actively consumed.
+    /// Otherwise, logs sent before the receiver starts will fill the channel buffer.
+    ///
+    /// For other output modes (Direct, Noop), this can be called at any time.
+    pub fn init_global_subscriber(&mut self) {
+        if let Some(setup) = self.global_setup.take() {
+            if let Err(err) = setup.try_init_global(self.global_log_level) {
+                crate::raw_error!("tracing.subscriber.init", error = err.to_string());
+            }
+        }
+    }
+
     /// Create a `TelemetrySetup` for the given provider mode.
     ///
     /// This uses the runtime's shared `logs_reporter` and `logger_provider` to configure
@@ -224,7 +244,7 @@ impl TelemetryRuntime {
     /// - `Immediate` requires `logs_reporter` to be present
     /// - `OpenTelemetry` requires `logger_provider` to be present
     #[must_use]
-    pub fn telemetry_setup_for(&self, provider_mode: ProviderMode) -> crate::logs::TelemetrySetup {
+    pub fn telemetry_setup_for(&self, provider_mode: ProviderMode) -> TelemetrySetup {
         Self::make_telemetry_setup(
             provider_mode,
             self.logs_reporter.as_ref(),
@@ -240,8 +260,7 @@ impl TelemetryRuntime {
         provider_mode: ProviderMode,
         logs_reporter: Option<&LogsReporter>,
         logger_provider: Option<&SdkLoggerProvider>,
-    ) -> Result<crate::logs::TelemetrySetup, Error> {
-        use crate::logs::TelemetrySetup;
+    ) -> Result<TelemetrySetup, Error> {
 
         match provider_mode {
             ProviderMode::Noop => Ok(TelemetrySetup::Noop),

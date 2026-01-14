@@ -351,7 +351,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
                     // Inject logs receiver if this is the target node
                     if let Some((target_urn, ref logs_rx)) = logs_receiver {
+                        eprintln!("DEBUG: build - pipeline: {:?}, checking receiver URN: {} vs target: {}", pipeline_id, node_config.plugin_urn.as_ref(), target_urn);
                         if node_config.plugin_urn.as_ref() == target_urn {
+                            eprintln!("DEBUG: build - pipeline: {:?}, injecting logs_receiver into node!", pipeline_id);
                             wrapper.set_logs_receiver(logs_rx.clone());
                         }
                     }

@@ -13,6 +13,7 @@
 #[doc(hidden)]
 pub mod _private {
     pub use tracing::{debug, error, info, warn};
+    pub use tracing_core;
 }
 
 /// Macro for logging informational messages.
@@ -136,24 +137,74 @@ where
     tracing::subscriber::with_default(raw_logging_subscriber(), f)
 }
 
-/// Log an error message directly to stderr, bypassing the tracing subscriber.
+/// Log an error message directly to stderr, bypassing the tracing dispatcher.
+///
+/// This macro creates a real tracing Event with proper Metadata, then dispatches
+/// it directly to `RawLoggingLayer::dispatch_event`, bypassing the global
+/// dispatcher. This is safe to call from within tracing subscriber callbacks
+/// (e.g., `on_event`) where using `tracing::subscriber::with_default` would
+/// cause a RefCell panic.
+///
+/// Output format matches the standard log format:
+/// `2026-01-06T10:30:45.123Z  ERROR  target::name: message [key=value, ...]`
 #[macro_export]
 macro_rules! raw_error {
-    ($name:expr $(,)?) => {
-        $crate::internal_events::with_raw_logging(|| {
-            $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-        })
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::internal_events::with_raw_logging(|| {
-            $crate::_private::error!(name: $name,
-                                     target: env!("CARGO_PKG_NAME"),
-                                     name = $name,
-                                     $($key = {
-                                         $value
-                                     }),+,
-                                     ""
-            );
-        })
-    };
+    ($name:expr $(,)?) => {{
+        use $crate::self_tracing::{ConsoleWriter, RawLoggingLayer};
+        use $crate::_private::tracing_core::{Event, Metadata, Level, field::FieldSet, callsite::DefaultCallsite};
+
+        static CALLSITE: DefaultCallsite = DefaultCallsite::new(&META);
+        static META: Metadata<'static> = Metadata::new(
+            $name,
+            env!("CARGO_PKG_NAME"),
+            Level::ERROR,
+            Some(file!()),
+            Some(line!()),
+            Some(env!("CARGO_PKG_NAME")),
+            FieldSet::new(&[], $crate::_private::tracing_core::callsite::Identifier(&CALLSITE)),
+            $crate::_private::tracing_core::metadata::Kind::EVENT,
+        );
+
+        let layer = RawLoggingLayer::new(ConsoleWriter::no_color());
+        let valueset = META.fields().value_set(&[]);
+        let event = Event::new(&META, &valueset);
+        layer.dispatch_event(&event);
+    }};
+    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {{
+        use $crate::self_tracing::{ConsoleWriter, RawLoggingLayer};
+        use $crate::_private::tracing_core::{Event, Metadata, Level, field::FieldSet, callsite::DefaultCallsite};
+
+        // Define field names as static strings
+        static FIELD_NAMES: &[&str] = &[$(stringify!($key)),+];
+
+        static CALLSITE: DefaultCallsite = DefaultCallsite::new(&META);
+        static META: Metadata<'static> = Metadata::new(
+            $name,
+            env!("CARGO_PKG_NAME"),
+            Level::ERROR,
+            Some(file!()),
+            Some(line!()),
+            Some(env!("CARGO_PKG_NAME")),
+            FieldSet::new(FIELD_NAMES, $crate::_private::tracing_core::callsite::Identifier(&CALLSITE)),
+            $crate::_private::tracing_core::metadata::Kind::EVENT,
+        );
+
+        let layer = RawLoggingLayer::new(ConsoleWriter::no_color());
+
+        // Bind values to extend their lifetimes - use Debug formatting
+        $(
+            let $key = format!("{:?}", $value);
+        )+
+
+        // Create fixed-size array of field-value pairs (the repetition creates N elements)
+        let field_values = &[
+            $((
+                &META.fields().field(stringify!($key)).expect("field exists"),
+                Some(&$key as &dyn $crate::_private::tracing_core::field::Value)
+            )),+
+        ];
+        let valueset = META.fields().value_set(field_values);
+        let event = Event::new(&META, &valueset);
+        layer.dispatch_event(&event);
+    }};
 }

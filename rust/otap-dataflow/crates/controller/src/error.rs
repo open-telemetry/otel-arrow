@@ -103,4 +103,11 @@ pub enum Error {
         /// Error message describing the configuration problem.
         message: String,
     },
+
+    /// Internal telemetry pipeline failed to start.
+    #[error("Internal telemetry pipeline failed to start: {message}")]
+    InternalPipelineStartupFailed {
+        /// Error message describing why startup failed.
+        message: String,
+    },
 }
