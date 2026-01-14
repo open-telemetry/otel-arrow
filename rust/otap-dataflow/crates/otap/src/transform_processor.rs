@@ -245,6 +245,10 @@ impl Processor<OtapPdata> for TransformProcessor {
                             otap_batch.into()
                         }
                         Err(e) => {
+                            // forward the routed messages in the event of a failure to avoid
+                            // caching any batches that were routed before the pipeline fails
+                            self.handle_routed_messages(effect_handler).await?;
+
                             self.metrics.msgs_transform_failed.inc();
                             return Err(EngineError::ProcessorError {
                                 processor: effect_handler.processor_id(),
