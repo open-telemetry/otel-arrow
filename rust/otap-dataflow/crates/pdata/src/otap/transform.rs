@@ -8,12 +8,16 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder,
-    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
+    PrimitiveArray, PrimitiveBuilder, PrimitiveDictionaryBuilder, RecordBatch, StringArray,
+    StringDictionaryBuilder, UInt32Array,
 };
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, concat};
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Float64Type, Int64Type, UInt16Type,
+    UInt8Type,
+};
 use arrow::row::{RowConverter, SortField};
 
 use crate::arrays::{
@@ -889,9 +893,7 @@ pub fn transform_attributes_with_stats(
 /// Currently the operations supported are:
 /// - rename which replaces a given attribute key
 /// - delete which removes all rows from the record batch for a given key
-///
-/// Support for insert will be added in the future (see
-/// https://github.com/open-telemetry/otel-arrow/issues/813)
+/// - insert which adds new attributes to the record batch
 ///
 /// Note that to avoid any ambiguity in how the transformation is applied, this method will
 /// validate the transform. The caller must ensure the supplied transform is valid. See
@@ -3802,16 +3804,9 @@ fn create_inserted_batch(
             Arc::new(builder.finish())
         }
         DataType::Dictionary(k, _v) => {
-            // For simplicity, we can create a StringArray and cast it to Dictionary?
-            // Or build dictionary properly. building properly is better.
-            // But keys might be u8 or u16.
-            // Since we have a small set of keys repeated many times, proper dictionary encoding is good.
-            // But existing keys are not available here easily (to share dict).
-            // Merging dictionaries later (concat) handles remapping.
             match **k {
                 DataType::UInt8 => {
-                    // TODO: Optimize by building dictionary
-                    let mut builder = arrow::array::StringDictionaryBuilder::<UInt8Type>::new();
+                    let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
                     for _parent in &unique_parents {
                         for (key, _) in &insert.entries {
                             builder.append_value(key);
@@ -3820,7 +3815,7 @@ fn create_inserted_batch(
                     Arc::new(builder.finish())
                 }
                 DataType::UInt16 => {
-                    let mut builder = arrow::array::StringDictionaryBuilder::<UInt16Type>::new();
+                    let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
                     for _parent in &unique_parents {
                         for (key, _) in &insert.entries {
                             builder.append_value(key);
@@ -3844,28 +3839,6 @@ fn create_inserted_batch(
         }
     };
 
-    // Build Value columns
-    // We need to build columns for STR, INT, DOUBLE, BOOL, BYTES (if present)
-    // We iterate over inputs and fill.
-
-    // Helper to build column
-    let _build_col = |name: &str, builder_func: &dyn Fn() -> ArrayRef| -> Result<ArrayRef> {
-        if schema.field_with_name(name).is_ok() {
-            Ok(builder_func())
-        } else {
-            // If column missing in schema, we can't include it.
-            // But wait, RecordBatch::try_new requires matching columns.
-            // If schema has the column, we must provide it.
-            // If schema DOES NOT have the column, but we have values for it?
-            // Then we would fail to create batch if we try to include it.
-            // But if we omit it, where does the data go?
-            // Standard OTAP schema has all columns.
-            // If some are missing (e.g. projection?), we can't insert that data.
-            // We'll proceed assuming schema has needed columns or we fill nulls.
-            Err(Error::ColumnNotFound { name: name.into() })
-        }
-    };
-
     // We collect columns into a map or vec matching schema order.
     let mut columns = Vec::with_capacity(schema.fields().len());
 
@@ -3878,45 +3851,181 @@ fn create_inserted_batch(
         } else if name == consts::ATTRIBUTE_KEY {
             new_keys.clone()
         } else if name == consts::ATTRIBUTE_STR {
-            let mut builder =
-                arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
-            for _parent in &unique_parents {
-                for (_, val) in &insert.entries {
-                    if let LiteralValue::Str(s) = val {
-                        builder.append_value(s);
-                    } else {
-                        builder.append_null();
+            match field.data_type() {
+                DataType::Utf8 => {
+                    let mut builder =
+                        arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
+                    for _parent in &unique_parents {
+                        for (_, val) in &insert.entries {
+                            if let LiteralValue::Str(s) = val {
+                                builder.append_value(s);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
                     }
+                    Arc::new(builder.finish())
+                }
+                DataType::Dictionary(k, v) if **v == DataType::Utf8 => match **k {
+                    DataType::UInt8 => {
+                        let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
+                        for _parent in &unique_parents {
+                            for (_, val) in &insert.entries {
+                                if let LiteralValue::Str(s) = val {
+                                    builder.append_value(s);
+                                } else {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    DataType::UInt16 => {
+                        let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
+                        for _parent in &unique_parents {
+                            for (_, val) in &insert.entries {
+                                if let LiteralValue::Str(s) = val {
+                                    builder.append_value(s);
+                                } else {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    _ => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                            actual: *k.clone(),
+                        });
+                    }
+                },
+                dt => {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: name.into(),
+                        expect: DataType::Utf8,
+                        actual: dt.clone(),
+                    });
                 }
             }
-            Arc::new(builder.finish())
         } else if name == consts::ATTRIBUTE_INT {
-            let mut builder =
-                PrimitiveBuilder::<arrow::datatypes::Int64Type>::with_capacity(total_rows);
-            for _parent in &unique_parents {
-                for (_, val) in &insert.entries {
-                    if let LiteralValue::Int(v) = val {
-                        builder.append_value(*v);
-                    } else {
-                        builder.append_null();
+            match field.data_type() {
+                DataType::Int64 => {
+                    let mut builder = PrimitiveBuilder::<Int64Type>::with_capacity(total_rows);
+                    for _parent in &unique_parents {
+                        for (_, val) in &insert.entries {
+                            if let LiteralValue::Int(v) = val {
+                                builder.append_value(*v);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
                     }
+                    Arc::new(builder.finish())
+                }
+                DataType::Dictionary(k, v) if **v == DataType::Int64 => match **k {
+                    DataType::UInt8 => {
+                        let mut builder = PrimitiveDictionaryBuilder::<UInt8Type, Int64Type>::new();
+                        for _parent in &unique_parents {
+                            for (_, val) in &insert.entries {
+                                if let LiteralValue::Int(v) = val {
+                                    builder.append_value(*v);
+                                } else {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                     DataType::UInt16 => {
+                        let mut builder = PrimitiveDictionaryBuilder::<UInt16Type, Int64Type>::new();
+                        for _parent in &unique_parents {
+                            for (_, val) in &insert.entries {
+                                if let LiteralValue::Int(v) = val {
+                                    builder.append_value(*v);
+                                } else {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    _ => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt8],
+                            actual: *k.clone(),
+                        });
+                    }
+                },
+                dt => {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: name.into(),
+                        expect: DataType::Int64,
+                        actual: dt.clone(),
+                    });
                 }
             }
-            Arc::new(builder.finish())
         } else if name == consts::ATTRIBUTE_DOUBLE {
-            let mut builder =
-                PrimitiveBuilder::<arrow::datatypes::Float64Type>::with_capacity(total_rows);
-            for _parent in &unique_parents {
-                for (_, val) in &insert.entries {
-                    if let LiteralValue::Double(v) = val {
-                        builder.append_value(*v);
-                    } else {
-                        builder.append_null();
+            match field.data_type() {
+                DataType::Float64 => {
+                    let mut builder = PrimitiveBuilder::<Float64Type>::with_capacity(total_rows);
+                    for _parent in &unique_parents {
+                        for (_, val) in &insert.entries {
+                            if let LiteralValue::Double(v) = val {
+                                builder.append_value(*v);
+                            } else {
+                                builder.append_null();
+                            }
+                        }
                     }
+                    Arc::new(builder.finish())
+                }
+                DataType::Dictionary(k, v) if **v == DataType::Float64 => match **k {
+                    DataType::UInt8 => {
+                        let mut builder =
+                            PrimitiveDictionaryBuilder::<UInt8Type, Float64Type>::new();
+                        for _parent in &unique_parents {
+                            for (_, val) in &insert.entries {
+                                if let LiteralValue::Double(v) = val {
+                                    builder.append_value(*v);
+                                } else {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    DataType::UInt16 => {
+                        let mut builder =
+                            PrimitiveDictionaryBuilder::<UInt16Type, Float64Type>::new();
+                        for _parent in &unique_parents {
+                            for (_, val) in &insert.entries {
+                                if let LiteralValue::Double(v) = val {
+                                    builder.append_value(*v);
+                                } else {
+                                    builder.append_null();
+                                }
+                            }
+                        }
+                        Arc::new(builder.finish())
+                    }
+                    _ => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt8],
+                            actual: *k.clone(),
+                        });
+                    }
+                },
+                dt => {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: name.into(),
+                        expect: DataType::Float64,
+                        actual: dt.clone(),
+                    });
                 }
             }
-            Arc::new(builder.finish())
         } else if name == consts::ATTRIBUTE_BOOL {
+             // Note: Boolean Dictionaries are not standard/supported by simple builders
             let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
             for _parent in &unique_parents {
                 for (_, val) in &insert.entries {

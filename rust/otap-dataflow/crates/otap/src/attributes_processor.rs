@@ -10,9 +10,10 @@
 //! Supported actions (current subset):
 //! - `rename`: Renames an attribute key (non-standard deviation from the Go collector).
 //! - `delete`: Removes an attribute by key.
+//! - `insert`: Inserts a new attribute.
 //!
 //! Unsupported actions are ignored if present in the config:
-//! `insert`, `upsert`, `update` (value update), `hash`, `extract`, `convert`.
+//! `upsert`, `update` (value update), `hash`, `extract`, `convert`.
 //! We may add support for them later.
 //!
 //! Example configuration (YAML):
@@ -47,7 +48,8 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
-        AttributesTransform, DeleteTransform, RenameTransform, transform_attributes_with_stats,
+        AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
+        transform_attributes_with_stats,
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -81,6 +83,14 @@ pub enum Action {
         key: String,
     },
 
+    /// Insert a new attribute.
+    Insert {
+        /// The attribute key to insert.
+        key: String,
+        /// The value to insert.
+        value: Value,
+    },
+
     /// Other actions are accepted for forward-compatibility but ignored.
     /// These variants allow deserialization of Go-style configs without effect.
     #[serde(other)]
@@ -91,7 +101,7 @@ pub enum Action {
 /// Configuration for the AttributesProcessor.
 ///
 /// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
-/// Supported actions: rename (deviation), delete. Others are ignored.
+/// Supported actions: rename (deviation), delete, insert. Others are ignored.
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
@@ -140,6 +150,7 @@ impl AttributesProcessor {
     fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
+        let mut inserts = Vec::new();
 
         for action in config.actions {
             match action {
@@ -151,6 +162,27 @@ impl AttributesProcessor {
                     destination_key,
                 } => {
                     let _ = renames.insert(source_key, destination_key);
+                }
+                Action::Insert { key, value } => {
+                    let lit_val = match value {
+                        Value::String(s) => Some(LiteralValue::Str(s)),
+                        Value::Number(n) => {
+                            if let Some(i) = n.as_i64() {
+                                Some(LiteralValue::Int(i))
+                            } else if let Some(f) = n.as_f64() {
+                                Some(LiteralValue::Double(f))
+                            } else {
+                                None
+                            }
+                        }
+                        Value::Bool(b) => Some(LiteralValue::Bool(b)),
+                        // Ignore null, object, array as not supported by LiteralValue
+                        _ => None,
+                    };
+
+                    if let Some(val) = lit_val {
+                        inserts.push((key, val));
+                    }
                 }
                 // Unsupported actions are ignored for now
                 Action::Unsupported => {}
@@ -182,7 +214,11 @@ impl AttributesProcessor {
             } else {
                 Some(DeleteTransform::new(deletes))
             },
-            insert: None,
+            insert: if inserts.is_empty() {
+                None
+            } else {
+                Some(InsertTransform::new(inserts))
+            },
         };
 
         transform
@@ -202,7 +238,7 @@ impl AttributesProcessor {
 
     #[inline]
     const fn is_noop(&self) -> bool {
-        self.transform.rename.is_none() && self.transform.delete.is_none()
+        self.transform.rename.is_none() && self.transform.delete.is_none() && self.transform.insert.is_none()
     }
 
     #[inline]
@@ -743,6 +779,92 @@ mod tests {
                         _ => false,
                     }
                 }));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_scoped_to_resource_only_logs() {
+        // Resource has 'a', scope has 'a', log has 'a' and another key to keep batch non-empty
+        let input = build_logs_with_attrs(
+            vec![
+                KeyValue::new("a", AnyValue::new_string("rv")),
+                KeyValue::new("r", AnyValue::new_string("keep")),
+            ],
+            vec![KeyValue::new("a", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("a", AnyValue::new_string("lv")),
+                KeyValue::new("b", AnyValue::new_string("keep")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "c", "value": "val"},
+            ],
+            "apply_to": ["resource"]
+        });
+
+        // Create a proper pipeline context for the test
+        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-insert-resource");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+
+                println!("Resource attrs: {:?}", res_attrs);
+                
+                assert!(res_attrs.iter().any(|kv| kv.key == "c"));
+                assert!(res_attrs.iter().any(|kv| kv.key == "r"));
+
+                // Scope 'c' should remain
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert!(!scope_attrs.iter().any(|kv| kv.key == "c"));
+                assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
+
+                // Log 'c' should be deleted; 'b' should remain
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(!log_attrs.iter().any(|kv| kv.key == "c"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "b"));
             })
             .validate(|_| async move {});
     }
