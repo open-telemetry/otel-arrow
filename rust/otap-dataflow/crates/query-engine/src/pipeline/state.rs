@@ -21,8 +21,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 // other state needed for stateful stream processing.
 //
 // When the pipeline is executed without an ExecutionState being provided, a default one will be
-// created. This means that anything added to this in the should be inexpensive to initialize in
-// the default case.
+// created. This means that anything added to this should be inexpensive to initialize in the
+// default case.
 #[derive(Default)]
 pub struct ExecutionState {
     extensions: Option<ExtensionMap>,
