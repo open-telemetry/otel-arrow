@@ -3,10 +3,13 @@
 
 use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-    DiscardDataExpression, Expression, LogicalExpression, NotLogicalExpression, QueryLocation,
-    TransformExpression, OutputDataExpression, OutputExpression, StaticScalarExpression,
+    DiscardDataExpression, Expression, LogicalExpression, NotLogicalExpression,
+    OutputDataExpression, OutputExpression, QueryLocation, StaticScalarExpression,
+    TransformExpression,
 };
-use data_engine_parser_abstractions::{ParserError, parse_standard_string_literal, to_query_location};
+use data_engine_parser_abstractions::{
+    ParserError, parse_standard_string_literal, to_query_location,
+};
 use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
@@ -247,9 +250,9 @@ mod tests {
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
         DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MutableValueExpression,
-        NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation, ScalarExpression, SetTransformExpression,
-        SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        TransformExpression, ValueAccessor,
+        NotLogicalExpression, OutputDataExpression, OutputExpression, QueryLocation,
+        ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, TransformExpression, ValueAccessor,
     };
     use data_engine_parser_abstractions::{Parser, ParserOptions, ParserState};
     use pest::Parser as _;
