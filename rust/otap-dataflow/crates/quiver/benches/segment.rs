@@ -293,7 +293,7 @@ fn segment_write(c: &mut Criterion) {
                         let segment_path = temp_dir.path().join("bench_segment.qseg");
                         let writer = SegmentWriter::new(SegmentSeq::new(1));
                         writer
-                            .write_segment(&segment_path, segment)
+                            .write_segment_sync(&segment_path, segment)
                             .expect("write succeeds");
                         temp_dir // Keep temp_dir alive until write completes
                     },
@@ -325,7 +325,7 @@ fn segment_write(c: &mut Criterion) {
                     let segment_path = temp_dir.path().join("bench_segment.qseg");
                     let writer = SegmentWriter::new(SegmentSeq::new(1));
                     writer
-                        .write_segment(&segment_path, segment)
+                        .write_segment_sync(&segment_path, segment)
                         .expect("write succeeds");
                     temp_dir
                 },
@@ -354,7 +354,7 @@ fn segment_write(c: &mut Criterion) {
                     let segment_path = temp_dir.path().join("bench_segment.qseg");
                     let writer = SegmentWriter::new(SegmentSeq::new(1));
                     writer
-                        .write_segment(&segment_path, segment)
+                        .write_segment_sync(&segment_path, segment)
                         .expect("write succeeds");
                     temp_dir
                 },
@@ -385,7 +385,7 @@ fn create_test_segment(num_bundles: usize, num_rows: usize) -> (tempfile::TempDi
     // Write to file
     let writer = SegmentWriter::new(SegmentSeq::new(1));
     writer
-        .write_segment(&segment_path, segment)
+        .write_segment_sync(&segment_path, segment)
         .expect("write succeeds");
 
     (temp_dir, segment_path)

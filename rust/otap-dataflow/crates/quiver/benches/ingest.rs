@@ -157,7 +157,7 @@ fn ingest_single(c: &mut Criterion) {
                     (engine, temp_dir)
                 },
                 |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
-                    engine.ingest(bundle).expect("ingest succeeds");
+                    engine.ingest_sync(bundle).expect("ingest succeeds");
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -194,9 +194,9 @@ fn ingest_sustained(c: &mut Criterion) {
             },
             |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
                 for _ in 0..num_bundles {
-                    engine.ingest(&bundle).expect("ingest succeeds");
+                    engine.ingest_sync(&bundle).expect("ingest succeeds");
                 }
-                engine.shutdown().expect("shutdown succeeds");
+                engine.shutdown_sync().expect("shutdown succeeds");
             },
             criterion::BatchSize::PerIteration,
         );
@@ -242,9 +242,9 @@ fn ingest_with_frequent_writes(c: &mut Criterion) {
             },
             |(engine, _temp_dir): (Arc<QuiverEngine>, TempDir)| {
                 for _ in 0..20 {
-                    engine.ingest(&bundle).expect("ingest succeeds");
+                    engine.ingest_sync(&bundle).expect("ingest succeeds");
                 }
-                engine.shutdown().expect("shutdown succeeds");
+                engine.shutdown_sync().expect("shutdown succeeds");
             },
             criterion::BatchSize::PerIteration,
         );

@@ -3360,4 +3360,154 @@ mod tests {
         assert!(stats.flushed >= 1, "should have flushed at least one subscriber");
         // deleted can be any non-negative number (usize)
     }
+
+    /// Helper to create an engine using the async open API.
+    async fn setup_engine_async(dir: &std::path::Path) -> Arc<QuiverEngine> {
+        let config = QuiverConfig::builder()
+            .data_dir(dir)
+            .build()
+            .expect("config");
+        QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine")
+    }
+
+    /// Helper to create an engine and ingest data using fully async APIs.
+    async fn setup_engine_with_data_async(
+        dir: &std::path::Path,
+        bundle_count: usize,
+    ) -> Arc<QuiverEngine> {
+        let engine = setup_engine_async(dir).await;
+
+        for _ in 0..bundle_count {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+        if bundle_count > 0 {
+            engine.flush().await.expect("flush");
+        }
+        engine
+    }
+
+    #[tokio::test]
+    async fn async_open_creates_engine() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_async(dir.path()).await;
+
+        // Verify engine is functional
+        assert_eq!(engine.segment_store().segment_count(), 0);
+        assert_eq!(engine.total_segments_written(), 0);
+    }
+
+    #[tokio::test]
+    async fn async_ingest_succeeds() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_async(dir.path()).await;
+
+        let bundle = DummyBundle::with_rows(100);
+        engine.ingest(&bundle).await.expect("ingest");
+
+        // Verify metrics recorded
+        let metrics = engine.metrics();
+        assert_eq!(metrics.ingest_attempts(), 1);
+    }
+
+    #[tokio::test]
+    async fn async_ingest_and_flush_creates_segment() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_async(dir.path()).await;
+
+        // Ingest some data
+        for _ in 0..5 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+
+        // Flush to create segment
+        engine.flush().await.expect("flush");
+
+        // Verify segment created
+        assert_eq!(engine.total_segments_written(), 1);
+        assert_eq!(engine.segment_store().segment_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn async_shutdown_finalizes_segment() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_async(dir.path()).await;
+
+        // Ingest some data
+        for _ in 0..5 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+
+        // Shutdown (should finalize segment)
+        engine.shutdown().await.expect("shutdown");
+
+        // Verify segment created
+        assert_eq!(engine.total_segments_written(), 1);
+    }
+
+    #[tokio::test]
+    async fn async_full_pipeline_ingest_to_consume() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data_async(dir.path(), 10).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("async-pipeline").unwrap();
+        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Consume all bundles using async next_bundle
+        let mut consumed = 0;
+        loop {
+            match engine
+                .next_bundle(&sub_id, Some(Duration::from_millis(100)))
+                .await
+            {
+                Ok(Some(h)) => {
+                    h.ack();
+                    consumed += 1;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(consumed, 10, "should have consumed all bundles");
+    }
+
+    #[tokio::test]
+    async fn async_ingest_triggers_segment_finalization() {
+        use std::num::NonZeroU64;
+
+        let dir = tempdir().expect("tempdir");
+
+        // Use a tiny segment size to trigger finalization during ingest
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1024).unwrap(), // 1KB
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        // Ingest enough data to trigger segment finalization
+        for _ in 0..20 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+
+        // Should have auto-finalized at least one segment
+        assert!(
+            engine.total_segments_written() >= 1,
+            "should have finalized at least one segment"
+        );
+    }
 }
