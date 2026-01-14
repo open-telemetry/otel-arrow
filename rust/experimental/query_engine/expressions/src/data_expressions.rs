@@ -303,8 +303,7 @@ impl ConditionalDataExpressionBranch {
     }
 }
 
-
-/// TODO comments
+/// Data expression representing an operation that emits data to a sink.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutputDataExpression {
     query_location: QueryLocation,
@@ -323,10 +322,7 @@ impl OutputDataExpression {
         &self.output
     }
 
-    pub fn try_fold(
-        &mut self,
-        _scope: &PipelineResolutionScope,
-    ) -> Result<(), ExpressionError> {
+    pub fn try_fold(&mut self, _scope: &PipelineResolutionScope) -> Result<(), ExpressionError> {
         // No folding currently supported for output expressions.
         Ok(())
     }
@@ -341,18 +337,54 @@ impl Expression for OutputDataExpression {
         "OutputDataExpression"
     }
 
-    // TODO test this
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         writeln!(f, "Output:")?;
         write!(f, "{indent}└── ")?;
         match &self.output {
-            OutputExpression::NamedSink(expr) => expr.fmt_with_indent(f, format!("{indent}    ").as_str()),
+            OutputExpression::NamedSink(expr) => {
+                expr.fmt_with_indent(f, format!("{indent}    ").as_str())
+            }
         }
     }
 }
 
-/// TODO comments
+/// Expression representing an operation that emits data to a sink.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputExpression {
-    NamedSink(StringScalarExpression)
+    /// Output data to a sink identified by name.
+    // Currently this contains a static string because that is the only option supported.
+    // In the future could may support dynamic sink identified by a variable, result of a
+    // function call, or other some expression, at which point we could change this to the
+    // more general `StaticExpression`.
+    NamedSink(StringScalarExpression),
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::fmt;
+
+    // Helper struct to test fmt_with_indent by implementing Display
+    struct DisplayWrapper<'a, T: Expression>(&'a T, &'a str);
+
+    impl<'a, T: Expression> fmt::Display for DisplayWrapper<'a, T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.fmt_with_indent(f, self.1)
+        }
+    }
+
+    #[test]
+    fn test_output_expression_fmt_with_indent() {
+        let string_expr = StringScalarExpression::new(QueryLocation::new_fake(), "sink_name");
+        let output_expr = OutputExpression::NamedSink(string_expr.clone());
+        let output_data_expr = OutputDataExpression::new(QueryLocation::new_fake(), output_expr);
+        let output = format!("{}", DisplayWrapper(&output_data_expr, ""));
+        assert_eq!(
+            output,
+            format!(
+                "Output:\n\
+                └── {string_expr:?}\n"
+            )
+        );
+    }
 }
