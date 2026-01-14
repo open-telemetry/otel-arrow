@@ -25,7 +25,7 @@ tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 parking_lot.workspace = true
 rand.workspace = true
 clap.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 ratatui = "0.30"
 crossterm = "0.29"
 sysinfo = "0.37"

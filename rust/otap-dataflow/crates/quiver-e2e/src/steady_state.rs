@@ -254,7 +254,7 @@ pub async fn run(
     }
 
     // Create per-engine resources (engine owns segment store and registry)
-    // Engine creation must happen in a blocking context because WalWriter::open_sync uses block_on
+    // Using async QuiverEngine::open which handles WAL initialization asynchronously
     let num_engines = config.engines;
     let subscribers_per_engine = config.subscribers;
     let segment_size_mb = config.segment_size_mb;
@@ -267,22 +267,19 @@ pub async fn run(
     let is_tui = output.is_tui();
 
     let (engines, all_sub_ids): (Vec<Arc<QuiverEngine>>, Vec<(usize, SubscriberId)>) =
-        tokio::task::spawn_blocking(move || {
-            create_engines_sync(
-                num_engines,
-                subscribers_per_engine,
-                segment_size_mb,
-                wal_flush_interval_ms,
-                no_wal,
-                read_mode,
-                disk_budget_mb,
-                retention_policy,
-                &data_dir_clone,
-                is_tui,
-            )
-        })
+        create_engines(
+            num_engines,
+            subscribers_per_engine,
+            segment_size_mb,
+            wal_flush_interval_ms,
+            no_wal,
+            read_mode,
+            disk_budget_mb,
+            retention_policy,
+            &data_dir_clone,
+            is_tui,
+        )
         .await
-        .map_err(|e| format!("Engine creation task failed: {}", e))?
         .map_err(|e: String| -> Box<dyn std::error::Error> { e.into() })?;
 
     output.log(&format!(
@@ -455,20 +452,13 @@ pub async fn run(
 
     let final_ingested = total_ingested.load(Ordering::Relaxed);
 
-    // 2. Finalize any remaining open segments (all engines)
-    // Must run in blocking context because shutdown() uses block_on internally
-    let engines_for_shutdown = engines.clone();
-    let shutdown_errors = tokio::task::spawn_blocking(move || {
-        let mut errors = Vec::new();
-        for engine in &engines_for_shutdown {
-            if let Err(e) = engine.shutdown() {
-                errors.push(format!("Engine shutdown error: {}", e));
-            }
+    // 2. Finalize any remaining open segments (all engines) using async shutdown
+    let mut shutdown_errors = Vec::new();
+    for engine in &engines {
+        if let Err(e) = engine.shutdown().await {
+            shutdown_errors.push(format!("Engine shutdown error: {}", e));
         }
-        errors
-    })
-    .await
-    .unwrap_or_default();
+    }
     for err in shutdown_errors {
         output.log_warn(&err);
     }
@@ -632,8 +622,8 @@ pub async fn run(
 
 // === Helper functions ===
 
-/// Register subscribers on engine (sync version for use in spawn_blocking context).
-fn register_subscribers_on_engine_sync(
+/// Register subscribers on an engine.
+fn register_subscribers(
     engine: &Arc<QuiverEngine>,
     count: usize,
 ) -> Result<Vec<SubscriberId>, String> {
@@ -674,7 +664,7 @@ fn spawn_ingest_task(
                     }
                     // Retry loop for backpressure handling
                     loop {
-                        match engine.ingest(test_bundle) {
+                        match engine.ingest_sync(test_bundle) {
                             Ok(()) => {
                                 let _ = total_ingested.fetch_add(1, Ordering::Relaxed);
                                 break; // Success, move to next bundle
@@ -760,11 +750,78 @@ fn create_engine_config(
     config
 }
 
+/// Creates engines asynchronously using the async `QuiverEngine::open` API.
+#[allow(clippy::too_many_arguments)]
+async fn create_engines(
+    num_engines: usize,
+    subscribers_per_engine: usize,
+    segment_size_mb: u64,
+    wal_flush_interval_ms: u64,
+    no_wal: bool,
+    read_mode: SegmentReadMode,
+    disk_budget_mb: u64,
+    retention_policy: RetentionPolicy,
+    data_dir: &std::path::Path,
+    _is_tui: bool,
+) -> Result<(Vec<Arc<QuiverEngine>>, Vec<(usize, SubscriberId)>), String> {
+    let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(num_engines);
+    let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
+
+    for engine_idx in 0..num_engines {
+        // Each engine gets its own subdirectory
+        let engine_dir = if num_engines > 1 {
+            data_dir.join(format!("engine_{}", engine_idx))
+        } else {
+            data_dir.to_path_buf()
+        };
+        tokio::fs::create_dir_all(&engine_dir)
+            .await
+            .map_err(|e| format!("Failed to create engine dir: {}", e))?;
+
+        // Create engine with staggered timing to avoid synchronized I/O
+        let engine_config = create_engine_config(
+            &engine_dir,
+            segment_size_mb,
+            wal_flush_interval_ms,
+            no_wal,
+            read_mode,
+            engine_idx,
+            num_engines,
+        );
+
+        // Create per-engine disk budget (Phase 1: static quota per engine)
+        let wal_size_mb = if no_wal { 0 } else { 128 };
+        let budget = create_per_engine_budget(
+            disk_budget_mb,
+            num_engines,
+            retention_policy,
+            segment_size_mb,
+            wal_size_mb,
+        )?;
+
+        // Engine now owns segment store and registry internally - using async open
+        let engine = QuiverEngine::open(engine_config, budget)
+            .await
+            .map_err(|e| format!("Failed to create engine: {}", e))?;
+
+        // Register subscribers using engine's unified API
+        let sub_ids = register_subscribers(&engine, subscribers_per_engine)?;
+        for sub_id in sub_ids {
+            all_sub_ids.push((engine_idx, sub_id));
+        }
+
+        engines.push(engine);
+    }
+
+    Ok((engines, all_sub_ids))
+}
+
 /// Creates engines synchronously in a blocking context.
 ///
 /// This is called via `spawn_blocking` because `WalWriter::open_sync` uses `block_on`
 /// internally, which conflicts with an async runtime.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn create_engines_sync(
     num_engines: usize,
     subscribers_per_engine: usize,
@@ -817,7 +874,7 @@ fn create_engines_sync(
             .map_err(|e| format!("Failed to create engine: {}", e))?;
 
         // Register subscribers using engine's unified API
-        let sub_ids = register_subscribers_on_engine_sync(&engine, subscribers_per_engine)?;
+        let sub_ids = register_subscribers(&engine, subscribers_per_engine)?;
         for sub_id in sub_ids {
             all_sub_ids.push((engine_idx, sub_id));
         }
