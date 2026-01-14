@@ -66,7 +66,7 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
                     // ToDo Replace this eprintln once we have selected a logging solution
                     raw_error!(
                         "Thread finished with an error during drop; error suppressed",
-                        thread_name = &self.name,
+                        thread_name = &self.name
                     );
                 }
                 Err(panic) => {
@@ -75,7 +75,7 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
                     raw_error!(
                         "Thread panicked during drop; panic suppressed",
                         thread_name = &self.name,
-                        panicked = tracing::field::debug(panic),
+                        panicked = ?panic
                     );
                 }
             }

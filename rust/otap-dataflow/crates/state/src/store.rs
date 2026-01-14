@@ -11,7 +11,7 @@ use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
 use otap_df_config::pipeline::PipelineSettings;
-use otap_df_telemetry::{otel_error, otel_warn, raw_error};
+use otap_df_telemetry::{otel_warn, raw_error};
 use serde::{Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -108,15 +108,15 @@ impl ObservedStateStore {
         // mechanism (see previous todo).
         match &observed_event.r#type {
             EventType::Request(_) => {
-                otel_error!(
+                raw_error!(
                     "request.event",
-                    observed_event = tracing::field::debug(&observed_event)
+                    observed_event = ?observed_event,
                 );
             }
             EventType::Error(_) => {
-                otel_error!(
+                raw_error!(
                     "error.event",
-                    observed_event = tracing::field::debug(&observed_event)
+                    observed_event = ?observed_event,
                 );
             }
             EventType::Success(_) => { /* no console output for success events */ }
@@ -162,7 +162,7 @@ impl ObservedStateStore {
                     if let Err(e) = self.report(event) {
                         raw_error!(
                             "Error reporting observed event",
-                            error = e.to_string(),
+                            error = ?e,
                         );
                     }
                 }

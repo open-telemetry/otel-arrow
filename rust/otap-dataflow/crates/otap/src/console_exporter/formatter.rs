@@ -13,11 +13,11 @@
 //! ```
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, InstrumentationScopeView};
 use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
-use otap_df_pdata::OtlpProtoBytes;
 use std::io::{Cursor, Write};
 
 /// Buffer size for formatting output.
@@ -101,14 +101,14 @@ impl HierarchicalFormatter {
     }
 
     /// Format logs from a LogsDataView.
-    fn format_logs_data<'a, L: LogsDataView>(&self, logs_data: &'a L) {
+    fn format_logs_data<L: LogsDataView>(&self, logs_data: &'_ L) {
         for resource_logs in logs_data.resources() {
             self.format_resource_logs(&resource_logs);
         }
     }
 
     /// Format a ResourceLogs with its nested scopes.
-    fn format_resource_logs<'a, R: ResourceLogsView>(&self, resource_logs: &'a R) {
+    fn format_resource_logs<R: ResourceLogsView>(&self, resource_logs: &'_ R) {
         let mut buf = [0u8; OUTPUT_BUFFER_SIZE];
         let mut w = Cursor::new(buf.as_mut_slice());
 
@@ -148,7 +148,7 @@ impl HierarchicalFormatter {
     }
 
     /// Get the first timestamp from log records in a ResourceLogs.
-    fn get_first_log_timestamp<'a, R: ResourceLogsView>(&self, resource_logs: &'a R) -> u64 {
+    fn get_first_log_timestamp<R: ResourceLogsView>(&self, resource_logs: &'_ R) -> u64 {
         for scope_logs in resource_logs.scopes() {
             for log_record in scope_logs.log_records() {
                 if let Some(ts) = log_record.time_unix_nano() {
@@ -163,7 +163,7 @@ impl HierarchicalFormatter {
     }
 
     /// Format a ScopeLogs with its nested log records.
-    fn format_scope_logs<'a, S: ScopeLogsView>(&self, scope_logs: &'a S, is_last_scope: bool) {
+    fn format_scope_logs<S: ScopeLogsView>(&self, scope_logs: &'_ S, is_last_scope: bool) {
         let mut buf = [0u8; OUTPUT_BUFFER_SIZE];
         let mut w = Cursor::new(buf.as_mut_slice());
 
@@ -210,9 +210,9 @@ impl HierarchicalFormatter {
     }
 
     /// Format a single log record.
-    fn format_log_record<'a, L: LogRecordView>(
+    fn format_log_record<L: LogRecordView>(
         &self,
-        log_record: &'a L,
+        log_record: &'_ L,
         is_last_scope: bool,
         is_last_record: bool,
     ) {
@@ -277,7 +277,7 @@ impl HierarchicalFormatter {
                     self.write_any_value(&mut w, &v);
                 }
             }
-        let _ = w.write_all(b"]");
+            let _ = w.write_all(b"]");
         }
 
         let _ = w.write_all(b"\n");
@@ -394,11 +394,7 @@ impl HierarchicalFormatter {
     }
 
     /// Write scope information.
-    fn write_scope_info<S: InstrumentationScopeView>(
-        &self,
-        w: &mut Cursor<&mut [u8]>,
-        scope: &S,
-    ) {
+    fn write_scope_info<S: InstrumentationScopeView>(&self, w: &mut Cursor<&mut [u8]>, scope: &S) {
         let _ = w.write_all(b"{");
         let mut has_content = false;
 

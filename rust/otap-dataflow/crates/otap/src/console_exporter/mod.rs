@@ -18,8 +18,8 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::node::NodeUserConfig;
 use otap_df_config::SignalType;
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NodeControlMsg};
@@ -31,6 +31,7 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_pdata::OtapPayload;
+use otap_df_telemetry::raw_error;
 use std::sync::Arc;
 
 mod formatter;
@@ -83,11 +84,9 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
-        let config: ConsoleExporterConfig =
-            serde_json::from_value(node_config.config.clone()).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!("Failed to parse console exporter config: {}", e),
-                }
+        let config: ConsoleExporterConfig = serde_json::from_value(node_config.config.clone())
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: format!("Failed to parse console exporter config: {}", e),
             })?;
         Ok(ExporterWrapper::local(
             ConsoleExporter::new(config),
@@ -146,12 +145,12 @@ impl ConsoleExporter {
 
     fn export_traces(&self, _payload: &OtapPayload) {
         // TODO: Implement traces formatting
-        eprintln!("Console exporter: Traces formatting not yet implemented");
+        raw_error!("Console exporter: Traces formatting not yet implemented");
     }
 
     fn export_metrics(&self, _payload: &OtapPayload) {
         // TODO: Implement metrics formatting
-        eprintln!("Console exporter: Metrics formatting not yet implemented");
+        raw_error!("Console exporter: Metrics formatting not yet implemented");
     }
 }
 

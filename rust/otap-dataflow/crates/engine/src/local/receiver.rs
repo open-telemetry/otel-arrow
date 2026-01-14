@@ -334,7 +334,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            None,
+        );
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -355,7 +362,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            None,
+        );
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -402,7 +416,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            None,
+        );
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -431,7 +452,14 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, None);
+        let eh = EffectHandler::new(
+            test_node("recv"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+            None,
+        );
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

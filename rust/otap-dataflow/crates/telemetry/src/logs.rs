@@ -276,7 +276,7 @@ where
         match self.reporter.try_report(LogPayload::Singleton(record)) {
             Ok(()) => {}
             Err(err) => {
-                crate::raw_error!("failed to send log", err = err.to_string());
+                crate::raw_error!("failed to send log", err = %err);
             }
         }
     }
@@ -347,23 +347,23 @@ impl TelemetrySetup {
         match self {
             TelemetrySetup::Noop => {
                 let subscriber = tracing::subscriber::NoSubscriber::new();
-                tracing::subscriber::with_default(subscriber, || f())
+                tracing::subscriber::with_default(subscriber, f)
             }
             TelemetrySetup::Raw => {
                 let subscriber = Registry::default()
                     .with(filter)
                     .with(RawLoggingLayer::new(ConsoleWriter::default()));
-                tracing::subscriber::with_default(subscriber, || f())
+                tracing::subscriber::with_default(subscriber, f)
             }
             TelemetrySetup::Immediate { reporter } => {
                 let layer = ImmediateLayer::new(reporter.clone());
                 let subscriber = Registry::default().with(filter).with(layer);
-                tracing::subscriber::with_default(subscriber, || f())
+                tracing::subscriber::with_default(subscriber, f)
             }
             TelemetrySetup::OpenTelemetry { logger_provider } => {
                 let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
                 let subscriber = Registry::default().with(filter).with(sdk_layer);
-                tracing::subscriber::with_default(subscriber, || f())
+                tracing::subscriber::with_default(subscriber, f)
             }
         }
     }

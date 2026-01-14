@@ -31,13 +31,13 @@ impl ObservedEventReporter {
             Err(flume::SendTimeoutError::Timeout(event)) => {
                 raw_error!(
                     "Timeout sending observed event",
-                    event = event
+                    event = ?event
                 );
             }
             Err(flume::SendTimeoutError::Disconnected(event)) => {
                 raw_error!(
                     "Disconnected event observer",
-                    event = event
+                    event = ?event
                 );
             }
             Ok(_) => {}

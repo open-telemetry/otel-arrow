@@ -11,6 +11,7 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -19,7 +20,6 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_engine::ReceiverFactory;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::logs::{LogBatch, LogPayload};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
@@ -74,12 +74,11 @@ impl InternalTelemetryReceiver {
 
     /// Create a receiver from a JSON configuration.
     pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
-        let config: Config =
-            serde_json::from_value(config.clone()).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: e.to_string(),
-                }
-            })?;
+        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
         Ok(Self::new(config))
     }
 }
@@ -161,7 +160,8 @@ impl InternalTelemetryReceiver {
 
         if !batch.records.is_empty() {
             let bytes = batch.encode_export_logs_request();
-            let pdata = OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+            let pdata =
+                OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
             effect_handler.send_message(pdata).await?;
         }
         Ok(())

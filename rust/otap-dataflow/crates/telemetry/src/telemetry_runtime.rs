@@ -89,14 +89,12 @@ impl TelemetryRuntime {
                 OutputMode::Direct => {
                     // Direct mode: logs go to a collector that prints to console
                     let (collector, reporter) = LogsCollector::new(config.reporting_channel_size);
-                    eprintln!("DEBUG: TelemetryRuntime::new - Direct mode, no receiver");
                     (Some(reporter), None, Some(collector))
                 }
                 OutputMode::Internal => {
                     // Internal mode: logs go through channel to ITR node
                     let (receiver, reporter) =
                         LogsCollector::channel(config.reporting_channel_size);
-                    eprintln!("DEBUG: TelemetryRuntime::new - Internal mode, receiver created");
                     (Some(reporter), Some(receiver), None)
                 }
                 OutputMode::Noop => (None, None, None),
@@ -261,7 +259,6 @@ impl TelemetryRuntime {
         logs_reporter: Option<&LogsReporter>,
         logger_provider: Option<&SdkLoggerProvider>,
     ) -> Result<TelemetrySetup, Error> {
-
         match provider_mode {
             ProviderMode::Noop => Ok(TelemetrySetup::Noop),
             ProviderMode::Raw => Ok(TelemetrySetup::Raw),

@@ -69,8 +69,7 @@ pub use tracing::warn_span as otel_warn_span;
 
 // Re-export commonly used logs types for convenience.
 pub use logs::{
-    ImmediateLayer, LogBatch, LogPayload, LogsCollector, LogsReceiver, LogsReporter,
-    TelemetrySetup,
+    ImmediateLayer, LogBatch, LogPayload, LogsCollector, LogsReceiver, LogsReporter, TelemetrySetup,
 };
 
 // TODO This should be #[cfg(test)], but something is preventing it from working.
@@ -169,6 +168,7 @@ impl Default for InternalTelemetrySystem {
 ///
 /// If `RUST_LOG` is set in the environment, it takes precedence for fine-grained control.
 /// Otherwise, falls back to the config level with known noisy dependencies (h2, hyper) silenced.
+#[must_use]
 pub fn get_env_filter(level: LogLevel) -> EnvFilter {
     let level = match level {
         LogLevel::Off => LevelFilter::OFF,

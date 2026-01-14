@@ -103,7 +103,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let _logs_collector_handle =
             if let Some(logs_collector) = telemetry_runtime.take_logs_collector() {
                 Some(spawn_thread_local_task(
-                        "logs-collector",
+                    "logs-collector",
                     move |_cancellation_token| logs_collector.run(),
                 )?)
             } else {
@@ -112,7 +112,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Get logs receiver for Internal output mode (passed to internal pipeline)
         let mut logs_receiver = telemetry_runtime.take_logs_receiver();
-        eprintln!("DEBUG: logs_receiver after take: {:?}", logs_receiver.is_some());
 
         let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
@@ -153,86 +152,87 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let log_level = telemetry_config.logs.level;
 
         // Spawn internal telemetry pipeline thread, if configured.
-        let internal_pipeline_thread =
-            if let Some(internal_config) = pipeline.extract_internal_config() {
-                // TODO: this is a bunch of placeholder values!
-                let internal_logs_receiver = logs_receiver.take();
-                eprintln!("DEBUG: internal_logs_receiver after take: {:?}", internal_logs_receiver.is_some());
-                let internal_factory = self.pipeline_factory;
-                let internal_pipeline_id: PipelineId = "internal".into();
-                let internal_pipeline_key = DeployedPipelineKey {
-                    pipeline_group_id: pipeline_group_id.clone(),
-                    pipeline_id: internal_pipeline_id.clone(),
-                    core_id: 0,
-                };
-                let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
-                    pipeline_group_id.clone(),
-                    internal_pipeline_id.clone(),
-                    0,
-                    0,
-                );
-                let internal_obs_evt_reporter = obs_evt_reporter.clone();
-                let internal_metrics_reporter = metrics_reporter.clone();
-
-                // Create control message channel for internal pipeline
-                let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
-                    internal_config
-                        .pipeline_settings()
-                        .default_pipeline_ctrl_msg_channel_size,
-                );
-
-                // Create a channel to signal startup success/failure
-                // This allows us to fail fast if the internal pipeline can't build
-                let (startup_tx, startup_rx) = std_mpsc::channel::<Result<(), Error>>();
-
-                let thread_name = "internal-pipeline".to_string();
-                let internal_telemetry_setup = internal_telemetry_setup.clone();
-                let handle = thread::Builder::new()
-                    .name(thread_name.clone())
-                    .spawn(move || {
-                        Self::run_internal_pipeline_thread(
-                            internal_pipeline_key,
-                            CoreId { id: 0 }, // No pinning for internal pipeline
-                            internal_config,
-                            internal_factory,
-                            internal_pipeline_ctx,
-                            internal_obs_evt_reporter,
-                            internal_metrics_reporter,
-                            internal_telemetry_setup,
-                            log_level, // TODO: separate log level for internal pipeline.
-                            internal_logs_receiver,
-                            internal_ctrl_tx,
-                            internal_ctrl_rx,
-                            startup_tx,
-                        )
-                    })
-                    .map_err(|e| Error::ThreadSpawnError {
-                        thread_name: thread_name.clone(),
-                        source: e,
-                    })?;
-
-                // Wait for the internal pipeline to signal successful startup
-                // This ensures we fail fast with a clear error if the internal pipeline can't build
-                match startup_rx.recv() {
-                    Ok(Ok(())) => {
-                        // Internal pipeline built successfully and is running
-                    }
-                    Ok(Err(e)) => {
-                        // Internal pipeline failed to build - propagate the error
-                        return Err(e);
-                    }
-                    Err(_) => {
-                        // Channel closed unexpectedly - thread may have panicked
-                        return Err(Error::InternalPipelineStartupFailed {
-                            message: "Internal pipeline thread terminated unexpectedly during startup".to_string(),
-                        });
-                    }
-                }
-
-                Some((thread_name, handle))
-            } else {
-                None
+        let internal_pipeline_thread = if let Some(internal_config) =
+            pipeline.extract_internal_config()
+        {
+            // TODO: this is a bunch of placeholder values!
+            let internal_logs_receiver = logs_receiver.take();
+            let internal_factory = self.pipeline_factory;
+            let internal_pipeline_id: PipelineId = "internal".into();
+            let internal_pipeline_key = DeployedPipelineKey {
+                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_id: internal_pipeline_id.clone(),
+                core_id: 0,
             };
+            let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
+                pipeline_group_id.clone(),
+                internal_pipeline_id.clone(),
+                0,
+                0,
+            );
+            let internal_obs_evt_reporter = obs_evt_reporter.clone();
+            let internal_metrics_reporter = metrics_reporter.clone();
+
+            // Create control message channel for internal pipeline
+            let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
+                internal_config
+                    .pipeline_settings()
+                    .default_pipeline_ctrl_msg_channel_size,
+            );
+
+            // Create a channel to signal startup success/failure
+            // This allows us to fail fast if the internal pipeline can't build
+            let (startup_tx, startup_rx) = std_mpsc::channel::<Result<(), Error>>();
+
+            let thread_name = "internal-pipeline".to_string();
+            let internal_telemetry_setup = internal_telemetry_setup.clone();
+            let handle = thread::Builder::new()
+                .name(thread_name.clone())
+                .spawn(move || {
+                    Self::run_internal_pipeline_thread(
+                        internal_pipeline_key,
+                        CoreId { id: 0 }, // No pinning for internal pipeline
+                        internal_config,
+                        internal_factory,
+                        internal_pipeline_ctx,
+                        internal_obs_evt_reporter,
+                        internal_metrics_reporter,
+                        internal_telemetry_setup,
+                        log_level, // TODO: separate log level for internal pipeline.
+                        internal_logs_receiver,
+                        internal_ctrl_tx,
+                        internal_ctrl_rx,
+                        startup_tx,
+                    )
+                })
+                .map_err(|e| Error::ThreadSpawnError {
+                    thread_name: thread_name.clone(),
+                    source: e,
+                })?;
+
+            // Wait for the internal pipeline to signal successful startup
+            // This ensures we fail fast with a clear error if the internal pipeline can't build
+            match startup_rx.recv() {
+                Ok(Ok(())) => {
+                    // Internal pipeline built successfully and is running
+                }
+                Ok(Err(e)) => {
+                    // Internal pipeline failed to build - propagate the error
+                    return Err(e);
+                }
+                Err(_) => {
+                    // Channel closed unexpectedly - thread may have panicked
+                    return Err(Error::InternalPipelineStartupFailed {
+                        message: "Internal pipeline thread terminated unexpectedly during startup"
+                            .to_string(),
+                    });
+                }
+            }
+
+            Some((thread_name, handle))
+        } else {
+            None
+        };
 
         // Initialize the global subscriber AFTER the internal pipeline has signaled successful startup.
         // This ensures the channel receiver is being consumed before we start sending logs.
@@ -578,26 +578,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
             // Build the runtime pipeline from the configuration
             // Pass logs_receiver for injection into ITR node (if present)
-            eprintln!("DEBUG: run_pipeline_thread - logs_receiver is_some: {:?}", logs_receiver.is_some());
             let logs_receiver_param = logs_receiver
                 .map(|rx| (INTERNAL_TELEMETRY_RECEIVER_URN, rx));
-            eprintln!("DEBUG: run_pipeline_thread - logs_receiver_param is_some: {:?}", logs_receiver_param.is_some());
             let runtime_pipeline = pipeline_factory
                 .build(pipeline_context.clone(), pipeline_config.clone(), logs_receiver_param)
                 .map_err(|e| {
-                    eprintln!("DEBUG: run_pipeline_thread - build FAILED: {:?}", e);
                     Error::PipelineRuntimeError {
                         source: Box::new(e),
                     }
                 })?;
-            eprintln!("DEBUG: run_pipeline_thread - pipeline built for {:?}", pipeline_key);
 
             obs_evt_reporter.report(ObservedEvent::ready(
                 pipeline_key.clone(),
                 Some("Pipeline initialization successful.".to_owned()),
             ));
-
-            eprintln!("DEBUG: run_pipeline_thread - about to call run_forever for pipeline_key: {:?}", pipeline_key);
 
             // Start the pipeline (this will use the current thread's Tokio runtime)
             runtime_pipeline
@@ -652,12 +646,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
             // Build the runtime pipeline from the configuration
             // Pass logs_receiver for injection into ITR node
-            let logs_receiver_param = logs_receiver
-                .map(|rx| (INTERNAL_TELEMETRY_RECEIVER_URN, rx));
+            let logs_receiver_param = logs_receiver.map(|rx| (INTERNAL_TELEMETRY_RECEIVER_URN, rx));
 
-            let runtime_pipeline = match pipeline_factory
-                .build(pipeline_context.clone(), pipeline_config.clone(), logs_receiver_param)
-            {
+            let runtime_pipeline = match pipeline_factory.build(
+                pipeline_context.clone(),
+                pipeline_config.clone(),
+                logs_receiver_param,
+            ) {
                 Ok(pipeline) => pipeline,
                 Err(e) => {
                     // Signal failure to parent thread with the actual error

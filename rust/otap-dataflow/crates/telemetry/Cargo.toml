@@ -43,7 +43,6 @@ opentelemetry-otlp = { workspace = true, features = ["grpc-tonic", "tls", "metri
 opentelemetry-prometheus = { workspace = true }
 opentelemetry-appender-tracing = { workspace = true }
 tracing = { workspace = true }
-tracing-core = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
 [dev-dependencies]
