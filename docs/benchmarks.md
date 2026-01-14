@@ -90,9 +90,9 @@ All benchmark tests measure the following metrics:
 - **Logs/sec input** - Input throughput
 - **Logs/sec output** - Output throughput
 - **RAM** - Average and maximum memory usage
-- **Normalized CPU** - Average and maximum CPU usage normalized to a 0-100%
-  range relative to the available cores in the test configuration (e.g., 80% in
-  a 4-core test means 80% of 4 cores)
+- **Normalized CPU** - Average and maximum CPU usage, normalized to 0-100% where
+  100% represents full utilization of all available cores. For example, in a
+  4-core test, 80% means 3.2 cores are being used (0.8 × 4 cores)
 - **Network bytes/sec** - Input and output network bandwidth
 
 ### Learn More About Phase 2
