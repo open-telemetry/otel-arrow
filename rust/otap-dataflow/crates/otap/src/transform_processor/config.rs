@@ -6,7 +6,14 @@ use serde::Deserialize;
 /// Configuration for the [`TransformProcessor`](super::TransformProcessor)
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    /// the query that defines the transformation to be applied
-    pub query: String,
+    #[serde(flatten)]
+    pub query: Query,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Query {
+    KqlQuery(String),
+    OplQuery(String),
     // TODO - add section to allow transforms to be specified in OTTL
 }
