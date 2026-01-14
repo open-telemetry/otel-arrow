@@ -6,7 +6,7 @@
 use crate::attributes::{
     ChannelAttributeSet, EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet,
 };
-use crate::entity_context::current_node_telemetry_handle;
+use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -175,20 +175,6 @@ impl PipelineContext {
         self.core_id
     }
 
-    /// Registers a new multivariate metrics instance with the metrics registry.
-    #[must_use]
-    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-    ) -> MetricSet<T> {
-        if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.register_metric_set::<T>()
-        } else {
-            self.controller_context
-                .telemetry_registry_handle
-                .register_metric_set::<T>(self.node_attribute_set())
-        }
-    }
-
     /// Registers a metric set for the given entity key and tracks it in node telemetry if present.
     #[must_use]
     pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
@@ -203,6 +189,35 @@ impl PipelineContext {
             telemetry.track_metric_set(metrics.metric_set_key());
         }
         metrics
+    }
+
+    /// Registers a metric set for the current node entity.
+    #[must_use]
+    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<T> {
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.register_metric_set::<T>()
+        } else if let Some(entity_key) = node_entity_key() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_metric_set_for_entity::<T>(entity_key)
+        } else {
+            // Tests often construct nodes directly without the engine's entity scoping. So the
+            // following code path is only enabled for test builds.
+            #[cfg(feature = "test-utils")]
+            {
+                self.controller_context
+                    .telemetry_registry_handle
+                    .register_metric_set::<T>(self.node_attribute_set())
+            }
+            #[cfg(not(feature = "test-utils"))]
+            {
+                panic!(
+                    "node entity key not set; ensure node entity is registered and instrumented"
+                );
+            }
+        }
     }
 
     /// Registers a metric set for the given attributes and tracks it in node telemetry if present.

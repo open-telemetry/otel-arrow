@@ -164,7 +164,8 @@ pub struct MyNode {
 
 impl MyNode {
     pub fn new(pipeline_ctx: PipelineContext) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
+        let metrics =
+            pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
         Self { metrics }
     }
 
