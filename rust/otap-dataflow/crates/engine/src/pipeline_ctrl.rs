@@ -458,7 +458,7 @@ mod tests {
         }
 
         // Create a dummy MetricsReporter for testing using MetricsSystem
-        let metrics_system = otap_df_telemetry::MetricsSystem::default();
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let pipeline_settings = PipelineSettings::default();
         let observed_state_store = ObservedStateStore::new(&pipeline_settings);
@@ -870,7 +870,7 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let metrics_system = otap_df_telemetry::MetricsSystem::default();
+                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
                 let pipeline_settings = PipelineSettings::default();
                 let observed_state_store = ObservedStateStore::new(&pipeline_settings);

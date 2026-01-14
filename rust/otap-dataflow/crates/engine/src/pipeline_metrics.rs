@@ -750,7 +750,7 @@ impl PipelineMetricsMonitor {
 mod jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
@@ -764,8 +764,8 @@ mod jemalloc_tests {
 
     #[test]
     fn pipeline_metrics_monitor_black_box_updates_jemalloc() {
-        let registry = MetricsRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
 
         let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
@@ -824,14 +824,14 @@ mod jemalloc_tests {
 mod non_jemalloc_tests {
     use super::*;
     use crate::context::ControllerContext;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::hint::black_box;
     use std::time::{Duration, Instant};
 
     #[test]
     fn pipeline_metrics_monitor_does_not_update_memory_without_jemalloc() {
-        let registry = MetricsRegistryHandle::new();
-        let controller = ControllerContext::new(registry);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
 
         let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
