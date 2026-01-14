@@ -21,9 +21,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::pipeline::service::telemetry::logs::{
-    INTERNAL_TELEMETRY_RECEIVER_URN, ProviderMode,
-};
+use otap_df_config::pipeline::service::telemetry::logs::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -39,7 +37,7 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::logs::EngineLogsSetup;
+use otap_df_telemetry::logs::TelemetrySetup;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::telemetry_runtime::TelemetryRuntime;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
@@ -145,51 +143,33 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        // Create engine logs setup based on provider configuration.
-        let engine_logs_setup = match telemetry_config.logs.providers.engine {
-            ProviderMode::Noop => EngineLogsSetup::Noop,
-            ProviderMode::Raw => EngineLogsSetup::Raw,
-            ProviderMode::Immediate => EngineLogsSetup::Immediate {
-                reporter: telemetry_runtime
-                    .logs_reporter()
-                    .cloned()
-                    .expect("validated: immediate requires reporter"),
-            },
-            ProviderMode::OpenTelemetry => EngineLogsSetup::OpenTelemetry {
-                logger_provider: telemetry_runtime
-                    .logger_provider()
-                    .clone()
-                    .expect("validated: opentelemetry engine requires logger_provider from global"),
-            },
-        };
+        // Create telemetry setup for engine and internal pipelines from provider configuration.
+        let engine_telemetry_setup =
+            telemetry_runtime.telemetry_setup_for(telemetry_config.logs.providers.engine);
+        let internal_telemetry_setup =
+            telemetry_runtime.telemetry_setup_for(telemetry_config.logs.providers.internal);
         let log_level = telemetry_config.logs.level;
 
-        // Spawn internal pipeline thread if configured.
+        // Spawn internal telemetry pipeline thread, if configured.
         let internal_pipeline_thread =
             if let Some(internal_config) = pipeline.extract_internal_config() {
-                // Internal pipeline only exists when output mode is Internal
-                // The logs_receiver goes to the internal pipeline's ITR node
+                // TODO: this is a bunch of placeholder values!
                 let internal_logs_receiver = logs_receiver.take();
                 let internal_factory = self.pipeline_factory;
                 let internal_pipeline_id: PipelineId = "internal".into();
                 let internal_pipeline_key = DeployedPipelineKey {
                     pipeline_group_id: pipeline_group_id.clone(),
                     pipeline_id: internal_pipeline_id.clone(),
-                    core_id: 0, // Virtual core ID for internal pipeline
+                    core_id: 0,
                 };
                 let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
                     pipeline_group_id.clone(),
                     internal_pipeline_id.clone(),
-                    0, // Virtual core ID
-                    0, // Virtual thread ID
+                    0,
+                    0,
                 );
                 let internal_obs_evt_reporter = obs_evt_reporter.clone();
                 let internal_metrics_reporter = metrics_reporter.clone();
-
-                // Internal pipeline uses Raw logging (direct console output)
-                // to avoid feedback loops - it can't log through itself
-                let internal_engine_logs_setup = EngineLogsSetup::Raw;
-                let internal_log_level = log_level;
 
                 // Create control message channel for internal pipeline
                 let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
@@ -199,6 +179,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 );
 
                 let thread_name = "internal-pipeline".to_string();
+                let internal_telemetry_setup = internal_telemetry_setup.clone();
                 let handle = thread::Builder::new()
                     .name(thread_name.clone())
                     .spawn(move || {
@@ -210,8 +191,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             internal_pipeline_ctx,
                             internal_obs_evt_reporter,
                             internal_metrics_reporter,
-                            internal_engine_logs_setup,
-                            internal_log_level,
+                            internal_telemetry_setup,
+                            log_level, // TODO: separate log level for internal pipeline.
                             internal_logs_receiver,
                             internal_ctrl_tx,
                             internal_ctrl_rx,
@@ -265,7 +246,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 thread_id,
             );
             let metrics_reporter = metrics_reporter.clone();
-            let engine_logs_setup = engine_logs_setup.clone();
+            let telemetry_setup = engine_telemetry_setup.clone();
             let logs_receiver = logs_receiver.clone();
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
@@ -281,7 +262,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_handle,
                         obs_evt_reporter,
                         metrics_reporter,
-                        engine_logs_setup,
+                        telemetry_setup,
                         log_level,
                         logs_receiver,
                         pipeline_ctrl_msg_tx,
@@ -537,15 +518,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        engine_logs_setup: EngineLogsSetup,
+        telemetry_setup: TelemetrySetup,
         log_level: otap_df_config::pipeline::service::telemetry::logs::LogLevel,
         logs_receiver: Option<otap_df_telemetry::LogsReceiver>,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
     ) -> Result<Vec<()>, Error> {
-        // Run with the engine-appropriate tracing subscriber.
-        // The closure receives a LogsFlusher for buffered mode.
-        engine_logs_setup.with_engine_subscriber(log_level, || {
+        // Run with the appropriate tracing subscriber for this pipeline.
+        telemetry_setup.with_subscriber(log_level, || {
             // Create a tracing span for this pipeline thread
             // so that all logs within this scope include pipeline context.
             let span = otel_info_span!("pipeline_thread", core.id = core_id.id);

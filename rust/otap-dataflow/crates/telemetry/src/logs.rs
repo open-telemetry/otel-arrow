@@ -278,13 +278,13 @@ where
     }
 }
 
-/// Engine logging configuration, carrying the data needed for each mode.
+/// Telemetry setup for pipeline threads, carrying the data needed for each mode.
 ///
-/// This enum is constructed based on `config.logs.strategies.engine` and passed
-/// to each engine thread. The engine thread uses `with_engine_subscriber()` to
-/// run its work with the appropriate logging layer.
+/// This enum is constructed based on `config.logs.providers.engine` (for main pipelines)
+/// or `config.logs.providers.internal` (for the internal telemetry pipeline).
+/// Pipeline threads use `with_subscriber()` to run with the appropriate logging layer.
 #[derive(Clone)]
-pub enum EngineLogsSetup {
+pub enum TelemetrySetup {
     /// Logs are silently dropped.
     Noop,
     /// Synchronous raw logging to console.
@@ -301,34 +301,62 @@ pub enum EngineLogsSetup {
     },
 }
 
-impl EngineLogsSetup {
-    /// Run a closure with the engine-appropriate tracing subscriber.
+impl TelemetrySetup {
+    /// Initialize this setup as the global tracing subscriber.
     ///
-    /// Returns a `LogsFlusher` that can be used to periodically flush buffered logs.
-    /// For non-buffered modes, the flusher is a no-op.
-    pub fn with_engine_subscriber<F, R>(&self, log_level: LogLevel, f: F) -> R
+    /// This is used during startup to set the global subscriber. Returns an error
+    /// if a global subscriber has already been set.
+    pub fn try_init_global(
+        &self,
+        log_level: LogLevel,
+    ) -> Result<(), tracing_subscriber::util::TryInitError> {
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let filter = crate::get_env_filter(log_level);
+
+        match self {
+            TelemetrySetup::Noop => tracing::subscriber::NoSubscriber::new().try_init(),
+            TelemetrySetup::Raw => Registry::default()
+                .with(filter)
+                .with(RawLoggingLayer::new(ConsoleWriter::default()))
+                .try_init(),
+            TelemetrySetup::Immediate { reporter } => {
+                let layer = ImmediateLayer::new(reporter.clone());
+                Registry::default().with(filter).with(layer).try_init()
+            }
+            TelemetrySetup::OpenTelemetry { logger_provider } => {
+                let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
+                Registry::default().with(filter).with(sdk_layer).try_init()
+            }
+        }
+    }
+
+    /// Run a closure with the appropriate tracing subscriber for this setup.
+    ///
+    /// The closure runs with the configured logging layer active.
+    pub fn with_subscriber<F, R>(&self, log_level: LogLevel, f: F) -> R
     where
         F: FnOnce() -> R,
     {
         let filter = crate::get_env_filter(log_level);
 
         match self {
-            EngineLogsSetup::Noop => {
+            TelemetrySetup::Noop => {
                 let subscriber = tracing::subscriber::NoSubscriber::new();
                 tracing::subscriber::with_default(subscriber, || f())
             }
-            EngineLogsSetup::Raw => {
+            TelemetrySetup::Raw => {
                 let subscriber = Registry::default()
                     .with(filter)
                     .with(RawLoggingLayer::new(ConsoleWriter::default()));
                 tracing::subscriber::with_default(subscriber, || f())
             }
-            EngineLogsSetup::Immediate { reporter } => {
+            TelemetrySetup::Immediate { reporter } => {
                 let layer = ImmediateLayer::new(reporter.clone());
                 let subscriber = Registry::default().with(filter).with(layer);
                 tracing::subscriber::with_default(subscriber, || f())
             }
-            EngineLogsSetup::OpenTelemetry { logger_provider } => {
+            TelemetrySetup::OpenTelemetry { logger_provider } => {
                 let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
                 let subscriber = Registry::default().with(filter).with(sdk_layer);
                 tracing::subscriber::with_default(subscriber, || f())

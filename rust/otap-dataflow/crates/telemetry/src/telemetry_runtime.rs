@@ -7,19 +7,16 @@ pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
-use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
     logs::{OutputMode, ProviderMode},
 };
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, util::TryInitError};
 
 use crate::{
     LogsReceiver,
     error::Error,
-    logs::{ImmediateLayer, LogsCollector, LogsReporter},
-    self_tracing::{ConsoleWriter, RawLoggingLayer},
+    logs::{LogsCollector, LogsReporter},
     telemetry_runtime::logger_provider::LoggerProvider,
     telemetry_runtime::meter_provider::MeterProvider,
 };
@@ -100,13 +97,6 @@ impl TelemetryRuntime {
             (None, None, None)
         };
 
-        let tracing_setup =
-            tracing_subscriber::registry().with(crate::get_env_filter(config.logs.level));
-
-        let logerr = |err: TryInitError| {
-            crate::raw_error!("tracing.subscriber.init", error = err.to_string());
-        };
-
         // Check if either global or engine needs the OpenTelemetry logger provider
         let global_needs_otel = config.logs.providers.global == ProviderMode::OpenTelemetry;
         let engine_needs_otel = config.logs.providers.engine == ProviderMode::OpenTelemetry;
@@ -123,43 +113,14 @@ impl TelemetryRuntime {
 
         // Configure the global subscriber based on providers.global.
         // Engine threads override this with their own subscriber via with_default().
-        match config.logs.providers.global {
-            ProviderMode::Noop => {
-                // No-op: just install the filter, events are dropped
-                if let Err(err) = tracing::subscriber::NoSubscriber::new().try_init() {
-                    logerr(err);
-                }
-            }
-            ProviderMode::Raw => {
-                if let Err(err) = tracing_setup
-                    .with(RawLoggingLayer::new(ConsoleWriter::default()))
-                    .try_init()
-                {
-                    logerr(err);
-                }
-            }
-            ProviderMode::Immediate => {
-                let reporter = logs_reporter.clone().ok_or_else(|| {
-                    Error::ConfigurationError("Immediate logging requires a LogsReporter".into())
-                })?;
-                let channel_layer = ImmediateLayer::new(reporter);
-                if let Err(err) = tracing_setup.with(channel_layer).try_init() {
-                    logerr(err);
-                }
-            }
-            ProviderMode::OpenTelemetry => {
-                // logger_provider is guaranteed to be Some here since global_needs_otel is true
-                let sdk_layer = OpenTelemetryTracingBridge::new(
-                    logger_provider
-                        .as_ref()
-                        .expect("logger_provider configured when global is OpenTelemetry"),
-                );
-
-                if let Err(err) = tracing_setup.with(sdk_layer).try_init() {
-                    logerr(err)
-                }
-            }
-        };
+        let global_setup = Self::make_telemetry_setup(
+            config.logs.providers.global,
+            logs_reporter.as_ref(),
+            logger_provider.as_ref(),
+        )?;
+        if let Err(err) = global_setup.try_init_global(config.logs.level) {
+            crate::raw_error!("tracing.subscriber.init", error = err.to_string());
+        }
 
         // Note: Any span-level detail, typically through a traces provider, has
         // to be configured via the try_init() cases above.
@@ -251,6 +212,61 @@ impl TelemetryRuntime {
     /// This method takes ownership of the collector (can only be called once).
     pub fn take_logs_collector(&mut self) -> Option<LogsCollector> {
         self.logs_collector.take()
+    }
+
+    /// Create a `TelemetrySetup` for the given provider mode.
+    ///
+    /// This uses the runtime's shared `logs_reporter` and `logger_provider` to configure
+    /// the setup for the given provider mode.
+    ///
+    /// # Panics
+    /// Panics if the provider mode requires a resource that wasn't configured:
+    /// - `Immediate` requires `logs_reporter` to be present
+    /// - `OpenTelemetry` requires `logger_provider` to be present
+    #[must_use]
+    pub fn telemetry_setup_for(&self, provider_mode: ProviderMode) -> crate::logs::TelemetrySetup {
+        Self::make_telemetry_setup(
+            provider_mode,
+            self.logs_reporter.as_ref(),
+            self.logger_provider.as_ref(),
+        )
+        .expect("validated: provider mode resources should be configured")
+    }
+
+    /// Helper to create a TelemetrySetup from a ProviderMode and optional resources.
+    ///
+    /// Returns an error if the mode requires a resource that isn't provided.
+    fn make_telemetry_setup(
+        provider_mode: ProviderMode,
+        logs_reporter: Option<&LogsReporter>,
+        logger_provider: Option<&SdkLoggerProvider>,
+    ) -> Result<crate::logs::TelemetrySetup, Error> {
+        use crate::logs::TelemetrySetup;
+
+        match provider_mode {
+            ProviderMode::Noop => Ok(TelemetrySetup::Noop),
+            ProviderMode::Raw => Ok(TelemetrySetup::Raw),
+            ProviderMode::Immediate => {
+                let reporter = logs_reporter.ok_or_else(|| {
+                    Error::ConfigurationError(
+                        "Immediate provider mode requires logs_reporter".into(),
+                    )
+                })?;
+                Ok(TelemetrySetup::Immediate {
+                    reporter: reporter.clone(),
+                })
+            }
+            ProviderMode::OpenTelemetry => {
+                let provider = logger_provider.ok_or_else(|| {
+                    Error::ConfigurationError(
+                        "OpenTelemetry provider mode requires logger_provider".into(),
+                    )
+                })?;
+                Ok(TelemetrySetup::OpenTelemetry {
+                    logger_provider: provider.clone(),
+                })
+            }
+        }
     }
 
     /// Shutdown the OpenTelemetry SDK.
