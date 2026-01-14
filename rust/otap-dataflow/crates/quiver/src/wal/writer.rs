@@ -862,6 +862,34 @@ impl ActiveWalFile {
         Ok(())
     }
 
+    /// Synchronous flush for use in `Drop` where async is not available.
+    ///
+    /// This temporarily converts the tokio File to a std File to perform
+    /// a blocking sync_data call, then converts it back.
+    fn flush_now_sync(&mut self) {
+        // try_into_std fails if the file has pending async operations.
+        // In Drop, we expect the file to be idle.
+        let tokio_file = std::mem::replace(&mut self.file, placeholder_file());
+        let std_file = match tokio_file.try_into_std() {
+            Ok(f) => f,
+            Err(tokio_file) => {
+                // Restore the file and give up - pending async ops
+                self.file = tokio_file;
+                return;
+            }
+        };
+
+        // Perform sync_data
+        #[cfg(test)]
+        test_support::record_sync_data();
+        let _ = std_file.sync_data();
+
+        // Convert back to tokio::fs::File
+        self.file = File::from_std(std_file);
+        self.last_flush = Instant::now();
+        self.unflushed_bytes = 0;
+    }
+
     /// Updates the high-water mark and potentially shrinks the payload buffer.
     ///
     /// Call this after writing an entry (when `payload_buffer` has been cleared).
@@ -1400,7 +1428,7 @@ impl Drop for WalWriter {
             return;
         }
 
-        let _ = self.active_file.flush_now();
+        self.active_file.flush_now_sync();
         #[cfg(test)]
         test_support::record_drop_flush();
     }
@@ -1428,6 +1456,21 @@ fn system_time_to_nanos(ts: SystemTime) -> WalResult<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| WalError::InvalidTimestamp)?;
     i64::try_from(duration.as_nanos()).map_err(|_| WalError::InvalidTimestamp)
+}
+
+/// Creates a placeholder tokio::fs::File for use in `std::mem::replace`.
+///
+/// This opens `/dev/null` (Unix) or `NUL` (Windows) to create a valid but
+/// inert file handle. The placeholder is immediately replaced with the
+/// real file after the sync operation completes.
+fn placeholder_file() -> File {
+    #[cfg(unix)]
+    let path = "/dev/null";
+    #[cfg(windows)]
+    let path = "NUL";
+    // Use std::fs::File::open which is sync, then convert to tokio
+    let std_file = std::fs::File::open(path).expect("failed to open null device");
+    File::from_std(std_file)
 }
 
 async fn sync_file_data_async(file: &File) -> WalResult<()> {
