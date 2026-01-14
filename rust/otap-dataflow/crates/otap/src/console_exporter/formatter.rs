@@ -3,22 +3,24 @@
 
 //! Hierarchical formatter for OTLP data with tree-style output.
 //!
-//! This module uses the shared formatting primitives from `otap_df_telemetry::self_tracing`
-//! to render OTLP log data in a hierarchical tree format:
+//! This module uses the shared `format_log_line` from `otap_df_telemetry::self_tracing`
+//! to render OTLP log data in a hierarchical tree format. The tree structure is
+//! inserted via the level-formatting callback, keeping timestamp left-aligned:
 //!
 //! ```text
-//! <timestamp> RESOURCE {service.name=my-service, host.name=localhost}
-//! │ <timestamp> SCOPE {name=my-library, version=1.0.0}
-//! │ ├─ INFO  event_name: message body [attr=value, ...]
-//! │ ├─ WARN  event_name: warning message
-//! │ └─ ERROR event_name: error message [code=500]
+//! 2026-01-14T18:29:09.645Z  RESOURCE  v1.Resource: [service.name=my-service]
+//! 2026-01-14T18:29:09.645Z  │ SCOPE   v1.InstrumentationScope: [name=my-lib]
+//! 2026-01-14T18:29:09.645Z  │ └─ DEBUG  event_name: body [attr=value]
 //! ```
 
-use otap_df_pdata::views::common::{AttributeView, InstrumentationScopeView};
+use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::schema::{SpanId, TraceId};
+use otap_df_pdata::views::common::{
+    AnyValueView, AttributeView, InstrumentationScopeView, Str, ValueType,
+};
 use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
-use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::self_tracing::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE};
 use std::io::Write;
 
@@ -27,7 +29,6 @@ mod unicode_tree {
     pub const VERTICAL: &str = "│";
     pub const TEE: &str = "├─";
     pub const CORNER: &str = "└─";
-    pub const SPACE: &str = "  ";
 }
 
 /// Tree drawing characters for ASCII mode.
@@ -35,13 +36,38 @@ mod ascii_tree {
     pub const VERTICAL: &str = "|";
     pub const TEE: &str = "+-";
     pub const CORNER: &str = "\\-";
-    pub const SPACE: &str = "  ";
+}
+
+/// Tree drawing characters.
+#[derive(Clone, Copy)]
+struct TreeChars {
+    vertical: &'static str,
+    tee: &'static str,
+    corner: &'static str,
+}
+
+impl TreeChars {
+    fn unicode() -> Self {
+        Self {
+            vertical: unicode_tree::VERTICAL,
+            tee: unicode_tree::TEE,
+            corner: unicode_tree::CORNER,
+        }
+    }
+
+    fn ascii() -> Self {
+        Self {
+            vertical: ascii_tree::VERTICAL,
+            tee: ascii_tree::TEE,
+            corner: ascii_tree::CORNER,
+        }
+    }
 }
 
 /// Hierarchical formatter for OTLP data.
 pub struct HierarchicalFormatter {
     writer: ConsoleWriter,
-    use_unicode: bool,
+    tree: TreeChars,
 }
 
 impl HierarchicalFormatter {
@@ -53,7 +79,12 @@ impl HierarchicalFormatter {
         } else {
             ConsoleWriter::no_color()
         };
-        Self { writer, use_unicode }
+        let tree = if use_unicode {
+            TreeChars::unicode()
+        } else {
+            TreeChars::ascii()
+        };
+        Self { writer, tree }
     }
 
     /// Format logs from OTLP bytes.
@@ -65,42 +96,33 @@ impl HierarchicalFormatter {
     }
 
     /// Format logs from a LogsDataView.
-    fn format_logs_data<L: LogsDataView>(&self, logs_data: &'_ L) {
+    fn format_logs_data<L: LogsDataView>(&self, logs_data: &L) {
         for resource_logs in logs_data.resources() {
             self.format_resource_logs(&resource_logs);
         }
     }
 
     /// Format a ResourceLogs with its nested scopes.
-    fn format_resource_logs<R: ResourceLogsView>(&self, resource_logs: &'_ R) {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = std::io::Cursor::new(buf.as_mut_slice());
-
-        // Get first timestamp from nested log records for the resource line
+    fn format_resource_logs<R: ResourceLogsView>(&self, resource_logs: &R) {
+        // Get first timestamp from nested log records
         let first_ts = self.get_first_log_timestamp(resource_logs);
 
-        // Write resource header
-        self.writer.write_ansi(&mut w, AnsiCode::Dim);
-        ConsoleWriter::write_timestamp(&mut w, first_ts);
-        self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b" ");
-        self.writer.write_ansi(&mut w, AnsiCode::Cyan);
-        self.writer.write_ansi(&mut w, AnsiCode::Bold);
-        let _ = w.write_all(b"RESOURCE");
-        self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b" ");
-
-        // Write resource attributes
-        if let Some(resource) = resource_logs.resource() {
-            self.write_resource_attrs(&mut w, &resource);
-        } else {
-            let _ = w.write_all(b"{}");
+        // Always format resource line (even if empty) for consistent tree structure
+        match resource_logs.resource() {
+            Some(resource) => {
+                let view = ResourceLogView::new(&resource);
+                self.print_line(first_ts, "v1.Resource", &view, |w, cw| {
+                    cw.write_ansi(w, AnsiCode::Cyan);
+                    cw.write_ansi(w, AnsiCode::Bold);
+                    let _ = w.write_all(b"RESOURCE");
+                    cw.write_ansi(w, AnsiCode::Reset);
+                    let _ = w.write_all(b"  ");
+                });
+            }
+            None => {
+                self.print_resource_line(first_ts);
+            }
         }
-        let _ = w.write_all(b"\n");
-
-        // Print resource line
-        let len = w.position() as usize;
-        let _ = std::io::stdout().write_all(&buf[..len]);
 
         // Format each scope
         let scopes: Vec<_> = resource_logs.scopes().collect();
@@ -111,8 +133,27 @@ impl HierarchicalFormatter {
         }
     }
 
+    /// Print a resource line with no attributes (used when resource is None).
+    fn print_resource_line(&self, timestamp_ns: u64) {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut w = std::io::Cursor::new(buf.as_mut_slice());
+
+        self.writer.write_ansi(&mut w, AnsiCode::Dim);
+        ConsoleWriter::write_timestamp(&mut w, timestamp_ns);
+        self.writer.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+        self.writer.write_ansi(&mut w, AnsiCode::Cyan);
+        self.writer.write_ansi(&mut w, AnsiCode::Bold);
+        let _ = w.write_all(b"RESOURCE");
+        self.writer.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"   v1.Resource:\n");
+
+        let len = w.position() as usize;
+        let _ = std::io::stdout().write_all(&buf[..len]);
+    }
+
     /// Get the first timestamp from log records in a ResourceLogs.
-    fn get_first_log_timestamp<R: ResourceLogsView>(&self, resource_logs: &'_ R) -> u64 {
+    fn get_first_log_timestamp<R: ResourceLogsView>(&self, resource_logs: &R) -> u64 {
         for scope_logs in resource_logs.scopes() {
             for log_record in scope_logs.log_records() {
                 if let Some(ts) = log_record.time_unix_nano() {
@@ -127,42 +168,32 @@ impl HierarchicalFormatter {
     }
 
     /// Format a ScopeLogs with its nested log records.
-    fn format_scope_logs<S: ScopeLogsView>(&self, scope_logs: &'_ S, is_last_scope: bool) {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = std::io::Cursor::new(buf.as_mut_slice());
-
-        let tree = self.tree_chars();
-
-        // Get first timestamp from log records for the scope line
+    fn format_scope_logs<S: ScopeLogsView>(&self, scope_logs: &S, is_last_scope: bool) {
+        // Get first timestamp from log records
         let first_ts = scope_logs
             .log_records()
             .find_map(|lr| lr.time_unix_nano().or_else(|| lr.observed_time_unix_nano()))
             .unwrap_or(0);
 
-        // Write scope header with tree prefix
-        let _ = w.write_all(tree.vertical.as_bytes());
-        let _ = w.write_all(b" ");
-        self.writer.write_ansi(&mut w, AnsiCode::Dim);
-        ConsoleWriter::write_timestamp(&mut w, first_ts);
-        self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b" ");
-        self.writer.write_ansi(&mut w, AnsiCode::Magenta);
-        self.writer.write_ansi(&mut w, AnsiCode::Bold);
-        let _ = w.write_all(b"SCOPE");
-        self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b" ");
-
-        // Write scope info
-        if let Some(scope) = scope_logs.scope() {
-            self.write_scope_info(&mut w, &scope);
-        } else {
-            let _ = w.write_all(b"{}");
+        // Always format scope line (even if empty) for consistent tree structure
+        match scope_logs.scope() {
+            Some(scope) => {
+                let view = ScopeLogView::new(&scope);
+                let tree = self.tree;
+                self.print_line(first_ts, "v1.InstrumentationScope", &view, |w, cw| {
+                    let _ = w.write_all(tree.vertical.as_bytes());
+                    let _ = w.write_all(b" ");
+                    cw.write_ansi(w, AnsiCode::Magenta);
+                    cw.write_ansi(w, AnsiCode::Bold);
+                    let _ = w.write_all(b"SCOPE");
+                    cw.write_ansi(w, AnsiCode::Reset);
+                    let _ = w.write_all(b"    ");
+                });
+            }
+            None => {
+                self.print_scope_line(first_ts);
+            }
         }
-        let _ = w.write_all(b"\n");
-
-        // Print scope line
-        let len = w.position() as usize;
-        let _ = std::io::stdout().write_all(&buf[..len]);
 
         // Format each log record
         let records: Vec<_> = scope_logs.log_records().collect();
@@ -173,151 +204,426 @@ impl HierarchicalFormatter {
         }
     }
 
-    /// Format a single log record.
-    fn format_log_record<L: LogRecordView>(
-        &self,
-        log_record: &'_ L,
-        is_last_scope: bool,
-        is_last_record: bool,
-    ) {
+    /// Print a scope line with no attributes (used when scope is None).
+    fn print_scope_line(&self, timestamp_ns: u64) {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let mut w = std::io::Cursor::new(buf.as_mut_slice());
 
-        let tree = self.tree_chars();
-        let severity = log_record.severity_number();
-
-        // Tree prefix: vertical line for scope continuation, then branch for record
-        let _ = w.write_all(tree.vertical.as_bytes());
+        self.writer.write_ansi(&mut w, AnsiCode::Dim);
+        ConsoleWriter::write_timestamp(&mut w, timestamp_ns);
+        self.writer.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"  ");
+        let _ = w.write_all(self.tree.vertical.as_bytes());
         let _ = w.write_all(b" ");
-        if is_last_record && is_last_scope {
-            let _ = w.write_all(tree.corner.as_bytes());
-        } else {
-            let _ = w.write_all(tree.tee.as_bytes());
-        }
-        let _ = w.write_all(b" ");
+        self.writer.write_ansi(&mut w, AnsiCode::Magenta);
+        self.writer.write_ansi(&mut w, AnsiCode::Bold);
+        let _ = w.write_all(b"SCOPE");
+        self.writer.write_ansi(&mut w, AnsiCode::Reset);
+        let _ = w.write_all(b"    v1.InstrumentationScope:\n");
 
-        // Timestamp
+        let len = w.position() as usize;
+        let _ = std::io::stdout().write_all(&buf[..len]);
+    }
+
+    /// Format a single log record using format_log_line.
+    fn format_log_record<L: LogRecordView>(
+        &self,
+        log_record: &L,
+        is_last_scope: bool,
+        is_last_record: bool,
+    ) {
         let ts = log_record
             .time_unix_nano()
             .or_else(|| log_record.observed_time_unix_nano())
             .unwrap_or(0);
-        self.writer.write_ansi(&mut w, AnsiCode::Dim);
-        ConsoleWriter::write_timestamp(&mut w, ts);
-        self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b" ");
 
-        // Level (using shared severity formatting)
-        self.writer.write_severity(&mut w, severity);
+        let event_name = log_record
+            .event_name()
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .unwrap_or_else(|| "event".to_string());
 
-        // Event name
-        self.writer.write_ansi(&mut w, AnsiCode::Bold);
-        if let Some(name) = log_record.event_name() {
-            let _ = w.write_all(name.as_ref());
-        } else {
-            let _ = w.write_all(b"event");
-        }
-        self.writer.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b": ");
+        let severity = log_record.severity_number();
+        let tree = self.tree;
 
-        // Body (using shared AnyValue formatting)
-        if let Some(body) = log_record.body() {
-            ConsoleWriter::write_any_value(&mut w, &body);
-        }
+        self.print_line(ts, &event_name, log_record, |w, cw| {
+            // Tree prefix
+            let _ = w.write_all(tree.vertical.as_bytes());
+            let _ = w.write_all(b" ");
+            if is_last_record && is_last_scope {
+                let _ = w.write_all(tree.corner.as_bytes());
+            } else {
+                let _ = w.write_all(tree.tee.as_bytes());
+            }
+            let _ = w.write_all(b" ");
+            // Severity with color
+            cw.write_severity(w, severity);
+        });
+    }
 
-        // Attributes (using shared attribute formatting)
-        ConsoleWriter::write_attrs(&mut w, log_record.attributes());
+    /// Print a line using the shared format_log_line.
+    fn print_line<V, F>(&self, timestamp_ns: u64, event_name: &str, record: &V, format_level: F)
+    where
+        V: LogRecordView,
+        F: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+    {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let mut w = std::io::Cursor::new(buf.as_mut_slice());
 
-        let _ = w.write_all(b"\n");
+        self.writer
+            .format_log_line(&mut w, timestamp_ns, event_name, record, format_level);
 
-        // Print to stdout or stderr based on severity
         let len = w.position() as usize;
-        if ConsoleWriter::severity_is_error_or_warn(severity) {
-            let _ = std::io::stderr().write_all(&buf[..len]);
-        } else {
-            let _ = std::io::stdout().write_all(&buf[..len]);
-        }
-    }
-
-    /// Get tree drawing characters based on mode.
-    fn tree_chars(&self) -> TreeChars {
-        if self.use_unicode {
-            TreeChars {
-                vertical: unicode_tree::VERTICAL,
-                tee: unicode_tree::TEE,
-                corner: unicode_tree::CORNER,
-                _space: unicode_tree::SPACE,
-            }
-        } else {
-            TreeChars {
-                vertical: ascii_tree::VERTICAL,
-                tee: ascii_tree::TEE,
-                corner: ascii_tree::CORNER,
-                _space: ascii_tree::SPACE,
-            }
-        }
-    }
-
-    /// Write resource attributes in `{key=value, ...}` format.
-    fn write_resource_attrs<R: ResourceView>(&self, w: &mut BufWriter<'_>, resource: &R) {
-        let _ = w.write_all(b"{");
-        let mut first = true;
-        for attr in resource.attributes() {
-            if !first {
-                let _ = w.write_all(b", ");
-            }
-            first = false;
-            let _ = w.write_all(attr.key());
-            let _ = w.write_all(b"=");
-            if let Some(v) = attr.value() {
-                ConsoleWriter::write_any_value(w, &v);
-            }
-        }
-        let _ = w.write_all(b"}");
-    }
-
-    /// Write scope information in `{name=..., version=..., ...}` format.
-    fn write_scope_info<S: InstrumentationScopeView>(&self, w: &mut BufWriter<'_>, scope: &S) {
-        let _ = w.write_all(b"{");
-        let mut has_content = false;
-
-        if let Some(name) = scope.name() {
-            let _ = w.write_all(b"name=");
-            let _ = w.write_all(name.as_ref());
-            has_content = true;
-        }
-
-        if let Some(version) = scope.version() {
-            if has_content {
-                let _ = w.write_all(b", ");
-            }
-            let _ = w.write_all(b"version=");
-            let _ = w.write_all(version.as_ref());
-            has_content = true;
-        }
-
-        // Include scope attributes
-        for attr in scope.attributes() {
-            if has_content {
-                let _ = w.write_all(b", ");
-            }
-            let _ = w.write_all(attr.key());
-            let _ = w.write_all(b"=");
-            if let Some(v) = attr.value() {
-                ConsoleWriter::write_any_value(w, &v);
-            }
-            has_content = true;
-        }
-
-        let _ = w.write_all(b"}");
+        let _ = std::io::stdout().write_all(&buf[..len]);
     }
 }
 
-/// Tree drawing characters.
-struct TreeChars {
-    vertical: &'static str,
-    tee: &'static str,
-    corner: &'static str,
-    _space: &'static str,
+// ============================================================================
+// View adapters that present Resource and Scope as LogRecordView
+// ============================================================================
+
+/// A view adapter that presents a Resource as a LogRecordView.
+///
+/// The resource attributes become the log record's attributes.
+/// Body is empty, severity is ignored.
+struct ResourceLogView<'a, R: ResourceView> {
+    resource: &'a R,
+}
+
+impl<'a, R: ResourceView> ResourceLogView<'a, R> {
+    fn new(resource: &'a R) -> Self {
+        Self { resource }
+    }
+}
+
+impl<R: ResourceView> LogRecordView for ResourceLogView<'_, R> {
+    type Attribute<'att>
+        = R::Attribute<'att>
+    where
+        Self: 'att;
+    type AttributeIter<'att>
+        = R::AttributesIter<'att>
+    where
+        Self: 'att;
+    type Body<'bod>
+        = EmptyAnyValue
+    where
+        Self: 'bod;
+
+    fn time_unix_nano(&self) -> Option<u64> {
+        None
+    }
+    fn observed_time_unix_nano(&self) -> Option<u64> {
+        None
+    }
+    fn severity_number(&self) -> Option<i32> {
+        None
+    }
+    fn severity_text(&self) -> Option<Str<'_>> {
+        None
+    }
+    fn body(&self) -> Option<Self::Body<'_>> {
+        None
+    }
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        self.resource.attributes()
+    }
+    fn dropped_attributes_count(&self) -> u32 {
+        0
+    }
+    fn flags(&self) -> Option<u32> {
+        None
+    }
+    fn trace_id(&self) -> Option<&TraceId> {
+        None
+    }
+    fn span_id(&self) -> Option<&SpanId> {
+        None
+    }
+    fn event_name(&self) -> Option<Str<'_>> {
+        None
+    }
+}
+
+/// A view adapter that presents an InstrumentationScope as a LogRecordView.
+///
+/// The scope's name, version, and attributes are merged into the attributes iterator.
+struct ScopeLogView<'a, S: InstrumentationScopeView> {
+    scope: &'a S,
+}
+
+impl<'a, S: InstrumentationScopeView> ScopeLogView<'a, S> {
+    fn new(scope: &'a S) -> Self {
+        Self { scope }
+    }
+}
+
+impl<S: InstrumentationScopeView> LogRecordView for ScopeLogView<'_, S> {
+    type Attribute<'att>
+        = ScopeAttribute<'att, S>
+    where
+        Self: 'att;
+    type AttributeIter<'att>
+        = ScopeAttributeIter<'att, S>
+    where
+        Self: 'att;
+    type Body<'bod>
+        = EmptyAnyValue
+    where
+        Self: 'bod;
+
+    fn time_unix_nano(&self) -> Option<u64> {
+        None
+    }
+    fn observed_time_unix_nano(&self) -> Option<u64> {
+        None
+    }
+    fn severity_number(&self) -> Option<i32> {
+        None
+    }
+    fn severity_text(&self) -> Option<Str<'_>> {
+        None
+    }
+    fn body(&self) -> Option<Self::Body<'_>> {
+        None
+    }
+    fn attributes(&self) -> Self::AttributeIter<'_> {
+        ScopeAttributeIter::new(self.scope)
+    }
+    fn dropped_attributes_count(&self) -> u32 {
+        0
+    }
+    fn flags(&self) -> Option<u32> {
+        None
+    }
+    fn trace_id(&self) -> Option<&TraceId> {
+        None
+    }
+    fn span_id(&self) -> Option<&SpanId> {
+        None
+    }
+    fn event_name(&self) -> Option<Str<'_>> {
+        None
+    }
+}
+
+/// Iterator that yields scope name, version, and attributes as a unified attribute stream.
+struct ScopeAttributeIter<'a, S: InstrumentationScopeView> {
+    scope: &'a S,
+    phase: ScopeIterPhase<'a, S>,
+}
+
+enum ScopeIterPhase<'a, S: InstrumentationScopeView + 'a> {
+    Name,
+    Version,
+    Attributes(S::AttributeIter<'a>),
+    Done,
+}
+
+impl<'a, S: InstrumentationScopeView + 'a> ScopeAttributeIter<'a, S> {
+    fn new(scope: &'a S) -> Self {
+        Self {
+            scope,
+            phase: ScopeIterPhase::Name,
+        }
+    }
+}
+
+impl<'a, S: InstrumentationScopeView + 'a> Iterator for ScopeAttributeIter<'a, S> {
+    type Item = ScopeAttribute<'a, S>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match &mut self.phase {
+                ScopeIterPhase::Name => {
+                    if let Some(name) = self.scope.name() {
+                        self.phase = ScopeIterPhase::Version;
+                        return Some(ScopeAttribute::Name(name));
+                    }
+                    self.phase = ScopeIterPhase::Version;
+                }
+                ScopeIterPhase::Version => {
+                    if let Some(version) = self.scope.version() {
+                        self.phase = ScopeIterPhase::Attributes(self.scope.attributes());
+                        return Some(ScopeAttribute::Version(version));
+                    }
+                    self.phase = ScopeIterPhase::Attributes(self.scope.attributes());
+                }
+                ScopeIterPhase::Attributes(iter) => {
+                    if let Some(attr) = iter.next() {
+                        return Some(ScopeAttribute::Attr(attr));
+                    }
+                    self.phase = ScopeIterPhase::Done;
+                    return None;
+                }
+                ScopeIterPhase::Done => return None,
+            }
+        }
+    }
+}
+
+/// A synthetic attribute for scope name/version or a real scope attribute.
+enum ScopeAttribute<'a, S: InstrumentationScopeView + 'a> {
+    Name(Str<'a>),
+    Version(Str<'a>),
+    Attr(S::Attribute<'a>),
+}
+
+impl<'a, S: InstrumentationScopeView + 'a> AttributeView for ScopeAttribute<'a, S> {
+    type Val<'val>
+        = ScopeAttributeValue<'a, 'val, S>
+    where
+        Self: 'val;
+
+    fn key(&self) -> Str<'_> {
+        match self {
+            ScopeAttribute::Name(_) => b"name",
+            ScopeAttribute::Version(_) => b"version",
+            ScopeAttribute::Attr(a) => a.key(),
+        }
+    }
+
+    fn value(&self) -> Option<Self::Val<'_>> {
+        match self {
+            ScopeAttribute::Name(s) => Some(ScopeAttributeValue::String(s)),
+            ScopeAttribute::Version(s) => Some(ScopeAttributeValue::String(s)),
+            ScopeAttribute::Attr(a) => a.value().map(ScopeAttributeValue::Delegated),
+        }
+    }
+}
+
+/// Value type for scope attributes - either a string (name/version) or delegated.
+/// 'a is the lifetime of the underlying data
+/// 'val is the borrow lifetime for the value call
+enum ScopeAttributeValue<'a, 'val, S: InstrumentationScopeView + 'a>
+where
+    S::Attribute<'a>: 'val,
+{
+    String(Str<'a>),
+    Delegated(<S::Attribute<'a> as AttributeView>::Val<'val>),
+}
+
+impl<'a, 'val, S: InstrumentationScopeView + 'a> AnyValueView<'val>
+    for ScopeAttributeValue<'a, 'val, S>
+where
+    'a: 'val,
+{
+    type KeyValue = EmptyAttribute;
+    type ArrayIter<'arr>
+        = std::iter::Empty<Self>
+    where
+        Self: 'arr;
+    type KeyValueIter<'kv>
+        = std::iter::Empty<EmptyAttribute>
+    where
+        Self: 'kv;
+
+    fn value_type(&self) -> ValueType {
+        match self {
+            ScopeAttributeValue::String(_) => ValueType::String,
+            ScopeAttributeValue::Delegated(v) => v.value_type(),
+        }
+    }
+
+    fn as_string(&self) -> Option<Str<'_>> {
+        match self {
+            ScopeAttributeValue::String(s) => Some(s),
+            ScopeAttributeValue::Delegated(v) => v.as_string(),
+        }
+    }
+
+    fn as_int64(&self) -> Option<i64> {
+        match self {
+            ScopeAttributeValue::String(_) => None,
+            ScopeAttributeValue::Delegated(v) => v.as_int64(),
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            ScopeAttributeValue::String(_) => None,
+            ScopeAttributeValue::Delegated(v) => v.as_bool(),
+        }
+    }
+
+    fn as_double(&self) -> Option<f64> {
+        match self {
+            ScopeAttributeValue::String(_) => None,
+            ScopeAttributeValue::Delegated(v) => v.as_double(),
+        }
+    }
+
+    fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            ScopeAttributeValue::String(_) => None,
+            ScopeAttributeValue::Delegated(v) => v.as_bytes(),
+        }
+    }
+
+    fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
+        None
+    }
+
+    fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
+        None
+    }
+}
+
+/// An empty AnyValue (used as placeholder for body).
+struct EmptyAnyValue;
+
+impl<'a> AnyValueView<'a> for EmptyAnyValue {
+    type KeyValue = EmptyAttribute;
+    type ArrayIter<'arr>
+        = std::iter::Empty<EmptyAnyValue>
+    where
+        Self: 'arr;
+    type KeyValueIter<'kv>
+        = std::iter::Empty<EmptyAttribute>
+    where
+        Self: 'kv;
+
+    fn value_type(&self) -> ValueType {
+        ValueType::Empty
+    }
+    fn as_string(&self) -> Option<Str<'_>> {
+        None
+    }
+    fn as_int64(&self) -> Option<i64> {
+        None
+    }
+    fn as_bool(&self) -> Option<bool> {
+        None
+    }
+    fn as_double(&self) -> Option<f64> {
+        None
+    }
+    fn as_bytes(&self) -> Option<&[u8]> {
+        None
+    }
+    fn as_array(&self) -> Option<Self::ArrayIter<'_>> {
+        None
+    }
+    fn as_kvlist(&self) -> Option<Self::KeyValueIter<'_>> {
+        None
+    }
+}
+
+/// An empty attribute (used as placeholder).
+struct EmptyAttribute;
+
+impl AttributeView for EmptyAttribute {
+    type Val<'val>
+        = EmptyAnyValue
+    where
+        Self: 'val;
+
+    fn key(&self) -> Str<'_> {
+        b""
+    }
+
+    fn value(&self) -> Option<Self::Val<'_>> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -326,13 +632,13 @@ mod tests {
 
     #[test]
     fn test_tree_chars() {
-        let unicode = HierarchicalFormatter::new(false, true);
-        let ascii = HierarchicalFormatter::new(false, false);
+        let unicode = TreeChars::unicode();
+        let ascii = TreeChars::ascii();
 
-        assert_eq!(unicode.tree_chars().vertical, "│");
-        assert_eq!(unicode.tree_chars().tee, "├─");
+        assert_eq!(unicode.vertical, "│");
+        assert_eq!(unicode.tee, "├─");
 
-        assert_eq!(ascii.tree_chars().vertical, "|");
-        assert_eq!(ascii.tree_chars().tee, "+-");
+        assert_eq!(ascii.vertical, "|");
+        assert_eq!(ascii.tee, "+-");
     }
 }

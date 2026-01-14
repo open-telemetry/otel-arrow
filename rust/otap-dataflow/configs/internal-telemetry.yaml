@@ -43,9 +43,23 @@ internal:
     out_ports:
       out_port:
         destinations:
-          - console
+          - batch
         dispatch_strategy: round_robin
     config: {}
+  batch:
+    kind: processor
+    plugin_urn: "urn:otel:batch:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - console
+        dispatch_strategy: round_robin
+    config:
+      otap:
+        min_size: 1000
+        sizer: items
+      flush_timeout: 3s
+      format: otlp
   console:
     kind: exporter
     plugin_urn: "urn:otel:console:exporter"
