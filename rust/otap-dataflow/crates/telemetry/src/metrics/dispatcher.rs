@@ -14,12 +14,12 @@ use crate::{
     descriptor::{Instrument, MetricsField, Temporality},
     error::Error,
     metrics::MetricValue,
-    registry::MetricsRegistryHandle,
+    registry::TelemetryRegistryHandle,
 };
 
 /// Dispatcher for metrics that periodically flushes metrics to OpenTelemetry SDK.
 pub struct MetricsDispatcher {
-    metrics_handler: MetricsRegistryHandle,
+    metrics_handler: TelemetryRegistryHandle,
     reporting_interval: std::time::Duration,
 }
 
@@ -27,7 +27,7 @@ impl MetricsDispatcher {
     /// Create a new metrics dispatcher
     #[must_use]
     pub fn new(
-        metrics_handler: MetricsRegistryHandle,
+        metrics_handler: TelemetryRegistryHandle,
         reporting_interval: std::time::Duration,
     ) -> Self {
         Self {
@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn test_dispatch_metrics_no_metrics() {
         let dispatcher = MetricsDispatcher::new(
-            MetricsRegistryHandle::new(),
+            TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
         let result = dispatcher.dispatch_metrics();
@@ -381,7 +381,7 @@ mod tests {
         let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
-            MetricsRegistryHandle::new(),
+            TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
@@ -402,7 +402,7 @@ mod tests {
         let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
-            MetricsRegistryHandle::new(),
+            TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
@@ -423,7 +423,7 @@ mod tests {
         let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
-            MetricsRegistryHandle::new(),
+            TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
@@ -444,7 +444,7 @@ mod tests {
         let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
-            MetricsRegistryHandle::new(),
+            TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);

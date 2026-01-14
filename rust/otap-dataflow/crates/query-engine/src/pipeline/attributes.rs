@@ -127,7 +127,7 @@ mod test {
 
     #[tokio::test]
     async fn test_rename_single_attributes() {
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-rename attributes[\"y\"] = attributes[\"x\"]",
             generate_logs_test_data(),
         )
@@ -145,7 +145,7 @@ mod test {
         );
 
         // test renaming resource attributes:
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-rename resource.attributes[\"yr1\"] = resource.attributes[\"xr1\"]",
             generate_logs_test_data(),
         )
@@ -163,7 +163,7 @@ mod test {
         );
 
         // test renaming scope attributes:
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-rename instrumentation_scope.attributes[\"ys1\"] = instrumentation_scope.attributes[\"xs1\"]",
             generate_logs_test_data(),
         )
@@ -184,7 +184,7 @@ mod test {
     #[tokio::test]
     async fn test_rename_multiple_attributes() {
         // test renaming multiple attributes from same batch
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | 
                 project-rename 
                     attributes[\"y\"] = attributes[\"x\"], 
@@ -206,7 +206,7 @@ mod test {
         );
 
         // test renaming multiple attributes from many batches
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | 
                 project-rename 
                     attributes[\"y\"] = attributes[\"x\"], 
@@ -256,7 +256,7 @@ mod test {
     #[tokio::test]
     async fn test_rename_when_no_attrs_batch_present() {
         let input = vec![LogRecord::build().event_name("test").finish()];
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | 
                 project-rename 
                     attributes[\"y\"] = attributes[\"x\"], 
@@ -290,7 +290,7 @@ mod test {
 
     #[tokio::test]
     async fn test_delete_attributes() {
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | project-away attributes[\"x\"]",
             generate_logs_test_data(),
         )
@@ -306,7 +306,7 @@ mod test {
         );
 
         // test moving multiple attributes simultaneously from different payloads
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | 
                 project-away 
                     attributes[\"x\"], 
@@ -352,7 +352,7 @@ mod test {
             )],
         )]);
 
-        let result = exec_logs_pipeline(
+        let result = exec_logs_pipeline::<KqlParser>(
             "logs | 
                 project-away attributes[\"y\"],
                 resource.attributes[\"xr1\"], 

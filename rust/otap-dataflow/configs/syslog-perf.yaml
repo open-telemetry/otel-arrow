@@ -1,0 +1,33 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:syslog_cef:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "0.0.0.0:5140"
+      protocol: udp
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otap:perf:exporter"
+    config:
+      frequency: 1000
+      cpu_usage: false
+      mem_usage: false
+      disk_usage: false
+      io_usage: false
+
+service:
+  telemetry:
+    logs:
+      level: "info"
+    resource:
+      service.name: "syslog-perf"
