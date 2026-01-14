@@ -556,7 +556,9 @@ impl QuiverEngine {
         // Note: WAL bytes are NOT tracked in budget - they're temporary and purged after
         // segment finalization. Only segment bytes are budget-tracked.
         if self.config.durability == DurabilityMode::Wal {
-            let wal_offset = self.append_to_wal_with_capacity_handling_async(bundle).await?;
+            let wal_offset = self
+                .append_to_wal_with_capacity_handling_async(bundle)
+                .await?;
 
             // Track cumulative WAL bytes for throughput measurement
             let wal_entry_bytes = wal_offset.next_offset.saturating_sub(wal_offset.position);
@@ -2513,7 +2515,9 @@ mod tests {
 
         // Second ingest - should trigger time-based finalization
         let bundle2 = DummyBundle::with_rows(1);
-        engine.ingest_sync(&bundle2).expect("second ingest succeeds");
+        engine
+            .ingest_sync(&bundle2)
+            .expect("second ingest succeeds");
 
         drop(engine);
 
@@ -3200,7 +3204,9 @@ mod tests {
 
         // Register and activate subscriber
         let sub_id = SubscriberId::new("async-test").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Use async next_bundle
@@ -3221,7 +3227,9 @@ mod tests {
 
         // Register and activate subscriber (but don't ingest anything)
         let sub_id = SubscriberId::new("timeout-test").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Async next_bundle should timeout quickly
@@ -3242,7 +3250,9 @@ mod tests {
 
         // Register and activate subscriber before any data
         let sub_id = SubscriberId::new("wake-test").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         let got_bundle = Arc::new(AtomicBool::new(false));
@@ -3292,7 +3302,9 @@ mod tests {
 
         // Register and activate subscriber
         let sub_id = SubscriberId::new("interleave-test").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Alternate between async and poll methods
@@ -3327,7 +3339,9 @@ mod tests {
 
         // Register and activate subscriber
         let sub_id = SubscriberId::new("flush-test").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Consume a bundle to make the subscriber dirty
@@ -3354,7 +3368,9 @@ mod tests {
 
         // Register and consume all bundles
         let sub_id = SubscriberId::new("maintain-test").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Consume all bundles
@@ -3373,7 +3389,10 @@ mod tests {
         let stats = engine.maintain().await.expect("maintain");
 
         // Should have flushed at least the one dirty subscriber
-        assert!(stats.flushed >= 1, "should have flushed at least one subscriber");
+        assert!(
+            stats.flushed >= 1,
+            "should have flushed at least one subscriber"
+        );
         // deleted can be any non-negative number (usize)
     }
 
@@ -3472,7 +3491,9 @@ mod tests {
 
         // Register and activate subscriber
         let sub_id = SubscriberId::new("async-pipeline").unwrap();
-        engine.register_subscriber(sub_id.clone()).expect("register");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
         engine.activate_subscriber(&sub_id).expect("activate");
 
         // Consume all bundles using async next_bundle

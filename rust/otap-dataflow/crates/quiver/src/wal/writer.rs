@@ -469,7 +469,9 @@ impl WalWriter {
             active_header_size,
             active_wal_start,
         );
-        coordinator.reload_rotated_files_async(metadata.len()).await?;
+        coordinator
+            .reload_rotated_files_async(metadata.len())
+            .await?;
 
         // Scan to find the last valid entry and truncate any trailing garbage
         let (next_sequence, valid_offset) = coordinator.detect_next_sequence_async().await?;

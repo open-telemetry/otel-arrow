@@ -748,7 +748,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 (entries, oldest)
             };
 
-            match write_progress_file_sync(&self.config.data_dir, &sub_id, oldest_incomplete, &entries) {
+            match write_progress_file_sync(
+                &self.config.data_dir,
+                &sub_id,
+                oldest_incomplete,
+                &entries,
+            ) {
                 Ok(()) => {
                     flushed += 1;
                 }

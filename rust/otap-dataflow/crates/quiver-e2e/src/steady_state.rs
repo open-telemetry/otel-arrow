@@ -630,7 +630,8 @@ fn register_subscribers(
     let mut sub_ids = Vec::with_capacity(count);
     for sub_id in 0..count {
         let sub_name = format!("subscriber-{}", sub_id);
-        let id = SubscriberId::new(&sub_name).map_err(|e| format!("Invalid subscriber id: {}", e))?;
+        let id =
+            SubscriberId::new(&sub_name).map_err(|e| format!("Invalid subscriber id: {}", e))?;
         engine
             .register_subscriber(id.clone())
             .map_err(|e| format!("Failed to register subscriber: {}", e))?;
@@ -831,8 +832,7 @@ fn create_engines_sync(
     retention_policy: RetentionPolicy,
     data_dir: &std::path::Path,
     _is_tui: bool,
-) -> Result<(Vec<Arc<QuiverEngine>>, Vec<(usize, SubscriberId)>), String>
-{
+) -> Result<(Vec<Arc<QuiverEngine>>, Vec<(usize, SubscriberId)>), String> {
     let mut engines: Vec<Arc<QuiverEngine>> = Vec::with_capacity(num_engines);
     let mut all_sub_ids: Vec<(usize, SubscriberId)> = Vec::new();
 

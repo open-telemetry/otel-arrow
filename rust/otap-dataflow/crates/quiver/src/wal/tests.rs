@@ -414,7 +414,9 @@ fn wal_writer_rejects_slot_ids_outside_bitmap() {
         vec![FixtureSlot::new(SlotId::new(65), 0xAA, &[1])],
     );
 
-    let err = writer.append_bundle_sync(&bundle).expect_err("slot validation");
+    let err = writer
+        .append_bundle_sync(&bundle)
+        .expect_err("slot validation");
     assert!(matches!(err, WalError::SlotOutOfRange(slot) if slot == SlotId::new(65)));
 }
 
@@ -597,13 +599,17 @@ fn wal_writer_enforces_safe_offset_boundaries() {
         descriptor.clone(),
         vec![FixtureSlot::new(SlotId::new(0), 0x01, &[11, 12, 13])],
     );
-    let _ = writer.append_bundle_sync(&first_bundle).expect("first append");
+    let _ = writer
+        .append_bundle_sync(&first_bundle)
+        .expect("first append");
 
     let second_bundle = FixtureBundle::new(
         descriptor,
         vec![FixtureSlot::new(SlotId::new(0), 0x02, &[21, 22, 23])],
     );
-    let _ = writer.append_bundle_sync(&second_bundle).expect("second append");
+    let _ = writer
+        .append_bundle_sync(&second_bundle)
+        .expect("second append");
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
     let mut iter = reader.iter_from(0).expect("iter");
@@ -942,13 +948,17 @@ fn wal_reader_rewind_allows_replay_from_start() {
         descriptor.clone(),
         vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
     );
-    let _ = writer.append_bundle_sync(&first_bundle).expect("first append");
+    let _ = writer
+        .append_bundle_sync(&first_bundle)
+        .expect("first append");
 
     let second_bundle = FixtureBundle::new(
         descriptor,
         vec![FixtureSlot::new(SlotId::new(0), 0x02, &[2])],
     );
-    let _ = writer.append_bundle_sync(&second_bundle).expect("second append");
+    let _ = writer
+        .append_bundle_sync(&second_bundle)
+        .expect("second append");
     drop(writer);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
@@ -1349,13 +1359,17 @@ fn wal_reader_iter_from_respects_offsets() {
         descriptor.clone(),
         vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
     );
-    let first_offset = writer.append_bundle_sync(&first_bundle).expect("first append");
+    let first_offset = writer
+        .append_bundle_sync(&first_bundle)
+        .expect("first append");
 
     let second_bundle = FixtureBundle::new(
         descriptor,
         vec![FixtureSlot::new(SlotId::new(0), 0x02, &[2])],
     );
-    let second_offset = writer.append_bundle_sync(&second_bundle).expect("second append");
+    let second_offset = writer
+        .append_bundle_sync(&second_bundle)
+        .expect("second append");
     drop(writer);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
@@ -1515,7 +1529,9 @@ fn wal_writer_handles_large_payload_batches() {
     ))
     .expect("writer");
 
-    let _ = writer.append_bundle_sync(&bundle).expect("append large payload");
+    let _ = writer
+        .append_bundle_sync(&bundle)
+        .expect("append large payload");
     drop(writer);
 
     let mut reader = WalReader::open(&wal_path).expect("reader");
@@ -1558,13 +1574,17 @@ fn wal_writer_auto_truncates_after_mid_entry_truncation() {
         descriptor.clone(),
         vec![FixtureSlot::new(SlotId::new(0), 0x01, &[1])],
     );
-    let _ = writer.append_bundle_sync(&first_bundle).expect("first append");
+    let _ = writer
+        .append_bundle_sync(&first_bundle)
+        .expect("first append");
 
     let second_bundle = FixtureBundle::new(
         descriptor.clone(),
         vec![FixtureSlot::new(SlotId::new(0), 0x02, &[2])],
     );
-    let _ = writer.append_bundle_sync(&second_bundle).expect("second append");
+    let _ = writer
+        .append_bundle_sync(&second_bundle)
+        .expect("second append");
     drop(writer);
 
     // Record valid file length after first entry for later comparison
@@ -2040,7 +2060,9 @@ fn wal_writer_skips_flush_when_neither_threshold_met() {
     writer.test_set_last_flush(Instant::now());
     let before = writer.test_last_flush();
 
-    let _offset = writer.append_bundle_sync(&bundle).expect("append without flush");
+    let _offset = writer
+        .append_bundle_sync(&bundle)
+        .expect("append without flush");
 
     // last_flush should not have changed (no flush occurred during append)
     assert_eq!(
@@ -2522,7 +2544,9 @@ fn wal_memory_after_large_bundle_spike() {
     for _ in 0..100 {
         let small_slot = FixtureSlot::new(SlotId::new(0), 0x01, &[1, 2, 3]);
         let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
-        let _ = writer.append_bundle_sync(&small_bundle).expect("append small");
+        let _ = writer
+            .append_bundle_sync(&small_bundle)
+            .expect("append small");
     }
     print_rss("after baseline");
 
@@ -2535,7 +2559,9 @@ fn wal_memory_after_large_bundle_spike() {
             build_complex_batch(1_000_000, "large", 1024), // ~1000 MB
         );
         let large_bundle = FixtureBundle::new(descriptor.clone(), vec![large_slot]);
-        let _ = writer.append_bundle_sync(&large_bundle).expect("append large");
+        let _ = writer
+            .append_bundle_sync(&large_bundle)
+            .expect("append large");
         // print_rss("after large bundle (before drop)");
     }
     // large_slot and large_bundle are now dropped
@@ -2548,7 +2574,9 @@ fn wal_memory_after_large_bundle_spike() {
     for i in 0..100 {
         let small_slot = FixtureSlot::new(SlotId::new(0), 0x03, &[4, 5, 6]);
         let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
-        let _ = writer.append_bundle_sync(&small_bundle).expect("append small");
+        let _ = writer
+            .append_bundle_sync(&small_bundle)
+            .expect("append small");
         drop(small_bundle);
         if (i + 1) % 10 == 0 {
             print_rss(&format!("after {} small bundles", i + 1));
@@ -2853,7 +2881,9 @@ fn recovery_infers_purged_offset_from_cursor() {
 
         // Append a new entry - it should get a correct WAL position
         let bundle = single_slot_bundle(&descriptor, 0xBB, &[0xBB]);
-        let new_offset = writer.append_bundle_sync(&bundle).expect("append after restart");
+        let new_offset = writer
+            .append_bundle_sync(&bundle)
+            .expect("append after restart");
 
         // The new entry should continue from where the last one ended,
         // even though the rotated files were purged before restart

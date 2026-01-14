@@ -158,7 +158,9 @@ fn ingest_single(c: &mut Criterion) {
                     let temp_dir = bench_tempdir();
                     let config = bench_config(temp_dir.path(), 100); // Large segment to avoid finalization
                     let engine = rt.block_on(async {
-                        QuiverEngine::open(config, bench_budget()).await.expect("engine")
+                        QuiverEngine::open(config, bench_budget())
+                            .await
+                            .expect("engine")
                     });
                     (engine, temp_dir)
                 },
@@ -199,7 +201,9 @@ fn ingest_sustained(c: &mut Criterion) {
                 let temp_dir = bench_tempdir();
                 let config = bench_config(temp_dir.path(), 1); // 1 MB segments
                 let engine = rt.block_on(async {
-                    QuiverEngine::open(config, bench_budget()).await.expect("engine")
+                    QuiverEngine::open(config, bench_budget())
+                        .await
+                        .expect("engine")
                 });
                 (engine, temp_dir) // Keep temp_dir alive
             },
@@ -252,7 +256,9 @@ fn ingest_with_frequent_writes(c: &mut Criterion) {
                     .build()
                     .expect("valid config");
                 let engine = rt.block_on(async {
-                    QuiverEngine::open(config, bench_budget()).await.expect("engine")
+                    QuiverEngine::open(config, bench_budget())
+                        .await
+                        .expect("engine")
                 });
                 (engine, temp_dir) // Keep temp_dir alive
             },

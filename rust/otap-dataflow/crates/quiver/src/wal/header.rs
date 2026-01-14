@@ -236,7 +236,6 @@ impl WalHeader {
         Self::decode(&full_buf)
     }
 
-
     pub fn decode(buf: &[u8]) -> Result<Self, WalError> {
         if buf.len() < WAL_HEADER_MIN_LEN {
             return Err(WalError::InvalidHeader(
