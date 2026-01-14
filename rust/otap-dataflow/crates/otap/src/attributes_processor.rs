@@ -238,7 +238,9 @@ impl AttributesProcessor {
 
     #[inline]
     const fn is_noop(&self) -> bool {
-        self.transform.rename.is_none() && self.transform.delete.is_none() && self.transform.insert.is_none()
+        self.transform.rename.is_none()
+            && self.transform.delete.is_none()
+            && self.transform.insert.is_none()
     }
 
     #[inline]
@@ -848,7 +850,7 @@ mod tests {
                     .attributes;
 
                 println!("Resource attrs: {:?}", res_attrs);
-                
+
                 assert!(res_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(res_attrs.iter().any(|kv| kv.key == "r"));
 

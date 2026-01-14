@@ -15,8 +15,8 @@ use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffe
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, Float64Type, Int64Type, UInt16Type,
-    UInt8Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Float64Type, Int64Type, UInt8Type,
+    UInt16Type,
 };
 use arrow::row::{RowConverter, SortField};
 
@@ -3803,34 +3803,32 @@ fn create_inserted_batch(
             }
             Arc::new(builder.finish())
         }
-        DataType::Dictionary(k, _v) => {
-            match **k {
-                DataType::UInt8 => {
-                    let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
-                    for _parent in &unique_parents {
-                        for (key, _) in &insert.entries {
-                            builder.append_value(key);
-                        }
+        DataType::Dictionary(k, _v) => match **k {
+            DataType::UInt8 => {
+                let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
+                for _parent in &unique_parents {
+                    for (key, _) in &insert.entries {
+                        builder.append_value(key);
                     }
-                    Arc::new(builder.finish())
                 }
-                DataType::UInt16 => {
-                    let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
-                    for _parent in &unique_parents {
-                        for (key, _) in &insert.entries {
-                            builder.append_value(key);
-                        }
-                    }
-                    Arc::new(builder.finish())
-                }
-                _ => {
-                    return Err(Error::UnsupportedDictionaryKeyType {
-                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                        actual: *k.clone(),
-                    });
-                }
+                Arc::new(builder.finish())
             }
-        }
+            DataType::UInt16 => {
+                let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
+                for _parent in &unique_parents {
+                    for (key, _) in &insert.entries {
+                        builder.append_value(key);
+                    }
+                }
+                Arc::new(builder.finish())
+            }
+            _ => {
+                return Err(Error::UnsupportedDictionaryKeyType {
+                    expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                    actual: *k.clone(),
+                });
+            }
+        },
         _ => {
             return Err(Error::InvalidListArray {
                 expect_oneof: vec![DataType::Utf8],
@@ -3937,8 +3935,9 @@ fn create_inserted_batch(
                         }
                         Arc::new(builder.finish())
                     }
-                     DataType::UInt16 => {
-                        let mut builder = PrimitiveDictionaryBuilder::<UInt16Type, Int64Type>::new();
+                    DataType::UInt16 => {
+                        let mut builder =
+                            PrimitiveDictionaryBuilder::<UInt16Type, Int64Type>::new();
                         for _parent in &unique_parents {
                             for (_, val) in &insert.entries {
                                 if let LiteralValue::Int(v) = val {
@@ -4025,7 +4024,7 @@ fn create_inserted_batch(
                 }
             }
         } else if name == consts::ATTRIBUTE_BOOL {
-             // Note: Boolean Dictionaries are not standard/supported by simple builders
+            // Note: Boolean Dictionaries are not standard/supported by simple builders
             let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
             for _parent in &unique_parents {
                 for (_, val) in &insert.entries {
