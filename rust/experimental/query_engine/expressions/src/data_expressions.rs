@@ -352,10 +352,10 @@ impl Expression for OutputDataExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputExpression {
     /// Output data to a sink identified by name.
-    // Currently this contains a static string because it's the only way we handle identifying
-    // where to output the data. In the future we could support dynamic sink identified by a
-    // variable, result of a function call, or other some expression, at which point we can change
-    // this to contain the more general `StaticExpression`.
+    /// Currently this contains a static string because it's the only way we handle identifying
+    /// where to output the data. In the future we could support dynamic sink identified by a
+    /// variable, result of a function call, or other some expression, at which point we can change
+    /// this to contain the more general `StaticExpression`.
     NamedSink(StringScalarExpression),
 }
 
