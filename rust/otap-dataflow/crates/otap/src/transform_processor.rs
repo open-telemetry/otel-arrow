@@ -160,9 +160,7 @@ impl TransformProcessor {
             // interests, and juggling the incoming/outgoing contexts & Ack/Nack messages correctly
             let pdata = OtapPdata::new(Context::default(), payload);
 
-            // Find the port name based on the route name. We need to since do this, rather
-            // than just passing route_name directly, b/c `send_message_to` expects a `PortName`
-            // which must be Into<Cow<'static.. and route_name doesn't have this lifetime.
+            // Find the port name that matches the route name.
             let port_name = effect_handler
                 .connected_ports()
                 .iter()

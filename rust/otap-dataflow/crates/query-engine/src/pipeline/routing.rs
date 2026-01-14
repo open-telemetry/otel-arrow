@@ -3,7 +3,7 @@
 
 //! Routing for columnar query engine.
 //!
-//! This module contains the pipeline stage that OTAP batches to some destination.
+//! This module contains the pipeline stage that emits OTAP batches to some destination.
 //! The routing implementation is customizable, using the `Router` trait which the
 //! pipeline stage implementation will use to send the data to the appropriate route.
 
@@ -51,22 +51,22 @@ pub type RouteName = Rc<String>;
 
 /// Extension type for `Router` implementations used by this pipeline stage.
 ///
-/// For [`Pipeline`](super::Pipeline) callers that invoke pipeline supporting routing outputs,
-/// this type is used to provide a reference to the `Router` implementation in the
-/// `ExecutionState` extensions.
+/// For callers that invoke pipeline supporting routing outputs, this type is used to provide a reference
+/// to the `Router` implementation in the`ExecutionState` extensions.
 pub type RouterExtType = Box<dyn Router>;
 
 /// [`PipelineStage`] that routes OTAP batches to a specified route.
 ///
-/// This stage looks for a `Router` implementation in the `ExecutionState` extensions,
-/// and invokes it to send the batch to the specified route. [`Pipeline`s](super::Pipeline)
-/// that include this stage must ensure that a `Router` is set in the execution state.
+/// This stage looks for a `Router` implementation in the `ExecutionState` extensions, and invokes
+/// it to send the batch to the specified route. Executors of  [`Pipeline`s](super::Pipeline) that
+/// include this stage must ensure that a `Router` is set in the execution state.
 pub struct RouteToPipelineStage {
     route_name: RouteName,
 }
 
 impl RouteToPipelineStage {
     /// Create a new `RouteToPipelineStage` that routes to the specified route name.
+    #[must_use]
     pub fn new(route_name: &str) -> Self {
         Self {
             route_name: route_name.to_string().into(),
