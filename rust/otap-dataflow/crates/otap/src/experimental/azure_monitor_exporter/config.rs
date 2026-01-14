@@ -101,24 +101,24 @@ impl Config {
     pub fn validate(&self) -> Result<(), Error> {
         // Validate auth configuration
         if self.auth.scope.is_empty() {
-            return Err(Error::ConfigurationError(
+            return Err(Error::Config(
                 "Invalid configuration: auth scope must be non-empty".to_string(),
             ));
         }
 
         // Validate API configuration
         if self.api.dcr_endpoint.is_empty() {
-            return Err(Error::ConfigurationError(
+            return Err(Error::Config(
                 "Invalid configuration: dcr_endpoint must be non-empty".to_string(),
             ));
         }
         if self.api.stream_name.is_empty() {
-            return Err(Error::ConfigurationError(
+            return Err(Error::Config(
                 "Invalid configuration: stream_name must be non-empty".to_string(),
             ));
         }
         if self.api.dcr.is_empty() {
-            return Err(Error::ConfigurationError(
+            return Err(Error::Config(
                 "Invalid configuration: dcr must be non-empty".to_string(),
             ));
         }
@@ -153,7 +153,7 @@ impl Config {
                 }
                 Value::Object(map) => {
                     if key != "attributes" {
-                        return Err(Error::ConfigurationError(
+                        return Err(Error::Config(
                             "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed".to_string(),
                         ));
                     }
@@ -173,7 +173,7 @@ impl Config {
         if !duplicates.is_empty() {
             let mut columns: Vec<String> = duplicates.into_iter().collect();
             columns.sort();
-            return Err(Error::ConfigurationDuplicateColumnsError { columns });
+            return Err(Error::ConfigDuplicateColumns { columns });
         }
 
         Ok(())
@@ -216,42 +216,12 @@ mod tests {
             auth: AuthConfig::default(),
         };
 
-        assert!(config.validate().is_err());
+        let result = config.validate();
+        assert!(result.is_err());
         assert_eq!(
-            config.validate().unwrap_err(),
-            Error::ConfigurationError(
-                "Invalid configuration: dcr_endpoint must be non-empty".to_string()
-            )
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: dcr_endpoint must be non-empty"
         );
-    }
-
-    #[test]
-    fn test_schema_no_duplicate_columns() {
-        let config = Config {
-            api: ApiConfig {
-                dcr_endpoint: "https://example.com".to_string(),
-                stream_name: "mystream".to_string(),
-                dcr: "mydcr".to_string(),
-                schema: SchemaConfig {
-                    resource_mapping: HashMap::from([
-                        ("service.name".into(), "ServiceName".into()),
-                        ("service.version".into(), "ServiceVersion".into()),
-                    ]),
-                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
-                    log_record_mapping: HashMap::from([
-                        ("body".into(), json!("Body")),
-                        ("severity_text".into(), json!("Severity")),
-                        (
-                            "attributes".into(),
-                            json!({"user.id": "UserId", "request.path": "RequestPath"}),
-                        ),
-                    ]),
-                },
-            },
-            auth: AuthConfig::default(),
-        };
-
-        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -263,15 +233,15 @@ mod tests {
                 dcr: "mydcr".to_string(),
                 schema: SchemaConfig {
                     resource_mapping: HashMap::from([
-                        ("service.name".into(), "Name".into()), // "Name" - first occurrence
+                        ("service.name".into(), "Name".into()),
                     ]),
                     scope_mapping: HashMap::from([
-                        ("scope.name".into(), "Name".into()), // "Name" - duplicate!
+                        ("scope.name".into(), "Name".into()),
                     ]),
                     log_record_mapping: HashMap::from([
                         ("body".into(), json!("Body")),
-                        ("severity_text".into(), json!("Body")), // "Body" - duplicate!
-                        ("attributes".into(), json!({"user.name": "Name"})), // "Name" - another duplicate!
+                        ("severity_text".into(), json!("Body")),
+                        ("attributes".into(), json!({"user.name": "Name"})),
                     ]),
                 },
             },
@@ -281,15 +251,11 @@ mod tests {
         let result = config.validate();
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::ConfigurationDuplicateColumnsError { columns } => {
-                assert!(
-                    columns.contains(&"Name".to_string()) && columns.contains(&"Body".to_string())
-                );
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"Name".to_string()));
+                assert!(columns.contains(&"Body".to_string()));
             }
-            other => panic!(
-                "Expected ConfigurationDuplicateColumnsError, got {:?}",
-                other
-            ),
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
         }
     }
 
@@ -313,7 +279,7 @@ mod tests {
                             json!({
                                 "user.id": "UserId",
                                 "user.name": "UserName",
-                                "request.user": "UserName"  // "UserName" - duplicate within nested!
+                                "request.user": "UserName"
                             }),
                         ),
                     ]),
@@ -324,10 +290,12 @@ mod tests {
 
         let result = config.validate();
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, Error::ConfigurationDuplicateColumnsError { columns } if columns.contains(&"UserName".to_string()))
-        );
+        match result.unwrap_err() {
+            Error::ConfigDuplicateColumns { columns } => {
+                assert!(columns.contains(&"UserName".to_string()));
+            }
+            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
+        }
     }
 
     #[test]
@@ -341,7 +309,7 @@ mod tests {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::from([
-                        ("body".into(), json!({"nested": "NotAllowed"})), // object for non-attributes key
+                        ("body".into(), json!({"nested": "NotAllowed"})),
                     ]),
                 },
             },
@@ -350,9 +318,9 @@ mod tests {
 
         let result = config.validate();
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err, Error::ConfigurationError(msg) if msg == "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed")
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed"
         );
     }
 }

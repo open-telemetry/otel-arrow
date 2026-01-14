@@ -6,6 +6,8 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use std::io::Write;
 
+use super::error::Error;
+
 const ONE_MB: usize = 1024 * 1024; // 1 MB
 const MAX_GZIP_FLUSH_COUNT: usize = 100;
 const GZIP_SAFETY_MARGIN: usize = 30; // Safety margin in bytes
@@ -65,7 +67,7 @@ impl GzipBatcher {
     }
 
     #[inline]
-    pub fn push(&mut self, data: &[u8]) -> Result<PushResult, String> {
+    pub fn push(&mut self, data: &[u8]) -> Result<PushResult, Error> {
         if self.pending_batch.is_some() {
             return Ok(PushResult::BatchReady(self.batch_id));
         }
@@ -73,7 +75,7 @@ impl GzipBatcher {
         self.push_internal(data)
     }
 
-    fn push_internal(&mut self, data: &[u8]) -> Result<PushResult, String> {
+    fn push_internal(&mut self, data: &[u8]) -> Result<PushResult, Error> {
         // This limits uncompressed data size to a maximum of 1MB
         // Is this a good compromise for code simplicity vs efficiency?
         // This algorithm is still very good up to 100KB per entry, which
@@ -86,7 +88,7 @@ impl GzipBatcher {
 
         if is_first_entry {
             self.batch_id += 1;
-            self.buf.write_all(b"[").map_err(|e| e.to_string())?;
+            self.buf.write_all(b"[").map_err(Error::BatchPushFailed)?;
         }
 
         // Update calculation to use the constant
@@ -94,7 +96,7 @@ impl GzipBatcher {
         let must_flush = next_size > self.remaining_size;
 
         if must_flush {
-            self.buf.flush().map_err(|e| e.to_string())?;
+            self.buf.flush().map_err(Error::BatchPushFailed)?;
 
             self.flush_count += 1;
             let compressed_size = self.buf.get_ref().len();
@@ -126,11 +128,11 @@ impl GzipBatcher {
             }
         } else {
             if !is_first_entry {
-                self.buf.write_all(b",").map_err(|e| e.to_string())?;
+                self.buf.write_all(b",").map_err(Error::BatchPushFailed)?;
                 self.total_uncompressed_size += 1;
                 self.uncompressed_size += 1;
             }
-            self.buf.write_all(data).map_err(|e| e.to_string())?;
+            self.buf.write_all(data).map_err(Error::BatchPushFailed)?;
             self.uncompressed_size += data.len();
             self.total_uncompressed_size += data.len();
             self.row_count += 1.0;
@@ -139,16 +141,16 @@ impl GzipBatcher {
         }
     }
 
-    pub fn finalize(&mut self) -> Result<FinalizeResult, String> {
+    pub fn finalize(&mut self) -> Result<FinalizeResult, Error> {
         if self.buf.get_ref().is_empty() {
             return Ok(FinalizeResult::Empty);
         }
 
-        self.buf.write_all(b"]").map_err(|e| e.to_string())?;
+        self.buf.write_all(b"]").map_err(Error::BatchFinalizeFailed)?;
 
         let old_buf = std::mem::replace(&mut self.buf, Self::new_encoder());
 
-        let compressed_data = old_buf.finish().map_err(|e| e.to_string())?;
+        let compressed_data = old_buf.finish().map_err(Error::BatchFinalizeFailed)?;
         let row_count = self.row_count;
 
         // Reset state

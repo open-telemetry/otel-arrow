@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
@@ -20,6 +21,7 @@ use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 
 use super::auth::Auth;
+use super::error::Error;
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
 use super::gzip_batcher::FinalizeResult;
@@ -51,11 +53,11 @@ pub struct AzureMonitorExporter {
 #[allow(clippy::print_stdout)]
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
-    pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+    pub fn new(config: Config) -> Result<Self, ConfigError> {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            .map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
 
@@ -81,7 +83,7 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         completed_export: CompletedExport,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         let CompletedExport {
             batch_id,
             client,
@@ -110,7 +112,7 @@ impl AzureMonitorExporter {
         batch_id: u64,
         row_count: f64,
         duration: std::time::Duration,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
         self.stats.add_messages(completed_messages.len() as f64);
@@ -131,8 +133,8 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: f64,
-        error: String,
-    ) -> Result<(), Error> {
+        error: Error,
+    ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
         self.stats.add_failed_messages(failed_messages.len() as f64);
@@ -146,7 +148,7 @@ impl AzureMonitorExporter {
 
         for (_, context, payload) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(&error, OtapPdata::new(context, payload)))
+                .notify_nack(NackMsg::new(error.to_string(), OtapPdata::new(context, payload)))
                 .await?;
         }
         Ok(())
@@ -174,7 +176,7 @@ impl AzureMonitorExporter {
     async fn queue_pending_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         let pending_batch = match self.gzip_batcher.take_pending_batch() {
             Some(batch) => batch,
             None => return Ok(()), // No pending batch - nothing to do
@@ -207,7 +209,7 @@ impl AzureMonitorExporter {
         payload: OtapPayload,
         logs_view: &T,
         msg_id: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, payload);
         } else {
@@ -230,29 +232,30 @@ impl AzureMonitorExporter {
                     self.queue_pending_batch(effect_handler).await?;
                 }
                 Ok(gzip_batcher::PushResult::TooLarge) => {
+                    let error = Error::LogEntryTooLarge;
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
-                                "Log entry too large to export",
+                                error.to_string(),
                                 OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
-                    return Err(Error::InternalError {
-                        message: "Log entry too large to export".to_string(),
+                    return Err(EngineError::InternalError {
+                        message: error.to_string(),
                     });
                 }
-                Err(e) => {
+                Err(error) => {
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
-                                "Failed to add log entry to batch",
+                                error.to_string(),
                                 OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
-                    return Err(Error::InternalError {
-                        message: format!("Failed to add log entry to batch: {:?}", e),
+                    return Err(EngineError::InternalError {
+                        message: error.to_string(),
                     });
                 }
             }
@@ -273,7 +276,7 @@ impl AzureMonitorExporter {
     async fn drain_in_flight_exports(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         let completed_exports = self.in_flight_exports.drain().await;
         for completed_export in completed_exports {
             self.finalize_export(effect_handler, completed_export)
@@ -285,14 +288,14 @@ impl AzureMonitorExporter {
     async fn queue_current_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         match self.gzip_batcher.finalize() {
             Ok(FinalizeResult::Ok) => {
                 return self.queue_pending_batch(effect_handler).await;
             }
             Ok(FinalizeResult::Empty) => Ok(()),
-            Err(e) => Err(Error::InternalError {
-                message: format!("Failed to finalize batch: {:?}", e),
+            Err(error) => Err(EngineError::InternalError {
+                message: error.to_string(),
             }),
         }
     }
@@ -346,7 +349,7 @@ impl AzureMonitorExporter {
     async fn handle_shutdown(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         self.queue_current_batch(effect_handler).await?;
         self.drain_in_flight_exports(effect_handler).await?;
 
@@ -368,7 +371,7 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         match msg {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
@@ -382,8 +385,11 @@ impl AzureMonitorExporter {
                                 let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
 
                                 let logs_view = OtapLogsView::try_from(&otap_arrow_records)
-                                    .map_err(|e| Error::InternalError {
-                                        message: format!("Failed to create OtapLogsView: {:?}", e),
+                                    .map_err(|e| {
+                                        let error = Error::LogsViewCreationFailed { source: e };
+                                        EngineError::InternalError {
+                                            message: error.to_string(),
+                                        }
                                     })?;
 
                                 self.handle_logs_view(
@@ -425,8 +431,9 @@ impl AzureMonitorExporter {
             Ok(_) => {} // Ignore other message types
 
             Err(e) => {
-                return Err(Error::InternalError {
-                    message: format!("Channel error: {e}"),
+                let error = Error::ChannelRecv(e);
+                return Err(EngineError::InternalError {
+                    message: error.to_string(),
                 });
             }
         }
@@ -442,7 +449,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<TerminalState, EngineError> {
         effect_handler
             .info(&format!(
                 "[AzureMonitorExporter] Starting: endpoint={}, stream={}, dcr={}",
@@ -452,15 +459,23 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let auth = Auth::new(&self.config.auth).map_err(|e| Error::InternalError {
-            message: format!("Failed to create auth handler: {e}"),
+        let auth = Auth::new(&self.config.auth).map_err(|e| {
+            let error = Error::AuthHandlerCreation(Box::new(e));
+            EngineError::InternalError {
+                message: error.to_string(),
+            }
         })?;
 
         let token = self.try_refresh_token(&auth).await;
         self.client_pool
             .initialize(&self.config.api, &auth)
             .await
-            .expect("Failed to initialize client pool");
+            .map_err(|e| {
+                let error = Error::ClientPoolInit(Box::new(e));
+                EngineError::InternalError {
+                    message: error.to_string(),
+                }
+            })?;
 
         let mut next_token_refresh = Self::get_next_token_refresh(token);
         let mut next_stats_print =
@@ -594,6 +609,7 @@ mod tests {
     use crate::pdata::Context;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
+    use http::StatusCode;
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -735,12 +751,18 @@ mod tests {
             .add_msg_to_data(msg_id, context.clone(), payload);
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
+        let error = Error::ServerError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: "Simulated error".to_string(),
+            retry_after: None,
+        };
+
         let _ = exporter
             .handle_export_failure(
                 &effect_handler,
                 batch_id,
                 10.0,
-                "Simulated error".to_string(),
+                error,
             )
             .await;
 

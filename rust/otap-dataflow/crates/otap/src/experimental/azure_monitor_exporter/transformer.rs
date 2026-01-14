@@ -13,6 +13,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::config::{Config, SchemaConfig};
+use super::error::Error;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
@@ -81,7 +82,7 @@ struct ParsedSchema {
 }
 
 impl ParsedSchema {
-    fn from_config(schema: &SchemaConfig) -> Result<Self, String> {
+    fn from_config(schema: &SchemaConfig) -> Result<Self, Error> {
         let mut field_mappings = Vec::new();
         let mut attribute_mapping = HashMap::new();
 
@@ -99,11 +100,16 @@ impl ParsedSchema {
                 }
             } else {
                 // Parse field mapping
-                let source = LogRecordField::from_str(key)
-                    .ok_or_else(|| format!("Unknown log record field: {key}"))?;
+                let source = LogRecordField::from_str(key).ok_or_else(|| {
+                    Error::UnknownLogRecordField {
+                        field: key.clone(),
+                    }
+                })?;
                 let dest = value
                     .as_str()
-                    .ok_or_else(|| format!("Field mapping for '{key}' must be a string"))?
+                    .ok_or_else(|| Error::InvalidFieldMapping {
+                        field: key.clone(),
+                    })?
                     .to_string();
                 field_mappings.push(FieldMapping { source, dest });
             }
@@ -139,7 +145,7 @@ impl Transformer {
     }
 
     /// Create a new Transformer, returning an error if configuration is invalid
-    pub fn try_new(config: &Config) -> Result<Self, String> {
+    pub fn try_new(config: &Config) -> Result<Self, Error> {
         Ok(Self {
             schema: ParsedSchema::from_config(&config.api.schema)?,
         })
@@ -669,7 +675,7 @@ mod tests {
 
         let result = Transformer::try_new(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unknown log record field"));
+        assert!(result.unwrap_err().to_string().contains("Unknown log record field"));
     }
 
     #[test]
@@ -684,7 +690,7 @@ mod tests {
 
         let result = Transformer::try_new(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("must be a string"));
+        assert!(result.unwrap_err().to_string().contains("must be a string"));
     }
 
     #[test]
