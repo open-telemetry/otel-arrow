@@ -152,10 +152,11 @@ def print_scaling_report(throughputs: dict[int, float], efficiencies: dict[int, 
     print("-" * 80)
     print()
     
-    # Summary statistics
-    if len(efficiencies) > 1:
-        avg_efficiency = sum(efficiencies.values()) / len(efficiencies)
-        min_efficiency = min(efficiencies.values())
+    # Summary statistics (excluding 1-core baseline since it's always 100%)
+    multi_core_efficiencies = {c: e for c, e in efficiencies.items() if c > 1}
+    if multi_core_efficiencies:
+        avg_efficiency = sum(multi_core_efficiencies.values()) / len(multi_core_efficiencies)
+        min_efficiency = min(multi_core_efficiencies.values())
         max_cores = max(throughputs.keys())
         max_throughput = throughputs[max_cores]
         
@@ -274,8 +275,9 @@ def main():
         print(f"Benchmark JSON written to: {output_json_path}", file=sys.stderr)
     
     # Exit with non-zero if scaling is poor (for CI alerting)
-    if efficiencies:
-        avg_efficiency = sum(efficiencies.values()) / len(efficiencies)
+    multi_core_efficiencies = [e for c, e in efficiencies.items() if c > 1]
+    if multi_core_efficiencies:
+        avg_efficiency = sum(multi_core_efficiencies) / len(multi_core_efficiencies)
         if avg_efficiency < 0.50:
             print("Warning: Very poor scaling efficiency detected!", file=sys.stderr)
             # Don't fail the build, just warn
