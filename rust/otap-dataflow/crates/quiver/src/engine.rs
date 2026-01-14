@@ -758,15 +758,17 @@ impl QuiverEngine {
     // Maintenance API
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Flushes dirty subscriber progress to disk.
+    /// Flushes dirty subscriber progress to disk synchronously.
     ///
     /// Returns the number of subscribers whose progress was flushed.
+    ///
+    /// For async contexts, use [`flush_progress`](Self::flush_progress).
     ///
     /// # Errors
     ///
     /// Returns an error if any progress file cannot be written.
-    pub fn flush_progress(&self) -> std::result::Result<usize, SubscriberError> {
-        self.registry.flush_progress()
+    pub fn flush_progress_sync(&self) -> std::result::Result<usize, SubscriberError> {
+        self.registry.flush_progress_sync()
     }
 
     /// Deletes segment files that have been fully processed by all subscribers.
@@ -874,45 +876,45 @@ impl QuiverEngine {
         deleted
     }
 
-    /// Performs combined maintenance: flushes progress and cleans up segments.
+    /// Performs combined maintenance synchronously: flushes progress and cleans up segments.
     ///
     /// This is the recommended periodic maintenance call. It:
     /// 1. Flushes dirty subscriber progress to disk
     /// 2. Deletes fully-processed segment files
     ///
-    /// For async contexts, prefer [`maintain_async`](Self::maintain_async).
+    /// For async contexts, use [`maintain`](Self::maintain).
     ///
     /// # Errors
     ///
     /// Returns an error if either operation fails.
-    pub fn maintain(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
-        let flushed = self.flush_progress()?;
+    pub fn maintain_sync(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
+        let flushed = self.flush_progress_sync()?;
         let deleted = self.cleanup_completed_segments()?;
         Ok(MaintenanceStats { flushed, deleted })
     }
 
-    /// Asynchronously flushes dirty subscriber progress to disk.
+    /// Flushes dirty subscriber progress to disk.
     ///
     /// Returns the number of subscribers whose progress was flushed.
     ///
     /// # Errors
     ///
     /// Returns an error if any progress file cannot be written.
-    pub async fn flush_progress_async(&self) -> std::result::Result<usize, SubscriberError> {
-        self.registry.flush_progress_async().await
+    pub async fn flush_progress(&self) -> std::result::Result<usize, SubscriberError> {
+        self.registry.flush_progress().await
     }
 
-    /// Performs combined maintenance asynchronously.
+    /// Performs combined maintenance: flushes progress and cleans up segments.
     ///
-    /// This is the async version of [`maintain`](Self::maintain). It:
-    /// 1. Flushes dirty subscriber progress to disk (async)
-    /// 2. Deletes fully-processed segment files (sync - file deletes are fast)
+    /// This is the recommended periodic maintenance call. It:
+    /// 1. Flushes dirty subscriber progress to disk
+    /// 2. Deletes fully-processed segment files
     ///
     /// # Errors
     ///
     /// Returns an error if either operation fails.
-    pub async fn maintain_async(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
-        let flushed = self.flush_progress_async().await?;
+    pub async fn maintain(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
+        let flushed = self.flush_progress().await?;
         let deleted = self.cleanup_completed_segments()?;
         Ok(MaintenanceStats { flushed, deleted })
     }
@@ -2796,7 +2798,7 @@ mod tests {
             bundles_acked = acked;
 
             // Flush progress to disk (simulating graceful shutdown)
-            let flushed = engine.flush_progress().expect("flush progress");
+            let flushed = engine.flush_progress_sync().expect("flush progress");
             assert!(flushed > 0, "should have flushed progress");
 
             // Engine dropped here (simulating crash/shutdown)
@@ -3016,11 +3018,11 @@ mod tests {
         handle.ack();
 
         // Flush progress asynchronously
-        let flushed = engine.flush_progress_async().await.expect("flush_progress");
+        let flushed = engine.flush_progress().await.expect("flush_progress");
         assert_eq!(flushed, 1, "should have flushed one subscriber");
 
         // Flush again - should be 0 since nothing is dirty now
-        let flushed2 = engine.flush_progress_async().await.expect("flush_progress 2");
+        let flushed2 = engine.flush_progress().await.expect("flush_progress 2");
         assert_eq!(flushed2, 0, "should have flushed zero subscribers");
     }
 
@@ -3047,7 +3049,7 @@ mod tests {
         }
 
         // Run async maintain
-        let stats = engine.maintain_async().await.expect("maintain");
+        let stats = engine.maintain().await.expect("maintain");
 
         // Should have flushed at least the one dirty subscriber
         assert!(stats.flushed >= 1, "should have flushed at least one subscriber");

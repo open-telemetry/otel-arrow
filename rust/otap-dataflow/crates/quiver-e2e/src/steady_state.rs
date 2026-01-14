@@ -377,7 +377,7 @@ pub fn run(
 
                 // Time-based maintenance: flush progress + cleanup (0 = disabled)
                 if maintain_interval_ms > 0 && last_maintain.elapsed() >= maintain_interval {
-                    let _ = engine.maintain();
+                    let _ = engine.maintain_sync();
                     last_maintain = Instant::now();
                 }
             }
@@ -531,7 +531,7 @@ pub fn run(
 
     // Flush final progress (all engines)
     for engine in &engines {
-        let _ = engine.flush_progress();
+        let _ = engine.flush_progress_sync();
     }
 
     // 6. Final cleanup (all engines)

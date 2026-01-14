@@ -29,7 +29,7 @@ use crc32fast::Hasher;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use super::writer::sync_parent_dir_async;
+use super::writer::sync_parent_dir;
 use super::{WalError, WalResult};
 
 #[cfg(test)]
@@ -159,7 +159,7 @@ impl CursorSidecar {
     }
 
     /// Reads the size field from a file to determine total sidecar length.
-    async fn read_size_async(file: &mut File) -> WalResult<usize> {
+    async fn read_size(file: &mut File) -> WalResult<usize> {
         let mut prefix = [0u8; SIDECAR_MIN_LEN];
         let _ = file.read_exact(&mut prefix).await?;
 
@@ -182,7 +182,7 @@ impl CursorSidecar {
     /// Reads the cursor sidecar from a file.
     pub async fn read_from(path: &Path) -> WalResult<Self> {
         let mut file = OpenOptions::new().read(true).open(path).await?;
-        let size = Self::read_size_async(&mut file).await?;
+        let size = Self::read_size(&mut file).await?;
         let mut buf = vec![0u8; size];
         let _ = file.read_exact(&mut buf).await?;
         Self::decode(&buf)
@@ -210,7 +210,7 @@ impl CursorSidecar {
             ));
         }
         tokio::fs::rename(&tmp_path, path).await?;
-        sync_parent_dir_async(path).await?;
+        sync_parent_dir(path).await?;
         Ok(())
     }
 

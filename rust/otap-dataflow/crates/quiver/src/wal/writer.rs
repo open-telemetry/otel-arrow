@@ -1240,7 +1240,7 @@ impl WalCoordinator {
             std::fs::set_permissions(&new_rotated_path, permissions)?;
         }
 
-        sync_parent_dir_async(&self.options.path).await?;
+        sync_parent_dir(&self.options.path).await?;
 
         let data_bytes = old_len.saturating_sub(self.active_header_size);
         let new_wal_position_end = self.active_wal_position_start().saturating_add(data_bytes);
@@ -1444,7 +1444,7 @@ async fn sync_file_data_async(file: &File) -> WalResult<()> {
 /// rename barriers (older ext3, NFS, non-default mount options).
 ///
 /// On non-Unix platforms this is a no-op since directory sync semantics differ.
-pub(super) async fn sync_parent_dir_async(path: &Path) -> WalResult<()> {
+pub(super) async fn sync_parent_dir(path: &Path) -> WalResult<()> {
     #[cfg(unix)]
     {
         if let Some(parent) = path.parent() {

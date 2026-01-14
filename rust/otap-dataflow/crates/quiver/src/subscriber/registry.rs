@@ -712,7 +712,9 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the first error encountered after attempting all flushes.
     /// Check the dirty count after an error to see how many subscribers still
     /// need flushing.
-    pub fn flush_progress(&self) -> Result<usize> {
+    ///
+    /// For async contexts, use [`flush_progress`](Self::flush_progress).
+    pub fn flush_progress_sync(&self) -> Result<usize> {
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
             let mut dirty_set = self.dirty_subscribers.lock();
@@ -769,10 +771,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         }
     }
 
-    /// Writes all dirty subscriber progress to disk asynchronously.
-    ///
-    /// This is the async version of [`flush_progress`](Self::flush_progress).
-    /// Use this in async contexts for non-blocking I/O.
+    /// Writes all dirty subscriber progress to disk.
     ///
     /// Returns the number of subscribers whose progress was successfully flushed.
     ///
@@ -781,7 +780,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the first error encountered after attempting all flushes.
     /// Check the dirty count after an error to see how many subscribers still
     /// need flushing.
-    pub async fn flush_progress_async(&self) -> Result<usize> {
+    pub async fn flush_progress(&self) -> Result<usize> {
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
             let mut dirty_set = self.dirty_subscribers.lock();
@@ -1175,7 +1174,7 @@ mod tests {
             handle.ack();
 
             // Flush progress files before closing
-            registry.flush_progress().unwrap();
+            registry.flush_progress_sync().unwrap();
         }
 
         // Reopen and verify state was recovered
@@ -1209,7 +1208,7 @@ mod tests {
             handle.reject(); // Dropped
 
             // Flush progress files before closing
-            registry.flush_progress().unwrap();
+            registry.flush_progress_sync().unwrap();
         }
 
         // Reopen and verify state was recovered
