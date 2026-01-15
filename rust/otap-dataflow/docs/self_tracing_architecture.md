@@ -45,18 +45,14 @@ telemetry pitfalls, as follows:
 - OTAP-Dataflow components reachable from an ITR cannot be configured
   to send to an ITR node. This avoids a direct feedback cycle for
   internal telemetry because the components cannot reach
-  themselves. For example, ITR and downstream components may be
-  configured for raw logging.
+  themselves.
 - Use of dedicated thread(s) for internal telemetry output.
-- Thread-local state to avoid third-party instrumentation in
-  dedicated internal telemetry threads.
-- Components under observation (non-ITR components) use
-  per-engine-core internal logs buffer, allowing overflow.
+- Control over Tokio `tracing` subscriber in different contexts
 - Non-blocking interfaces. We prefer to drop and count dropped
   internal log events than to block the pipeline.
 - Option to configure internal telemetry multiple ways, including the
-  no-op implementation, global or regional logs consumers, buffered and
-  unbuffered.
+  no-op implementation, direct console output, and global or regional 
+  logs consumers.
 
 ## OTLP-bytes first
 
