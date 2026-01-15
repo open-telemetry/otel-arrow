@@ -7,7 +7,7 @@
 //! the logs as OTLP ExportLogsRequest messages into the pipeline.
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::pdata::OtapPdata;
+use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -20,9 +20,10 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-//use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::logs::LogPayload;
 use otap_df_telemetry::metrics::MetricSetSnapshot;
+use otap_df_telemetry::self_tracing::{SavedCallsite, encode_export_logs_request};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -141,70 +142,22 @@ impl InternalTelemetryReceiver {
     /// Send a log payload as OTLP logs.
     async fn send_payload(
         &self,
-        _effect_handler: &local::EffectHandler<OtapPdata>,
+        effect_handler: &local::EffectHandler<OtapPdata>,
         payload: LogPayload,
     ) -> Result<(), Error> {
         match payload {
-            LogPayload::Singleton(_record) => {
-                // // Use resource bytes if available, otherwise encode without resource
-                // let bytes = if let Some(resource_bytes) = effect_handler.resource_bytes() {
-                //     //batch.encode_export_logs_request_with_resource(resource_bytes)
-                // } else {
-                //     //batch.encode_export_logs_request()
-                // };
-                // let pdata =
-                //     OtapPdata::new_todo_context(OtlpProtoBytes::ExportLogsRequest(bytes).into());
-                // effect_handler.send_message(pdata).await?;
+            LogPayload::Singleton(record) => {
+                let callsite = SavedCallsite::new(record.callsite_id.0.metadata());
+                let bytes =
+                    encode_export_logs_request(record, &callsite, effect_handler.resource_bytes());
+
+                let pdata = OtapPdata::new(
+                    Context::default(),
+                    OtlpProtoBytes::ExportLogsRequest(bytes).into(),
+                );
+                effect_handler.send_message(pdata).await?;
             }
         }
         Ok(())
     }
 }
-
-// /// Encode singleton as an OTLP ExportLogsServiceRequest.
-// #[must_use]
-// pub fn encode_singleton_request(single: LogRecord, resource_bytes: &Option<Bytes>) -> Bytes {
-//     let mut buf = ProtoBuffer::with_capacity(256 + resource_bytes.len());
-
-//     // ExportLogsServiceRequest { resource_logs: [ ResourceLogs { ... } ] }
-//     proto_encode_len_delimited_unknown_size!(
-//         LOGS_DATA_RESOURCE, // field 1: resource_logs (same field number)
-//         {
-//             // Insert pre-encoded resource (field 1: resource)
-//             buf.extend_from_slice(resource_bytes);
-
-//             // ResourceLogs { scope_logs: [ ScopeLogs { ... } ] }
-//             proto_encode_len_delimited_unknown_size!(
-//                 RESOURCE_LOGS_SCOPE_LOGS, // field 2: scope_logs
-//                 {
-//                     // ScopeLogs { log_records: [ ... ] }
-//                     // Note: we skip scope (field 1) to use empty/default scope
-//                     for record in &self.records {
-//                         self.encode_log_record(record, &mut buf);
-//                     }
-//                 },
-//                 &mut buf
-//             );
-//         },
-//         &mut buf
-//     );
-
-//     buf.into_bytes()
-// }
-
-// /// Encode a single log record into the buffer.
-// fn encode_log_record(&self, record: &LogRecord, buf: &mut ProtoBuffer) {
-//     // Get the callsite metadata for encoding
-//     let metadata = record.callsite_id.0.metadata();
-//     let callsite = SavedCallsite::new(metadata);
-
-//     proto_encode_len_delimited_unknown_size!(
-//         SCOPE_LOGS_LOG_RECORDS, // field 2: log_records
-//         {
-//             let mut encoder = DirectLogRecordEncoder::new(buf);
-//             // Clone record since encode_log_record takes ownership
-//             let _ = encoder.encode_log_record(record.clone(), &callsite);
-//         },
-//         buf
-//     );
-// }
