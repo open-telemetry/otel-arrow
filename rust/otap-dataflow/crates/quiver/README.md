@@ -27,7 +27,7 @@ cargo bench -p otap-df-quiver     # Criterion benchmarks
 
 ## Usage
 
-```rust,ignore
+```rust,no_run
 use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId, CancellationToken};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 When the disk budget is exhausted, `ingest()` returns `QuiverError::StorageAtCapacity`.
 The embedding layer should handle this by slowing ingestion:
 
-```rust,ignore
+```rust,no_run
 use quiver::QuiverError;
 
 match engine.ingest(&bundle).await {
