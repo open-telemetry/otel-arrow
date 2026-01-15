@@ -8,17 +8,51 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{QuiverError, Result};
+use crate::segment_store::SegmentReadMode;
+
+/// Controls the durability/throughput tradeoff for ingested data.
+///
+/// This determines whether the write-ahead log (WAL) is used to protect
+/// data in the open segment before it is finalized to disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum DurabilityMode {
+    /// Full WAL protection: each bundle is written to the WAL before acknowledgement.
+    ///
+    /// On crash, only bundles written since the last WAL fsync are lost
+    /// (controlled by [`WalConfig::flush_interval`]).
+    ///
+    /// This is the safest option but has lower throughput (~125 bundles/sec typical).
+    #[default]
+    Wal,
+
+    /// Segment-only durability: WAL is disabled, data is only durable after
+    /// segment finalization.
+    ///
+    /// On crash, the entire open segment is lost (potentially thousands of bundles).
+    /// Provides ~3x higher throughput than WAL mode.
+    ///
+    /// Use this when:
+    /// - Throughput is more important than durability
+    /// - Data can be re-fetched from upstream on crash
+    /// - You have other durability guarantees (e.g., upstream acknowledgement)
+    SegmentOnly,
+}
 
 /// Top-level configuration for the persistence engine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuiverConfig {
-    /// Write-ahead log tuning parameters.
+    /// Controls durability vs throughput tradeoff.
+    pub durability: DurabilityMode,
+    /// Write-ahead log tuning parameters (ignored when durability is `SegmentOnly`).
     pub wal: WalConfig,
     /// Segment creation tuning parameters.
     pub segment: SegmentConfig,
     /// Retention controls for finalized data.
     pub retention: RetentionConfig,
+    /// Read mode for segment files (mmap vs standard I/O).
+    pub read_mode: SegmentReadMode,
     /// Optional override for the base data directory.
     pub data_dir: PathBuf,
 }
@@ -32,7 +66,10 @@ impl QuiverConfig {
 
     /// Ensures the configuration holds sane, non-zero values.
     pub fn validate(&self) -> Result<()> {
-        self.wal.validate()?;
+        // Only validate WAL config if WAL is enabled
+        if self.durability == DurabilityMode::Wal {
+            self.wal.validate()?;
+        }
         self.segment.validate()?;
         self.retention.validate()?;
 
@@ -55,9 +92,11 @@ impl QuiverConfig {
 impl Default for QuiverConfig {
     fn default() -> Self {
         Self {
+            durability: DurabilityMode::default(),
             wal: WalConfig::default(),
             segment: SegmentConfig::default(),
             retention: RetentionConfig::default(),
+            read_mode: SegmentReadMode::default(),
             data_dir: PathBuf::from("./quiver_data"),
         }
     }
@@ -67,13 +106,22 @@ impl Default for QuiverConfig {
 /// backwards compatible.
 #[derive(Debug, Default)]
 pub struct QuiverConfigBuilder {
+    durability: DurabilityMode,
     wal: WalConfig,
     segment: SegmentConfig,
     retention: RetentionConfig,
+    read_mode: SegmentReadMode,
     data_dir: PathBuf,
 }
 
 impl QuiverConfigBuilder {
+    /// Sets the durability mode.
+    #[must_use]
+    pub fn durability(mut self, durability: DurabilityMode) -> Self {
+        self.durability = durability;
+        self
+    }
+
     /// Applies a custom WAL configuration.
     #[must_use]
     pub fn wal(mut self, wal: WalConfig) -> Self {
@@ -95,6 +143,13 @@ impl QuiverConfigBuilder {
         self
     }
 
+    /// Sets the segment read mode (mmap vs standard I/O).
+    #[must_use]
+    pub fn read_mode(mut self, read_mode: SegmentReadMode) -> Self {
+        self.read_mode = read_mode;
+        self
+    }
+
     /// Overrides the storage directory.
     #[must_use]
     pub fn data_dir<P: AsRef<Path>>(mut self, data_dir: P) -> Self {
@@ -105,9 +160,11 @@ impl QuiverConfigBuilder {
     /// Consumes the builder and validates the resulting configuration.
     pub fn build(self) -> Result<QuiverConfig> {
         let cfg = QuiverConfig {
+            durability: self.durability,
             wal: self.wal,
             segment: self.segment,
             retention: self.retention,
+            read_mode: self.read_mode,
             data_dir: if self.data_dir.as_os_str().is_empty() {
                 PathBuf::from("./quiver_data")
             } else {
@@ -120,10 +177,18 @@ impl QuiverConfigBuilder {
 }
 
 /// Write-ahead-log related controls.
+///
+/// Note: WAL disk usage is tracked in the shared [`DiskBudget`](crate::DiskBudget)
+/// alongside segments, so the configured disk budget cap applies to the
+/// combined total of WAL files and segment files.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WalConfig {
     /// Maximum on-disk footprint (across active + rotated files).
+    ///
+    /// This is an internal WAL-specific cap that triggers backpressure when
+    /// exceeded. The shared [`DiskBudget`](crate::DiskBudget) provides the
+    /// overall disk limit that includes both WAL and segment storage.
     pub max_size_bytes: NonZeroU64,
     /// Maximum number of rotated WAL files retained during rotation.
     pub max_rotated_files: u16,
@@ -152,7 +217,11 @@ impl WalConfig {
 impl Default for WalConfig {
     fn default() -> Self {
         Self {
-            max_size_bytes: NonZeroU64::new(4 * 1024 * 1024 * 1024).expect("non-zero"),
+            // WAL max should accommodate (max_rotated_files + 1) * rotation_target_bytes
+            // with some headroom. At 10 rotated files × 64 MB = 640 MB theoretical max,
+            // 128 MB is conservative (allows ~2 rotations worth). The WAL naturally
+            // stays smaller because rotation purges old files.
+            max_size_bytes: NonZeroU64::new(128 * 1024 * 1024).expect("non-zero"),
             max_rotated_files: 10,
             rotation_target_bytes: NonZeroU64::new(64 * 1024 * 1024).expect("non-zero"),
             flush_interval: Duration::from_millis(25),
