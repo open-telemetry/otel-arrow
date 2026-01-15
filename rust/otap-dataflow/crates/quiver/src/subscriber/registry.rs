@@ -397,13 +397,21 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         let notify = self.bundle_available.clone();
 
         loop {
-            // Try to get a bundle
+            // IMPORTANT: Register for notification BEFORE checking for bundles.
+            // This prevents a race condition where:
+            //   1. poll_next_bundle returns None
+            //   2. A segment is finalized and notify_waiters() is called
+            //   3. We call notified() but miss the notification
+            //   4. We wait forever (or until next notification)
+            //
+            // By registering first, any notification after this point will wake us.
+            let notified = notify.notified();
+
+            // Now check for available bundles
             match self.poll_next_bundle(id)? {
                 Some(handle) => return Ok(Some(handle)),
                 None => {
                     // No bundle available, wait for notification or timeout
-                    let wait_future = notify.notified();
-
                     if let Some(deadline) = deadline {
                         let now = tokio::time::Instant::now();
                         if now >= deadline {
@@ -411,7 +419,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                         }
 
                         // Wait for notification or timeout
-                        match tokio::time::timeout_at(deadline, wait_future).await {
+                        match tokio::time::timeout_at(deadline, notified).await {
                             Ok(()) => {
                                 // Notified, loop around to try getting a bundle
                             }
@@ -422,7 +430,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                         }
                     } else {
                         // No timeout, just wait for notification
-                        wait_future.await;
+                        notified.await;
                     }
                 }
             }
