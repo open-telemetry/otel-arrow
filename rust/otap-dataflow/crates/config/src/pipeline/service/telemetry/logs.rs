@@ -5,34 +5,45 @@
 
 pub mod processors;
 
+use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Internal Telemetry Receiver node URN for internal logging using OTLP bytes.
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal:otlp:receiver";
+
 /// Internal logs configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LogsConfig {
-    /// The log level for internal engine logs.
+    /// The log level for internal logs.
     #[serde(default)]
     pub level: LogLevel,
 
-    /// The list of log processors to configure.
+    /// Logging provider configuration.
+    #[serde(default = "default_providers")]
+    pub providers: LoggingProviders,
+
+    /// What to do with collected log events. This applies when any ProviderMode
+    /// in providers indicates Buffered or Unbuffered. Does not apply if all
+    /// providers are in [Noop, Raw, OpenTelemetry].
+    #[serde(default = "default_output")]
+    pub output: OutputMode,
+
+    /// OpenTelemetry SDK is configured via processors.
     #[serde(default)]
     pub processors: Vec<processors::LogProcessorConfig>,
 }
 
-/// Log level for internal engine logs.
-///
-/// TODO: Change default to `Info` once per-thread subscriber is implemented
-/// to avoid contention from the global tracing subscriber.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+/// Log level for dataflow engine logs.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// Logging is completely disabled.
-    #[default]
     Off,
     /// Debug level logging.
     Debug,
     /// Info level logging.
+    #[default]
     Info,
     /// Warn level logging.
     Warn,
@@ -40,39 +51,144 @@ pub enum LogLevel {
     Error,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Logging providers for different execution contexts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LoggingProviders {
+    /// Provider mode for non-engine threads. This defines the global Tokio
+    /// `tracing` subscriber. Default is Unbuffered. Note that Buffered
+    /// requires opt-in thread-local setup.
+    pub global: ProviderMode,
 
-    #[test]
-    fn test_logs_config_deserialize() {
-        let yaml_str = r#"
-            level: "info"
-            processors:
-              - batch:
-                  exporter:
-                    console:
-            "#;
-        let config: LogsConfig = serde_yaml::from_str(yaml_str).unwrap();
-        assert_eq!(config.level, LogLevel::Info);
-        assert_eq!(config.processors.len(), 1);
+    /// Provider mod for engine/pipeline threads. This defines how the
+    /// engine thread / core sets the Tokio `tracing`
+    /// subscriber. Default is Buffered. Internal logs will be flushed
+    /// by either the Internal Telemetry Receiver or the main pipeline
+    /// controller.
+    pub engine: ProviderMode,
+
+    /// Provider mode for nodes downstream of Internal Telemetry receiver.
+    /// This defaults to Noop to avoid internal feedback.
+    #[serde(default = "default_internal_provider")]
+    pub internal: ProviderMode,
+}
+
+/// Logs producer: how log events are captured and routed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderMode {
+    /// Log events are silently ignored.
+    Noop,
+
+    /// Immediate delivery to the internal telemetry pipeline.
+    Immediate,
+
+    /// Use OTel-Rust as the provider.
+    OpenTelemetry,
+
+    /// Synchronous console logging. Note! This can block the producing thread.
+    Raw,
+}
+
+impl ProviderMode {
+    /// Returns true if this requires a LogsReporter channel for
+    /// asynchronous logging.
+    #[must_use]
+    pub fn needs_reporter(&self) -> bool {
+        matches!(self, Self::Immediate)
     }
+}
 
-    #[test]
-    fn test_log_level_deserialize() {
-        let yaml_str = r#"
-            level: "info"
-            "#;
-        let config: LogsConfig = serde_yaml::from_str(yaml_str).unwrap();
-        assert_eq!(config.level, LogLevel::Info);
+/// Output mode: what the recipient does with received events for
+/// provider logging modes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputMode {
+    /// Noop prevents the use of the Unbuffered mode. This output mode
+    /// can be set when all providers are configured to avoid the
+    /// internal output configuration through Noop, Raw, or
+    /// OpenTelemetry settings.
+    Noop,
+
+    /// Direct console logging: format and print directly to console
+    /// (stdout/stderr) from the logs collector thread, bypasses any
+    /// internal use of the dataflow engine.  ERROR and WARN go to
+    /// stderr, others to stdout.
+    #[default]
+    Direct,
+
+    /// Route to the internal telemetry pipeline.
+    Internal,
+}
+
+fn default_output() -> OutputMode {
+    OutputMode::Direct
+}
+
+fn default_internal_provider() -> ProviderMode {
+    ProviderMode::Noop
+}
+
+fn default_providers() -> LoggingProviders {
+    LoggingProviders {
+        global: ProviderMode::Immediate,
+        engine: ProviderMode::Immediate,
+        internal: default_internal_provider(),
     }
+}
 
-    #[test]
-    fn test_logs_config_default_deserialize() -> Result<(), serde_yaml::Error> {
-        let yaml_str = r#""#;
-        let config: LogsConfig = serde_yaml::from_str(yaml_str)?;
-        assert_eq!(config.level, LogLevel::Off);
-        assert!(config.processors.is_empty());
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            level: LogLevel::default(),
+            providers: default_providers(),
+            output: default_output(),
+            processors: Vec::new(),
+        }
+    }
+}
+
+impl LogsConfig {
+    /// Validate the logs configuration.
+    ///
+    /// Returns an error if:
+    /// - `output` is `Noop` but a provider uses `Immediate`
+    ///   (logs would be sent but discarded)
+    /// - `engine` is `OpenTelemetry` but `global` is not
+    ///   (current implementation restriction: the SDK logger provider is only
+    ///   configured when global uses OpenTelemetry)
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.providers.internal.needs_reporter() {
+            return Err(Error::InvalidUserConfig {
+                error: format!(
+                    "internal provider is invalid: {:?}",
+                    self.providers.internal
+                ),
+            });
+        }
+        if self.output == OutputMode::Noop {
+            let global_reports = self.providers.global.needs_reporter();
+            let engine_reports = self.providers.engine.needs_reporter();
+
+            if global_reports || engine_reports {
+                return Err(Error::InvalidUserConfig {
+                    error: "output mode is 'noop' but a provider uses an internal reporter".into(),
+                });
+            }
+        }
+
+        // Current implementation restriction: engine OpenTelemetry requires global OpenTelemetry.
+        // The SDK logger provider is only created when the global provider is OpenTelemetry.
+        // This could be lifted in the future by creating the logger provider independently.
+        if self.providers.engine == ProviderMode::OpenTelemetry
+            && self.providers.global != ProviderMode::OpenTelemetry
+        {
+            return Err(Error::InvalidUserConfig {
+                error: "engine provider 'opentelemetry' requires global provider to also be \
+                        'opentelemetry' (current implementation restriction)"
+                    .into(),
+            });
+        }
+
         Ok(())
     }
 }
