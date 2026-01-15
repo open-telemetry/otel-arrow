@@ -1050,7 +1050,7 @@ mod tests {
 
     impl TestSegment {
         /// Creates a test segment with 2 bundles in a single stream.
-        fn new() -> Self {
+        async fn new() -> Self {
             let dir = tempdir().expect("tempdir");
             let path = dir.path().join("test.qseg");
 
@@ -1075,7 +1075,8 @@ mod tests {
 
             let writer = SegmentWriter::new(SegmentSeq::new(1));
             let _ = writer
-                .write_segment_sync(&path, open_segment)
+                .write_segment(&path, open_segment)
+                .await
                 .expect("write");
 
             Self {
@@ -1087,9 +1088,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reader_opens_valid_segment() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_opens_valid_segment() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
 
@@ -1098,9 +1099,9 @@ mod tests {
         assert_eq!(reader.version(), 1);
     }
 
-    #[test]
-    fn reader_returns_stream_metadata() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_returns_stream_metadata() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let streams = reader.streams();
@@ -1111,9 +1112,9 @@ mod tests {
         assert_eq!(streams[0].row_count, 5); // 2 + 3
     }
 
-    #[test]
-    fn reader_returns_manifest_entries() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_returns_manifest_entries() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let manifest = reader.manifest();
@@ -1123,9 +1124,9 @@ mod tests {
         assert_eq!(manifest[1].bundle_index, 1);
     }
 
-    #[test]
-    fn reader_reads_bundle() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_reads_bundle() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let entry = reader.manifest()[0].clone();
@@ -1146,9 +1147,9 @@ mod tests {
         assert!(payloads.contains_key(&SlotId::new(0)));
     }
 
-    #[test]
-    fn reader_file_size() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_file_size() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
 
@@ -1158,9 +1159,9 @@ mod tests {
         assert!(reader.file_size() > 0);
     }
 
-    #[test]
-    fn reader_reads_chunk() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_reads_chunk() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
@@ -1274,8 +1275,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn roundtrip_dictionary_encoded_data() {
+    #[tokio::test]
+    async fn roundtrip_dictionary_encoded_data() {
         // This test exercises the dictionary reading code path in StreamDecoder::new
         // (lines 174-178) by using dictionary-encoded string columns.
         use arrow_array::types::Int32Type;
@@ -1316,7 +1317,8 @@ mod tests {
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
         let _ = writer
-            .write_segment_sync(&path, open_segment)
+            .write_segment(&path, open_segment)
+            .await
             .expect("write");
 
         // Read back and verify
@@ -1339,9 +1341,9 @@ mod tests {
         assert_eq!(dict_col.len(), 5);
     }
 
-    #[test]
-    fn reader_detects_checksum_mismatch() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_detects_checksum_mismatch() {
+        let seg = TestSegment::new().await;
 
         // Make the file writable so we can corrupt it for testing
         #[cfg(unix)]
@@ -1369,9 +1371,9 @@ mod tests {
         assert!(matches!(result, Err(SegmentError::ChecksumMismatch { .. })));
     }
 
-    #[test]
-    fn reader_stream_lookup_by_id() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_stream_lookup_by_id() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
@@ -1384,9 +1386,9 @@ mod tests {
         assert!(missing.is_none());
     }
 
-    #[test]
-    fn reader_chunk_out_of_bounds() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_chunk_out_of_bounds() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
@@ -1395,8 +1397,8 @@ mod tests {
         assert!(matches!(result, Err(SegmentError::InvalidFormat { .. })));
     }
 
-    #[test]
-    fn roundtrip_multiple_slots() {
+    #[tokio::test]
+    async fn roundtrip_multiple_slots() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("multi_slot.qseg");
 
@@ -1417,7 +1419,8 @@ mod tests {
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
         let _ = writer
-            .write_segment_sync(&path, open_segment)
+            .write_segment(&path, open_segment)
+            .await
             .expect("write");
 
         // Read back
@@ -1440,9 +1443,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reconstructed_bundle_into_payloads() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reconstructed_bundle_into_payloads() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let entry = reader.manifest()[0].clone();
@@ -1455,9 +1458,9 @@ mod tests {
     }
 
     #[cfg(feature = "mmap")]
-    #[test]
-    fn reader_opens_mmap() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_opens_mmap() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open_mmap(&seg.path).expect("open_mmap");
 
@@ -1466,9 +1469,9 @@ mod tests {
     }
 
     #[cfg(feature = "mmap")]
-    #[test]
-    fn mmap_bundle_outlives_reader() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn mmap_bundle_outlives_reader() {
+        let seg = TestSegment::new().await;
 
         let bundle = {
             let reader = SegmentReader::open_mmap(&seg.path).expect("open_mmap");
@@ -1492,8 +1495,8 @@ mod tests {
     /// the returned RecordBatch data buffers point into the mmap region rather
     /// than to copied memory.
     #[cfg(feature = "mmap")]
-    #[test]
-    fn mmap_multi_stream_alignment() {
+    #[tokio::test]
+    async fn mmap_multi_stream_alignment() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("multi_stream_mmap.qseg");
 
@@ -1523,7 +1526,8 @@ mod tests {
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
         let _ = writer
-            .write_segment_sync(&path, open_segment)
+            .write_segment(&path, open_segment)
+            .await
             .expect("write");
 
         // Read back with mmap

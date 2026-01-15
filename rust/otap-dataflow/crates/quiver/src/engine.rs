@@ -646,7 +646,6 @@ impl QuiverEngine {
     /// or `defer()` before being dropped.
     ///
     /// For async waiting, use [`next_bundle`](Self::next_bundle).
-    /// For sync blocking behavior, use [`next_bundle_blocking`](Self::next_bundle_blocking).
     pub fn poll_next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
@@ -696,30 +695,6 @@ impl QuiverEngine {
     ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
     {
         self.registry.next_bundle(id, timeout).await
-    }
-
-    /// Waits for the next available bundle with a timeout (blocking).
-    ///
-    /// Blocking: waits up to `timeout` for a bundle to become available.
-    /// Returns `None` on timeout or if `should_stop` returns true.
-    ///
-    /// For async waiting, prefer [`next_bundle`](Self::next_bundle).
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The subscriber ID
-    /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
-    /// * `should_stop` - Called periodically to check if waiting should stop (e.g., for shutdown).
-    pub fn next_bundle_blocking<F>(
-        self: &Arc<Self>,
-        id: &SubscriberId,
-        timeout: Option<Duration>,
-        should_stop: F,
-    ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
-    where
-        F: Fn() -> bool,
-    {
-        self.registry.next_bundle_blocking(id, timeout, should_stop)
     }
 
     /// Claims a specific bundle for a subscriber.

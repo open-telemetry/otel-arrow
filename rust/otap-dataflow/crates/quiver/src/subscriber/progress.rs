@@ -43,8 +43,8 @@
 //! Progress is written via temp file → fsync → rename to ensure crash-safe
 //! updates. This avoids partial writes and provides atomic visibility.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher as Crc32Hasher;
@@ -533,87 +533,6 @@ pub fn read_progress_file(path: &Path) -> Result<(SegmentSeq, Vec<SegmentProgres
 // Writing Progress Files
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Writes a subscriber progress file atomically (sync version).
-///
-/// Uses write-to-temp → fsync → rename pattern for crash safety.
-/// Prefer the async version when running in an async context.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The directory doesn't exist
-/// - The file cannot be written
-/// - fsync fails
-pub fn write_progress_file_sync(
-    dir: &Path,
-    subscriber_id: &SubscriberId,
-    oldest_incomplete_seg: SegmentSeq,
-    entries: &[SegmentProgressEntry],
-) -> Result<()> {
-    let final_path = progress_file_path(dir, subscriber_id);
-    let temp_path = temp_progress_file_path(dir, subscriber_id);
-
-    // Build the complete file content
-    let mut content = Vec::new();
-
-    // Header
-    let header = ProgressHeader::new(oldest_incomplete_seg, entries.len() as u32);
-    content.extend_from_slice(&header.serialize());
-
-    // Entries
-    for entry in entries {
-        content.extend_from_slice(&entry.serialize());
-    }
-
-    // CRC (of header + entries)
-    let mut hasher = Crc32Hasher::new();
-    hasher.update(&content);
-    let crc = hasher.finalize();
-    content.extend_from_slice(&crc.to_le_bytes());
-
-    // Write to temp file
-    {
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp_path)
-            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
-
-        let mut writer = BufWriter::new(file);
-        writer
-            .write_all(&content)
-            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
-
-        writer
-            .flush()
-            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
-
-        // Sync to disk
-        writer
-            .get_ref()
-            .sync_all()
-            .map_err(|e| SubscriberError::progress_io(&temp_path, e))?;
-    }
-
-    // Atomic rename
-    // Note: fs::rename() is atomic on POSIX systems. On Windows, it's only atomic
-    // when source and target are on the same volume. Since both temp_path and
-    // final_path are in the same directory (data_dir), this is guaranteed to be
-    // on the same volume.
-    fs::rename(&temp_path, &final_path)
-        .map_err(|e| SubscriberError::progress_io(&final_path, e))?;
-
-    // Sync parent directory to ensure rename is durable
-    if let Some(parent) = final_path.parent() {
-        if let Ok(dir_file) = File::open(parent) {
-            let _ = dir_file.sync_all();
-        }
-    }
-
-    Ok(())
-}
-
 /// Writes a subscriber progress file atomically.
 ///
 /// Uses write-to-temp → fsync → rename pattern for crash safety.
@@ -692,23 +611,6 @@ pub async fn write_progress_file(
     }
 
     Ok(())
-}
-
-/// Deletes a subscriber's progress file (sync version).
-///
-/// Prefer the async version when running in an async context.
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be deleted (but not if it doesn't exist).
-pub fn delete_progress_file_sync(dir: &Path, subscriber_id: &SubscriberId) -> Result<()> {
-    let path = progress_file_path(dir, subscriber_id);
-
-    match fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(SubscriberError::progress_io(&path, e)),
-    }
 }
 
 /// Deletes a subscriber's progress file.
@@ -911,12 +813,12 @@ mod tests {
     // File I/O tests
     // ─────────────────────────────────────────────────────────────────────────
 
-    #[test]
-    fn write_and_read_empty_progress() {
+    #[tokio::test]
+    async fn write_and_read_empty_progress() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, entries) = read_progress_file(&path).unwrap();
@@ -925,8 +827,8 @@ mod tests {
         assert!(entries.is_empty());
     }
 
-    #[test]
-    fn write_and_read_progress_with_entries() {
+    #[tokio::test]
+    async fn write_and_read_progress_with_entries() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("exporter-1").unwrap();
 
@@ -941,7 +843,7 @@ mod tests {
 
         let entries = vec![entry1.clone(), entry2.clone()];
 
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(10), &entries).unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(10), &entries).await.unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, read_entries) = read_progress_file(&path).unwrap();
@@ -952,12 +854,12 @@ mod tests {
         assert_eq!(read_entries[1], entry2);
     }
 
-    #[test]
-    fn read_detects_crc_corruption() {
+    #[tokio::test]
+    async fn read_detects_crc_corruption() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(5), &[]).unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(5), &[]).await.unwrap();
 
         // Corrupt a byte in the header
         let path = progress_file_path(dir.path(), &sub_id);
@@ -972,12 +874,12 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn read_detects_truncation() {
+    #[tokio::test]
+    async fn read_detects_truncation() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
 
         // Truncate the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -991,12 +893,12 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn read_detects_oversized_header() {
+    #[tokio::test]
+    async fn read_detects_oversized_header() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
 
         // Corrupt the header_size field to claim a size larger than the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -1022,12 +924,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn read_detects_entry_count_overflow() {
+    #[tokio::test]
+    async fn read_detects_entry_count_overflow() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
 
         // Corrupt the entry_count field to claim more entries than exist
         let path = progress_file_path(dir.path(), &sub_id);
@@ -1083,40 +985,26 @@ mod tests {
         );
     }
 
-    #[test]
-    fn delete_progress_file_sync_works() {
-        let dir = tempdir().unwrap();
-        let sub_id = SubscriberId::new("test-sub").unwrap();
-
-        write_progress_file_sync(dir.path(), &sub_id, SegmentSeq::new(0), &[]).unwrap();
-
-        let path = progress_file_path(dir.path(), &sub_id);
-        assert!(path.exists());
-
-        delete_progress_file_sync(dir.path(), &sub_id).unwrap();
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn delete_nonexistent_file_ok() {
+    #[tokio::test]
+    async fn delete_nonexistent_file_ok() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("nonexistent").unwrap();
 
         // Should not error
-        delete_progress_file_sync(dir.path(), &sub_id).unwrap();
+        delete_progress_file(dir.path(), &sub_id).await.unwrap();
     }
 
-    #[test]
-    fn scan_progress_files_finds_all() {
+    #[tokio::test]
+    async fn scan_progress_files_finds_all() {
         let dir = tempdir().unwrap();
 
         let sub1 = SubscriberId::new("exporter-1").unwrap();
         let sub2 = SubscriberId::new("backup-s3").unwrap();
         let sub3 = SubscriberId::new("metrics-sink").unwrap();
 
-        write_progress_file_sync(dir.path(), &sub1, SegmentSeq::new(0), &[]).unwrap();
-        write_progress_file_sync(dir.path(), &sub2, SegmentSeq::new(5), &[]).unwrap();
-        write_progress_file_sync(dir.path(), &sub3, SegmentSeq::new(10), &[]).unwrap();
+        write_progress_file(dir.path(), &sub1, SegmentSeq::new(0), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub2, SegmentSeq::new(5), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub3, SegmentSeq::new(10), &[]).await.unwrap();
 
         // Create a temp file that should be ignored
         fs::write(dir.path().join("quiver.sub.temp-file.tmp"), b"temp").unwrap();
@@ -1152,19 +1040,20 @@ mod tests {
     // Atomic update tests
     // ─────────────────────────────────────────────────────────────────────────
 
-    #[test]
-    fn atomic_update_preserves_old_on_temp_failure() {
+    #[tokio::test]
+    async fn atomic_update_preserves_old_on_temp_failure() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
         // Write initial state
         let initial_entry = SegmentProgressEntry::new(SegmentSeq::new(1), 10);
-        write_progress_file_sync(
+        write_progress_file(
             dir.path(),
             &sub_id,
             SegmentSeq::new(1),
             std::slice::from_ref(&initial_entry),
         )
+        .await
         .unwrap();
 
         // Read back and verify
@@ -1175,12 +1064,13 @@ mod tests {
 
         // Write updated state
         let updated_entry = SegmentProgressEntry::new(SegmentSeq::new(2), 20);
-        write_progress_file_sync(
+        write_progress_file(
             dir.path(),
             &sub_id,
             SegmentSeq::new(2),
             std::slice::from_ref(&updated_entry),
         )
+        .await
         .unwrap();
 
         // Verify update
@@ -1240,46 +1130,5 @@ mod tests {
         delete_progress_file(dir.path(), &sub_id).await.unwrap();
 
         assert!(!path.exists(), "file should not exist after delete");
-    }
-
-    #[tokio::test]
-    async fn async_write_progress_matches_sync_output() {
-        let dir = tempdir().unwrap();
-        let sub_id_sync = SubscriberId::new("sync-sub").unwrap();
-        let sub_id_async = SubscriberId::new("async-sub").unwrap();
-
-        let entry = SegmentProgressEntry::new(SegmentSeq::new(5), 200);
-
-        // Write with sync
-        write_progress_file_sync(
-            dir.path(),
-            &sub_id_sync,
-            SegmentSeq::new(5),
-            std::slice::from_ref(&entry),
-        )
-        .unwrap();
-
-        // Write with async
-        write_progress_file(
-            dir.path(),
-            &sub_id_async,
-            SegmentSeq::new(5),
-            std::slice::from_ref(&entry),
-        )
-        .await
-        .unwrap();
-
-        // Read both and compare
-        let sync_path = progress_file_path(dir.path(), &sub_id_sync);
-        let async_path = progress_file_path(dir.path(), &sub_id_async);
-
-        use std::fs::read;
-        let sync_contents = read(&sync_path).unwrap();
-        let async_contents = read(&async_path).unwrap();
-
-        assert_eq!(
-            sync_contents, async_contents,
-            "sync and async should produce identical files"
-        );
     }
 }
