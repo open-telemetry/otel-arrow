@@ -21,20 +21,27 @@ thread_local! {
     static BUILD_NODE_TELEMETRY_HANDLE: RefCell<Option<NodeTelemetryHandle>> = RefCell::new(None);
 }
 
-/// RAII guard that clears the pipeline entity key on drop.
-pub struct PipelineEntityScope {}
+/// RAII guard that clears and unregisters the pipeline entity on drop.
+pub struct PipelineEntityScope {
+    registry: TelemetryRegistryHandle,
+    key: EntityKey,
+}
 
 impl Drop for PipelineEntityScope {
     fn drop(&mut self) {
         PIPELINE_ENTITY_KEY.with(|cell| cell.set(None));
+        let _ = self.registry.unregister_entity(self.key);
     }
 }
 
 /// Sets the pipeline entity key for the current thread.
 #[must_use]
-pub fn set_pipeline_entity_key(key: EntityKey) -> PipelineEntityScope {
+pub fn set_pipeline_entity_key(
+    registry: TelemetryRegistryHandle,
+    key: EntityKey,
+) -> PipelineEntityScope {
     PIPELINE_ENTITY_KEY.with(|cell| cell.set(Some(key)));
-    PipelineEntityScope {}
+    PipelineEntityScope { registry, key }
 }
 
 /// Returns the pipeline entity key for the current thread, if set.
@@ -325,55 +332,78 @@ mod tests {
         CHANNEL_TYPE_MPSC, ChannelReceiverMetrics, ChannelSenderMetrics,
     };
     use crate::context::ControllerContext;
+    use crate::pipeline_metrics::PipelineMetricsMonitor;
     use otap_df_config::node::NodeKind;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::borrow::Cow;
 
     #[test]
-    fn cleanup_unregisters_node_and_channel_entities_and_metrics() {
+    fn pipeline_cleanup_unregisters_entities() {
         let registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry.clone());
-        let pipeline_ctx = controller_ctx
-            .pipeline_context_with("group".into(), "pipe".into(), 0, 0)
-            .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 0);
 
-        let node_entity_key = pipeline_ctx.register_node_entity();
-        let telemetry = NodeTelemetryHandle::new(pipeline_ctx.metrics_registry(), node_entity_key);
+        let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        let _pipeline_metrics = PipelineMetricsMonitor::new(pipeline_ctx.clone());
 
-        let input_key = pipeline_ctx.register_channel_entity(
-            "chan:in".into(),
+        let source_ctx =
+            pipeline_ctx.with_node_context("source".into(), "urn:test".into(), NodeKind::Receiver);
+        let dest_ctx =
+            pipeline_ctx.with_node_context("dest".into(), "urn:test".into(), NodeKind::Processor);
+
+        let source_entity_key = source_ctx.register_node_entity();
+        let dest_entity_key = dest_ctx.register_node_entity();
+        let source_handle =
+            NodeTelemetryHandle::new(source_ctx.metrics_registry(), source_entity_key);
+        let dest_handle = NodeTelemetryHandle::new(dest_ctx.metrics_registry(), dest_entity_key);
+        let source_guard = NodeTelemetryGuard::new(source_handle.clone());
+        let dest_guard = NodeTelemetryGuard::new(dest_handle.clone());
+
+        let channel_id: Cow<'static, str> = "chan:pdata".into();
+        let out_key = source_ctx.register_channel_entity(
+            channel_id.clone(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,
             CHANNEL_IMPL_INTERNAL,
         );
-        let output_key = pipeline_ctx.register_channel_entity(
-            "chan:out".into(),
+        source_handle.add_output_channel_key("out".into(), out_key);
+        let in_key = dest_ctx.register_channel_entity(
+            channel_id,
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,
             CHANNEL_IMPL_INTERNAL,
         );
-        let control_key = pipeline_ctx.register_channel_entity(
+        dest_handle.set_input_channel_key(in_key);
+        let ctrl_key = source_ctx.register_channel_entity(
             "chan:ctrl".into(),
             CHANNEL_KIND_CONTROL,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,
             CHANNEL_IMPL_INTERNAL,
         );
+        source_handle.set_control_channel_key(ctrl_key);
 
-        telemetry.set_input_channel_key(input_key);
-        telemetry.add_output_channel_key("out".into(), output_key);
-        telemetry.set_control_channel_key(control_key);
+        let out_metrics = source_ctx
+            .register_metric_set_for_entity::<ChannelSenderMetrics>(out_key);
+        source_handle.track_metric_set(out_metrics.metric_set_key());
+        let in_metrics =
+            dest_ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(in_key);
+        dest_handle.track_metric_set(in_metrics.metric_set_key());
+        let _ = source_handle.register_metric_set::<ChannelSenderMetrics>();
+        let _ = dest_handle.register_metric_set::<ChannelSenderMetrics>();
 
-        let _node_metrics = telemetry.register_metric_set::<ChannelSenderMetrics>();
-        let channel_metrics = pipeline_ctx
-            .register_metric_set_for_entity::<ChannelReceiverMetrics>(input_key);
-        telemetry.track_metric_set(channel_metrics.metric_set_key());
+        assert_eq!(registry.entity_count(), 6);
+        assert_eq!(registry.metric_set_count(), 6);
 
-        assert_eq!(registry.entity_count(), 4);
-        assert_eq!(registry.metric_set_count(), 2);
-
-        telemetry.cleanup();
+        drop(dest_guard);
+        drop(source_guard);
+        drop(_pipeline_metrics);
+        drop(_pipeline_entity_guard);
 
         assert_eq!(registry.metric_set_count(), 0);
         assert_eq!(registry.entity_count(), 0);

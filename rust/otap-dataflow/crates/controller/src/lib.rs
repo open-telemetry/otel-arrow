@@ -392,7 +392,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // entity is registered here for proper context tracking and set into thread-local storage
         // in order to be accessible by all components within this thread.
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-        let _pipeline_entity_guard = set_pipeline_entity_key(pipeline_entity_key);
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
 
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {

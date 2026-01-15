@@ -135,6 +135,7 @@ use crate::context::PipelineContext;
 use cpu_time::ThreadTime;
 use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter, ObserveUpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry_macros::metric_set;
 use std::time::Instant;
 
@@ -411,6 +412,7 @@ pub(crate) struct PipelineMetricsMonitor {
     metrics: MetricSet<PipelineMetrics>,
     tokio_rt: Option<tokio::runtime::RuntimeMetrics>,
     tokio_metrics: MetricSet<TokioRuntimeMetrics>,
+    registry: TelemetryRegistryHandle,
 }
 
 impl PipelineMetricsMonitor {
@@ -462,6 +464,7 @@ impl PipelineMetricsMonitor {
         let metrics = pipeline_ctx.register_metric_set_for_entity::<PipelineMetrics>(entity_key);
         let tokio_metrics =
             pipeline_ctx.register_metric_set_for_entity::<TokioRuntimeMetrics>(entity_key);
+        let registry = pipeline_ctx.metrics_registry();
 
         Self {
             start_time: now,
@@ -478,6 +481,7 @@ impl PipelineMetricsMonitor {
             metrics,
             tokio_rt,
             tokio_metrics,
+            registry,
         }
     }
 
@@ -753,6 +757,15 @@ impl PipelineMetricsMonitor {
     fn update_rusage_metrics(&mut self) {}
 }
 
+impl Drop for PipelineMetricsMonitor {
+    fn drop(&mut self) {
+        let _ = self.registry.unregister_metric_set(self.metrics.metric_set_key());
+        let _ = self
+            .registry
+            .unregister_metric_set(self.tokio_metrics.metric_set_key());
+    }
+}
+
 #[cfg(all(test, not(windows), feature = "jemalloc-testing"))]
 mod jemalloc_tests {
     use super::*;
@@ -775,8 +788,10 @@ mod jemalloc_tests {
         let controller = ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
-        let _pipeline_entity_guard =
-            crate::entity_context::set_pipeline_entity_key(pipeline_entity_key);
+        let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_ctx.metrics_registry(),
+            pipeline_entity_key,
+        );
 
         let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
 
@@ -844,8 +859,10 @@ mod non_jemalloc_tests {
         let controller = ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
-        let _pipeline_entity_guard =
-            crate::entity_context::set_pipeline_entity_key(pipeline_entity_key);
+        let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_ctx.metrics_registry(),
+            pipeline_entity_key,
+        );
 
         let mut monitor = PipelineMetricsMonitor::new(pipeline_ctx);
 

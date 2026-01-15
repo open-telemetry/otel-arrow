@@ -477,8 +477,10 @@ mod tests {
         );
 
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-        let pipeline_entity_guard =
-            crate::entity_context::set_pipeline_entity_key(pipeline_entity_key);
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
+        );
 
         let manager = PipelineCtrlMsgManager::new(
             DeployedPipelineKey {
@@ -906,8 +908,10 @@ mod tests {
                     thread_id,
                 );
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-                let _pipeline_entity_guard =
-                    crate::entity_context::set_pipeline_entity_key(pipeline_entity_key);
+                let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+                    pipeline_context.metrics_registry(),
+                    pipeline_entity_key,
+                );
 
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(
