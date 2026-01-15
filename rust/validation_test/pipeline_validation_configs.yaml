@@ -1,0 +1,11 @@
+tests: 
+  - name: "No Processor"
+    pipeline_config: ./validation_pipelines/no-processor.yaml
+    loadgen_exporter_type: otlp
+    backend_receiver_type: otlp
+    transformitive: false
+  - name: "Debug Processor"
+    pipeline_config: ./validation_pipelines/debug-processor.yaml
+    loadgen_exporter_type: otlp
+    backend_receiver_type: otlp
+    transformative: false

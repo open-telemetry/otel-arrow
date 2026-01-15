@@ -19,6 +19,7 @@ tonic = { version = "0.14", default-features = false, features = [
 tonic-middleware = "0.4.0"
 tonic-prost = "0.14"
 prost = "0.14"
+tera = "1"
 tokio = { version = "1.48.0", features = [ "sync"] }
 
 
