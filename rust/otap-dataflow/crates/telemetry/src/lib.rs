@@ -73,6 +73,18 @@ pub use logs::{
     DirectCollector, ImmediateLayer, LogPayload, LogsReceiver, LogsReporter, TelemetrySetup,
 };
 
+/// Runtime settings for internal telemetry injection into a receiver.
+///
+/// This struct bundles the logs receiver channel and pre-encoded resource bytes
+/// that should be injected into the Internal Telemetry Receiver node.
+#[derive(Clone)]
+pub struct InternalTelemetrySettings {
+    /// The logs receiver channel.
+    pub logs_receiver: LogsReceiver,
+    /// Pre-encoded resource bytes for OTLP log encoding.
+    pub resource_bytes: bytes::Bytes,
+}
+
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.

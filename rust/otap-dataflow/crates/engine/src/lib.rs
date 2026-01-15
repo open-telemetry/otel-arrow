@@ -25,6 +25,7 @@ use otap_df_config::{
     PortName,
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
+    pipeline::service::telemetry::logs::INTERNAL_TELEMETRY_RECEIVER_URN,
 };
 use otap_df_telemetry::otel_debug;
 use std::borrow::Cow;
@@ -292,13 +293,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///   the hyper-edges between them to determine the best channel type.
     /// - Assign channels to the source nodes and their destination nodes based on the previous
     ///   analysis.
-    ///
-    /// # Parameters
-    /// - `pipeline_ctx`: The pipeline context for this build.
-    /// - `config`: The pipeline configuration.
-    /// - `logs_receiver`: Optional tuple of (URN, receiver) for internal logs channel.
-    ///   When provided, the receiver and resource bytes are injected into any receiver
-    ///   node matching the URN, enabling collection of logs from all threads via the channel.
     pub fn build(
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
@@ -351,9 +345,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
                     // Inject internal telemetry settings if this is the target node
                     if let Some(ref settings) = internal_telemetry {
-                        if node_config.plugin_urn.as_ref() == settings.target_urn {
-                            wrapper.set_logs_receiver(settings.logs_receiver.clone());
-                            wrapper.set_resource_bytes(settings.resource_bytes.clone());
+                        if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
+                            wrapper.set_internal_telemetry(settings.clone());
                         }
                     }
 

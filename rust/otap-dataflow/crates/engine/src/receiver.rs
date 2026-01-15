@@ -19,7 +19,6 @@ use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
 use crate::terminal_state::TerminalState;
-use bytes::Bytes;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -31,18 +30,8 @@ use std::sync::Arc;
 /// Type alias for the internal logs receiver channel.
 pub type LogsReceiver = otap_df_telemetry::LogsReceiver;
 
-/// Runtime settings for internal telemetry injection into a receiver.
-///
-/// This struct bundles the logs receiver channel and pre-encoded resource bytes
-/// that should be injected into the Internal Telemetry Receiver node.
-pub struct InternalTelemetrySettings {
-    /// The URN of the receiver to inject into.
-    pub target_urn: &'static str,
-    /// The logs receiver channel.
-    pub logs_receiver: LogsReceiver,
-    /// Pre-encoded resource bytes for OTLP log encoding.
-    pub resource_bytes: Bytes,
-}
+/// Re-export from telemetry crate for convenience.
+pub use otap_df_telemetry::InternalTelemetrySettings;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -67,10 +56,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_senders: HashMap<PortName, LocalSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
-        /// Receiver for internal logs (for internal telemetry receiver).
-        logs_receiver: Option<LogsReceiver>,
-        /// Pre-encoded resource bytes for internal telemetry (for internal telemetry receiver).
-        resource_bytes: Option<Bytes>,
+        /// Internal telemetry settings (for internal telemetry receiver).
+        internal_telemetry: Option<InternalTelemetrySettings>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -90,10 +77,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
-        /// Receiver for internal logs (for internal telemetry receiver).
-        logs_receiver: Option<LogsReceiver>,
-        /// Pre-encoded resource bytes for internal telemetry (for internal telemetry receiver).
-        resource_bytes: Option<Bytes>,
+        /// Internal telemetry settings (for internal telemetry receiver).
+        internal_telemetry: Option<InternalTelemetrySettings>,
     },
 }
 
@@ -133,8 +118,7 @@ impl<PData> ReceiverWrapper<PData> {
             control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
-            logs_receiver: None,
-            resource_bytes: None,
+            internal_telemetry: None,
         }
     }
 
@@ -160,8 +144,7 @@ impl<PData> ReceiverWrapper<PData> {
             control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
-            logs_receiver: None,
-            resource_bytes: None,
+            internal_telemetry: None,
         }
     }
 
@@ -184,8 +167,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver,
                 pdata_senders,
                 pdata_receiver,
-                logs_receiver,
-                resource_bytes,
+                internal_telemetry,
             } => {
                 let channel_id = control_channel_id(&node_id);
                 let control_sender = match control_sender.into_mpsc() {
@@ -219,8 +201,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     pdata_receiver,
-                    logs_receiver,
-                    resource_bytes,
+                    internal_telemetry,
                 }
             }
             ReceiverWrapper::Shared {
@@ -232,8 +213,7 @@ impl<PData> ReceiverWrapper<PData> {
                 receiver,
                 pdata_senders,
                 pdata_receiver,
-                logs_receiver,
-                resource_bytes,
+                internal_telemetry,
             } => {
                 let channel_id = control_channel_id(&node_id);
                 let control_sender = match control_sender.into_mpsc() {
@@ -267,8 +247,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     pdata_receiver,
-                    logs_receiver,
-                    resource_bytes,
+                    internal_telemetry,
                 }
             }
         }
@@ -288,8 +267,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
-                    logs_receiver,
-                    resource_bytes,
+                    internal_telemetry,
                     ..
                 },
                 metrics_reporter,
@@ -314,8 +292,8 @@ impl<PData> ReceiverWrapper<PData> {
                     metrics_reporter,
                 );
                 // Inject internal telemetry settings if configured
-                if let Some(logs_rx) = logs_receiver {
-                    effect_handler.set_logs_receiver(logs_rx, resource_bytes)
+                if let Some(settings) = internal_telemetry {
+                    effect_handler.set_internal_telemetry(settings);
                 }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -409,49 +387,26 @@ impl<PData> Node<PData> for ReceiverWrapper<PData> {
 }
 
 impl<PData> ReceiverWrapper<PData> {
-    /// Set the logs receiver for internal telemetry.
+    /// Set the internal telemetry settings for this receiver.
     ///
     /// This is used by the Internal Telemetry Receiver to receive logs
     /// from all threads via the logs channel.
-    pub fn set_logs_receiver(&mut self, receiver: LogsReceiver) {
+    pub fn set_internal_telemetry(&mut self, settings: InternalTelemetrySettings) {
         match self {
-            ReceiverWrapper::Local { logs_receiver, .. } => {
-                *logs_receiver = Some(receiver);
+            ReceiverWrapper::Local { internal_telemetry, .. } => {
+                *internal_telemetry = Some(settings);
             }
-            ReceiverWrapper::Shared { logs_receiver, .. } => {
-                *logs_receiver = Some(receiver);
-            }
-        }
-    }
-
-    /// Take the logs receiver, if set.
-    pub fn take_logs_receiver(&mut self) -> Option<LogsReceiver> {
-        match self {
-            ReceiverWrapper::Local { logs_receiver, .. } => logs_receiver.take(),
-            ReceiverWrapper::Shared { logs_receiver, .. } => logs_receiver.take(),
-        }
-    }
-
-    /// Set the pre-encoded resource bytes for internal telemetry.
-    ///
-    /// This is used by the Internal Telemetry Receiver to include resource
-    /// attributes in the encoded OTLP log messages.
-    pub fn set_resource_bytes(&mut self, bytes: Bytes) {
-        match self {
-            ReceiverWrapper::Local { resource_bytes, .. } => {
-                *resource_bytes = Some(bytes);
-            }
-            ReceiverWrapper::Shared { resource_bytes, .. } => {
-                *resource_bytes = Some(bytes);
+            ReceiverWrapper::Shared { internal_telemetry, .. } => {
+                *internal_telemetry = Some(settings);
             }
         }
     }
 
-    /// Take the pre-encoded resource bytes, if set.
-    pub fn take_resource_bytes(&mut self) -> Option<Bytes> {
+    /// Take the internal telemetry settings, if set.
+    pub fn take_internal_telemetry(&mut self) -> Option<InternalTelemetrySettings> {
         match self {
-            ReceiverWrapper::Local { resource_bytes, .. } => resource_bytes.take(),
-            ReceiverWrapper::Shared { resource_bytes, .. } => resource_bytes.take(),
+            ReceiverWrapper::Local { internal_telemetry, .. } => internal_telemetry.take(),
+            ReceiverWrapper::Shared { internal_telemetry, .. } => internal_telemetry.take(),
         }
     }
 }

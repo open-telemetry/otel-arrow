@@ -37,6 +37,7 @@ use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, Timer
 use crate::error::{Error, ReceiverErrorKind, TypedError};
 use crate::local::message::LocalSender;
 use crate::node::NodeId;
+use crate::receiver::InternalTelemetrySettings;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
@@ -133,10 +134,8 @@ pub struct EffectHandler<PData> {
     msg_senders: HashMap<PortName, LocalSender<PData>>,
     /// Cached default sender for fast access in the hot path
     default_sender: Option<LocalSender<PData>>,
-    /// Receiver for internal logs (for internal telemetry receiver).
-    logs_receiver: Option<LogsReceiver>,
-    /// Pre-encoded resource bytes for OTLP log encoding (for internal telemetry receiver).
-    resource_bytes: Option<bytes::Bytes>,
+    /// Internal telemetry settings (for internal telemetry receiver).
+    internal_telemetry: Option<InternalTelemetrySettings>,
 }
 
 /// Implementation for the `!Send` effect handler.
@@ -166,31 +165,25 @@ impl<PData> EffectHandler<PData> {
             core,
             msg_senders,
             default_sender,
-            logs_receiver: None,
-            resource_bytes: None,
+            internal_telemetry: None,
         }
     }
 
-    /// Sets the logs receiver for internal telemetry.
-    pub fn set_logs_receiver(
-        &mut self,
-        logs_receiver: LogsReceiver,
-        resource_bytes: Option<bytes::Bytes>,
-    ) {
-        self.logs_receiver = Some(logs_receiver);
-        self.resource_bytes = resource_bytes;
+    /// Sets the internal telemetry settings.
+    pub fn set_internal_telemetry(&mut self, settings: InternalTelemetrySettings) {
+        self.internal_telemetry = Some(settings);
     }
 
-    /// Returns the logs receiver, if configured..
+    /// Returns the logs receiver, if configured.
     #[must_use]
     pub fn logs_receiver(&self) -> Option<&LogsReceiver> {
-        self.logs_receiver.as_ref()
+        self.internal_telemetry.as_ref().map(|s| &s.logs_receiver)
     }
 
     /// Returns the pre-encoded resource bytes, if configured.
     #[must_use]
     pub fn resource_bytes(&self) -> Option<&bytes::Bytes> {
-        self.resource_bytes.as_ref()
+        self.internal_telemetry.as_ref().map(|s| &s.resource_bytes)
     }
 
     /// Returns the id of the receiver associated with this handler.

@@ -21,9 +21,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::pipeline::service::telemetry::logs::{
-    INTERNAL_TELEMETRY_RECEIVER_URN, OutputMode,
-};
+use otap_df_config::pipeline::service::telemetry::logs::OutputMode;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -44,9 +42,7 @@ use otap_df_telemetry::logs::{DirectCollector, TelemetrySetup};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::self_tracing::ConsoleWriter;
 use otap_df_telemetry::telemetry_runtime::TelemetryRuntime;
-use otap_df_telemetry::{
-    InternalTelemetrySystem, otel_info, otel_info_span, otel_warn, resource::encode_resource_bytes,
-};
+use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 
@@ -98,8 +94,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         telemetry_config
             .logs
             .validate()
-            .map_err(|msg| Error::ConfigurationError {
-                message: msg.to_string(),
+            .map_err(|err| Error::InvalidConfiguration {
+                errors: [err].into(),
             })?;
 
         // Create telemetry runtime according to the various options.
@@ -121,9 +117,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         } else {
             None
         };
-
-        // Pre-encode resource bytes once for all log batches
-        let resource_bytes = encode_resource_bytes(&telemetry_config.resource);
 
         let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
@@ -164,18 +157,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let log_level = telemetry_config.logs.level;
 
         // Spawn internal telemetry pipeline thread, if configured.
-        let internal_pipeline_thread = if let Some(internal_config) =
+        let _internal_pipeline_thread = if let Some(internal_config) =
             pipeline.extract_internal_config()
         {
-            // Create internal telemetry settings if we have a logs receiver
-            let internal_telemetry_settings =
-                telemetry_runtime
-                    .take_logs_receiver()
-                    .map(|rx| InternalTelemetrySettings {
-                        target_urn: INTERNAL_TELEMETRY_RECEIVER_URN,
-                        logs_receiver: rx,
-                        resource_bytes: resource_bytes.clone(),
-                    });
+            // Take internal telemetry settings (logs receiver + resource bytes) if available
+            let internal_telemetry_settings = telemetry_runtime.take_internal_telemetry_settings();
             let internal_factory = self.pipeline_factory;
             let internal_pipeline_id: PipelineId = "internal".into();
             let internal_pipeline_key = DeployedPipelineKey {
@@ -239,12 +225,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     // Internal pipeline failed to build - propagate the error
                     return Err(e);
                 }
-                Err(_) => {
+                Err(err) => {
                     // Channel closed unexpectedly - thread may have panicked
-                    return Err(Error::InternalPipelineStartupFailed {
-                        message: "Internal pipeline thread terminated unexpectedly during startup"
-                            .to_string(),
-                    });
+                    return Err(Error::PipelineRuntimeError{source: Box::new(err)})
                 }
             }
 
@@ -389,42 +372,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         core_id,
                         panic_message: format!("{e:?}"),
                     });
-                }
-            }
-        }
-
-        // Wait for internal pipeline thread if it was spawned
-        if let Some((_thread_name, handle)) = internal_pipeline_thread {
-            let internal_pipeline_id: PipelineId = "internal".into();
-            let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: pipeline_group_id.clone(),
-                pipeline_id: internal_pipeline_id,
-                core_id: 0, // Virtual core ID for internal pipeline
-            };
-            match handle.join() {
-                Ok(Ok(_)) => {
-                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
-                }
-                Ok(Err(e)) => {
-                    let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
-                        pipeline_key.clone(),
-                        "Internal pipeline encountered a runtime error.",
-                        err_summary,
-                    ));
-                    // Log but don't fail - internal pipeline errors shouldn't bring down main
-                    otel_warn!(
-                        "InternalPipeline.Error",
-                        message = "Internal telemetry pipeline failed",
-                        error = format!("{e:?}")
-                    );
-                }
-                Err(e) => {
-                    otel_warn!(
-                        "InternalPipeline.Panic",
-                        message = "Internal telemetry pipeline panicked",
-                        panic_message = format!("{e:?}")
-                    );
                 }
             }
         }
@@ -666,14 +613,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ) {
                 Ok(pipeline) => pipeline,
                 Err(e) => {
-                    // Signal failure to parent thread with the actual error
-                    let error = Error::PipelineRuntimeError {
+                    // Send error to main thread and exit; main thread will propagate it
+                    let _ = startup_tx.send(Err(Error::PipelineRuntimeError {
                         source: Box::new(e),
-                    };
-                    let _ = startup_tx.send(Err(Error::InternalPipelineStartupFailed {
-                        message: format!("{}", error),
                     }));
-                    return Err(error);
+                    return Ok(vec![]);
                 }
             };
 

@@ -40,6 +40,8 @@ pub struct TelemetryRuntime {
     /// Receiver for the internal logs channel (Internal output mode only).
     /// The ITR node consumes this to process internal telemetry.
     logs_receiver: Option<LogsReceiver>,
+    /// Pre-encoded resource bytes for OTLP log encoding.
+    resource_bytes: bytes::Bytes,
     /// Deferred global subscriber setup. Must be initialized by controller
     /// AFTER the internal pipeline is started (so the channel is being consumed).
     global_setup: Option<TelemetrySetup>,
@@ -71,6 +73,9 @@ impl TelemetryRuntime {
     /// pipeline even when global uses a different logging strategy.
     pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
+
+        // Pre-encode resource bytes once for internal telemetry
+        let resource_bytes = crate::resource::encode_resource_bytes(&config.resource);
 
         let runtime = None;
 
@@ -115,6 +120,7 @@ impl TelemetryRuntime {
             logger_provider,
             logs_reporter,
             logs_receiver,
+            resource_bytes,
             global_setup: Some(global_setup),
             global_log_level: config.logs.level,
         })
@@ -187,6 +193,19 @@ impl TelemetryRuntime {
     /// This method takes ownership of the receiver (can only be called once).
     pub fn take_logs_receiver(&mut self) -> Option<LogsReceiver> {
         self.logs_receiver.take()
+    }
+
+    /// Take the internal telemetry settings for injection into the ITR node.
+    ///
+    /// Returns `Some` only when output mode is `Internal`. This bundles the
+    /// logs receiver channel and pre-encoded resource bytes together.
+    ///
+    /// This method takes ownership of the receiver (can only be called once).
+    pub fn take_internal_telemetry_settings(&mut self) -> Option<crate::InternalTelemetrySettings> {
+        self.logs_receiver.take().map(|rx| crate::InternalTelemetrySettings {
+            logs_receiver: rx,
+            resource_bytes: self.resource_bytes.clone(),
+        })
     }
 
     /// Initialize the global tracing subscriber.
