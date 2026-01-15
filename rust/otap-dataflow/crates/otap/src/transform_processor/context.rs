@@ -90,7 +90,9 @@ impl Contexts {
 
             // insert outbound
             let outbound = Outbound { inbound_key };
-            self.outbound.allocate(|| (outbound, ())).map(|(key, _)| key)
+            self.outbound
+                .allocate(|| (outbound, ()))
+                .map(|(key, _)| key)
         } else {
             Some(Key::null())
         }

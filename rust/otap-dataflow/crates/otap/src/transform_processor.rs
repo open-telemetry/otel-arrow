@@ -183,7 +183,8 @@ impl TransformProcessor {
 
         let inbound_ctx_key = self
             .contexts
-            .insert_inbound(inbound_context, error_reason).ok_or_else(|| EngineError::ProcessorError {
+            .insert_inbound(inbound_context, error_reason)
+            .ok_or_else(|| EngineError::ProcessorError {
                 processor: effect_handler.processor_id(),
                 kind: ProcessorErrorKind::Other,
                 error: "inbound slots not available".into(),
@@ -192,15 +193,18 @@ impl TransformProcessor {
 
         // juggle the context for the output of the pipeline. We need to do this b/c we'll be
         // emitting this batch, plus any routed batches, and we don't want to Ack the inbound
-        // context until we receive Acks from all downstream batches
+        // context until we receive Acks from all downstream batches (including this result)
         if let Ok(otap_batch) = pipeline_result {
             let mut pdata = OtapPdata::new(Context::default(), otap_batch.into());
-            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone()).ok_or_else(|| EngineError::ProcessorError {
-                processor: effect_handler.processor_id(),
-                kind: ProcessorErrorKind::Other,
-                error: "outbound slots not available".into(),
-                source_detail: "".into(),
-            })?;
+            let outbound_key = self
+                .contexts
+                .insert_outbound(inbound_ctx_key.clone())
+                .ok_or_else(|| EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Other,
+                    error: "outbound slots not available".into(),
+                    source_detail: "".into(),
+                })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
@@ -225,15 +229,19 @@ impl TransformProcessor {
                 })?
                 .clone();
 
+            // setup the pdata with the new outbound context
             let payload = OtapPayload::OtapArrowRecords(otap_batch);
             let context = Context::default();
             let mut pdata = OtapPdata::new(context, payload);
-            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone()).ok_or_else(|| EngineError::ProcessorError {
-                processor: effect_handler.processor_id(),
-                kind: ProcessorErrorKind::Other,
-                error: "outbound slots not available".into(),
-                source_detail: "".into(),
-            })?;
+            let outbound_key = self
+                .contexts
+                .insert_outbound(inbound_ctx_key.clone())
+                .ok_or_else(|| EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Other,
+                    error: "outbound slots not available".into(),
+                    source_detail: "".into(),
+                })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
@@ -248,13 +256,18 @@ impl TransformProcessor {
         Ok(())
     }
 
+    /// Clears the outbound context for the given key and send an Ack/Nack for the any
+    /// associated inbound if the inbound has no outstanding outbounds.
     async fn handle_ack_nack_inbound(
         &mut self,
         outbound_key: Key,
         signal_type: SignalType,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
+        // clear the outbound context.
         if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
+            // if here, we have cleared the final outbound context for some inbound batch,
+            // which means we can now Ack or Nack the inbound context
             let (context, error_reason) = inbound;
             let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
             if let Some(error) = error_reason {
