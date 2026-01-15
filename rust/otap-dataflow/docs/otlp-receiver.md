@@ -84,8 +84,8 @@ controls admission:
               |                                         |
    +----------v-----------+              +--------------v-----------+
    | gRPC                 |              | HTTP                     |
-   | acquire_owned()      |              | acquire_owned() + timeout|
-   | (queues)             |              | (default 30s or timeout) |
+   | poll_ready gating    |              | acquire_owned() + timeout|
+   | (backpressure)       |              | (default 30s or timeout) |
    +----------------------+              +--------------------------+
 ```
 
@@ -214,7 +214,7 @@ nodes:
 | Endpoints | Standard gRPC service methods |
 | Compression | zstd, gzip, deflate (configurable) |
 | Concurrency | `GlobalConcurrencyLimitLayer` when HTTP is disabled; shared semaphore when HTTP is enabled |
-| Backpressure | gRPC-only: early refusal at `poll_ready`; dual-protocol: queues on shared semaphore (no permit timeout) |
+| Backpressure | `poll_ready` gating (both gRPC-only and dual-protocol); backpressure propagates to HTTP/2 |
 
 ### OTLP/HTTP
 
@@ -279,8 +279,8 @@ Both protocols enforce timeouts to mitigate slow-client (Slowloris-style) DoS:
 When both protocols are enabled, the shared semaphore bounds total inflight
 requests across gRPC and HTTP. When at capacity:
 
-- **gRPC (dual-protocol):** Requests queue on `acquire_owned().await`
-  (no permit timeout); request-level `timeout` applies after permit acquisition.
+- **gRPC (dual-protocol):** Permit acquired in `poll_ready`; backpressure
+  propagates to HTTP/2 so new streams are not accepted while saturated.
 - **HTTP (dual-protocol):** Requests queue for up to `timeout` (default 30s)
   waiting for a permit; on timeout, respond 503.
 
