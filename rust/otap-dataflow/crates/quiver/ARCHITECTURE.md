@@ -1382,7 +1382,7 @@ which is re-exported as `quiver::CancellationToken` for convenience.
 - **Task cancellation**: Abort long-running consume loops when needed
 - **Resource cleanup**: Signal tasks to clean up and exit promptly
 
-**Example: Graceful shutdown pattern**
+#### Example: Graceful shutdown pattern
 
 ```rust
 use quiver::CancellationToken;
