@@ -164,9 +164,14 @@ where_operator_call = {
     "where" ~ expression
 }
 
+route_to_operator_call = {
+    "route_to" ~ string_literal
+}
+
 operator_call = {
     set_operator_call
     | if_else_operator_call
+    | route_to_operator_call
     | where_operator_call
 }
 

@@ -44,6 +44,7 @@ use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
     try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
 };
+use crate::pipeline::state::ExecutionState;
 
 pub mod optimize;
 
@@ -1711,6 +1712,7 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         if otap_batch.root_record_batch().is_none() {
             // if batch is empty, no filtering to do

@@ -18,6 +18,7 @@ use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
 use crate::error::Result;
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
+use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// This [`PipelineStage`] implementation will conditionally apply child pipeline stages on rows
@@ -88,6 +89,7 @@ impl PipelineStage for ConditionalPipelineStage {
         session_ctx: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let root_batch = match otap_batch.root_record_batch() {
             Some(root_batch) => root_batch,
@@ -146,6 +148,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         session_ctx,
                         config_options,
                         task_context.clone(),
+                        exec_state,
                     )
                     .await?;
             }
@@ -167,6 +170,7 @@ impl PipelineStage for ConditionalPipelineStage {
                             session_ctx,
                             config_options,
                             task_context.clone(),
+                            exec_state,
                         )
                         .await?;
                 }
