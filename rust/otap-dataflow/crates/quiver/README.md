@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Periodic maintenance
     engine.maintain().await?;
-    
+
     Ok(())
 }
 ```
