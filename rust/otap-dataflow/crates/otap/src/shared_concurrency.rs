@@ -5,12 +5,15 @@
 //!
 //! Provides a Tower middleware layer that uses an external semaphore for
 //! concurrency control, allowing multiple servers (gRPC, HTTP) to draw
-//! from the same capacity pool.
+//! from the same capacity pool. Concurrency is enforced at `poll_ready`
+//! so backpressure propagates before request bodies are accepted/decoded.
 
 use futures::future::BoxFuture;
 use std::sync::Arc;
+use std::task::ready;
 use std::task::{Context, Poll};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::PollSemaphore;
 use tower::{Layer, Service};
 
 /// Tower layer that enforces concurrency limits using a shared semaphore.
@@ -22,12 +25,11 @@ use tower::{Layer, Service};
 ///
 /// # Behavior Notes
 ///
-/// - **Queuing**: This layer uses `acquire_owned().await` in the request future,
-///   which allows requests to queue when at capacity. Unlike
-///   `tower::limit::GlobalConcurrencyLimitLayer` which applies backpressure at
-///   the `poll_ready` stage, this implementation accepts connections that wait
-///   for permits. This is acceptable for most use cases but means the server
-///   may have more pending tasks.
+/// - **Backpressure in `poll_ready`**: This layer acquires a permit during
+///   `poll_ready`. When the semaphore is saturated, `poll_ready` returns
+///   `Poll::Pending`, allowing upstream (e.g., tonic) to stop accepting new
+///   streams until capacity is available. This matches the backpressure
+///   behavior of `tower::limit::GlobalConcurrencyLimitLayer`.
 ///
 /// - **Service Cloning**: The inner service is cloned per request, which is
 ///   standard for Tower middleware. For tonic services this is typically cheap
@@ -80,7 +82,8 @@ impl<S> Layer<S> for SharedConcurrencyLayer {
     fn layer(&self, inner: S) -> Self::Service {
         SharedConcurrencyService {
             inner,
-            semaphore: self.semaphore.clone(),
+            semaphore: PollSemaphore::new(self.semaphore.clone()),
+            permit: None,
         }
     }
 }
@@ -92,10 +95,20 @@ impl<S> Layer<S> for SharedConcurrencyLayer {
 /// This implementation clones the inner service per request (see `call`), meaning
 /// `poll_ready` is checked on one instance while the request executes on a clone.
 /// See [`SharedConcurrencyLayer`] documentation for service compatibility requirements.
-#[derive(Clone)]
 pub struct SharedConcurrencyService<S> {
     inner: S,
-    semaphore: Arc<Semaphore>,
+    semaphore: PollSemaphore,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+impl<S: Clone> Clone for SharedConcurrencyService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            semaphore: self.semaphore.clone(),
+            permit: None, // fresh clones must acquire their own permit
+        }
+    }
 }
 
 impl<S, Request> Service<Request> for SharedConcurrencyService<S>
@@ -109,29 +122,43 @@ where
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // Check inner service readiness.
-        // NOTE: This checks readiness on `self.inner`, but `call()` will execute
-        // on a clone. This is safe only for services with stateless or shared
-        // readiness state. See struct-level documentation.
-        self.inner.poll_ready(cx)
+        // Acquire a permit up-front so backpressure is applied before requests
+        // are fully accepted/decoded. Pending here propagates to tonic so
+        // HTTP/2 stream acceptance is gated.
+        if self.permit.is_none() {
+            let permit = ready!(
+                self.semaphore
+                    .poll_acquire(cx)
+                    .map(|opt| opt.expect("semaphore should never be closed"))
+            );
+            self.permit = Some(permit);
+        }
+
+        match self.inner.poll_ready(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => {
+                // Release the permit on error so it is not leaked.
+                self.permit = None;
+                Poll::Ready(Err(e))
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn call(&mut self, request: Request) -> Self::Future {
         // Clone the inner service for the async block. This is a standard Tower
         // pattern but means readiness was checked on a different instance.
         // For services with per-instance state, consider tower::Buffer instead.
-        let semaphore = self.semaphore.clone();
+        let permit = self
+            .permit
+            .take()
+            .expect("permit must be acquired in poll_ready before call");
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
-            // Acquire permit - this will wait if at capacity
-            let _permit: OwnedSemaphorePermit = semaphore
-                .acquire_owned()
-                .await
-                .expect("semaphore should never be closed");
-
-            // Permit is held until the future completes (RAII)
-            // Process the request with the inner service
+            // Permit is held until the future completes (RAII). Processing the
+            // request consumes the reservation obtained in poll_ready.
+            let _permit: OwnedSemaphorePermit = permit;
             inner.call(request).await
         })
     }

@@ -95,12 +95,11 @@ regardless of which protocol clients use.
 **Protocol-specific behavior:**
 
 - **gRPC only (no HTTP configured):** Uses the original
-  `GlobalConcurrencyLimitLayer` with early refusal at `poll_ready`
-  when over limit (no queuing on permits).
-- **Both protocols:** Shared semaphore; gRPC queues on `acquire_owned().await`
-  with no separate permit timeout (the wait is unbounded), but the request-level
-  timeout still applies after the permit is acquired. HTTP queues on the shared
-  semaphore with a permit timeout (default: `http.timeout`, 30s).
+  `GlobalConcurrencyLimitLayer` with early refusal at `poll_ready`.
+- **Both protocols:** Shared semaphore; gRPC acquires a permit in `poll_ready`
+  (backpressure propagates to HTTP/2 so new streams are not accepted while the
+  pool is saturated). HTTP queues on the shared semaphore with a permit timeout
+  (default: `http.timeout`, 30s).
 - **HTTP only:** Uses its own semaphore and permit timeout (default: 30s).
 
 ### Unified Metrics
