@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::{
-    MutableValueExpression, ScalarExpression, SetTransformExpression, SourceScalarExpression,
-    StaticScalarExpression, StringScalarExpression, ValueAccessor,
+    ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+    ValueAccessor,
 };
 use data_engine_parser_abstractions::{ParserError, to_query_location};
 use pest::iterators::Pair;
@@ -15,7 +15,7 @@ use crate::parser::{Rule, invalid_child_rule_error};
 
 pub(crate) fn parse_assignment_expression(
     rule: Pair<'_, Rule>,
-) -> Result<SetTransformExpression, ParserError> {
+) -> Result<(SourceScalarExpression, ScalarExpression), ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
     if inner_rules.len() != 2 {
@@ -31,7 +31,7 @@ pub(crate) fn parse_assignment_expression(
 
     let left_query_location = to_query_location(&left);
     let destination = match left.as_rule() {
-        Rule::identifier_expression => MutableValueExpression::Source(SourceScalarExpression::new(
+        Rule::identifier_expression => SourceScalarExpression::new(
             left_query_location.clone(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
                 StaticScalarExpression::String(StringScalarExpression::new(
@@ -39,9 +39,9 @@ pub(crate) fn parse_assignment_expression(
                     left.as_str(),
                 )),
             )]),
-        )),
+        ),
         Rule::index_expression => match parse_index_expression(left)?.into() {
-            ScalarExpression::Source(source_expr) => MutableValueExpression::Source(source_expr),
+            ScalarExpression::Source(source_expr) => source_expr,
             other => {
                 return Err(ParserError::SyntaxError(
                     left_query_location,
@@ -52,20 +52,20 @@ pub(crate) fn parse_assignment_expression(
                 ));
             }
         },
-        Rule::attribute_selection_expression => match parse_attribute_selection_expression(left)?
-            .into()
-        {
-            ScalarExpression::Source(source_expr) => MutableValueExpression::Source(source_expr),
-            other => {
-                return Err(ParserError::SyntaxError(
-                    left_query_location,
-                    format!(
-                        "Expected source scalar for attribute_selection_expression rule, found {:?}",
-                        other
-                    ),
-                ));
+        Rule::attribute_selection_expression => {
+            match parse_attribute_selection_expression(left)?.into() {
+                ScalarExpression::Source(source_expr) => source_expr,
+                other => {
+                    return Err(ParserError::SyntaxError(
+                        left_query_location,
+                        format!(
+                            "Expected source scalar for attribute_selection_expression rule, found {:?}",
+                            other
+                        ),
+                    ));
+                }
             }
-        },
+        }
         invalid_rule => {
             return Err(invalid_child_rule_error(
                 left_query_location,
@@ -87,11 +87,7 @@ pub(crate) fn parse_assignment_expression(
         }
     };
 
-    Ok(SetTransformExpression::new(
-        query_location,
-        source,
-        destination,
-    ))
+    Ok((destination, source))
 }
 
 #[cfg(test)]
@@ -111,24 +107,23 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let result = parse_assignment_expression(rule).unwrap();
+        let (destination, source) = parse_assignment_expression(rule).unwrap();
 
-        let expected = SetTransformExpression::new(
+        let expected_destination = SourceScalarExpression::new(
             QueryLocation::new_fake(),
-            ScalarExpression::Static(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-            )),
-            MutableValueExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                    StaticScalarExpression::String(StringScalarExpression::new(
-                        QueryLocation::new_fake(),
-                        "a",
-                    )),
-                )]),
-            )),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "a",
+                )),
+            )]),
         );
-        assert_eq!(result, expected);
+        let expected_source = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+        ));
+
+        assert_eq!(destination, expected_destination);
+        assert_eq!(source, expected_source);
     }
 
     #[test]
@@ -137,26 +132,25 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let result = parse_assignment_expression(rule).unwrap();
+        let (destination, source) = parse_assignment_expression(rule).unwrap();
 
-        let expected = SetTransformExpression::new(
+        let expected_destination = SourceScalarExpression::new(
             QueryLocation::new_fake(),
-            ScalarExpression::Static(StaticScalarExpression::Integer(
-                IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
-            )),
-            MutableValueExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "x"),
-                    )),
-                ]),
-            )),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                )),
+            ]),
         );
-        assert_eq!(result, expected);
+        let expected_source = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+        ));
+
+        assert_eq!(destination, expected_destination);
+        assert_eq!(source, expected_source);
     }
 
     #[test]
@@ -165,29 +159,24 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::assignment_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
         let rule = rules.next().unwrap();
-        let result = parse_assignment_expression(rule).unwrap();
+        let (destination, source) = parse_assignment_expression(rule).unwrap();
 
-        let expected = SetTransformExpression::new(
+        let expected_destination = SourceScalarExpression::new(
             QueryLocation::new_fake(),
-            ScalarExpression::Static(StaticScalarExpression::String(StringScalarExpression::new(
-                QueryLocation::new_fake(),
-                "sdk",
-            ))),
-            MutableValueExpression::Source(SourceScalarExpression::new(
-                QueryLocation::new_fake(),
-                ValueAccessor::new_with_selectors(vec![
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(
-                            QueryLocation::new_fake(),
-                            "instrumentation_scope",
-                        ),
-                    )),
-                    ScalarExpression::Static(StaticScalarExpression::String(
-                        StringScalarExpression::new(QueryLocation::new_fake(), "name"),
-                    )),
-                ]),
-            )),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "instrumentation_scope"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "name"),
+                )),
+            ]),
         );
-        assert_eq!(result, expected);
+        let expected_source = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "sdk"),
+        ));
+
+        assert_eq!(destination, expected_destination);
+        assert_eq!(source, expected_source);
     }
 }
