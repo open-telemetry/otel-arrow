@@ -20,6 +20,8 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use bytes::Bytes;
+use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_telemetry::logs::LogPayload;
 use otap_df_telemetry::metrics::MetricSetSnapshot;
@@ -95,6 +97,9 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
             .start_periodic_telemetry(std::time::Duration::from_secs(1))
             .await?;
 
+        // Reusable buffer for encoding log records
+        let mut buf = ProtoBuffer::with_capacity(512);
+
         loop {
             tokio::select! {
                 biased;
@@ -105,7 +110,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(payload) = logs_receiver.try_recv() {
-                                self.send_payload(&effect_handler, payload).await?;
+                                self.send_payload(&effect_handler, payload, &mut buf).await?;
                             }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                         }
@@ -125,7 +130,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = logs_receiver.recv_async() => {
                     match result {
                         Ok(payload) => {
-                            self.send_payload(&effect_handler, payload).await?;
+                            self.send_payload(&effect_handler, payload, &mut buf).await?;
                         }
                         Err(_) => {
                             // Channel closed, exit gracefully
@@ -144,16 +149,21 @@ impl InternalTelemetryReceiver {
         &self,
         effect_handler: &local::EffectHandler<OtapPdata>,
         payload: LogPayload,
+        buf: &mut ProtoBuffer,
     ) -> Result<(), Error> {
         match payload {
             LogPayload::Singleton(record) => {
                 let callsite = SavedCallsite::new(record.callsite_id.0.metadata());
-                let bytes =
-                    encode_export_logs_request(record, &callsite, effect_handler.resource_bytes());
+                encode_export_logs_request(
+                    buf,
+                    record,
+                    &callsite,
+                    effect_handler.resource_bytes(),
+                );
 
                 let pdata = OtapPdata::new(
                     Context::default(),
-                    OtlpProtoBytes::ExportLogsRequest(bytes).into(),
+                    OtlpProtoBytes::ExportLogsRequest(Bytes::copy_from_slice(buf.as_ref())).into(),
                 );
                 effect_handler.send_message(pdata).await?;
             }

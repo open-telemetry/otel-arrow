@@ -302,26 +302,18 @@ pub fn level_to_severity_number(level: &Level) -> u8 {
     }
 }
 
-/// Encode a single LogRecord as an OTLP ExportLogsServiceRequest.
+/// Encode a single LogRecord as an OTLP ExportLogsServiceRequest also
+/// known as LogsData.
 ///
-/// This creates a complete OTLP request containing a single log record wrapped
-/// in the appropriate resource/scope hierarchy.
-///
-/// # Arguments
-/// * `record` - The log record to encode
-/// * `callsite` - The callsite metadata for the log record
-/// * `resource_bytes` - Optional pre-encoded resource bytes (from `encode_resource_bytes`)
-///
-/// # Returns
-/// The protobuf-encoded ExportLogsServiceRequest as bytes.
-#[must_use]
+/// The buffer is cleared before encoding. After this call, the buffer
+/// contains the complete encoded request.
 pub fn encode_export_logs_request(
+    buf: &mut ProtoBuffer,
     record: LogRecord,
     callsite: &SavedCallsite,
     resource_bytes: Option<&bytes::Bytes>,
-) -> bytes::Bytes {
-    let capacity = 256 + resource_bytes.map_or(0, |b| b.len());
-    let mut buf = ProtoBuffer::with_capacity(capacity);
+) {
+    buf.clear();
 
     // ExportLogsServiceRequest { resource_logs: [ ResourceLogs { ... } ] }
     proto_encode_len_delimited_unknown_size!(
@@ -337,21 +329,19 @@ pub fn encode_export_logs_request(
                 RESOURCE_LOGS_SCOPE_LOGS, // field 2: scope_logs
                 {
                     // ScopeLogs { log_records: [ LogRecord { ... } ] }
-                    // Note: we skip scope (field 1) to use empty/default scope
+                    // TODO: add scope (field 1)
                     proto_encode_len_delimited_unknown_size!(
                         SCOPE_LOGS_LOG_RECORDS, // field 2: log_records
                         {
-                            let mut encoder = DirectLogRecordEncoder::new(&mut buf);
+                            let mut encoder = DirectLogRecordEncoder::new(buf);
                             let _ = encoder.encode_log_record(record, callsite);
                         },
-                        &mut buf
+                        buf
                     );
                 },
-                &mut buf
+                buf
             );
         },
-        &mut buf
+        buf
     );
-
-    buf.into_bytes()
 }
