@@ -1258,7 +1258,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn async_next_bundle_returns_bundle_when_available() {
+    async fn next_bundle_returns_bundle_when_available() {
         let (registry, _dir) = setup_registry();
         let provider = registry.segment_provider.clone();
         provider.add_segment(1, 1);
@@ -1276,7 +1276,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_waits_for_segment_notification() {
+    async fn next_bundle_waits_for_segment_notification() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::time::Duration as TokioDuration;
 
@@ -1320,7 +1320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_timeout_returns_none() {
+    async fn next_bundle_timeout_returns_none() {
         let (registry, _dir) = setup_registry();
         // No segments added - will timeout
 
@@ -1352,7 +1352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_sequences_correctly() {
+    async fn next_bundle_sequences_correctly() {
         let (registry, _dir) = setup_registry();
         let provider = registry.segment_provider.clone();
         provider.add_segment(1, 3); // Segment with 3 bundles

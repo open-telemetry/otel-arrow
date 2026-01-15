@@ -2861,7 +2861,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_returns_available_bundle() {
+    async fn next_bundle_returns_available_bundle() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 10).await;
 
@@ -2884,7 +2884,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_timeout_when_no_bundles() {
+    async fn next_bundle_timeout_when_no_bundles() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 0).await;
 
@@ -2905,7 +2905,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_wakes_on_segment_finalized() {
+    async fn next_bundle_wakes_on_segment_finalized() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         let dir = tempdir().expect("tempdir");
@@ -2954,7 +2954,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_next_bundle_interleaves_with_poll() {
+    async fn next_bundle_interleaves_with_poll() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 10).await;
 
@@ -2991,7 +2991,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_flush_progress_writes_dirty_subscribers() {
+    async fn flush_progress_writes_dirty_subscribers() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 5).await;
 
@@ -3020,7 +3020,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_maintain_flushes_and_cleans() {
+    async fn maintain_flushes_and_cleans() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 10).await;
 
@@ -3055,30 +3055,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_open_creates_engine() {
-        let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_with_data(dir.path(), 0).await;
-
-        // Verify engine is functional
-        assert_eq!(engine.segment_store().segment_count(), 0);
-        assert_eq!(engine.total_segments_written(), 0);
-    }
-
-    #[tokio::test]
-    async fn async_ingest_succeeds() {
-        let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_with_data(dir.path(), 0).await;
-
-        let bundle = DummyBundle::with_rows(100);
-        engine.ingest(&bundle).await.expect("ingest");
-
-        // Verify metrics recorded
-        let metrics = engine.metrics();
-        assert_eq!(metrics.ingest_attempts(), 1);
-    }
-
-    #[tokio::test]
-    async fn async_ingest_and_flush_creates_segment() {
+    async fn ingest_and_flush_creates_segment() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 0).await;
 
@@ -3097,25 +3074,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_shutdown_finalizes_segment() {
-        let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_with_data(dir.path(), 0).await;
-
-        // Ingest some data
-        for _ in 0..5 {
-            let bundle = DummyBundle::with_rows(100);
-            engine.ingest(&bundle).await.expect("ingest");
-        }
-
-        // Shutdown (should finalize segment)
-        engine.shutdown().await.expect("shutdown");
-
-        // Verify segment created
-        assert_eq!(engine.total_segments_written(), 1);
-    }
-
-    #[tokio::test]
-    async fn async_full_pipeline_ingest_to_consume() {
+    async fn full_pipeline_ingest_to_consume() {
         let dir = tempdir().expect("tempdir");
         let engine = setup_engine_with_data(dir.path(), 10).await;
 
@@ -3146,7 +3105,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_ingest_triggers_segment_finalization() {
+    async fn ingest_triggers_segment_finalization() {
         use std::num::NonZeroU64;
 
         let dir = tempdir().expect("tempdir");

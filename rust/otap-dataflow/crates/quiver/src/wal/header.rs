@@ -435,7 +435,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_write_and_read_roundtrip() {
+    async fn write_and_read_roundtrip() {
         use tokio::fs::File as TokioFile;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_read_header_size_returns_correct_size() {
+    async fn read_header_size_returns_correct_size() {
         use tokio::fs::File as TokioFile;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_write_and_read_with_base_offset() {
+    async fn write_and_read_with_base_offset() {
         use tokio::fs::File as TokioFile;
 
         let dir = tempfile::tempdir().expect("tempdir");

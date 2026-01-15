@@ -1103,7 +1103,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn async_write_and_read_progress_file() {
+    async fn write_and_read_progress_file_async() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("async-test").unwrap();
 
@@ -1126,7 +1126,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn async_delete_progress_file_removes_file() {
+    async fn delete_progress_file_removes_file() {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("delete-test").unwrap();
 
