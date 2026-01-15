@@ -11,7 +11,7 @@ use crate::control::pipeline_ctrl_msg_channel;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
-use crate::node::{NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
+use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
