@@ -30,7 +30,12 @@ pub struct EntityRegistry {
 
 #[derive(Clone)]
 struct EntityEntry {
+    /// Shared attribute set for this entity.
     attrs: Arc<EntityAttributeSet>,
+    /// Reference count for deduplicated entities so we can keep a stable key while
+    /// multiple callers register the same attribute set. This is bookkeeping to
+    /// drop entities once no metric set or event references them, which is needed
+    /// for live reconfiguration without registry leaks.
     refs: usize,
 }
 
