@@ -818,7 +818,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[])
+            .await
+            .unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, entries) = read_progress_file(&path).unwrap();
@@ -843,7 +845,9 @@ mod tests {
 
         let entries = vec![entry1.clone(), entry2.clone()];
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(10), &entries).await.unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(10), &entries)
+            .await
+            .unwrap();
 
         let path = progress_file_path(dir.path(), &sub_id);
         let (oldest, read_entries) = read_progress_file(&path).unwrap();
@@ -859,7 +863,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(5), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(5), &[])
+            .await
+            .unwrap();
 
         // Corrupt a byte in the header
         let path = progress_file_path(dir.path(), &sub_id);
@@ -879,7 +885,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[])
+            .await
+            .unwrap();
 
         // Truncate the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -898,7 +906,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[])
+            .await
+            .unwrap();
 
         // Corrupt the header_size field to claim a size larger than the file
         let path = progress_file_path(dir.path(), &sub_id);
@@ -929,7 +939,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let sub_id = SubscriberId::new("test-sub").unwrap();
 
-        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub_id, SegmentSeq::new(0), &[])
+            .await
+            .unwrap();
 
         // Corrupt the entry_count field to claim more entries than exist
         let path = progress_file_path(dir.path(), &sub_id);
@@ -1002,9 +1014,15 @@ mod tests {
         let sub2 = SubscriberId::new("backup-s3").unwrap();
         let sub3 = SubscriberId::new("metrics-sink").unwrap();
 
-        write_progress_file(dir.path(), &sub1, SegmentSeq::new(0), &[]).await.unwrap();
-        write_progress_file(dir.path(), &sub2, SegmentSeq::new(5), &[]).await.unwrap();
-        write_progress_file(dir.path(), &sub3, SegmentSeq::new(10), &[]).await.unwrap();
+        write_progress_file(dir.path(), &sub1, SegmentSeq::new(0), &[])
+            .await
+            .unwrap();
+        write_progress_file(dir.path(), &sub2, SegmentSeq::new(5), &[])
+            .await
+            .unwrap();
+        write_progress_file(dir.path(), &sub3, SegmentSeq::new(10), &[])
+            .await
+            .unwrap();
 
         // Create a temp file that should be ignored
         fs::write(dir.path().join("quiver.sub.temp-file.tmp"), b"temp").unwrap();

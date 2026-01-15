@@ -426,9 +426,7 @@ impl QuiverEngine {
         // Note: WAL bytes are NOT tracked in budget - they're temporary and purged after
         // segment finalization. Only segment bytes are budget-tracked.
         if self.config.durability == DurabilityMode::Wal {
-            let wal_offset = self
-                .append_to_wal_with_capacity_handling(bundle)
-                .await?;
+            let wal_offset = self.append_to_wal_with_capacity_handling(bundle).await?;
 
             // Track cumulative WAL bytes for throughput measurement
             let wal_entry_bytes = wal_offset.next_offset.saturating_sub(wal_offset.position);
@@ -1022,7 +1020,9 @@ mod tests {
     async fn ingest_succeeds_and_records_metrics() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("config valid");
         let bundle = DummyBundle::new();
 
         // Ingest should now succeed
@@ -1037,7 +1037,9 @@ mod tests {
             .data_dir(temp_dir.path())
             .build()
             .expect("builder should produce valid config");
-        let engine = QuiverEngine::open(config.clone(), test_budget()).await.expect("config valid");
+        let engine = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .expect("config valid");
 
         assert_eq!(engine.config(), &config);
     }
@@ -1046,7 +1048,9 @@ mod tests {
     async fn ingest_appends_to_wal() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("config valid");
         let bundle = DummyBundle::new();
 
         engine.ingest(&bundle).await.expect("ingest succeeds");
@@ -1088,7 +1092,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest a bundle
         let bundle = DummyBundle::with_rows(10);
@@ -1148,7 +1154,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest enough data to exceed the threshold
         // With 100 byte threshold and ~100 bytes per row estimate,
@@ -1200,7 +1208,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest a bundle with enough data to trigger finalization
         let bundle = DummyBundle::with_rows(10);
@@ -1301,7 +1311,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest many bundles - WAL will fill up multiple times
         // Each bundle is ~100-200 bytes, so we need 50+ to fill the 8KB WAL
@@ -1365,7 +1377,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest 10 bundles with varying row counts
         let bundle_row_counts = [5, 8, 3, 12, 7, 4, 9, 6, 11, 2];
@@ -1538,7 +1552,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Create bundles with different fingerprints (simulating schema evolution)
         let bundle1 = DummyBundleWithFingerprint::new([0x11; 32], 5);
@@ -1679,7 +1695,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Stress parameters
         const NUM_BUNDLES: usize = 10_000;
@@ -1892,7 +1910,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         const NUM_BUNDLES: usize = 500;
 
@@ -2026,7 +2046,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Simulate schema evolution: 100 different schemas, 10 bundles each
         const NUM_SCHEMAS: usize = 100;
@@ -2111,11 +2133,16 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // First ingest - starts the timer
         let bundle1 = DummyBundle::with_rows(1);
-        engine.ingest(&bundle1).await.expect("first ingest succeeds");
+        engine
+            .ingest(&bundle1)
+            .await
+            .expect("first ingest succeeds");
 
         // Wait for the max_open_duration to elapse
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2161,7 +2188,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest a small bundle that won't trigger size or time finalization
         let bundle = DummyBundle::with_rows(5);
@@ -2211,7 +2240,9 @@ mod tests {
     async fn shutdown_on_empty_segment_succeeds() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("config valid");
 
         // Shutdown without ingesting anything should succeed
         engine
@@ -2246,7 +2277,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Each bundle with a different schema fingerprint creates a new stream.
         // We need to exceed max_stream_count (3) to trigger finalization.
@@ -2289,7 +2322,9 @@ mod tests {
             100 * 1024 * 1024,
             RetentionPolicy::Backpressure,
         ));
-        let engine = QuiverEngine::open(config, budget.clone()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
 
         // Budget starts with WAL header bytes (WAL is now tracked in budget)
         let initial_used = budget.used();
@@ -2332,7 +2367,9 @@ mod tests {
 
         // Create a very small budget (100 bytes) - segment will exceed this
         let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
-        let engine = QuiverEngine::open(config, budget).await.expect("engine created");
+        let engine = QuiverEngine::open(config, budget)
+            .await
+            .expect("engine created");
 
         // Ingest a bundle - segment finalization should fail due to budget
         let bundle = DummyBundle::with_rows(10);
@@ -2366,7 +2403,9 @@ mod tests {
 
         // Create a very small budget (100 bytes) - segment will exceed this
         let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
-        let engine = QuiverEngine::open(config, budget.clone()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
 
         // Ingest a bundle - segment finalization should fail due to budget
         let bundle = DummyBundle::with_rows(10);
@@ -2394,7 +2433,9 @@ mod tests {
 
         // Create a budget with DropOldest policy - large enough for a few segments
         let budget = Arc::new(DiskBudget::new(50 * 1024, RetentionPolicy::DropOldest));
-        let engine = QuiverEngine::open(config, budget.clone()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
 
         // Register a subscriber so segments can be marked as "complete"
         let sub_id = SubscriberId::new("test-sub").expect("valid id");
@@ -2441,7 +2482,9 @@ mod tests {
             .expect("config valid");
 
         let budget = Arc::new(DiskBudget::new(100 * 1024, RetentionPolicy::DropOldest));
-        let engine = QuiverEngine::open(config, budget.clone()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
 
         // Register and activate a subscriber
         let sub_id = SubscriberId::new("test-sub").expect("valid id");
@@ -2506,7 +2549,9 @@ mod tests {
             .expect("config valid");
 
         let budget = Arc::new(DiskBudget::new(100 * 1024, RetentionPolicy::DropOldest));
-        let engine = QuiverEngine::open(config, budget.clone()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
 
         // Register and activate a subscriber
         let sub_id = SubscriberId::new("test-sub").expect("valid id");
@@ -2569,7 +2614,9 @@ mod tests {
 
         // First engine: create some segments
         let segments_created = {
-            let engine = QuiverEngine::open(config.clone(), test_budget()).await.expect("engine created");
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine created");
 
             // Ingest enough data to create multiple segments
             for _ in 0..5 {
@@ -2585,7 +2632,9 @@ mod tests {
 
         // Second engine: should discover existing segments automatically
         {
-            let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine created");
 
             // The segment store should have loaded the existing segments
             assert_eq!(
@@ -2613,7 +2662,9 @@ mod tests {
 
         // First engine: create segments with data
         {
-            let engine = QuiverEngine::open(config.clone(), test_budget()).await.expect("engine created");
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine created");
 
             for _ in 0..3 {
                 let bundle = DummyBundle::with_rows(50);
@@ -2629,7 +2680,9 @@ mod tests {
 
         // Second engine: new subscriber should be able to consume the recovered data
         {
-            let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine created");
 
             // Register and activate a new subscriber
             let sub_id = SubscriberId::new("recovery-sub").expect("valid id");
@@ -2659,7 +2712,9 @@ mod tests {
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
 
         // Create engine - should work fine with no existing segments
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         assert_eq!(
             engine.segment_store.segment_count(),
@@ -2706,7 +2761,9 @@ mod tests {
                 .build()
                 .expect("valid config");
 
-            let engine = QuiverEngine::open(config, test_budget()).await.expect("engine created");
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine created");
 
             // Register subscriber before ingesting
             engine
@@ -2746,7 +2803,9 @@ mod tests {
                 .build()
                 .expect("valid config");
 
-            let engine = QuiverEngine::open(config, test_budget()).await.expect("engine recreated");
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine recreated");
 
             // Scan existing segments from previous run
             let found = engine.segment_store.scan_existing().expect("scan existing");
@@ -2787,7 +2846,9 @@ mod tests {
             .data_dir(dir)
             .build()
             .expect("config");
-        let engine = QuiverEngine::open(config, test_budget()).await.expect("engine");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
 
         for _ in 0..bundle_count {
             let bundle = DummyBundle::with_rows(100);
