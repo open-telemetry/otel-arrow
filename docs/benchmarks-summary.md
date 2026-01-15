@@ -16,6 +16,12 @@ load conditions. This columnar approach is expected to offer substantial
 advantages over traditional row-oriented telemetry pipelines in terms of CPU
 efficiency, memory usage, and throughput.
 
+The dataflow engine uses a **thread-per-core architecture**, where each
+available CPU core runs an independent runtime instance. This design eliminates
+traditional concurrency overhead (lock contention, context switching) but means
+that resource consumption scales with the number of configured cores. See the
+[Architecture](#architecture) section for more details.
+
 This document presents key performance metrics across different load scenarios
 and test configurations.
 
@@ -44,10 +50,14 @@ post-initialization idle state and validate minimal resource footprint. Note
 that longer-duration soak testing for memory leak detection is outside the scope
 of this benchmark summary.
 
-| Metric | Value |
-|--------|-------|
-| CPU Usage | TBD |
-| Memory Usage | TBD |
+| Configuration | CPU Usage | Memory Usage |
+|---------------|-----------|--------------|
+| Single Core   | 0.06%     | 27 MB        |
+| All Cores (128) | 2.5%    | 600 MB       |
+
+*Note: CPU usage is normalized (percentage of total system capacity). Memory
+usage scales with core count due to the thread-per-core architecture (see
+[Overview](#overview)).*
 
 These baseline metrics validate that the engine maintains minimal resource
 footprint when idle, ensuring efficient operation in environments with variable
@@ -75,12 +85,12 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
 
-| Batch Size | CPU Usage | Memory Usage |
-|------------|-----------|---------------|
-| 10/batch | TBD | TBD |
-| 100/batch | TBD | TBD |
-| 1000/batch | TBD | TBD |
-| 10000/batch | TBD | TBD |
+| Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
+|------------|-----------|--------------|------------|-------------|
+| 10/batch | TBD | TBD | TBD | TBD |
+| 100/batch | TBD | TBD | TBD | TBD |
+| 1000/batch | 17% | 47 MB | 718 KB/s | 748 KB/s |
+| 10000/batch | TBD | TBD | TBD | TBD |
 
 This represents the optimal scenario where the dataflow engine operates with its
 native protocol end-to-end, eliminating protocol conversion overhead. Results
@@ -90,12 +100,12 @@ characteristics, refer to the Saturation Performance section.
 
 ##### Standard Load - OTLP -> OTLP (Standard Protocol)
 
-| Batch Size | CPU Usage | Memory Usage |
-|------------|-----------|---------------|
-| 10/batch | TBD | TBD |
-| 100/batch | TBD | TBD |
-| 1000/batch | TBD | TBD |
-| 10000/batch | TBD | TBD |
+| Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
+|------------|-----------|--------------|------------|-------------|
+| 10/batch | TBD | TBD | TBD | TBD |
+| 100/batch | TBD | TBD | TBD | TBD |
+| 1000/batch | 43% | 53 MB | 2.1 MB/s | 2.2 MB/s |
+| 10000/batch | TBD | TBD | TBD | TBD |
 
 This scenario processes OTLP end-to-end using the standard OpenTelemetry
 protocol, providing a baseline for comparison with traditional OTLP-based
@@ -103,49 +113,43 @@ pipelines and demonstrating the performance of the columnar architecture even
 without OTAP protocol benefits. Results are shown for a single CPU core. For
 hardware scaling characteristics, refer to the Saturation Performance section.
 
-#### Saturation Performance
+#### Saturation Performance (Single Core)
 
-Behavior at maximum capacity when physical resource limits are reached.
+Maximum throughput achievable on a single CPU core at full utilization. This
+establishes the baseline "unit of capacity" for capacity planning.
 
 **Test Parameters:**
 
-- Batch size: 500 records per request (fixed for all saturation tests)
-- Load: Continuously increased until the system reaches maximum sustained
-  throughput
+- Batch size: 500 records per request
+- Load: Continuously increased until the CPU core is fully saturated
 - Test duration: 60 seconds at maximum load
 
-All saturation tests use a consistent batch size of 500 records to focus on
-hardware scaling characteristics and maximum throughput capacity. The impact of
-varying batch sizes is covered in the Standard Load Performance section.
+| Protocol | Max Throughput | Memory Usage |
+|----------|----------------|--------------|
+| OTAP → OTAP (Native) | TBD | TBD |
+| OTLP → OTLP (Standard) | TBD | TBD |
 
-##### Saturation Load - OTAP -> OTAP (Native Protocol)
+#### Scalability
 
-| CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
-|-----------|------------------------------|-------------------|--------------|
-| 1 Core    | TBD                          | TBD               | TBD          |
-| 4 Cores   | TBD                          | TBD               | TBD          |
-| 8 Cores   | TBD                          | TBD               | TBD          |
-| 16 Cores  | TBD                          | TBD               | TBD          |
+How throughput scales when adding CPU cores. The thread-per-core architecture
+enables near-linear scaling by eliminating shared-state synchronization overhead
+(see [Overview](#overview)).
 
-##### Saturation Load - OTLP -> OTLP (Standard Protocol)
+**Test Parameters:**
 
-| CPU Cores | Maximum Sustained Throughput | Throughput / Core | Memory Usage |
-|-----------|------------------------------|-------------------|--------------|
-| 1 Core    | TBD                          | TBD               | TBD          |
-| 4 Cores   | TBD                          | TBD               | TBD          |
-| 8 Cores   | TBD                          | TBD               | TBD          |
-| 16 Cores  | TBD                          | TBD               | TBD          |
+- Batch size: 500 records per request
+- Protocol: OTAP → OTAP (native protocol)
+- Load: Maximum sustained throughput at each core count
 
-Saturation testing validates the engine's stability under extreme load. The
-dataflow engine exhibits well-defined behavior when operating at capacity,
-maintaining predictable performance without degradation or instability. These
-results demonstrate the maximum throughput achievable with different CPU core
-allocations. The **Throughput / Core** metric provides a key efficiency
-indicator for capacity planning.
+| CPU Cores | Max Throughput | Scaling Efficiency | Memory Usage |
+|-----------|----------------|-------------------|--------------|
+| 1 Core    | TBD            | 100% (baseline)   | TBD          |
+| 2 Cores   | TBD            | TBD               | TBD          |
+| 4 Cores   | TBD            | TBD               | TBD          |
+| 8 Cores   | TBD            | TBD               | TBD          |
+| 16 Cores  | TBD            | TBD               | TBD          |
 
-<!--TODO: Document what is the behavior - is it applying backpressure
-(`wait_for_result` feature)? or dropping items and keeping internal metric
-about it.-->
+*Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput)*
 
 ### Architecture
 
