@@ -858,9 +858,7 @@ impl ActiveWalFile {
             Err(tokio_file) => {
                 // Restore the file and give up - pending async ops
                 self.file = Some(tokio_file);
-                tracing::warn!(
-                    "WAL drop flush skipped: file has pending async operations"
-                );
+                tracing::warn!("WAL drop flush skipped: file has pending async operations");
                 return;
             }
         };
