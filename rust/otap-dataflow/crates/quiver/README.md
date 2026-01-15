@@ -28,9 +28,10 @@ cargo bench -p otap-df-quiver     # Criterion benchmarks
 ## Usage
 
 ```rust,ignore
-use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId};
+use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId, CancellationToken};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,13 +48,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     engine.register_subscriber(sub_id.clone())?;
     engine.activate_subscriber(&sub_id)?;
 
+    // Create a cancellation token for graceful shutdown
+    let shutdown = CancellationToken::new();
+
     // Ingest data (bundles from upstream)
     // engine.ingest(&bundle).await?;
 
-    // Consume bundles
-    while let Some(handle) = engine.next_bundle(&sub_id, None).await? {
-        // Process the bundle...
-        handle.ack();  // Acknowledge successful processing
+    // Consume bundles with timeout and cancellation support
+    loop {
+        match engine.next_bundle(&sub_id, Some(Duration::from_secs(5)), Some(&shutdown)).await {
+            Ok(Some(handle)) => {
+                // Process the bundle...
+                handle.ack();  // Acknowledge successful processing
+            }
+            Ok(None) => continue,  // Timeout, check shutdown condition
+            Err(e) if e.is_cancelled() => break,  // Graceful shutdown
+            Err(e) => return Err(e.into()),
+        }
     }
 
     // Periodic maintenance

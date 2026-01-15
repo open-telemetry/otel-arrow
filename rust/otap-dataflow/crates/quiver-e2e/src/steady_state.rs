@@ -16,7 +16,7 @@ use quiver::SegmentReadMode;
 use quiver::budget::DiskBudget;
 use quiver::config::RetentionPolicy;
 use quiver::subscriber::SubscriberId;
-use quiver::{QuiverConfig, QuiverEngine};
+use quiver::{CancellationToken, QuiverConfig, QuiverEngine};
 use tempfile::TempDir;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
@@ -237,7 +237,6 @@ pub async fn run(
     };
 
     // Global coordination state shared across all engines
-    let running = Arc::new(AtomicBool::new(true));
     let ingest_running = Arc::new(AtomicBool::new(true));
     let total_ingested = Arc::new(AtomicU64::new(0));
     let total_consumed = Arc::new(AtomicU64::new(0));
@@ -316,30 +315,34 @@ pub async fn run(
         ingest_handles.push(handle);
     }
 
+    // Create a cancellation token for graceful shutdown
+    let shutdown_token = CancellationToken::new();
+
     // Spawn subscriber tasks (distributed across engines)
     let mut subscriber_handles = Vec::new();
     for (engine_idx, sub_id) in &all_sub_ids {
         let engine = engines[*engine_idx].clone();
-        let sub_running = running.clone();
         let sub_consumed = total_consumed.clone();
         let delay_ms = config.subscriber_delay_ms;
         let maintain_interval_ms = config.maintain_interval_ms;
         let sub_id_clone = sub_id.clone();
+        let cancel = shutdown_token.clone();
 
         let handle = tokio::spawn(async move {
             let delay = SubscriberDelay::new(delay_ms);
             let maintain_interval = Duration::from_millis(maintain_interval_ms);
             let mut last_maintain = Instant::now();
 
-            while sub_running.load(Ordering::Relaxed) {
-                // Use engine's async subscriber API
+            loop {
+                // Use engine's async subscriber API with cancellation
                 let bundle_handle = match engine
-                    .next_bundle(&sub_id_clone, Some(Duration::from_millis(100)))
+                    .next_bundle(&sub_id_clone, Some(Duration::from_millis(100)), Some(&cancel))
                     .await
                 {
                     Ok(Some(h)) => h,
-                    Ok(None) => continue, // Timeout, check running flag
-                    Err(_) => break,
+                    Ok(None) => continue, // Timeout, loop back to check cancellation
+                    Err(e) if e.is_cancelled() => break, // Graceful shutdown
+                    Err(_) => break, // Other error
                 };
 
                 delay.apply().await;
@@ -498,8 +501,8 @@ pub async fn run(
         drain_start.elapsed()
     ));
 
-    // 5. Stop subscribers
-    running.store(false, Ordering::SeqCst);
+    // 5. Stop subscribers using cancellation token
+    shutdown_token.cancel();
     for handle in subscriber_handles {
         let _ = handle.await;
     }

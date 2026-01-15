@@ -1356,10 +1356,12 @@ pub async fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()>
 ```rust
 /// Waits asynchronously for the next bundle.
 ///
-/// Returns when a bundle is available or the subscriber is deactivated.
+/// Returns when a bundle is available, timeout expires, or cancellation is requested.
 pub async fn next_bundle(
     self: &Arc<Self>,
     id: &SubscriberId,
+    timeout: Option<Duration>,
+    cancel: Option<&CancellationToken>,
 ) -> Result<Option<BundleHandle<...>>>
 ```
 
@@ -1368,6 +1370,62 @@ pub async fn next_bundle(
 - Uses `tokio::sync::Notify` for efficient async waiting
 - On segment finalization, call `notify.notify_waiters()`
 - Async consumers await the notification, then check for available bundles
+
+#### Cancellation Support
+
+Quiver supports cooperative cancellation via `tokio_util::sync::CancellationToken`,
+which is re-exported as `quiver::CancellationToken` for convenience.
+
+**Use cases**:
+
+- **Graceful shutdown**: Cancel waiting consumers without waiting for timeout
+- **Task cancellation**: Abort long-running consume loops when needed
+- **Resource cleanup**: Signal tasks to clean up and exit promptly
+
+**Example: Graceful shutdown pattern**
+
+```rust
+use quiver::CancellationToken;
+use std::time::Duration;
+
+// Create a shared cancellation token
+let shutdown = CancellationToken::new();
+let shutdown_clone = shutdown.clone();
+
+// Consumer task
+let consumer = tokio::spawn(async move {
+    loop {
+        match engine.next_bundle(&sub_id, Some(Duration::from_secs(5)), Some(&shutdown_clone)).await {
+            Ok(Some(handle)) => {
+                // Process bundle...
+                handle.ack();
+            }
+            Ok(None) => {
+                // Timeout - loop again (or check other conditions)
+            }
+            Err(e) if e.is_cancelled() => {
+                // Graceful shutdown requested
+                break;
+            }
+            Err(e) => {
+                // Real error - handle appropriately
+                break;
+            }
+        }
+    }
+});
+
+// Later, when shutdown is needed:
+shutdown.cancel();  // All waiting next_bundle calls wake immediately
+consumer.await.expect("consumer should complete");
+```
+
+**Cancellation semantics**:
+
+- Cancellation is checked at the start of each wait loop and in `tokio::select!`
+- Returns `Err(SubscriberError::Cancelled { .. })` when cancelled
+- `error.is_cancelled()` returns `true` for cancelled errors
+- Cancellation is immediate - does not wait for timeout to expire
 
 #### Maintenance and Flush
 
@@ -1394,6 +1452,7 @@ Some operations remain synchronous (no I/O or fast enough):
 ```toml
 [dependencies]
 tokio = { workspace = true, features = ["fs", "sync", "time"] }
+tokio-util = { workspace = true }
 memmap2 = { workspace = true }
 ```
 
@@ -1406,40 +1465,61 @@ and avoids the complexity of maintaining both sync and async code paths.
 | Operation | API |
 | --------- | --- |
 | Ingest | `ingest().await` - returns after WAL fsync (safe to ACK) |
-| Consume | `next_bundle().await` - waits for data |
+| Consume | `next_bundle(timeout, cancel).await` - waits for data with optional cancellation |
+| Poll | `poll_next_bundle()` - non-blocking check for data |
 | Claim | `claim_bundle()` - sync (memory lookup) |
 | Maintenance | `maintain().await` - async |
 | Flush | `flush().await` - async |
 
 #### Persistence Processor Integration Pattern
 
-With the async API, the persistence processor integration becomes straightforward:
+With the async API and cancellation support, the persistence processor integration
+becomes straightforward:
 
 ```rust
-// Ingest path (receiving upstream data)
-async fn handle_pdata(&mut self, data: OtapPdata) -> Result<()> {
-    // ingest().await completes only after WAL fsync
-    // Safe to ACK upstream after this returns
-    self.engine.ingest(&data).await?;
-    self.effect_handler.notify_ack(AckMsg::new(data)).await
+use quiver::CancellationToken;
+use std::time::Duration;
+
+struct PersistenceProcessor {
+    engine: Arc<QuiverEngine>,
+    subscriber_id: SubscriberId,
+    shutdown: CancellationToken,
 }
 
-// Consume path (sending to downstream)
-async fn consume_loop(&mut self) -> Result<()> {
-    loop {
-        let handle = self.engine.next_bundle(&self.subscriber_id).await?;
-        let Some(handle) = handle else { break };
-
-        match self.send_downstream(handle.data()).await {
-            Ok(()) => handle.ack(),
-            Err(e) if e.is_retryable() => {
-                let bundle_ref = handle.defer();
-                self.schedule_retry(bundle_ref);
-            }
-            Err(_) => handle.reject(),
-        }
+impl PersistenceProcessor {
+    // Ingest path (receiving upstream data)
+    async fn handle_pdata(&mut self, data: OtapPdata) -> Result<()> {
+        // ingest().await completes only after WAL fsync
+        // Safe to ACK upstream after this returns
+        self.engine.ingest(&data).await?;
+        self.effect_handler.notify_ack(AckMsg::new(data)).await
     }
-    Ok(())
+
+    // Consume path (sending to downstream)
+    async fn consume_loop(&mut self) -> Result<()> {
+        loop {
+            // Wait for bundle with cancellation support
+            let handle = match self.engine
+                .next_bundle(&self.subscriber_id, Some(Duration::from_secs(5)), Some(&self.shutdown))
+                .await
+            {
+                Ok(Some(h)) => h,
+                Ok(None) => continue,  // Timeout, loop again
+                Err(e) if e.is_cancelled() => break,  // Graceful shutdown
+                Err(e) => return Err(e.into()),
+            };
+
+            match self.send_downstream(handle.data()).await {
+                Ok(()) => handle.ack(),
+                Err(e) if e.is_retryable() => {
+                    let bundle_ref = handle.defer();
+                    self.schedule_retry(bundle_ref);
+                }
+                Err(_) => handle.reject(),
+            }
+        }
+        Ok(())
+    }
 }
 ```
 

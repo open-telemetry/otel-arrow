@@ -655,7 +655,7 @@ impl QuiverEngine {
     /// Waits asynchronously for the next available bundle.
     ///
     /// This is the primary async API for consuming bundles. It awaits until
-    /// a bundle becomes available or the timeout expires.
+    /// a bundle becomes available, the timeout expires, or cancellation is requested.
     ///
     /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
     /// or `defer()` before being dropped.
@@ -664,21 +664,26 @@ impl QuiverEngine {
     ///
     /// * `id` - The subscriber ID
     /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    /// * `cancel` - Optional cancellation token for graceful shutdown.
     ///
     /// # Returns
     ///
     /// * `Ok(Some(handle))` - A bundle is available
     /// * `Ok(None)` - Timeout expired with no bundle available
+    /// * `Err(SubscriberError::Cancelled)` - Cancellation was requested
     /// * `Err(_)` - Subscriber not found or not active
     ///
     /// # Example
     ///
     /// ```ignore
     /// use std::time::Duration;
+    /// use quiver::CancellationToken;
     ///
-    /// // Wait up to 5 seconds for a bundle
+    /// let cancel = CancellationToken::new();
+    ///
+    /// // Wait up to 5 seconds for a bundle, with cancellation support
     /// let handle = engine
-    ///     .next_bundle(&subscriber_id, Some(Duration::from_secs(5)))
+    ///     .next_bundle(&subscriber_id, Some(Duration::from_secs(5)), Some(&cancel))
     ///     .await?;
     ///
     /// if let Some(bundle) = handle {
@@ -690,9 +695,10 @@ impl QuiverEngine {
         self: &Arc<Self>,
         id: &SubscriberId,
         timeout: Option<Duration>,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
     {
-        self.registry.next_bundle(id, timeout).await
+        self.registry.next_bundle(id, timeout, cancel).await
     }
 
     /// Claims a specific bundle for a subscriber.
@@ -2874,7 +2880,7 @@ mod tests {
 
         // Use async next_bundle
         let handle = engine
-            .next_bundle(&sub_id, Some(Duration::from_secs(5)))
+            .next_bundle(&sub_id, Some(Duration::from_secs(5)), None)
             .await
             .expect("next_bundle")
             .expect("should have bundle");
@@ -2897,7 +2903,7 @@ mod tests {
 
         // Async next_bundle should timeout quickly
         let result = engine
-            .next_bundle(&sub_id, Some(Duration::from_millis(100)))
+            .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
             .await
             .expect("next_bundle");
 
@@ -2926,7 +2932,7 @@ mod tests {
         // Spawn async task to wait for bundle
         let consumer = tokio::spawn(async move {
             let result = engine_clone
-                .next_bundle(&sub_id_clone, Some(Duration::from_secs(10)))
+                .next_bundle(&sub_id_clone, Some(Duration::from_secs(10)), None)
                 .await
                 .expect("next_bundle");
             if result.is_some() {
@@ -2967,7 +2973,7 @@ mod tests {
 
         // Alternate between async and poll methods
         let h1 = engine
-            .next_bundle(&sub_id, Some(Duration::from_secs(1)))
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)), None)
             .await
             .expect("async 1")
             .expect("bundle 1");
@@ -2980,7 +2986,7 @@ mod tests {
         h2.ack();
 
         let h3 = engine
-            .next_bundle(&sub_id, Some(Duration::from_secs(1)))
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)), None)
             .await
             .expect("async 2")
             .expect("bundle 3");
@@ -3004,7 +3010,7 @@ mod tests {
 
         // Consume a bundle to make the subscriber dirty
         let handle = engine
-            .next_bundle(&sub_id, Some(Duration::from_secs(1)))
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)), None)
             .await
             .expect("next_bundle")
             .expect("bundle");
@@ -3034,7 +3040,7 @@ mod tests {
         // Consume all bundles
         loop {
             match engine
-                .next_bundle(&sub_id, Some(Duration::from_millis(100)))
+                .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
                 .await
             {
                 Ok(Some(h)) => h.ack(),
@@ -3089,7 +3095,7 @@ mod tests {
         let mut consumed = 0;
         loop {
             match engine
-                .next_bundle(&sub_id, Some(Duration::from_millis(100)))
+                .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
                 .await
             {
                 Ok(Some(h)) => {

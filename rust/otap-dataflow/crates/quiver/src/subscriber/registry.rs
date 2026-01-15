@@ -382,21 +382,55 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ///
     /// * `id` - The subscriber ID
     /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    /// * `cancel` - Optional cancellation token. If provided and cancelled, returns
+    ///   `Err(SubscriberError::Cancelled)`.
     ///
     /// # Returns
     ///
     /// * `Ok(Some(handle))` - A bundle is available
-    /// * `Ok(None)` - Timeout expired
+    /// * `Ok(None)` - Timeout expired with no bundle available
+    /// * `Err(SubscriberError::Cancelled)` - Cancellation was requested
     /// * `Err(_)` - Subscriber not found or not active
+    ///
+    /// # Cancellation
+    ///
+    /// When a cancellation token is provided and becomes cancelled, this method
+    /// returns immediately with `Err(SubscriberError::Cancelled { .. })`. This
+    /// enables graceful shutdown without waiting for the timeout to expire.
+    ///
+    /// ```ignore
+    /// use tokio_util::sync::CancellationToken;
+    ///
+    /// let cancel = CancellationToken::new();
+    ///
+    /// // In consumer task:
+    /// match registry.next_bundle(&id, Some(Duration::from_secs(5)), Some(&cancel)).await {
+    ///     Ok(Some(handle)) => { /* process bundle */ },
+    ///     Ok(None) => { /* timeout, check if we should continue */ },
+    ///     Err(e) if e.is_cancelled() => { /* shutdown requested */ },
+    ///     Err(e) => { /* real error */ },
+    /// }
+    ///
+    /// // To trigger shutdown from another task:
+    /// cancel.cancel();
+    /// ```
     pub async fn next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
         timeout: Option<Duration>,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
         let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
         let notify = self.bundle_available.clone();
 
         loop {
+            // Check for cancellation first
+            if let Some(token) = cancel {
+                if token.is_cancelled() {
+                    return Err(SubscriberError::cancelled("shutdown requested"));
+                }
+            }
+
             // IMPORTANT: Register for notification BEFORE checking for bundles.
             // This prevents a race condition where:
             //   1. poll_next_bundle returns None
@@ -411,26 +445,60 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             match self.poll_next_bundle(id)? {
                 Some(handle) => return Ok(Some(handle)),
                 None => {
-                    // No bundle available, wait for notification or timeout
-                    if let Some(deadline) = deadline {
-                        let now = tokio::time::Instant::now();
-                        if now >= deadline {
-                            return Ok(None);
-                        }
-
-                        // Wait for notification or timeout
-                        match tokio::time::timeout_at(deadline, notified).await {
-                            Ok(()) => {
-                                // Notified, loop around to try getting a bundle
-                            }
-                            Err(_) => {
-                                // Timeout expired
+                    // No bundle available, wait for notification, timeout, or cancellation
+                    match (deadline, cancel) {
+                        (Some(deadline), Some(token)) => {
+                            // Both timeout and cancellation
+                            let now = tokio::time::Instant::now();
+                            if now >= deadline {
                                 return Ok(None);
                             }
+
+                            tokio::select! {
+                                biased;
+
+                                _ = token.cancelled() => {
+                                    return Err(SubscriberError::cancelled("shutdown requested"));
+                                }
+                                _ = tokio::time::timeout_at(deadline, notified) => {
+                                    // Either notified or timed out, loop around to check
+                                }
+                            }
                         }
-                    } else {
-                        // No timeout, just wait for notification
-                        notified.await;
+                        (Some(deadline), None) => {
+                            // Only timeout, no cancellation
+                            let now = tokio::time::Instant::now();
+                            if now >= deadline {
+                                return Ok(None);
+                            }
+
+                            match tokio::time::timeout_at(deadline, notified).await {
+                                Ok(()) => {
+                                    // Notified, loop around to try getting a bundle
+                                }
+                                Err(_) => {
+                                    // Timeout expired
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                        (None, Some(token)) => {
+                            // No timeout, but with cancellation
+                            tokio::select! {
+                                biased;
+
+                                _ = token.cancelled() => {
+                                    return Err(SubscriberError::cancelled("shutdown requested"));
+                                }
+                                _ = notified => {
+                                    // Notified, loop around to try getting a bundle
+                                }
+                            }
+                        }
+                        (None, None) => {
+                            // No timeout, no cancellation - just wait for notification
+                            notified.await;
+                        }
                     }
                 }
             }
@@ -1277,7 +1345,7 @@ mod tests {
 
         // Async next_bundle should return the bundle (use timeout to avoid hang if test fails)
         let result = registry
-            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
             .await
             .unwrap();
         assert!(result.is_some(), "should get bundle");
@@ -1303,7 +1371,7 @@ mod tests {
         // Spawn an async task to wait for the bundle with a timeout
         let consumer = tokio::spawn(async move {
             let result = registry
-                .next_bundle(&id_clone, Some(Duration::from_secs(5)))
+                .next_bundle(&id_clone, Some(Duration::from_secs(5)), None)
                 .await
                 .expect("next_bundle should succeed");
             if result.is_some() {
@@ -1338,7 +1406,7 @@ mod tests {
 
         // next_bundle with short timeout should return None
         let result = registry
-            .next_bundle(&id, Some(Duration::from_millis(100)))
+            .next_bundle(&id, Some(Duration::from_millis(100)), None)
             .await
             .unwrap();
         assert!(
@@ -1353,7 +1421,7 @@ mod tests {
         registry.on_segment_finalized(SegmentSeq::new(1), 1);
 
         let result2 = registry
-            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
             .await
             .unwrap();
         assert!(result2.is_some(), "should get bundle after segment added");
@@ -1371,7 +1439,7 @@ mod tests {
 
         // Get first bundle with async method (use timeout to avoid hang if test fails)
         let handle1 = registry
-            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
             .await
             .unwrap()
             .expect("should get first bundle");
@@ -1385,7 +1453,7 @@ mod tests {
 
         // Get third bundle with async method again
         let handle3 = registry
-            .next_bundle(&id, Some(Duration::from_secs(5)))
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
             .await
             .unwrap()
             .expect("should get third bundle");
@@ -1395,5 +1463,91 @@ mod tests {
         // No more bundles
         let result = registry.poll_next_bundle(&id).unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_bundle_returns_cancelled_when_token_is_cancelled() {
+        let (registry, _dir) = setup_registry();
+
+        let id = SubscriberId::new("cancel-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Create a cancellation token and cancel it immediately
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        // next_bundle should return Cancelled immediately
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), Some(&cancel))
+            .await;
+
+        match result {
+            Err(e) => assert!(e.is_cancelled(), "should be a cancelled error"),
+            Ok(_) => panic!("should return error when cancelled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_bundle_cancellation_wakes_waiting_task() {
+        use tokio::time::Duration as TokioDuration;
+
+        let (registry, _dir) = setup_registry();
+
+        let id = SubscriberId::new("cancel-wake-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Create a cancellation token
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let registry_clone = registry.clone();
+        let id_clone = id.clone();
+
+        // Spawn a task that waits for a bundle (no segments, so it will block)
+        let waiter = tokio::spawn(async move {
+            registry_clone
+                .next_bundle(&id_clone, None, Some(&cancel_clone))
+                .await
+        });
+
+        // Give the waiter time to start waiting
+        tokio::time::sleep(TokioDuration::from_millis(50)).await;
+
+        // Cancel the token
+        cancel.cancel();
+
+        // The waiter should wake up and return Cancelled
+        let result = tokio::time::timeout(TokioDuration::from_secs(5), waiter)
+            .await
+            .expect("waiter should complete")
+            .expect("task should not panic");
+
+        match result {
+            Err(e) => assert!(e.is_cancelled(), "should be a cancelled error"),
+            Ok(_) => panic!("should return error when cancelled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_bundle_with_timeout_and_cancellation() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 1);
+
+        let id = SubscriberId::new("timeout-cancel-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Create a cancellation token (not cancelled)
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // Should successfully get bundle even with cancel token present
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), Some(&cancel))
+            .await
+            .unwrap();
+
+        assert!(result.is_some(), "should get bundle with uncancelled token");
     }
 }
