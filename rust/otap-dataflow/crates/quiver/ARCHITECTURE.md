@@ -1259,9 +1259,9 @@ returns a NACK, the embedding layer (e.g., persistence_processor):
 Quiver's progress files never see transient NACKs, only final outcomes (`Ack`
 or `Dropped`). This keeps Quiver decoupled from retry policy decisions.
 
-### Async API Design (Planned)
+### Async API Design
 
-Quiver will provide an async API designed for integration with otap-dataflow's
+Quiver provides an async API designed for integration with otap-dataflow's
 async-first, thread-per-core architecture. Since otap-dataflow is the primary
 consumer of quiver, we take a direct dependency on tokio and provide async APIs
 as the primary interface.
@@ -1283,7 +1283,7 @@ single-threaded runtime per core means:
 - Blocking operations on the async runtime starve other tasks on that core
 - We should prefer async I/O or short synchronous operations
 
-Quiver will use `tokio::fs` for cross-platform async file I/O. Internally,
+Quiver uses `tokio::fs` for cross-platform async file I/O. Internally,
 this dispatches blocking syscalls to tokio's thread pool rather than using
 platform-specific async I/O APIs (io_uring on Linux, IOCP on Windows).
 
