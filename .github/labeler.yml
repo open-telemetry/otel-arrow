@@ -7,6 +7,9 @@ go:
 ci-repo:
 - changed-files:
   - any-glob-to-any-file: '.github/**/*'
+opl-parser:
+- changed-files:
+  - any-glob-to-any-file: 'rust/otap-dataflow/crates/opl/**/*'
 query-engine:
 - changed-files:
   - any-glob-to-any-file: 'rust/experimental/query_engine/**/*'
