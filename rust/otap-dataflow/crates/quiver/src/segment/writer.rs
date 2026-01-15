@@ -160,51 +160,79 @@ impl SegmentWriter {
         path: impl AsRef<Path>,
         segment: super::OpenSegment,
     ) -> Result<(u64, u32), SegmentError> {
-        let path = path.as_ref();
+        let path = path.as_ref().to_path_buf();
         let (accumulators, manifest) = segment.into_parts()?;
+        let segment_seq = self.segment_seq;
 
-        // Create file and write data (sync - Arrow IPC doesn't support async)
-        let file = File::create(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
-        let mut writer = BufWriter::new(file);
+        // Create the file asynchronously, then convert to std::fs::File for Arrow IPC.
+        let async_file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| SegmentError::io(path.clone(), e))?;
+        let std_file = async_file.into_std().await;
 
-        let result = self.write_streaming(&mut writer, accumulators, manifest, path)?;
+        // Run the blocking Arrow IPC serialization on Tokio's blocking thread pool.
+        // Arrow IPC requires std::io::Write, so we can't use async I/O for
+        // serialization. Using spawn_blocking prevents blocking the async
+        // runtime's worker threads during file writes.
+        let (file, result) = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || -> Result<(File, (u64, u32)), SegmentError> {
+                let mut writer = BufWriter::new(std_file);
 
-        // Extract the underlying file for async fsync
-        let file = writer
-            .into_inner()
-            .map_err(|e| SegmentError::io(path.to_path_buf(), e.into_error()))?;
+                let segment_writer = SegmentWriter::new(segment_seq);
+                let result =
+                    segment_writer.write_streaming(&mut writer, accumulators, manifest, &path)?;
 
-        // Convert to tokio File for async fsync
-        let async_file = tokio::fs::File::from_std(file);
-        async_file
+                // Extract the underlying file for fsync
+                let file = writer
+                    .into_inner()
+                    .map_err(|e| SegmentError::io(path.clone(), e.into_error()))?;
+
+                Ok((file, result))
+            }
+        })
+        .await
+        .map_err(|e| SegmentError::InvalidFormat {
+            message: format!("blocking task panicked: {e}"),
+        })??;
+
+        // Async fsync - convert back to tokio::fs::File for async I/O
+        tokio::fs::File::from_std(file)
             .sync_all()
             .await
-            .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+            .map_err(|e| SegmentError::io(path.clone(), e))?;
 
-        Self::set_readonly(path)?;
+        // Sync parent directory to ensure the new file entry is durable.
+        // Required on some filesystems (older ext3, NFS) for crash consistency.
+        sync_parent_dir(&path).await?;
+
+        Self::set_readonly(&path).await?;
 
         Ok(result)
     }
 
     /// Sets the file to read-only after writing to enforce immutability.
-    fn set_readonly(path: &Path) -> Result<(), SegmentError> {
+    async fn set_readonly(path: &Path) -> Result<(), SegmentError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             // 0o440 = r--r----- (read-only for owner and group, no access for others)
             let permissions = std::fs::Permissions::from_mode(0o440);
-            std::fs::set_permissions(path, permissions)
+            tokio::fs::set_permissions(path, permissions)
+                .await
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         }
 
         #[cfg(not(unix))]
         {
             // On non-Unix platforms, use the portable read-only flag
-            let mut permissions = std::fs::metadata(path)
+            let mut permissions = tokio::fs::metadata(path)
+                .await
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?
                 .permissions();
             permissions.set_readonly(true);
-            std::fs::set_permissions(path, permissions)
+            tokio::fs::set_permissions(path, permissions)
+                .await
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         }
 
@@ -538,6 +566,30 @@ impl<W: Write> Write for HashingWriter<'_, W> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
     }
+}
+
+/// Syncs the parent directory to ensure new file entries are durable.
+///
+/// On POSIX systems, file creation is atomic but not necessarily durable until
+/// the parent directory is fsynced. This matters on filesystems without automatic
+/// barriers (older ext3, NFS, non-default mount options).
+///
+/// On non-Unix platforms this is a no-op since directory sync semantics differ.
+async fn sync_parent_dir(path: &Path) -> Result<(), SegmentError> {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            let dir = tokio::fs::File::open(parent)
+                .await
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+            dir.sync_all()
+                .await
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path; // silence unused warning
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
