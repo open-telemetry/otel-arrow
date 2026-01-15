@@ -172,34 +172,22 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Sets the logs receiver for internal telemetry.
-    ///
-    /// This is called by the engine when starting an Internal Telemetry Receiver
-    /// that has been configured with a logs channel.
-    pub fn set_logs_receiver(&mut self, logs_receiver: LogsReceiver) {
+    pub fn set_logs_receiver(
+        &mut self,
+        logs_receiver: LogsReceiver,
+        resource_bytes: Option<bytes::Bytes>,
+    ) {
         self.logs_receiver = Some(logs_receiver);
+        self.resource_bytes = resource_bytes;
     }
 
-    /// Sets the pre-encoded resource bytes for internal telemetry.
-    ///
-    /// This is called by the engine when starting an Internal Telemetry Receiver
-    /// that has been configured with resource attributes.
-    pub fn set_resource_bytes(&mut self, resource_bytes: bytes::Bytes) {
-        self.resource_bytes = Some(resource_bytes);
-    }
-
-    /// Returns the logs receiver, if configured.
-    ///
-    /// This is used by the Internal Telemetry Receiver to consume logs
-    /// from all threads via the logs channel.
+    /// Returns the logs receiver, if configured..
     #[must_use]
     pub fn logs_receiver(&self) -> Option<&LogsReceiver> {
         self.logs_receiver.as_ref()
     }
 
     /// Returns the pre-encoded resource bytes, if configured.
-    ///
-    /// This is used by the Internal Telemetry Receiver to include resource
-    /// attributes in the OTLP log encoding.
     #[must_use]
     pub fn resource_bytes(&self) -> Option<&bytes::Bytes> {
         self.resource_bytes.as_ref()
@@ -361,13 +349,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(
-            test_node("recv"),
-            senders,
-            None,
-            ctrl_tx,
-            metrics_reporter,
-        );
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         eh.send_message_to("b", 42).await.unwrap();
 
@@ -388,13 +370,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(
-            test_node("recv"),
-            senders,
-            None,
-            ctrl_tx,
-            metrics_reporter,
-        );
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -440,13 +416,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(
-            test_node("recv"),
-            senders,
-            None,
-            ctrl_tx,
-            metrics_reporter,
-        );
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -475,13 +445,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(
-            test_node("recv"),
-            senders,
-            None,
-            ctrl_tx,
-            metrics_reporter,
-        );
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();

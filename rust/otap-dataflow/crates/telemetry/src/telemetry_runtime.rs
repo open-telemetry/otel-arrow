@@ -16,7 +16,8 @@ use otap_df_config::pipeline::service::telemetry::{
 use crate::{
     LogsReceiver,
     error::Error,
-    logs::{LogsCollector, LogsReporter, TelemetrySetup},
+    logs::channel as logs_channel,
+    logs::{LogsReporter, TelemetrySetup},
     telemetry_runtime::logger_provider::LoggerProvider,
     telemetry_runtime::meter_provider::MeterProvider,
 };
@@ -27,7 +28,6 @@ use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 /// This struct owns all telemetry infrastructure including:
 /// - OpenTelemetry SDK meter and logger providers
 /// - Internal logs reporter and receiver channels
-/// - Optional logs collector for Direct output mode
 pub struct TelemetryRuntime {
     /// The tokio runtime used to run the OpenTelemetry SDK OTLP exporter.
     /// The reference is kept to ensure the runtime lives as long as the client.
@@ -40,8 +40,6 @@ pub struct TelemetryRuntime {
     /// Receiver for the internal logs channel (Internal output mode only).
     /// The ITR node consumes this to process internal telemetry.
     logs_receiver: Option<LogsReceiver>,
-    /// Collector for Direct output mode. Must be spawned by the controller.
-    logs_collector: Option<LogsCollector>,
     /// Deferred global subscriber setup. Must be initialized by controller
     /// AFTER the internal pipeline is started (so the channel is being consumed).
     global_setup: Option<TelemetrySetup>,
@@ -64,7 +62,7 @@ impl TelemetryRuntime {
     /// noisy HTTP/2 and hyper logs.
     ///
     /// The logs reporter is created internally based on the configuration:
-    /// - For `Direct` output: creates reporter + collector (collector must be spawned)
+    /// - For `Direct` output: creates reporter + receiver (collector must be spawned)
     /// - For `Internal` output: creates reporter + receiver (receiver goes to ITR node)
     /// - For `Noop` output: no reporter is created
     ///
@@ -79,28 +77,13 @@ impl TelemetryRuntime {
         let (meter_provider, runtime) =
             MeterProvider::configure(sdk_resource.clone(), &config.metrics, runtime)?.into_parts();
 
-        // Determine if we need a logs reporter based on provider modes
-        let providers_need_reporter = config.logs.providers.global.needs_reporter()
-            || config.logs.providers.engine.needs_reporter();
-
-        // Create the logs reporter, receiver, and collector based on output mode
-        let (logs_reporter, logs_receiver, logs_collector) = if providers_need_reporter {
-            match config.logs.output {
-                OutputMode::Direct => {
-                    // Direct mode: logs go to a collector that prints to console
-                    let (collector, reporter) = LogsCollector::new(config.reporting_channel_size);
-                    (Some(reporter), None, Some(collector))
-                }
-                OutputMode::Internal => {
-                    // Internal mode: logs go through channel to ITR node
-                    let (receiver, reporter) =
-                        LogsCollector::channel(config.reporting_channel_size);
-                    (Some(reporter), Some(receiver), None)
-                }
-                OutputMode::Noop => (None, None, None),
+        // Create the logs reporter, receiver
+        let (logs_reporter, logs_receiver) = match config.logs.output {
+            OutputMode::Direct | OutputMode::Internal => {
+                let (x, y) = logs_channel(config.reporting_channel_size);
+                (Some(x), Some(y))
             }
-        } else {
-            (None, None, None)
+            _ => (None, None),
         };
 
         // Check if either global or engine needs the OpenTelemetry logger provider
@@ -132,7 +115,6 @@ impl TelemetryRuntime {
             logger_provider,
             logs_reporter,
             logs_receiver,
-            logs_collector,
             global_setup: Some(global_setup),
             global_log_level: config.logs.level,
         })
@@ -205,16 +187,6 @@ impl TelemetryRuntime {
     /// This method takes ownership of the receiver (can only be called once).
     pub fn take_logs_receiver(&mut self) -> Option<LogsReceiver> {
         self.logs_receiver.take()
-    }
-
-    /// Take the logs collector for Direct output mode.
-    ///
-    /// Returns `Some` only when output mode is `Direct`. The collector should
-    /// be spawned on a dedicated thread to process log records.
-    ///
-    /// This method takes ownership of the collector (can only be called once).
-    pub fn take_logs_collector(&mut self) -> Option<LogsCollector> {
-        self.logs_collector.take()
     }
 
     /// Initialize the global tracing subscriber.

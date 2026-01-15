@@ -315,10 +315,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 // Inject internal telemetry settings if configured
                 if let Some(logs_rx) = logs_receiver {
-                    effect_handler.set_logs_receiver(logs_rx);
-                }
-                if let Some(res_bytes) = resource_bytes {
-                    effect_handler.set_resource_bytes(res_bytes);
+                    effect_handler.set_logs_receiver(logs_rx, resource_bytes)
                 }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }

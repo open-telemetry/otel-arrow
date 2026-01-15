@@ -55,6 +55,7 @@ fn default_reporting_interval() -> Duration {
 }
 
 /// Attribute value types for telemetry resource attributes.
+/// TODO: Replace with OTLP AnyValue?
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub enum AttributeValue {
     /// String type attribute value.

@@ -21,7 +21,9 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::pipeline::service::telemetry::logs::INTERNAL_TELEMETRY_RECEIVER_URN;
+use otap_df_config::pipeline::service::telemetry::logs::{
+    INTERNAL_TELEMETRY_RECEIVER_URN, OutputMode,
+};
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -38,10 +40,13 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::logs::{TelemetrySetup, encode_resource_bytes};
+use otap_df_telemetry::logs::{DirectCollector, TelemetrySetup};
 use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::self_tracing::ConsoleWriter;
 use otap_df_telemetry::telemetry_runtime::TelemetryRuntime;
-use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{
+    InternalTelemetrySystem, otel_info, otel_info_span, otel_warn, resource::encode_resource_bytes,
+};
 use std::sync::mpsc as std_mpsc;
 use std::thread;
 
@@ -100,19 +105,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Create telemetry runtime according to the various options.
         let mut telemetry_runtime = TelemetryRuntime::new(telemetry_config)?;
 
-        // Start the logs collector thread if needed for direct output.
-        let _logs_collector_handle =
-            if let Some(logs_collector) = telemetry_runtime.take_logs_collector() {
-                Some(spawn_thread_local_task(
-                    "logs-collector",
-                    move |_cancellation_token| logs_collector.run(),
-                )?)
-            } else {
-                None
-            };
+        let direct_collector = (telemetry_config.logs.output == OutputMode::Direct).then(|| {
+            DirectCollector::new(
+                ConsoleWriter::color(),
+                telemetry_runtime.take_logs_receiver().expect("valid"),
+            )
+        });
 
-        // Get logs receiver for Internal output mode (passed to internal pipeline)
-        let mut logs_receiver = telemetry_runtime.take_logs_receiver();
+        // Start the logs collector thread if needed for direct output.
+        let _logs_collector_handle = if telemetry_config.logs.output == OutputMode::Direct {
+            Some(spawn_thread_local_task(
+                "logs-collector",
+                move |_cancellation_token| direct_collector.expect("ok").run(),
+            )?)
+        } else {
+            None
+        };
 
         // Pre-encode resource bytes once for all log batches
         let resource_bytes = encode_resource_bytes(&telemetry_config.resource);
@@ -160,13 +168,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             pipeline.extract_internal_config()
         {
             // Create internal telemetry settings if we have a logs receiver
-            let internal_telemetry_settings = logs_receiver.take().map(|rx| {
-                InternalTelemetrySettings {
-                    target_urn: INTERNAL_TELEMETRY_RECEIVER_URN,
-                    logs_receiver: rx,
-                    resource_bytes: resource_bytes.clone(),
-                }
-            });
+            let internal_telemetry_settings =
+                telemetry_runtime
+                    .take_logs_receiver()
+                    .map(|rx| InternalTelemetrySettings {
+                        target_urn: INTERNAL_TELEMETRY_RECEIVER_URN,
+                        logs_receiver: rx,
+                        resource_bytes: resource_bytes.clone(),
+                    });
             let internal_factory = self.pipeline_factory;
             let internal_pipeline_id: PipelineId = "internal".into();
             let internal_pipeline_key = DeployedPipelineKey {

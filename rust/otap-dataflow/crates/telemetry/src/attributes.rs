@@ -122,6 +122,9 @@ pub trait AttributeSetHandler {
 }
 
 /// Represents a single attribute value that can be of different types.
+///
+/// TODO: Duplicate of crates/config/src/pipeline/service/telemetry.rs
+/// AttributeValue or OTLP AnyValue?
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum AttributeValue {
     /// String attribute value
