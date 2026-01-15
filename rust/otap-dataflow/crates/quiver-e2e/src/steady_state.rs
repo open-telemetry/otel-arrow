@@ -651,8 +651,6 @@ fn spawn_ingest_task(
     backpressure_count: Arc<AtomicU64>,
     startup_delay_ms: u64,
 ) -> JoinHandle<()> {
-    // Now that wal_writer uses tokio::sync::Mutex, the ingest() future is Send
-    // and we can use tokio::spawn directly.
     tokio::spawn(async move {
         // Staggered startup to desynchronize segment writes
         if startup_delay_ms > 0 {
