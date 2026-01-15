@@ -361,9 +361,10 @@ mod test {
     use otap_df_config::{PortName, node::NodeUserConfig};
     use otap_df_engine::{
         context::ControllerContext,
+        control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
         local::message::LocalSender,
         message::Sender,
-        node::NodeWithPDataSender,
+        node::{Node, NodeWithPDataSender},
         testing::{
             processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
             test_node,
@@ -385,7 +386,7 @@ mod test {
         testing::round_trip::{otap_to_otlp, otlp_to_otap},
     };
 
-    use crate::pdata::OtapPdata;
+    use crate::{pdata::OtapPdata, testing::TestCallData};
 
     fn try_create_with_config(
         config: Value,
@@ -819,6 +820,196 @@ mod test {
                     }
                     _ => panic!("unexpected payload type"),
                 }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_with_subscribers_no_routing() {
+        // Smoke test to ensure Ack/Nack handling works correctly when there are subscribers.
+        // This verifies that the context tracking mechanism properly preserves subscriber
+        // information through the transform processor, allowing proper Ack/Nack propagation.
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "logs | where severity_text == \"INFO\"";
+        let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
+        // let node_id = processor.node_id().index;
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                // Create a log record
+                let log_records = vec![LogRecord::build().severity_text("INFO").finish()];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                // Create pdata with a subscriber - this simulates an upstream component
+                // that wants to be notified when processing completes
+                let pdata = OtapPdata::new_default(otap_batch.into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    999,
+                );
+
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                // Process the message through the transform processor
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // Drain output and verify message was transformed and emitted
+                let mut output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1, "Should emit one transformed message");
+
+                let outbound_pdata = output.pop().unwrap();
+
+                let (outbound_context, _payload) = outbound_pdata.clone().into_parts();
+
+                // assert that since the pipeline did no routing, the outbound context should be
+                // same as the inbound
+                assert_eq!(inbound_context, outbound_context);
+                assert!(outbound_context.has_subscribers());
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_with_subscribers_with_routing() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            } else if (severity_text == "INFO") {
+                route_to "info_port"
+            }"#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        // TODO we should make this into a helper
+        let test_node_id = NodeId {
+            index: 1,
+            name: "test_node".into(),
+        };
+        let (error_port_tx, error_port_rx) = otap_df_channel::mpsc::Channel::new(10);
+        processor
+            .set_pdata_sender(
+                test_node_id.clone(),
+                PortName::from("error_port"),
+                Sender::Local(LocalSender::mpsc(error_port_tx)),
+            )
+            .unwrap();
+        let (info_port_tx, info_port_rx) = otap_df_channel::mpsc::Channel::new(10);
+        processor
+            .set_pdata_sender(
+                test_node_id.clone(),
+                PortName::from("info_port"),
+                Sender::Local(LocalSender::mpsc(info_port_tx)),
+            )
+            .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let other_log_record = LogRecord::build().severity_text("DEBUG").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                error_log_record.clone(),
+                                info_log_record.clone(),
+                                other_log_record.clone(),
+                            ],
+                        )],
+                    )],
+                }));
+
+                let upstream_node_id = 999;
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // assert that since some routing (splitting of the batch) did occur, we get a
+                // new context
+                let (outbound_context1, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_context1);
+
+                let (outbound_context2, _) = error_port_rx.recv().await.unwrap().into_parts();
+                let (outbound_context3, _) = info_port_rx.recv().await.unwrap().into_parts();
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // now we'll Ack the outbound messages and ensure that we eventually emit an ack
+                // for the inbound message
+                let call_data = outbound_context1.current_calldata().unwrap();
+                let mut ack1 = AckMsg::new(OtapPdata::new(
+                    outbound_context1,
+                    OtapPayload::empty(SignalType::Logs),
+                ));
+                ack1.calldata = call_data;
+
+                let call_data = outbound_context2.current_calldata().unwrap();
+                let mut ack2 = AckMsg::new(OtapPdata::new(
+                    outbound_context2,
+                    OtapPayload::empty(SignalType::Logs),
+                ));
+                ack2.calldata = call_data;
+
+                let call_data = outbound_context3.current_calldata().unwrap();
+                let mut ack3 = AckMsg::new(OtapPdata::new(
+                    outbound_context3,
+                    OtapPayload::empty(SignalType::Logs),
+                ));
+                ack3.calldata = call_data;
+
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack1)))
+                    .await
+                    .unwrap();
+                // no ack b/c not all outbound are ack'd
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack2)))
+                    .await
+                    .unwrap();
+                // still no ack b/c not all outbound are ack'd
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack3)))
+                    .await
+                    .unwrap();
+                // now we've ack'd all three outbound, so it should emit an Ack message
+                let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                match ack_msg {
+                    PipelineControlMsg::DeliverAck { node_id, .. } => {
+                        assert_eq!(node_id, upstream_node_id);
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
             })
             .validate(|_ctx| async move {})
     }
