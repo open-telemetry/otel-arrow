@@ -30,7 +30,7 @@ bytes.workspace = true
 crc32fast.workspace = true
 blake3.workspace = true
 parking_lot.workspace = true
-tokio = { workspace = true, features = ["fs", "sync"] }
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
 tokio-util = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror.workspace = true

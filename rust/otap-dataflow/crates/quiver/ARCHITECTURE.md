@@ -1393,7 +1393,7 @@ Some operations remain synchronous (no I/O or fast enough):
 
 ```toml
 [dependencies]
-tokio = { workspace = true, features = ["fs", "sync"] }
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
 memmap2 = { workspace = true }
 ```
 
