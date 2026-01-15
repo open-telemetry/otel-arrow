@@ -81,6 +81,7 @@ impl<UData> State<UData> {
         Some((key, ures))
     }
 
+    /// Get immutable reference to user data in a slot (if key is valid).
     #[must_use]
     pub fn get(&self, key: Key) -> Option<&UData> {
         self.slots.get(key)

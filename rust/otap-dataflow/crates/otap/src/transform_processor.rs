@@ -36,6 +36,7 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_query_engine::pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
+use slotmap::Key as _;
 
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
@@ -186,15 +187,17 @@ impl TransformProcessor {
 
         // juggle the context for the output of the pipeline. We need to do this b/c we'll be
         // emitting this batch, plus any routed batches, and we don't want to Ack the inbound
-        // context until we receive Ack's from all downstream batches
+        // context until we receive Acks from all downstream batches
         if let Ok(otap_batch) = pipeline_result {
             let mut pdata = OtapPdata::new(Context::default(), otap_batch.into());
             let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone())?;
-            effect_handler.subscribe_to(
-                Interests::NACKS | Interests::ACKS,
-                outbound_key.into(),
-                &mut pdata,
-            );
+            if !outbound_key.is_null() {
+                effect_handler.subscribe_to(
+                    Interests::NACKS | Interests::ACKS,
+                    outbound_key.into(),
+                    &mut pdata,
+                );
+            }
             effect_handler.send_message(pdata).await?;
         }
 
@@ -216,11 +219,13 @@ impl TransformProcessor {
             let context = Context::default();
             let mut pdata = OtapPdata::new(context, payload);
             let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone())?;
-            effect_handler.subscribe_to(
-                Interests::NACKS | Interests::ACKS,
-                outbound_key.into(),
-                &mut pdata,
-            );
+            if !outbound_key.is_null() {
+                effect_handler.subscribe_to(
+                    Interests::NACKS | Interests::ACKS,
+                    outbound_key.into(),
+                    &mut pdata,
+                );
+            }
 
             effect_handler.send_message_to(port_name, pdata).await?;
         }
