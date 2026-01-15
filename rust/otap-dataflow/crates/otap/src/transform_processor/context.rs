@@ -15,7 +15,7 @@ use crate::{
 
 struct Inbound {
     context: Context,
-    error_reason: Option<String>, //
+    error_reason: Option<String>,
     num_outbound: usize,
 }
 
@@ -23,6 +23,14 @@ struct Outbound {
     inbound_key: Key,
 }
 
+/// Contexts manages the context of inbound and outbound batches. The intent here is to keep enough state
+/// that if any batches are split by the pipeline, we can Ack/Nack the inbound batch and when all outbound batches
+/// are completed.
+///
+/// It contains two slot maps:
+/// - Inbound: manages how many outbound batches are associated with an inbound batch, as well as
+///   the error reason if any occurred (either processing the inbound batch, or any outbound batch).
+/// - Outbound: maps the inbound key to the outbound key.
 pub(super) struct Contexts {
     inbound: State<Inbound>,
     outbound: State<Outbound>,
@@ -36,14 +44,25 @@ impl Contexts {
         }
     }
 
+    /// Insert an inbound batch into the context.
+    ///
+    /// If the inbound batch does not need to be managed (no subscribers), it is not inserted into the context
+    /// and a null key is returned.
+    ///
+    /// Returns `None` if the inbound slot map is full.
+    ///
+    /// # Parameters
+    ///
+    /// - `context`: The context of the inbound batch.
+    /// - `error_reason`: The error may have occurred processing the inbound batch.
     pub fn insert_inbound(
         &mut self,
         context: Context,
         error_reason: Option<String>,
-    ) -> Result<Key, Error> {
+    ) -> Option<Key> {
         if !context.has_subscribers() {
             // no point in managing the inbound/outbound the context if there are no subscribers
-            return Ok(Key::null());
+            return Some(Key::null());
         }
 
         let inbound = Inbound {
@@ -51,35 +70,46 @@ impl Contexts {
             num_outbound: 0,
             error_reason,
         };
-        // TODO don't unwrap these here ...
-        let (inbound_key, _) = self.inbound.allocate(|| (inbound, ())).unwrap();
-        Ok(inbound_key)
+
+        self.inbound.allocate(|| (inbound, ())).map(|(key, _)| key)
     }
 
-    pub fn insert_outbound(&mut self, inbound_key: Key) -> Result<Key, Error> {
+    /// Inserts an outbound batch into the context. This will update any necessary state related
+    /// to the inbound batch (increment count of outbound batches).
+    ///
+    /// Returns the key of the outbound batch. IF the inbound batch doesn't exist it will return
+    /// a null key. Note: even after calling insert_inbound, the inbound batch may not exist
+    /// because we determined from the context it doesn't need to be tracked (e.g. it has no
+    /// subscribers).
+    ///
+    /// Returns `None` if the outbound slot map is full.
+    pub fn insert_outbound(&mut self, inbound_key: Key) -> Option<Key> {
         // incr inbound
         if let Some(inbound) = self.inbound.get_mut(inbound_key) {
             inbound.num_outbound += 1;
 
             // insert outbound
             let outbound = Outbound { inbound_key };
-            let (outbound_key, _) = self.outbound.allocate(|| (outbound, ())).unwrap();
-            Ok(outbound_key)
+            self.outbound.allocate(|| (outbound, ())).map(|(key, _)| key)
         } else {
-            Ok(Key::null())
+            Some(Key::null())
         }
     }
 
     pub fn set_failed(&mut self, outbound_key: Key, error_reason: String) {
         if let Some(inbound) = self.inbound.get_mut(outbound_key) {
-            // Only keep the original error
-            // TODO - maybe we should concatenate the errors together ...
+            // keep the original error if it exists
             if inbound.error_reason.is_none() {
                 inbound.error_reason = Some(error_reason)
             }
         }
     }
 
+    /// Clears the outbound slot and returns the context and error reason if the inbound slot is now empty.
+    ///
+    /// Returns `Some((context, error_reason))` if the inbound slot is now empty. This would mean that
+    /// all outbound batches for this inbound slot have been processed and the inbound batch could be
+    /// Ack/NAck'd
     pub fn clear_outbound(&mut self, outbound_key: Key) -> Option<(Context, Option<String>)> {
         let inbound_key = {
             let outbound = self.outbound.get(outbound_key)?;

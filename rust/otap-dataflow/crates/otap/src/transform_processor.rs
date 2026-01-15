@@ -183,14 +183,24 @@ impl TransformProcessor {
 
         let inbound_ctx_key = self
             .contexts
-            .insert_inbound(inbound_context, error_reason)?;
+            .insert_inbound(inbound_context, error_reason).ok_or_else(|| EngineError::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "inbound slots not available".into(),
+                source_detail: "".into(),
+            })?;
 
         // juggle the context for the output of the pipeline. We need to do this b/c we'll be
         // emitting this batch, plus any routed batches, and we don't want to Ack the inbound
         // context until we receive Acks from all downstream batches
         if let Ok(otap_batch) = pipeline_result {
             let mut pdata = OtapPdata::new(Context::default(), otap_batch.into());
-            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone())?;
+            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone()).ok_or_else(|| EngineError::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "outbound slots not available".into(),
+                source_detail: "".into(),
+            })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
@@ -218,7 +228,12 @@ impl TransformProcessor {
             let payload = OtapPayload::OtapArrowRecords(otap_batch);
             let context = Context::default();
             let mut pdata = OtapPdata::new(context, payload);
-            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone())?;
+            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone()).ok_or_else(|| EngineError::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "outbound slots not available".into(),
+                source_detail: "".into(),
+            })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
                     Interests::NACKS | Interests::ACKS,
