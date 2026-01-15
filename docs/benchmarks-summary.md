@@ -12,18 +12,15 @@ maintaining the network efficiency gains from Phase 1.
 
 The OTel Arrow dataflow engine, implemented in Rust, provides predictable
 performance characteristics and efficient resource utilization across varying
-load conditions. This columnar approach is expected to offer substantial
-advantages over traditional row-oriented telemetry pipelines in terms of CPU
-efficiency, memory usage, and throughput.
+load conditions. The engine uses a [thread-per-core
+architecture](#thread-per-core-design) where resource consumption scales with
+the number of configured cores.
 
-The dataflow engine uses a **thread-per-core architecture**, where each
-available CPU core runs an independent runtime instance. This design eliminates
-traditional concurrency overhead (lock contention, context switching) but means
-that resource consumption scales with the number of configured cores. See the
-[Architecture](#architecture) section for more details.
-
-This document presents key performance metrics across different load scenarios
-and test configurations.
+This document presents a curated set of key performance metrics across different
+load scenarios and test configurations. For the complete set of automated
+performance tests (continuous, nightly, saturation, idle state, and binary size
+benchmarks), see [Detailed Benchmark
+Results](benchmarks.md#current-performance-results).
 
 ### Test Environment
 
@@ -56,18 +53,18 @@ of this benchmark summary.
 | All Cores (128) | 2.5%    | 600 MB       |
 
 *Note: CPU usage is normalized (percentage of total system capacity). Memory
-usage scales with core count due to the thread-per-core architecture (see
-[Overview](#overview)).*
+usage scales with core count due to the [thread-per-core
+architecture](#thread-per-core-design).*
 
 These baseline metrics validate that the engine maintains minimal resource
 footprint when idle, ensuring efficient operation in environments with variable
 telemetry loads.
 
-#### Standard Load Performance
+#### Standard Load Performance (Single Core)
 
-Resource utilization at 100,000 log records per second (100K logs/sec). Tests
-are conducted with four different batch sizes to demonstrate the impact of
-batching on performance.
+Resource utilization at 100,000 log records per second (100K logs/sec) on a
+single CPU core. Tests are conducted with four different batch sizes to
+demonstrate the impact of batching on performance.
 
 **Test Parameters:**
 
@@ -83,6 +80,9 @@ collectors and high-throughput aggregation points. This approach ensures a fair
 assessment, highlighting both the overhead for small batches and the significant
 efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 
+<!-- TODO: We need to add BatchingProcessor to tests. -->
+<!-- TODO: Batch size influence might be most relevant when we do aggregation/transform etc. -->
+
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
 
 | Batch Size | CPU Usage | Memory Usage | Network In | Network Out |
@@ -93,10 +93,7 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 | 10000/batch | TBD | TBD | TBD | TBD |
 
 This represents the optimal scenario where the dataflow engine operates with its
-native protocol end-to-end, eliminating protocol conversion overhead. Results
-are shown for a single CPU core to demonstrate baseline efficiency and the
-impact of batch size on resource utilization. For hardware scaling
-characteristics, refer to the Saturation Performance section.
+native protocol end-to-end, eliminating protocol conversion overhead.
 
 ##### Standard Load - OTLP -> OTLP (Standard Protocol)
 
@@ -109,9 +106,7 @@ characteristics, refer to the Saturation Performance section.
 
 This scenario processes OTLP end-to-end using the standard OpenTelemetry
 protocol, providing a baseline for comparison with traditional OTLP-based
-pipelines and demonstrating the performance of the columnar architecture even
-without OTAP protocol benefits. Results are shown for a single CPU core. For
-hardware scaling characteristics, refer to the Saturation Performance section.
+pipelines.
 
 #### Saturation Performance (Single Core)
 
@@ -131,9 +126,9 @@ establishes the baseline "unit of capacity" for capacity planning.
 
 #### Scalability
 
-How throughput scales when adding CPU cores. The thread-per-core architecture
-enables near-linear scaling by eliminating shared-state synchronization overhead
-(see [Overview](#overview)).
+How throughput scales when adding CPU cores. The [thread-per-core
+architecture](#thread-per-core-design) enables near-linear scaling by
+eliminating shared-state synchronization overhead.
 
 **Test Parameters:**
 
