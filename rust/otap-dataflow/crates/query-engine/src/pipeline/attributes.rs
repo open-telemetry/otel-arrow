@@ -15,6 +15,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
+use crate::pipeline::state::ExecutionState;
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
 /// specified by the [`AttributesTransform`]
@@ -40,6 +41,7 @@ impl PipelineStage for AttributeTransformPipelineStage {
         _session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let attrs_payload_type = match self.attrs_id {
             AttributesIdentifier::Root => match otap_batch {
