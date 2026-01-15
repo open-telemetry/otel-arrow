@@ -104,10 +104,9 @@ settings:
 Provider mode values are:
 
 - Noop: Ignore these producers
-- Unbuffered: Use a non-blocking write to the internal logs channel.
-  Unbuffered is the default for the global provider.
-- Buffered: Use a thread-local buffer, requires managed flushing.
-  The global provider is not supported for buffered logging.
+- Immediate: Use a non-blocking write to the internal logs channel.
+  This enables asynchronous logs reporting using the the configured output
+  mode.
 - OpenTelemetry: Use the OpenTelemetry SDK. This option has the most
   comprehensive obsevability, including OpenTelemetry traces
   integration.
@@ -127,8 +126,8 @@ The output modes are:
 
 - Noop: Not a real output mode, this setting will cause an error when
   any provider uses Buffered or Unbuffered.
-- Raw: Use raw console logging from the global or regional logging
-  thread.
+- Direct: Use raw console logging from the global or regional logging
+  thread. This supports asynchronous console logging.
 - Internal: Use an Internal Telemetry Receiver as the destination.
 
 ## Default configuration
