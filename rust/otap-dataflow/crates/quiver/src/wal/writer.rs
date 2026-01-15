@@ -111,14 +111,15 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::io::{ErrorKind, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
+use crate::budget::DiskBudget;
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::cursor_sidecar::CursorSidecar;
@@ -223,6 +224,11 @@ pub(crate) struct WalWriterOptions {
     /// Controls how quickly the buffer shrinks after a spike in usage.
     /// Default is (15, 16) for ~6% decay per append.
     pub buffer_decay_rate: (usize, usize),
+    /// Optional shared disk budget for tracking WAL usage alongside segments.
+    ///
+    /// When provided, WAL bytes are recorded in this budget, enabling unified
+    /// disk capacity management across all engine components.
+    pub budget: Option<Arc<DiskBudget>>,
 }
 
 impl WalWriterOptions {
@@ -235,6 +241,7 @@ impl WalWriterOptions {
             max_rotated_files: DEFAULT_MAX_ROTATED_FILES,
             rotation_target_bytes: DEFAULT_ROTATION_TARGET_BYTES,
             buffer_decay_rate: DEFAULT_BUFFER_DECAY_RATE,
+            budget: None,
         }
     }
 
@@ -255,6 +262,16 @@ impl WalWriterOptions {
 
     pub fn with_rotation_target(mut self, target_bytes: u64) -> Self {
         self.rotation_target_bytes = target_bytes.clamp(1, MAX_ROTATION_TARGET_BYTES);
+        self
+    }
+
+    /// Sets the shared disk budget for unified capacity tracking.
+    ///
+    /// When provided, WAL bytes are recorded in this budget, allowing the
+    /// `DiskBudget` to track total disk usage across WAL files, segments,
+    /// and other engine components.
+    pub fn with_budget(mut self, budget: Arc<DiskBudget>) -> Self {
+        self.budget = Some(budget);
         self
     }
 
@@ -319,12 +336,20 @@ struct ActiveWalFile {
     file: File,
     /// Scratch buffer used to serialize slot payloads before writing.
     payload_buffer: Vec<u8>,
+    /// Scratch buffer for building complete WAL entries before writing.
+    /// This allows a single write syscall per entry instead of multiple small writes.
+    entry_buffer: Vec<u8>,
     /// Rolling high-water mark for payload buffer size (bytes).
     ///
     /// Tracks typical peak usage over recent appends. Used to decide when
     /// shrinking is safe (capacity significantly exceeds high-water) without
     /// thrashing after one-off large bundles. Decays slowly each append.
     payload_high_water: usize,
+    /// Rolling high-water mark for entry buffer size (bytes).
+    ///
+    /// Same adaptive sizing logic as `payload_high_water`, applied to the
+    /// entry serialization buffer to prevent unbounded growth.
+    entry_high_water: usize,
     /// Decay rate for the high-water mark (numerator, denominator).
     buffer_decay_rate: (usize, usize),
     /// Timestamp of the most recent flush.
@@ -345,6 +370,9 @@ struct WalCoordinator {
     cursor_state: CursorSidecar,
     /// Total bytes across the active WAL plus all rotated files.
     aggregate_bytes: u64,
+    /// Cumulative bytes written to WAL since writer opened (never decreases).
+    /// Used for accurate throughput measurement across rotations.
+    cumulative_bytes_written: u64,
     /// Metadata describing each rotated `wal.N` file on disk, ordered oldest-to-newest.
     rotated_files: VecDeque<RotatedWalFile>,
     /// WAL stream position at the start of the active file.
@@ -362,6 +390,10 @@ struct WalCoordinator {
     /// Used by `ensure_entry_boundary()` to avoid re-scanning from the file start.
     /// Reset to `active_header_size` on rotation since the new file has no entries yet.
     active_file_validated_entry_boundary: u64,
+    /// In-memory index of entry end positions (file offsets) in the active WAL file.
+    /// Populated during append; used by `ensure_entry_boundary()` to validate cursors
+    /// without reading from disk. Cleared on rotation.
+    entry_boundaries: Vec<u64>,
     /// Sequence number associated with the last committed consumer cursor.
     last_cursor_sequence: Option<u64>,
     /// Count of WAL file rotations performed during this writer's lifetime.
@@ -453,6 +485,11 @@ impl WalWriter {
         coordinator.restore_cursor_offsets(active_file.len());
         coordinator.recalculate_aggregate_bytes(active_file.len());
 
+        // Record existing WAL bytes in the shared disk budget (if provided)
+        if let Some(ref budget) = coordinator.options.budget {
+            budget.record_existing(coordinator.aggregate_bytes);
+        }
+
         Ok(Self {
             active_file,
             coordinator,
@@ -525,11 +562,13 @@ impl WalWriter {
 
         self.next_sequence = self.next_sequence.wrapping_add(1);
 
+        let entry_end_offset = entry_start.saturating_add(entry_total_bytes);
         self.active_file.current_len = self
             .active_file
             .current_len
             .saturating_add(entry_total_bytes);
-        self.coordinator.record_append(entry_total_bytes);
+        self.coordinator
+            .record_append(entry_end_offset, entry_total_bytes);
         self.active_file
             .maybe_flush(&self.coordinator.options().flush_policy, entry_total_bytes)?;
 
@@ -571,10 +610,17 @@ impl WalWriter {
         self.coordinator.purge_count
     }
 
+    /// Returns the cumulative bytes written to WAL since this writer opened.
+    /// This value never decreases, even as WAL files are rotated and purged.
+    pub(crate) fn cumulative_bytes_written(&self) -> u64 {
+        self.coordinator.cumulative_bytes_written
+    }
+
     /// Encodes a slot directly into `payload_buffer`, avoiding intermediate allocations.
     ///
     /// Writes the slot header (id, fingerprint, row_count, payload_len) followed by
-    /// the Arrow IPC-encoded payload bytes.
+    /// the Arrow IPC-encoded payload bytes. The payload is written directly to the
+    /// buffer, and the length is patched in afterwards.
     fn encode_slot_into_buffer(
         &mut self,
         slot_id: SlotId,
@@ -582,20 +628,38 @@ impl WalWriter {
     ) -> WalResult<()> {
         let row_count = u32::try_from(payload.batch.num_rows())
             .map_err(|_| WalError::RowCountOverflow(payload.batch.num_rows()))?;
-        let payload_bytes = encode_record_batch(payload.batch)?;
-        let payload_len = u32::try_from(payload_bytes.len())
-            .map_err(|_| WalError::PayloadTooLarge(payload_bytes.len()))?;
 
-        let buf = &mut self.active_file.payload_buffer;
+        // Write slot header with placeholder for payload_len
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&slot_id.0.to_le_bytes());
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&payload.schema_fingerprint);
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&row_count.to_le_bytes());
+        let payload_len_offset = self.active_file.payload_buffer.len();
+        self.active_file
+            .payload_buffer
+            .extend_from_slice(&0u32.to_le_bytes()); // placeholder
 
-        // Write slot header
-        buf.extend_from_slice(&slot_id.0.to_le_bytes());
-        buf.extend_from_slice(&payload.schema_fingerprint);
-        buf.extend_from_slice(&row_count.to_le_bytes());
-        buf.extend_from_slice(&payload_len.to_le_bytes());
+        // Encode Arrow IPC directly into buffer
+        let payload_start = self.active_file.payload_buffer.len();
+        {
+            let schema = payload.batch.schema();
+            let mut writer = StreamWriter::try_new(&mut self.active_file.payload_buffer, &schema)
+                .map_err(WalError::Arrow)?;
+            writer.write(payload.batch).map_err(WalError::Arrow)?;
+            writer.finish().map_err(WalError::Arrow)?;
+        }
+        let payload_len = self.active_file.payload_buffer.len() - payload_start;
 
-        // Write payload
-        buf.extend_from_slice(&payload_bytes);
+        // Patch the payload length
+        let payload_len_u32 =
+            u32::try_from(payload_len).map_err(|_| WalError::PayloadTooLarge(payload_len))?;
+        self.active_file.payload_buffer[payload_len_offset..payload_len_offset + 4]
+            .copy_from_slice(&payload_len_u32.to_le_bytes());
 
         Ok(())
     }
@@ -606,7 +670,9 @@ impl ActiveWalFile {
         Self {
             file,
             payload_buffer: Vec::new(),
+            entry_buffer: Vec::new(),
             payload_high_water: 0,
+            entry_high_water: 0,
             buffer_decay_rate,
             last_flush: Instant::now(),
             unflushed_bytes: 0,
@@ -646,6 +712,10 @@ impl ActiveWalFile {
     /// │ u32 len  │ entry header │  payload bytes  │ u32 crc  │
     /// └──────────┴──────────────┴─────────────────┴──────────┘
     /// ```
+    ///
+    /// Builds the complete entry in `entry_buffer` and writes with a single syscall.
+    /// The buffer is reused across calls with adaptive shrinking to balance memory
+    /// usage against reallocation overhead.
     fn write_entry(
         &mut self,
         entry_len: u32,
@@ -653,12 +723,54 @@ impl ActiveWalFile {
         payload: &[u8],
         crc: u32,
     ) -> WalResult<u64> {
-        let entry_start = self.seek_to_end()?;
-        self.file.write_all(&entry_len.to_le_bytes())?;
-        self.file.write_all(entry_header)?;
-        self.file.write_all(payload)?;
-        self.file.write_all(&crc.to_le_bytes())?;
+        // Record entry start position before writing
+        let entry_start = self.current_len;
+
+        // Calculate total entry size: 4 (len) + header + payload + 4 (crc)
+        let total_size = 4 + ENTRY_HEADER_LEN + payload.len() + 4;
+
+        // Reuse the buffer: clear sets len=0 but preserves capacity.
+        // Only reserve additional capacity if needed (reserve is a no-op if
+        // capacity is already sufficient).
+        self.entry_buffer.clear();
+        self.entry_buffer.reserve(total_size);
+
+        // Build complete entry
+        self.entry_buffer
+            .extend_from_slice(&entry_len.to_le_bytes());
+        self.entry_buffer.extend_from_slice(entry_header);
+        self.entry_buffer.extend_from_slice(payload);
+        self.entry_buffer.extend_from_slice(&crc.to_le_bytes());
+
+        // Single write syscall for the complete entry
+        self.file.write_all(&self.entry_buffer)?;
+
+        // Adaptive shrinking: keep buffer sized appropriately for typical usage
+        self.maybe_shrink_entry_buffer(total_size);
+
         Ok(entry_start)
+    }
+
+    /// Updates the high-water mark and potentially shrinks the entry buffer.
+    ///
+    /// Uses the same adaptive algorithm as `maybe_shrink_payload_buffer`.
+    fn maybe_shrink_entry_buffer(&mut self, used_len: usize) {
+        // Update high-water with current usage
+        self.entry_high_water = self.entry_high_water.max(used_len);
+
+        // Apply decay so high-water adapts to reduced usage
+        let (numerator, denominator) = self.buffer_decay_rate;
+        self.entry_high_water = self.entry_high_water.saturating_mul(numerator) / denominator;
+
+        let capacity = self.entry_buffer.capacity();
+        let target = self.entry_high_water.saturating_add(SHRINK_HEADROOM);
+
+        // Only shrink if:
+        // - Capacity significantly exceeds the target (2× headroom)
+        // - Buffer is large enough to bother (> SHRINK_THRESHOLD)
+        if capacity > target.saturating_mul(2) && capacity > SHRINK_THRESHOLD {
+            self.entry_buffer.shrink_to(target);
+        }
     }
 
     fn maybe_flush(&mut self, policy: &FlushPolicy, bytes_written: u64) -> WalResult<()> {
@@ -741,6 +853,7 @@ impl WalCoordinator {
             sidecar_path,
             cursor_state,
             aggregate_bytes: active_header_size,
+            cumulative_bytes_written: 0,
             rotated_files: VecDeque::new(),
             // The active file's header tells us the WAL position at the start
             // of this file, which represents data from prior rotated files.
@@ -748,6 +861,7 @@ impl WalCoordinator {
             next_rotation_id: 1,
             active_header_size,
             active_file_validated_entry_boundary: active_header_size,
+            entry_boundaries: Vec::new(),
             last_cursor_sequence: None,
             rotation_count: 0,
             purge_count: 0,
@@ -830,8 +944,35 @@ impl WalCoordinator {
             self.to_file_offset(self.cursor_state.wal_position, active_len);
     }
 
-    fn record_append(&mut self, entry_total_bytes: u64) {
+    fn record_append(&mut self, entry_end_offset: u64, entry_total_bytes: u64) {
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(entry_total_bytes);
+        self.cumulative_bytes_written = self
+            .cumulative_bytes_written
+            .saturating_add(entry_total_bytes);
+
+        // Record the new bytes in the shared disk budget (if provided)
+        if let Some(ref budget) = self.options.budget {
+            budget.record_existing(entry_total_bytes);
+        }
+
+        // Record the entry end position for in-memory cursor validation
+        self.entry_boundaries.push(entry_end_offset);
+
+        // Warn if entry_boundaries is growing large relative to expected WAL capacity.
+        // This vector is cleared on rotation and pruned on cursor advancement.
+        // Under normal operation with 64MB rotation target and ~1KB bundles, we'd expect
+        // at most ~65,000 entries per active file. A threshold of 100,000 indicates either:
+        // - Very small bundles with a large rotation target, or
+        // - The consumer cursor is not advancing (entries aren't being pruned)
+        // Memory impact: 100,000 entries × 8 bytes = 800KB (modest but worth monitoring)
+        const ENTRY_BOUNDARIES_WARNING_THRESHOLD: usize = 100_000;
+        if self.entry_boundaries.len() == ENTRY_BOUNDARIES_WARNING_THRESHOLD {
+            tracing::warn!(
+                entry_count = self.entry_boundaries.len(),
+                rotation_target_bytes = self.options.rotation_target_bytes,
+                "entry_boundaries vector is large; consumer cursor may be stale or not advancing"
+            );
+        }
     }
 
     fn preflight_append(
@@ -863,6 +1004,12 @@ impl WalCoordinator {
                 "wal size cap exceeded; advance cursor to reclaim space",
             ));
         }
+
+        // Note: WAL does NOT check shared disk budget here. The engine applies
+        // backpressure at the ingestion boundary based on budget headroom,
+        // leaving room for WAL rotation and segment finalization to complete.
+        // This simpler approach avoids potential deadlocks from WAL trying to
+        // trigger cleanup while holding locks.
 
         Ok(())
     }
@@ -918,46 +1065,40 @@ impl WalCoordinator {
         Ok(())
     }
 
+    /// Validates that `target` is a valid entry boundary in the active WAL file.
+    ///
+    /// Uses the in-memory `entry_boundaries` index for O(log n) validation without
+    /// reading from disk. The index is populated during append operations.
     fn ensure_entry_boundary(
         &mut self,
-        active_file: &mut ActiveWalFile,
+        _active_file: &mut ActiveWalFile,
         target: u64,
     ) -> WalResult<()> {
+        // Fast path: target matches the last validated boundary
         if target == self.active_file_validated_entry_boundary {
             return Ok(());
         }
+
+        // Regression check
         if target < self.active_file_validated_entry_boundary {
             return Err(WalError::InvalidConsumerCursor(
                 "safe offset regressed (file offset)",
             ));
         }
 
-        let original_pos = active_file.file_mut().stream_position()?;
-        let mut cursor = self.active_file_validated_entry_boundary;
-        let _ = active_file.file_mut().seek(SeekFrom::Start(cursor))?;
-        while cursor < target {
-            let mut len_buf = [0u8; 4];
-            active_file.file_mut().read_exact(&mut len_buf)?;
-            let entry_len = u32::from_le_bytes(len_buf) as u64;
-            let entry_total = 4u64
-                .checked_add(entry_len)
-                .and_then(|val| val.checked_add(4))
-                .ok_or(WalError::InvalidConsumerCursor("entry length overflow"))?;
-            cursor = cursor
-                .checked_add(entry_total)
-                .ok_or(WalError::InvalidConsumerCursor("safe offset overflow"))?;
-            if cursor > target {
-                let _ = active_file.file_mut().seek(SeekFrom::Start(original_pos))?;
-                return Err(WalError::InvalidConsumerCursor(
-                    "safe offset splits entry boundary",
-                ));
-            }
-            let _ = active_file
-                .file_mut()
-                .seek(SeekFrom::Current(entry_len as i64 + 4))?;
+        // Target must be at header (start of entries) or at an entry boundary
+        if target == self.active_header_size {
+            return Ok(());
         }
-        let _ = active_file.file_mut().seek(SeekFrom::Start(original_pos))?;
-        Ok(())
+
+        // Binary search for target in the entry boundaries index
+        // entry_boundaries contains the end offset of each entry
+        match self.entry_boundaries.binary_search(&target) {
+            Ok(_) => Ok(()), // Exact match - target is a valid entry boundary
+            Err(_) => Err(WalError::InvalidConsumerCursor(
+                "safe offset splits entry boundary",
+            )),
+        }
     }
 
     fn write_cursor_sidecar(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
@@ -972,9 +1113,19 @@ impl WalCoordinator {
             let data_within_active = wal_pos.saturating_sub(active_start);
             let file_offset = self.active_header_size.saturating_add(data_within_active);
             self.active_file_validated_entry_boundary = file_offset;
+
+            // Prune entry boundaries that are now behind the cursor.
+            // Since boundaries are sorted, find the first one >= file_offset and drain before it.
+            let keep_from = self
+                .entry_boundaries
+                .partition_point(|&offset| offset < file_offset);
+            if keep_from > 0 {
+                let _ = self.entry_boundaries.drain(..keep_from);
+            }
         } else if wal_pos == active_start {
             // Cursor is exactly at the start of active file
             self.active_file_validated_entry_boundary = self.active_header_size;
+            // All boundaries in the active file are still relevant
         }
         // If wal_pos < active_start, the cursor is in a rotated file,
         // so we don't update active_file_validated_entry_boundary
@@ -1066,6 +1217,8 @@ impl WalCoordinator {
         active_file.replace_file(file, new_header_size);
         self.aggregate_bytes = self.aggregate_bytes.saturating_add(active_file.len());
         self.active_file_validated_entry_boundary = new_header_size;
+        // Clear entry boundaries index - new file has no entries yet
+        self.entry_boundaries.clear();
         self.rotation_count = self.rotation_count.saturating_add(1);
 
         CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state)?;
@@ -1084,8 +1237,15 @@ impl WalCoordinator {
                     std::fs::set_permissions(&front.path, permissions)?;
                 }
 
+                let purged_bytes = front.total_bytes();
                 std::fs::remove_file(&front.path)?;
-                self.aggregate_bytes = self.aggregate_bytes.saturating_sub(front.total_bytes());
+                self.aggregate_bytes = self.aggregate_bytes.saturating_sub(purged_bytes);
+
+                // Release the purged bytes from the shared disk budget (if provided)
+                if let Some(ref budget) = self.options.budget {
+                    budget.release(purged_bytes);
+                }
+
                 self.purge_count = self.purge_count.saturating_add(1);
                 let _ = self.rotated_files.pop_front();
             } else {
@@ -1212,17 +1372,6 @@ fn system_time_to_nanos(ts: SystemTime) -> WalResult<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| WalError::InvalidTimestamp)?;
     i64::try_from(duration.as_nanos()).map_err(|_| WalError::InvalidTimestamp)
-}
-
-fn encode_record_batch(batch: &RecordBatch) -> WalResult<Vec<u8>> {
-    let schema = batch.schema();
-    let mut buffer = Vec::new();
-    {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema).map_err(WalError::Arrow)?;
-        writer.write(batch).map_err(WalError::Arrow)?;
-        writer.finish().map_err(WalError::Arrow)?;
-    }
-    Ok(buffer)
 }
 
 fn sync_file_data(file: &File) -> WalResult<()> {
