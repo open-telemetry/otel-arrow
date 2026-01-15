@@ -336,13 +336,17 @@ pub async fn run(
             loop {
                 // Use engine's async subscriber API with cancellation
                 let bundle_handle = match engine
-                    .next_bundle(&sub_id_clone, Some(Duration::from_millis(100)), Some(&cancel))
+                    .next_bundle(
+                        &sub_id_clone,
+                        Some(Duration::from_millis(100)),
+                        Some(&cancel),
+                    )
                     .await
                 {
                     Ok(Some(h)) => h,
                     Ok(None) => continue, // Timeout, loop back to check cancellation
                     Err(e) if e.is_cancelled() => break, // Graceful shutdown
-                    Err(_) => break, // Other error
+                    Err(_) => break,      // Other error
                 };
 
                 delay.apply().await;

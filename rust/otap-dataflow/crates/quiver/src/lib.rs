@@ -69,13 +69,13 @@ pub use config::{
 pub use engine::{MaintenanceStats, QuiverEngine, QuiverEngineBuilder};
 pub use error::{QuiverError, Result};
 
-// Re-export CancellationToken for convenient use by consumers.
-// This is the standard tokio-util type used for cooperative cancellation.
-pub use tokio_util::sync::CancellationToken;
 pub use segment::SegmentError;
 pub use segment_store::{SegmentReadMode, SegmentStore};
 pub use subscriber::{
     BundleHandle, BundleIndex, BundleRef, RegistryCallback, RegistryConfig, SegmentProvider,
     SubscriberError, SubscriberId, SubscriberRegistry,
 };
+// Re-export CancellationToken for convenient use by consumers.
+// This is the standard tokio-util type used for cooperative cancellation.
+pub use tokio_util::sync::CancellationToken;
 pub use wal::WalError;
