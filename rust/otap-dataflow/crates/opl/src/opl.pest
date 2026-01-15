@@ -156,6 +156,10 @@ assignment_expression = {
     (attribute_selection_expression | index_expression | identifier_expression) ~ "=" ~ expression
 }
 
+rename_operator_call = {
+    ("rename" | "project-rename") ~ assignment_expression ~ ("," ~ assignment_expression)*
+}
+
 set_operator_call = {
     ("set" | "extend") ~ assignment_expression
 }
@@ -170,6 +174,7 @@ route_to_operator_call = {
 
 operator_call = {
     set_operator_call
+    | rename_operator_call
     | if_else_operator_call
     | route_to_operator_call
     | where_operator_call
