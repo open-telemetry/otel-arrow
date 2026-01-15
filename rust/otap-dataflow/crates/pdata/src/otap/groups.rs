@@ -1513,7 +1513,7 @@ impl UnifiedDictionaryTypeSelector {
         Self {
             total_batch_size: 0,
             values_arrays: Vec::new(),
-            smallest_key_type: DataType::UInt16,
+            smallest_key_type: DataType::UInt8, // Start with smallest, upgrade as needed
             selected_type: None,
         }
     }
@@ -1529,7 +1529,7 @@ impl UnifiedDictionaryTypeSelector {
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt8Type>>()
                         .expect("can cast array to data type");
-                    self.smallest_key_type = DataType::UInt8;
+                    // Keep smallest_key_type as-is (UInt8 doesn't require upgrade)
                     dict_col.values()
                 }
                 DataType::UInt16 => {
@@ -1537,6 +1537,8 @@ impl UnifiedDictionaryTypeSelector {
                         .as_any()
                         .downcast_ref::<DictionaryArray<UInt16Type>>()
                         .expect("can cast array to data type");
+                    // Upgrade to UInt16 if we see a UInt16 dictionary
+                    self.smallest_key_type = DataType::UInt16;
                     dict_col.values()
                 }
                 key_type => {
@@ -1562,18 +1564,28 @@ impl UnifiedDictionaryTypeSelector {
             return Ok(selected_type.clone());
         }
 
-        // check early termination conditions
-        if self.total_batch_size <= u8::MAX as usize {
-            let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt8);
-            self.selected_type = Some(selected_type.clone());
-            return Ok(selected_type);
-        }
+        // If we've seen a UInt16 dictionary, we must use at least UInt16 (can't downcast)
+        if self.smallest_key_type == DataType::UInt16 {
+            if self.total_batch_size <= u16::MAX as usize {
+                let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt16);
+                self.selected_type = Some(selected_type.clone());
+                return Ok(selected_type);
+            }
+            // Fall through to cardinality estimation for larger sizes
+        } else {
+            // smallest_key_type is UInt8, check if we can use UInt8
+            if self.total_batch_size <= u8::MAX as usize {
+                let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt8);
+                self.selected_type = Some(selected_type.clone());
+                return Ok(selected_type);
+            }
 
-        if self.smallest_key_type == DataType::UInt16 && self.total_batch_size <= u16::MAX as usize
-        {
-            let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt16);
-            self.selected_type = Some(selected_type.clone());
-            return Ok(selected_type);
+            // Check if UInt16 is sufficient
+            if self.total_batch_size <= u16::MAX as usize {
+                let selected_type = UnifiedDictionaryType::Dictionary(DataType::UInt16);
+                self.selected_type = Some(selected_type.clone());
+                return Ok(selected_type);
+            }
         }
 
         // None of the easy cases applied so we have to iterate through some values to estimate
@@ -2015,7 +2027,7 @@ fn try_unify_dictionaries(
                 ),
                 UnifiedDictionaryType::Native => cast(column, &values_type),
             }
-            .expect("can cast dictionary column");
+            .map_err(|e| Error::Batching { source: e })?;
 
             let new_field = fields[field_index]
                 .as_ref()
@@ -2026,10 +2038,8 @@ fn try_unify_dictionaries(
         }
     }
 
-    // safety: should be safe to expect that building the record batch won't fail here. The schema
-    // should match the columns and the columns should all have the correct length
-    Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .expect("can unify dict columns"))
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .map_err(|e| Error::Batching { source: e })
 }
 
 fn try_discover_structs(
@@ -2155,7 +2165,8 @@ fn try_unify_structs(
                 let struct_nulls = rb_field
                     .is_nullable()
                     .then(|| NullBuffer::from_iter(repeat_n(false, len)));
-                let new_rb_column = StructArray::new(struct_fields, struct_columns, struct_nulls);
+                let new_rb_column = StructArray::try_new(struct_fields, struct_columns, struct_nulls)
+                    .map_err(|e| Error::Batching { source: e })?;
                 let new_rb_field = Field::new(
                     rb_field.name(),
                     new_rb_column.data_type().clone(),
@@ -2167,12 +2178,8 @@ fn try_unify_structs(
         }
     }
 
-    Ok(
-        // Safety: here we should have an array of fields that match the types in the columns
-        // and all the columns are same length, so it's safe to expect here
-        RecordBatch::try_new(Arc::new(Schema::new(rb_fields)), rb_columns)
-            .expect("could not new record batch with unified struct columns"),
-    )
+    RecordBatch::try_new(Arc::new(Schema::new(rb_fields)), rb_columns)
+        .map_err(|e| Error::Batching { source: e })
 }
 
 fn try_unify_struct_fields(
@@ -2218,10 +2225,8 @@ fn try_unify_struct_fields(
                 let current_column = current_array.column(field_index).clone();
                 let new_column = match current_field.data_type() {
                     DataType::Dictionary(_, _) => {
-                        // safety: casting the dictionary keys should be infallible here as we're
-                        // either casting to a native dict (which should be infallible), or we're
-                        // casting the keys to a size we've calculated will fit
-                        cast(&current_column, &data_type).expect("can cast dictionary column")
+                        cast(&current_column, &data_type)
+                            .map_err(|e| Error::Batching { source: e })?
                     }
                     _ => current_column,
                 };
@@ -2238,11 +2243,12 @@ fn try_unify_struct_fields(
         }
     }
 
-    Ok(StructArray::new(
+    StructArray::try_new(
         Fields::from(new_fields),
         new_columns,
         current_array.nulls().cloned(),
-    ))
+    )
+    .map_err(|e| Error::Batching { source: e })
 }
 
 /// Note! the tests below validate internal details of the the logic above.

@@ -72,7 +72,7 @@ service:
       providers:
         global: immediate
         engine: immediate
-        internal: noop  # Avoid feedback in internal pipeline
+        internal: raw  # Avoid feedback in internal pipeline
       output: internal
     resource:
       service.id: 1234
