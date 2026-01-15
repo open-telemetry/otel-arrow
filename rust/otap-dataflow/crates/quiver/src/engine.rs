@@ -383,8 +383,8 @@ impl QuiverEngine {
     ///
     /// Call this before dropping the engine to capture final stats.
     #[cfg(test)]
-    pub(crate) fn wal_stats(&self) -> WalStats {
-        let writer = self.wal_writer.blocking_lock();
+    pub(crate) async fn wal_stats(&self) -> WalStats {
+        let writer = self.wal_writer.lock().await;
         WalStats {
             rotation_count: writer.rotation_count(),
             purge_count: writer.purge_count(),
@@ -1727,7 +1727,7 @@ mod tests {
         assert_eq!(engine.metrics().ingest_attempts(), NUM_BUNDLES as u64);
 
         // Capture WAL stats before shutdown
-        let wal_stats = engine.wal_stats();
+        let wal_stats = engine.wal_stats().await;
 
         // Shutdown engine to flush
         engine.shutdown().await.expect("shutdown");
