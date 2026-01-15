@@ -670,51 +670,6 @@ impl WalWriter {
 
         Ok(())
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Synchronous wrappers for legacy code
-    // These use a blocking runtime to call async methods.
-    // Prefer using the async methods directly when possible.
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Synchronous wrapper for [`WalWriter::open`].
-    ///
-    /// Creates a new tokio runtime internally to run the async operation.
-    /// This is provided for compatibility with existing sync code paths.
-    /// Prefer using `open()` directly in async contexts.
-    pub fn open_sync(options: WalWriterOptions) -> WalResult<Self> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create runtime")
-            .block_on(Self::open(options))
-    }
-
-    /// Synchronous wrapper for [`WalWriter::append_bundle`].
-    ///
-    /// Creates a new tokio runtime internally to run the async operation.
-    /// This is provided for compatibility with existing sync code paths.
-    /// Prefer using `append_bundle()` directly in async contexts.
-    pub fn append_bundle_sync<B: RecordBundle>(&mut self, bundle: &B) -> WalResult<WalOffset> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create runtime")
-            .block_on(self.append_bundle(bundle))
-    }
-
-    /// Synchronous wrapper for [`WalWriter::persist_cursor`].
-    ///
-    /// Creates a new tokio runtime internally to run the async operation.
-    /// This is provided for compatibility with existing sync code paths.
-    /// Prefer using `persist_cursor()` directly in async contexts.
-    pub(crate) fn persist_cursor_sync(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create runtime")
-            .block_on(self.persist_cursor(cursor))
-    }
 }
 
 impl ActiveWalFile {
