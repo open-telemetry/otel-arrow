@@ -8,11 +8,12 @@ use futures::stream::FuturesUnordered;
 use tokio::time::Duration;
 
 use super::client::LogsIngestionClient;
+use super::error::Error;
 
 pub struct CompletedExport {
     pub batch_id: u64,
     pub client: LogsIngestionClient,
-    pub result: Result<Duration, String>,
+    pub result: Result<Duration, Error>,
     pub row_count: f64,
 }
 
@@ -157,7 +158,7 @@ mod tests {
         LogsIngestionClient::from_parts(
             http_client,
             "http://localhost".to_string(),
-            credential,
+            credential as Arc<dyn TokenCredential>,
             "scope".to_string(),
         )
     }

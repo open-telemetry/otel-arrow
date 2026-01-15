@@ -48,6 +48,7 @@ otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
+otap-df-opl = { path = "../opl" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-query-engine = { path = "../query-engine" }
 otap-df-telemetry = { path = "../telemetry" }
