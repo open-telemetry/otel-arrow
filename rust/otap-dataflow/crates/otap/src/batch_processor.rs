@@ -73,6 +73,10 @@ pub const DEFAULT_OTLP_MIN_SIZE_BYTES: usize = 262144;
 /// Timeout in milliseconds for periodic flush
 pub const DEFAULT_TIMEOUT_MS: u64 = 200;
 
+/// Log messages
+const LOG_MSG_BATCHING_FAILED_PREFIX: &str = "OTAP batch processor: low-level batching failed for";
+const LOG_MSG_BATCHING_FAILED_SUFFIX: &str = "; dropping";
+
 /// How to size a batch.
 ///
 /// Note: these are not always supported. In the present code, the only
@@ -510,6 +514,18 @@ fn nzu_to_nz64(nz: Option<NonZeroUsize>) -> Option<NonZeroU64> {
     nz.map(|nz| NonZeroU64::new(nz.get() as u64).expect("nonzero"))
 }
 
+async fn log_batching_failed(
+    effect: &mut local::EffectHandler<OtapPdata>,
+    signal: SignalType,
+    err: &impl std::fmt::Display,
+) {
+    effect
+        .info(&format!(
+            "{LOG_MSG_BATCHING_FAILED_PREFIX} {signal:?}: {err}{LOG_MSG_BATCHING_FAILED_SUFFIX}"
+        ))
+        .await;
+}
+
 impl BatchProcessor {
     /// Parse JSON config and build the processor instance with the provided metrics set.
     /// This function does not wrap the processor into a ProcessorWrapper so callers can
@@ -841,21 +857,14 @@ where
                 Ok(v) => v,
                 Err(e) => {
                     self.metrics.batching_errors.add(count as u64);
-                    otap_df_telemetry::otel_error!(
-                        "Processor.BatchingError",
-                        signal = format!("{:?}", self.signal),
-                        error = e.to_string(),
-                    );
-
+                    log_batching_failed(effect, self.signal, &e).await;
                     let str = e.to_string();
-                    let res = Err(str);
+                    let res = Err(str.clone());
                     // In this case, we are sending failure to all the pending inputs.
                     self.buffer
                         .handle_partial_responses(self.signal, effect, &res, inputs.context)
                         .await?;
-                    // Log and drop instead of returning an error to avoid crashing the pipeline.
-                    // The error has been logged and subscribers notified; continue processing.
-                    return Ok(());
+                    return Err(EngineError::InternalError { message: str });
                 }
             };
 

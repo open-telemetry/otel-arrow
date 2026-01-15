@@ -14,7 +14,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       traffic_config:
-        max_signal_count: 1000
+        max_signal_count: 100000
         max_batch_size: 1000
         signals_per_second: 1000
         log_weight: 100
@@ -59,7 +59,7 @@ internal:
         min_size: 1000
         sizer: items
       flush_timeout: 3s
-      format: otlp
+      format: preserve
   console:
     kind: exporter
     plugin_urn: "urn:otel:console:exporter"
