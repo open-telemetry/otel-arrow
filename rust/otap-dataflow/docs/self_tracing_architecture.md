@@ -107,29 +107,31 @@ Provider mode values are:
   comprehensive obsevability, including OpenTelemetry traces
   integration.
 - Raw: Use the raw logger, meaning to synchronously write to the
-  console. For asynchronous console logging instead, use Buffered or
-  Unbuffered provider mod and set the Raw output mode.
+  console. For asynchronous console logging instead, use the Immediate
+  provider mode and the Direct output mode.
 
 ## Output modes
 
-When any of the providers use Buffered or Unbuffered modes, an
-engine-managed thread is responsible for consuming internal logs. This
-`LogsCollector` thread is currently global, but could be NUMA-regional
-as described in [README](./README.md), and it can be configured currently
-for raw or internal logging.
+When any of the providers use Immediate mode, an engine-managed thread
+is responsible for consuming internal logs. In `direct` mode, this is
+a dedicated thread. This could become NUMA-regional as described in
+[README](./README.md) for metrics.
 
-The output modes are:
+The current output modes are:
 
 - Noop: Not a real output mode, this setting will cause an error when
   any provider uses Buffered or Unbuffered.
 - Direct: Use raw console logging from the global or regional logging
-  thread. This supports asynchronous console logging.
-- Internal: Use an Internal Telemetry Receiver as the destination.
+  thread. This is standard mode, offering asynchronous console logging.
+- Internal: Use an Internal Telemetry Receiver in the internal telemetry
+  pipeline nodes as the destination.
 
 ## Default configuration
 
 In this configuration, a dedicated `LogsCollector` thread consumes
-from the channel and prints to console.
+from the channel and prints directly to the console. This is an asynchronous
+form of console logging (unlike the use of the `raw` provider mode, which
+is synchronous).
 
 ```yaml
 service:
@@ -137,45 +139,10 @@ service:
     logs:
       level: info
       providers:
-        global: unbuffered
-        engine: buffered
+        global: immediate
+        engine: immediate
         internal: noop
-      output: raw
-```
-
-```mermaid
-flowchart LR
-    subgraph "Thread Contexts"
-        G[Global Threads<br/>HTTP admin, etc.]
-        E[Engine Threads<br/>Pipeline cores]
-        I[Internal Threads<br/>ITR components]
-    end
-
-    subgraph "Provider Layers"
-        UL[UnbufferedLayer<br/>immediate send]
-        BL[ThreadBufferedLayer<br/>thread-local buffer]
-        NL[Noop<br/>dropped]
-    end
-
-    subgraph "Channel"
-        CH[(flume channel)]
-    end
-
-    subgraph "Output"
-        LC[LogsCollector Thread]
-        CON[Console<br/>stdout/stderr]
-    end
-
-    G -->|tracing event| UL
-    E -->|tracing event| BL
-    I -->|tracing event| NL
-
-    UL -->|LogPayload::Singleton| CH
-    BL -->|periodic flush<br/>LogPayload::Batch| CH
-    NL -.->|discarded| X[null]
-
-    CH --> LC
-    LC -->|raw format| CON
+      output: direct
 ```
 
 ## Internal Telemetry Receiver configuration
@@ -190,58 +157,24 @@ service:
     logs:
       level: info
       providers:
-        global: unbuffered
-        engine: buffered
-        internal: noop
-      output: internal
+        global: immediate  # sends to the ITR
+        engine: immediate  # sends to the ITR
+        internal: raw      # internal pipeline logs are raw-logged
+      output: internal     # logs route to the internal pipeline
 
+# Normal pipeline node
 nodes:
-  internal_telemetry:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:telemetry:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - otlp_exporter
-
+  ...
+  
+# Internal telemetry pipeline nodes
+internal:
+  kind: receiver
+  plugin_urn: "urn:otel:otlp:telemetry:receiver"
+  out_ports:
+    out_port:
+      destinations:
+        - otlp_exporter
   otlp_exporter:
     kind: exporer
     ...
-```
-
-```mermaid
-flowchart LR
-    subgraph "Thread Contexts"
-        G[Global Threads<br/>HTTP admin, etc.]
-        E[Engine Threads<br/>Pipeline cores]
-        I[Internal Threads<br/>ITR components]
-    end
-
-    subgraph "Provider Layers"
-        UL[UnbufferedLayer<br/>immediate send]
-        BL[ThreadBufferedLayer<br/>thread-local buffer]
-        NL[Noop<br/>dropped]
-    end
-
-    subgraph "Channel"
-        CH[(flume channel)]
-    end
-
-    subgraph "Internal Telemetry Pipeline"
-        ITR[InternalTelemetryReceiver<br/>encodes to OTLP bytes]
-        PROC[Processors<br/>batch, filter, etc.]
-        EXP[Exporter<br/>OTLP, file, etc.]
-    end
-
-    G -->|tracing event| UL
-    E -->|tracing event| BL
-    I -->|tracing event| NL
-
-    UL -->|LogPayload::Singleton| CH
-    BL -->|periodic flush<br/>LogPayload::Batch| CH
-    NL -.->|discarded| X[null]
-
-    CH --> ITR
-    ITR -->|OtapPayload<br/>ExportLogsRequest| PROC
-    PROC --> EXP
 ```
