@@ -264,6 +264,7 @@ mod tests {
                     },
                 ),
             ],
+            ..Default::default()
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
@@ -292,6 +293,7 @@ mod tests {
                     },
                 ),
             ],
+            ..Default::default()
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
         let (sdk_logger_provider, runtime_option) = logger_provider.into_parts();
@@ -309,8 +311,7 @@ mod tests {
     fn test_logger_provider_configure_default() -> Result<(), Error> {
         let resource = Resource::builder().build();
         let logger_config = LogsConfig {
-            level: LogLevel::default(),
-            processors: vec![],
+            ..Default::default()
         };
         let logger_provider = LoggerProvider::configure(resource, &logger_config, None)?;
         let (sdk_logger_provider, _) = logger_provider.into_parts();
