@@ -254,13 +254,9 @@ mod tests {
             CHANNEL_TYPE_MPSC,
             CHANNEL_IMPL_INTERNAL,
         );
-        let sender_metrics = pipeline_ctx
-            .register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key);
-        let sender = LocalSender::mpsc_with_metrics(
-            sender,
-            &mut registry,
-            sender_metrics,
-        );
+        let sender_metrics =
+            pipeline_ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key);
+        let sender = LocalSender::mpsc_with_metrics(sender, &mut registry, sender_metrics);
         sender.try_send(1).unwrap();
         assert!(matches!(sender.try_send(2), Err(SendError::Full(_))));
         drop(receiver);
@@ -289,12 +285,8 @@ mod tests {
         );
         let receiver_metrics = pipeline_ctx
             .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key);
-        let mut receiver = LocalReceiver::mpsc_with_metrics(
-            receiver,
-            &mut registry,
-            receiver_metrics,
-            1,
-        );
+        let mut receiver =
+            LocalReceiver::mpsc_with_metrics(receiver, &mut registry, receiver_metrics, 1);
 
         assert!(matches!(receiver.try_recv(), Err(RecvError::Empty)));
         sender.try_send(1).unwrap();

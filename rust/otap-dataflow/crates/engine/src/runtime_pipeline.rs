@@ -121,6 +121,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics,
         } = self;
 
+        // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -130,8 +131,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
 
-        // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
-        // they can communicate with the runtime pipeline.
+        // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
@@ -159,22 +159,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
-                let node_ctx = NodeTaskContext::new(
-                    node_entity_key,
-                    Some(handle),
-                    input_key,
-                    output_keys,
-                );
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(
-                    node_ctx,
-                    fut,
-                )));
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(
-                    node_ctx,
-                    fut,
-                )));
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
             }
@@ -202,22 +192,12 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
-                let node_ctx = NodeTaskContext::new(
-                    node_entity_key,
-                    Some(handle),
-                    input_key,
-                    output_keys,
-                );
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(
-                    node_ctx,
-                    fut,
-                )));
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(
-                    node_ctx,
-                    fut,
-                )));
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
             }
@@ -249,29 +229,18 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
-                let node_ctx = NodeTaskContext::new(
-                    node_entity_key,
-                    Some(handle),
-                    input_key,
-                    output_keys,
-                );
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(
-                    node_ctx,
-                    fut,
-                )));
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
                 let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
-                futures.push(local_tasks.spawn_local(instrument_with_node_context(
-                    node_ctx,
-                    fut,
-                )));
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
             }
         }
 
-        // Create a task to process pipeline control messages, i.e. messages sent from nodes to
-        // the pipeline engine.
+        // Spawn the control-plane task that routes node control messages to the pipeline engine.
         let internal_telemetry = config.pipeline_settings().telemetry.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
@@ -287,6 +256,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             manager.run().await
         }));
 
+        // Drive all local tasks until completion, returning the first error if any.
         rt.block_on(async {
             local_tasks
                 .run_until(async {

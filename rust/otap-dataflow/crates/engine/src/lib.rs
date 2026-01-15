@@ -341,7 +341,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    let _ = node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
+                    let _ =
+                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
                     let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                     let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
@@ -369,7 +370,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    let _ = node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
+                    let _ =
+                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
                     let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                     let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
@@ -397,7 +399,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    let _ = node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
+                    let _ =
+                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
                     let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                     let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
@@ -655,9 +658,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_impl,
                             );
                             telemetry.set_input_channel_key(receiver_entity_key);
-                            let receiver_metrics = ctx.register_metric_set_for_entity::<
-                                ChannelReceiverMetrics,
-                            >(receiver_entity_key);
+                            let receiver_metrics = ctx
+                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                    receiver_entity_key,
+                                );
                             telemetry.track_metric_set(receiver_metrics.metric_set_key());
                             let receiver = SharedReceiver::mpmc_with_metrics(
                                 pdata_receiver.clone(),
@@ -753,9 +757,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_impl,
                             );
                             telemetry.set_input_channel_key(receiver_entity_key);
-                            let receiver_metrics = ctx.register_metric_set_for_entity::<
-                                ChannelReceiverMetrics,
-                            >(receiver_entity_key);
+                            let receiver_metrics = ctx
+                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                    receiver_entity_key,
+                                );
                             telemetry.track_metric_set(receiver_metrics.metric_set_key());
                             let receiver = LocalReceiver::mpmc_with_metrics(
                                 pdata_receiver.clone(),

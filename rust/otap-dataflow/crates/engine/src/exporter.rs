@@ -236,11 +236,7 @@ impl<PData> ExporterWrapper<PData> {
                                 channel_entity_key,
                             );
                         (
-                            LocalSender::mpsc_with_metrics(
-                                sender,
-                                channel_metrics,
-                                sender_metrics,
-                            ),
+                            LocalSender::mpsc_with_metrics(sender, channel_metrics, sender_metrics),
                             Some(LocalReceiver::mpsc_with_metrics(
                                 receiver,
                                 channel_metrics,
@@ -265,11 +261,7 @@ impl<PData> ExporterWrapper<PData> {
                                 channel_entity_key,
                             );
                         (
-                            LocalSender::mpsc_with_metrics(
-                                sender,
-                                channel_metrics,
-                                sender_metrics,
-                            ),
+                            LocalSender::mpsc_with_metrics(sender, channel_metrics, sender_metrics),
                             None,
                         )
                     }

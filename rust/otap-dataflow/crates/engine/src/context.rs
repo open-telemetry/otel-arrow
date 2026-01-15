@@ -220,23 +220,7 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a metric set for the given attributes and tracks it in node telemetry if present.
-    #[must_use]
-    pub fn register_metric_set_with_attrs<T: MetricSetHandler + Default + Debug + Send + Sync>(
-        &self,
-        attrs: impl otap_df_telemetry::attributes::AttributeSetHandler + Send + Sync + 'static,
-    ) -> MetricSet<T> {
-        let metrics = self
-            .controller_context
-            .telemetry_registry_handle
-            .register_metric_set::<T>(attrs);
-        if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.track_metric_set(metrics.metric_set_key());
-        }
-        metrics
-    }
-
-    /// Registers (or reuses) the pipeline entity for this context.
+    /// Registers the pipeline entity for this context.
     #[must_use]
     pub fn register_pipeline_entity(&self) -> EntityKey {
         self.controller_context
@@ -244,7 +228,7 @@ impl PipelineContext {
             .register_entity(self.pipeline_attribute_set())
     }
 
-    /// Registers (or reuses) the node entity for this context.
+    /// Registers the node entity for this context.
     #[must_use]
     pub fn register_node_entity(&self) -> EntityKey {
         self.controller_context
@@ -307,7 +291,7 @@ impl PipelineContext {
         }
     }
 
-    /// Registers (or reuses) a channel entity for the given channel attributes.
+    /// Registers a channel entity for the given channel attributes.
     #[must_use]
     pub fn register_channel_entity(
         &self,

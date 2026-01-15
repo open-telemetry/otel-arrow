@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Thread/task-local storage for entity keys used by telemetry instrumentation.
+//! Thread/task-local storage for entity keys used by our internal telemetry instrumentation
+//! to associate metrics and events with the correct pipeline entity, node entity or the correct
+//! input/output channel entities.
 
 use otap_df_config::PortName;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -12,7 +14,10 @@ use std::future::Future;
 use std::rc::Rc;
 
 thread_local! {
+    /// Defined when building a pipeline to associate telemetry with the pipeline entity.
+    /// Present for the pipeline lifetime.
     static PIPELINE_ENTITY_KEY: Cell<Option<EntityKey>> = Cell::new(None);
+    /// Set for each node being built to provide telemetry handle during construction.
     static BUILD_NODE_TELEMETRY_HANDLE: RefCell<Option<NodeTelemetryHandle>> = RefCell::new(None);
 }
 
@@ -39,13 +44,20 @@ pub fn pipeline_entity_key() -> Option<EntityKey> {
 }
 
 tokio::task_local! {
+    /// Task-local context for nodes, including entity keys and telemetry handle.
+    /// This task local can be used by our internal telemetry instrumentation to associate metrics
+    /// and events with the correct node entity or the correct input/output channels.
     static NODE_TASK_CONTEXT: NodeTaskContext;
 }
 
+/// Per-task snapshot for fast lookups.
+/// Separate from NodeTelemetryState to avoid RefCell borrows on hot paths during node execution.
 #[derive(Debug)]
 pub(crate) struct NodeTaskContext {
-    entity_key: Option<EntityKey>,
     telemetry_handle: Option<NodeTelemetryHandle>,
+
+    /// Entities associated with this node task.
+    entity_key: Option<EntityKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
 }
@@ -67,6 +79,7 @@ impl NodeTaskContext {
 }
 
 /// Returns the node entity key for the current task, if set.
+#[inline]
 #[must_use]
 pub fn node_entity_key() -> Option<EntityKey> {
     NODE_TASK_CONTEXT
@@ -76,6 +89,7 @@ pub fn node_entity_key() -> Option<EntityKey> {
 }
 
 /// Returns the input channel entity key for the current task, if set.
+#[inline]
 #[must_use]
 pub fn node_input_channel_key() -> Option<EntityKey> {
     NODE_TASK_CONTEXT
@@ -85,6 +99,13 @@ pub fn node_input_channel_key() -> Option<EntityKey> {
 }
 
 /// Returns the output channel entity key for the given port in the current task, if set.
+///
+/// Implementation detail: This function looks up the output channel keys stored in the
+/// NodeTaskContext for the current task, searching for a matching port name and returning
+/// the associated EntityKey if found. If the number of output channels becomes large, consider
+/// optimizing the storage structure for faster lookups. Right now, a linear search seems a good
+/// trade-off given the expected small number of output channels per node.
+#[inline]
 #[must_use]
 pub fn node_output_channel_key(port: &str) -> Option<EntityKey> {
     NODE_TASK_CONTEXT
@@ -111,6 +132,8 @@ where
 
 /// Returns the current node telemetry handle, if set.
 pub(crate) fn current_node_telemetry_handle() -> Option<NodeTelemetryHandle> {
+    // Runtime code uses the task-local context.
+    // Build-time code uses the thread-local fallback before node tasks are spawned.
     if let Ok(handle) = NODE_TASK_CONTEXT.try_with(|ctx| ctx.telemetry_handle.clone()) {
         return handle;
     }
@@ -122,6 +145,8 @@ pub(crate) fn with_node_telemetry_handle<T>(
     handle: NodeTelemetryHandle,
     f: impl FnOnce() -> T,
 ) -> T {
+    // Build-time helper: node construction happens before task locals exist, so we scope a
+    // thread-local handle to let builders access current_node_telemetry_handle().
     BUILD_NODE_TELEMETRY_HANDLE.with(|cell| {
         let _ = cell.replace(Some(handle));
         let result = f();
@@ -145,6 +170,7 @@ impl Debug for NodeTelemetryHandle {
     }
 }
 
+// Per-node mutable lifecycle state used for metric/entity tracking and cleanup.
 struct NodeTelemetryState {
     entity_key: EntityKey,
     metric_keys: Vec<MetricSetKey>,
@@ -155,6 +181,7 @@ struct NodeTelemetryState {
 }
 
 impl NodeTelemetryHandle {
+    /// Create a handle that owns registry access and per-node cleanup state.
     pub(crate) fn new(registry: TelemetryRegistryHandle, entity_key: EntityKey) -> Self {
         Self {
             registry,
@@ -169,10 +196,12 @@ impl NodeTelemetryHandle {
         }
     }
 
+    /// Return the node entity key for associating metrics/entities.
     pub(crate) fn entity_key(&self) -> EntityKey {
         self.state.borrow().entity_key
     }
 
+    /// Register a metric set tied to this node entity and track it for cleanup.
     pub(crate) fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
@@ -184,10 +213,12 @@ impl NodeTelemetryHandle {
         metrics
     }
 
+    /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
     }
 
+    /// Associate the inbound channel entity key with this node for task-local scoping.
     pub(crate) fn set_input_channel_key(&self, key: EntityKey) {
         let mut state = self.state.borrow_mut();
         debug_assert!(
@@ -197,6 +228,7 @@ impl NodeTelemetryHandle {
         state.input_channel_key = Some(key);
     }
 
+    /// Associate an output channel entity key keyed by port name.
     pub(crate) fn add_output_channel_key(&self, port: PortName, key: EntityKey) {
         let mut state = self.state.borrow_mut();
         if let Some((_, existing_key)) = state
@@ -210,6 +242,7 @@ impl NodeTelemetryHandle {
         state.output_channel_keys.push((port, key));
     }
 
+    /// Associate the control channel entity key with this node.
     pub(crate) fn set_control_channel_key(&self, key: EntityKey) {
         let mut state = self.state.borrow_mut();
         debug_assert!(
@@ -219,14 +252,17 @@ impl NodeTelemetryHandle {
         state.control_channel_key = Some(key);
     }
 
+    /// Read the input channel entity key for task-local scoping.
     pub(crate) fn input_channel_key(&self) -> Option<EntityKey> {
         self.state.borrow().input_channel_key
     }
 
+    /// Read output channel entity keys for task-local scoping.
     pub(crate) fn output_channel_keys(&self) -> Vec<(PortName, EntityKey)> {
         self.state.borrow().output_channel_keys.clone()
     }
 
+    /// Unregister tracked metric sets and entities; safe to call once.
     pub(crate) fn cleanup(&self) {
         let mut state = self.state.borrow_mut();
         if state.cleaned {
@@ -278,5 +314,68 @@ impl NodeTelemetryGuard {
 impl Drop for NodeTelemetryGuard {
     fn drop(&mut self) {
         self.handle.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::channel_metrics::{
+        CHANNEL_IMPL_INTERNAL, CHANNEL_KIND_CONTROL, CHANNEL_KIND_PDATA, CHANNEL_MODE_LOCAL,
+        CHANNEL_TYPE_MPSC, ChannelReceiverMetrics, ChannelSenderMetrics,
+    };
+    use crate::context::ControllerContext;
+    use otap_df_config::node::NodeKind;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    #[test]
+    fn cleanup_unregisters_node_and_channel_entities_and_metrics() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry.clone());
+        let pipeline_ctx = controller_ctx
+            .pipeline_context_with("group".into(), "pipe".into(), 0, 0)
+            .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver);
+
+        let node_entity_key = pipeline_ctx.register_node_entity();
+        let telemetry = NodeTelemetryHandle::new(pipeline_ctx.metrics_registry(), node_entity_key);
+
+        let input_key = pipeline_ctx.register_channel_entity(
+            "chan:in".into(),
+            CHANNEL_KIND_PDATA,
+            CHANNEL_MODE_LOCAL,
+            CHANNEL_TYPE_MPSC,
+            CHANNEL_IMPL_INTERNAL,
+        );
+        let output_key = pipeline_ctx.register_channel_entity(
+            "chan:out".into(),
+            CHANNEL_KIND_PDATA,
+            CHANNEL_MODE_LOCAL,
+            CHANNEL_TYPE_MPSC,
+            CHANNEL_IMPL_INTERNAL,
+        );
+        let control_key = pipeline_ctx.register_channel_entity(
+            "chan:ctrl".into(),
+            CHANNEL_KIND_CONTROL,
+            CHANNEL_MODE_LOCAL,
+            CHANNEL_TYPE_MPSC,
+            CHANNEL_IMPL_INTERNAL,
+        );
+
+        telemetry.set_input_channel_key(input_key);
+        telemetry.add_output_channel_key("out".into(), output_key);
+        telemetry.set_control_channel_key(control_key);
+
+        let _node_metrics = telemetry.register_metric_set::<ChannelSenderMetrics>();
+        let channel_metrics = pipeline_ctx
+            .register_metric_set_for_entity::<ChannelReceiverMetrics>(input_key);
+        telemetry.track_metric_set(channel_metrics.metric_set_key());
+
+        assert_eq!(registry.entity_count(), 4);
+        assert_eq!(registry.metric_set_count(), 2);
+
+        telemetry.cleanup();
+
+        assert_eq!(registry.metric_set_count(), 0);
+        assert_eq!(registry.entity_count(), 0);
     }
 }

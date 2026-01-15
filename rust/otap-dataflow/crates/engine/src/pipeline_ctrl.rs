@@ -494,7 +494,13 @@ mod tests {
             pipeline_settings.telemetry.clone(),
             Vec::new(),
         );
-        (manager, pipeline_tx, control_receivers, nodes, pipeline_entity_guard)
+        (
+            manager,
+            pipeline_tx,
+            control_receivers,
+            nodes,
+            pipeline_entity_guard,
+        )
     }
 
     /// Validates the core timer workflow:
