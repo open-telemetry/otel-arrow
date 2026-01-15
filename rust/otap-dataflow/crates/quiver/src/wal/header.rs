@@ -117,7 +117,13 @@ impl WalHeader {
 
     /// Reads the header from a file synchronously.
     ///
-    /// Used by sync readers like [`WalReader`](super::WalReader).
+    /// This is the synchronous counterpart to [`read_from`](Self::read_from).
+    /// Used by [`WalReader`](super::WalReader) for crash recovery during engine
+    /// startup. Sync I/O is acceptable here because recovery only happens once
+    /// at startup, not on the hot path.
+    ///
+    /// See the [`reader`](super::reader) module documentation for the design
+    /// rationale behind sync I/O for WAL reading.
     pub fn read_from_sync(file: &mut std::fs::File) -> Result<Self, WalError> {
         use std::io::{Read, Seek};
         let _ = file.seek(SeekFrom::Start(0))?;

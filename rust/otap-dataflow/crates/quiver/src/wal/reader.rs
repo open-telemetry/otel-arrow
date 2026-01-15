@@ -6,6 +6,25 @@
 //! The reader validates headers, streams entries starting at arbitrary offsets,
 //! and exposes helper types for tracking replay progress.
 //!
+//! # Synchronous I/O Design
+//!
+//! This module intentionally uses synchronous I/O rather than async for several
+//! reasons:
+//!
+//! 1. **Recovery-only use case**: The WAL reader is only used during engine
+//!    startup for crash recovery, not on the hot path during normal operation.
+//!
+//! 2. **Iterator compatibility**: Rust's [`Iterator`] trait is inherently
+//!    synchronous. Using async would require [`Stream`] which adds complexity
+//!    for no benefit in the recovery scenario.
+//!
+//! 3. **Sequential access**: WAL replay reads entries sequentially from disk.
+//!    Async I/O provides no benefit here since there's no concurrent work to
+//!    overlap with I/O waits.
+//!
+//! For async WAL operations (writes, flushes), see [`super::WalWriter`] which
+//! uses `tokio::fs::File` for non-blocking I/O on the hot path.
+//!
 //! # Entry Format
 //!
 //! Each WAL entry has this layout:
@@ -63,6 +82,15 @@ const MAX_ENTRY_SIZE: usize = MAX_ROTATION_TARGET_BYTES as usize;
 
 /// Sequential reader that validates the WAL header before exposing iterators
 /// over decoded entries.
+///
+/// # Sync I/O Design
+///
+/// This reader uses synchronous I/O intentionally. See the [module-level
+/// documentation](self) for the design rationale. In brief: WAL reading only
+/// occurs during crash recovery at startup, where blocking I/O is acceptable
+/// and the iterator-based API is simpler than async streams.
+///
+/// For async WAL operations (writes, flushes), see [`WalWriter`](super::WalWriter).
 #[derive(Debug)]
 pub(crate) struct WalReader {
     file: File,
@@ -74,6 +102,10 @@ pub(crate) struct WalReader {
 }
 
 impl WalReader {
+    /// Opens a WAL file for reading and validates its header.
+    ///
+    /// Uses synchronous I/O - see the [type-level documentation](Self) for
+    /// rationale. This is only called during engine startup/recovery.
     pub fn open(path: impl Into<PathBuf>) -> WalResult<Self> {
         let path = path.into();
         let mut file = File::open(&path)?;
@@ -89,10 +121,12 @@ impl WalReader {
         })
     }
 
+    /// Returns the path to the WAL file.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Returns the segment configuration hash from the WAL header.
     pub fn segment_cfg_hash(&self) -> [u8; 16] {
         self.segment_cfg_hash
     }
