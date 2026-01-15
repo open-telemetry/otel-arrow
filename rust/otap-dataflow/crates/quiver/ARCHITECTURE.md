@@ -8,12 +8,11 @@ without data loss.
 
 ## Proposed Solution: Quiver
 
-We propose building Quiver: a standalone, embeddable Arrow-based segment store
-packaged as a reusable Rust crate. Quiver *is not fully implemented yet*; this document
-defines its initial design, scope, and open questions. While it will be
-developed first for `otap-dataflow`, we intend to keep it decoupled so it can
-integrate into other telemetry pipelines or streaming systems that need durable
-buffering around Apache Arrow.
+Quiver is a standalone, embeddable Arrow-based segment store packaged as a
+reusable Rust crate. This document defines its design, scope, and implementation
+details. While Quiver is being developed first for `otap-dataflow`, it is designed
+to be decoupled so it can integrate into other telemetry pipelines or streaming
+systems that need durable buffering around Apache Arrow.
 
 Throughout the proposal we use **RecordBundle** to describe the logical unit
 Quiver persists. In OTAP terms this corresponds to an `OtapArrowRecords`
@@ -154,8 +153,8 @@ WAL entries belonging to:
   - Arrow payload blobs are serialized in the **streaming** IPC format. For each
     populated slot we write exactly one contiguous IPC stream containing the
     chunk(s) belonging to that `Option<RecordBatch>` value. The blob for a slot
-    immediately follows its metadata block, so the serialized representation of a
-    single `RecordBundle` is `[entry header][slot bitmap][metadata0][payload0]
+    immediately follows its metadata block, so the serialized representation of
+    a single `RecordBundle` is `[entry header][slot bitmap][metadata0][payload0]
     [metadata1][payload1]...` Absent slots (bitmap bit cleared) contribute neither
     metadata nor bytes; they are implicitly `None` when reconstructing the
     bundle.
@@ -252,13 +251,95 @@ WAL entries belonging to:
   remain on disk until subscribers advance, but the WAL only needs to cover the
   currently open segment.
 
-**Acknowledgement Log (`ack.log`)**: Shared append-only log for subscriber state
+**Per-Subscriber Progress Files (`quiver.sub.<id>`)**: Each subscriber maintains
+an independent progress file that records its current state.
 
-- Stores every per-bundle Ack/Nack as `(segment_seq, bundle_index,
-  subscriber_id, outcome)`
-- Replayed on startup to rebuild each subscriber's in-flight bundle set and
-  advance segment high-water marks once all bundles are acknowledged
-- Enables recovery without per-subscriber WALs
+##### Subscriber ID Naming Constraints
+
+Subscriber IDs become part of the filename (`quiver.sub.<id>`), so they must be
+filesystem-safe:
+
+- **Non-empty**: At least one character
+- **Max length**: 64 characters (conservative for cross-platform compatibility)
+- **Character set**: ASCII alphanumeric, hyphen, underscore (`[a-zA-Z0-9_-]`)
+- **No reserved names**: Cannot be `.`, `..`, or Windows reserved names
+  (CON, PRN, etc.)
+
+Examples: `exporter-otlp`, `backup_s3`, `metrics-1`
+
+##### Progress File Format (v1)
+
+The binary format is designed for forward and backward compatibility:
+
+```text
+Header (fixed size for v1 = 32 bytes):
++----------+---------+-------------+----------+-----------------------+-------------+----------+
+| magic    | version | header_size | flags    | oldest_incomplete_seg | entry_count | reserved |
+| (8B)     | (2B LE) | (2B LE)     | (2B LE)  | (8B LE)               | (4B LE)     | (6B)     |
++----------+---------+-------------+----------+-----------------------+-------------+----------+
+
+Body (entry_count segment entries):
++------------+--------------+---------------+-----------------+
+| seg_seq    | bundle_count | bitmap_words  | acked_bitmap    |
+| (8B LE)    | (4B LE)      | (2B LE)       | (bitmap_words * 8B) |
++------------+--------------+---------------+-----------------+
+
+Footer:
++----------+
+| crc32    |
+| (4B LE)  |
++----------+
+```
+
+Field descriptions:
+
+- `magic`: `"QUIVSUB\0"` (8 bytes) - identifies file type
+- `version`: Format version (currently 1)
+- `header_size`: Total header bytes (32 for v1); allows skipping unknown fields
+- `flags`: Reserved for future per-file options (must be 0 for v1)
+- `oldest_incomplete_seg`: Segment sequence of oldest incomplete segment
+- `entry_count`: Number of segment entries in body
+- `reserved`: Zero-filled; available for future header fields
+- `seg_seq`: Segment sequence number for this entry
+- `bundle_count`: Total bundles in segment (for validation)
+- `bitmap_words`: Number of 8-byte words in the bitmap
+- `acked_bitmap`: Bit vector of acked bundles (1 = acked, LSB = bundle 0)
+- `crc32`: CRC32C of all preceding bytes (header + body)
+
+##### Compatibility Guarantees
+
+- **Forward compatibility** (old reader, new writer):
+  - `header_size` lets old readers skip unknown header extensions
+  - Unknown trailing bytes after known fields are ignored
+  - Unknown non-zero `flags` should warn but not fail
+
+- **Backward compatibility** (new reader, old writer):
+  - Version field identifies format; v1 readers reject v0 or unknown versions
+  - Shorter-than-expected files are rejected as corrupted
+
+- **Integrity**: CRC32C covers entire file; mismatches indicate corruption
+
+##### File Semantics
+
+- **Atomic updates**: Progress is written via `write temp -> fsync -> rename`,
+  ensuring crash-safe updates without append-only log compaction.
+- **Batched I/O**: In-memory state is updated on each ack; file writes are
+  batched via the `maintain()` API. The embedding layer calls `maintain()`
+  periodically (e.g., every 25-100ms) to flush dirty progress files and
+  clean up completed segments.
+- **Compact representation**: Only partially-complete segments are tracked.
+  Once all bundles in a segment are acked, `oldest_incomplete_segment` advances
+  and the segment entry is removed.
+
+##### Recovery Semantics
+
+- **Startup**: Read each `quiver.sub.<id>` file to restore that subscriber's
+  state. No log replay required--file contains current state.
+- **CRC validation**: If CRC fails, the file is considered corrupted. Recovery
+  options: (1) start fresh from latest segment, (2) fail startup, or (3) use
+  backup if available. Policy is configurable.
+- **Cleanup coordination**: Before deleting a segment, all subscriber progress
+  files must be flushed and show `oldest_incomplete_segment > deleted_segment`.
 
 **Dual Time & Ordering Semantics**:
 
@@ -274,24 +355,88 @@ Retention and queries can use event time (semantic) or ingestion timestamp
 ordering and tie-breaking. Indexing directly on event time is lower priority
 and will follow query feature implementation.
 
-**Pub/Sub Notifications**: Subscribers (exporters) receive notifications when
-new segments are ready.
+**Notification Model**: Quiver uses push notification with pull-based data
+retrieval.
+
+- **Push notification**: When bundles are finalized, Quiver invokes a callback
+  (or sends to a channel) to signal the embedding layer. This ensures low
+  latency without polling.
+- **Pull data retrieval**: The embedding layer calls `next_bundle()` or
+  `claim_bundle()` to fetch data. This provides natural backpressure and keeps
+  the Quiver API simple.
+- **Acknowledgement**: After processing, the embedding layer resolves the bundle
+  via `ack()` (success) or `reject()` (permanent failure).
+
+The notification contains minimal information (e.g., segment sequence);
+the embedding layer decides when and how to read the data.
+
+**Bundle Lifecycle**: Each bundle transitions through well-defined states:
+
+```text
+                  +---> Acked (terminal, logged)
+                  |
+Pending --> Claimed
+                  |
+                  +---> Rejected (terminal, logged as Dropped)
+                  |
+                  +---> Pending (via defer or implicit drop)
+```
+
+- **Pending**: Available for consumption via `next_bundle()`.
+- **Claimed**: Returned to a subscriber, awaiting resolution.
+- **Acked**: Successfully processed (terminal).
+- **Rejected**: Permanently failed (terminal, logged as `Dropped`).
+
+Calling `defer()` or allowing the handle to drop returns the bundle to Pending.
+The embedding layer manages retry timing by holding a lightweight `BundleRef`
+and scheduling retries via its own delay mechanism. When the retry fires, it
+calls `claim_bundle(bundle_ref)` to re-acquire the bundle from storage. This
+keeps memory bounded during extended retry periods since the actual data is
+read on-demand from memory-mapped segment files.
 
 **Multi-Subscriber Tracking**: Each subscriber maintains per-segment bundle
 progress; data is deleted only when every subscriber has acknowledged every
-bundle (or retention policy overrides). A subscriber's high-water mark is the
-highest contiguous segment whose bundles all have Ack (or dropped) outcomes.
-Out-of-order Acks land in a tiny gap set keyed by `(segment_seq, bundle_index)`
-so the mark never jumps past a missing bundle. Each bundle Ack decrements the
-segment's outstanding bundle counter; once it reaches zero the segment becomes
-eligible for deletion.
+bundle (or retention policy overrides).
 
-Ack/Nack events append to a shared log (single WAL keyed by subscriber ID) so
-per-bundle state is replayed after crashes without per-subscriber files. The
-shared log (`ack.log`) lives alongside the main WAL. Periodic checkpoints
-persist each subscriber's current high-water mark into the metadata index so
-recovery can skip directly to the first gap, replaying the log only for recent
-events; bundle gap sets are rebuilt on replay from the same log stream.
+Quiver uses a hybrid tracking model that supports both in-order and out-of-order
+(priority-based) delivery:
+
+- **Per-segment completion**: Track which bundles are acked within each segment,
+  allowing acknowledgements to arrive in any order.
+- **Oldest incomplete segment**: A derived value equivalent to the traditional
+  high-water mark (HWM), representing the oldest segment with pending bundles.
+- **Segment deletion**: A segment becomes eligible for deletion when all
+  subscribers have acked all its bundles, regardless of delivery order.
+
+This model supports priority delivery (newest data first, backfill old data
+later) while maintaining accurate progress tracking.
+
+Each subscriber maintains a progress file (`quiver.sub.<id>`) that snapshots
+its current state. Progress files are atomically updated via write-fsync-rename,
+avoiding the compaction complexity of append-only logs. Recovery reads each
+progress file directly--no log replay required. Segment cleanup is coordinated
+by checking that all subscriber progress files show `oldest_incomplete_segment`
+past the segment to be deleted.
+
+### Layering: Quiver vs Embedding Layer
+
+Quiver is a standalone persistence library with no knowledge of the embedding
+pipeline's control flow semantics. Responsibilities are split as follows:
+
+| Concern | Quiver (Library) | Embedding Layer (e.g., persistence_processor) |
+| ------- | ---------------- | --------------------------------------------- |
+| WAL + Segment storage | Yes | |
+| Per-subscriber progress files | Yes | |
+| Subscriber state (per-segment tracking) | Yes | |
+| Retry policy and backoff | | Yes |
+| NACK handling | | Yes |
+| Dispatch via pipeline | | Yes |
+| Startup coordination | | Yes |
+
+Quiver's `record_outcome()` accepts only terminal states (`Ack` or `Dropped`).
+Transient failures (NACKs) are handled entirely by the embedding layer, which
+may re-read bundles from Quiver and retry with backoff. This separation keeps
+Quiver reusable across different pipeline implementations.
 
 ### Integration with OTAP Dataflow
 
@@ -345,16 +490,142 @@ Protects processed data; smaller footprint, buffers during downstream outages
 8. **Default Strict Durability**: `backpressure` is the default size-cap
   policy, guaranteeing no segment loss prior to acknowledgement; `drop_oldest`
   must be explicitly selected to allow controlled loss.
+9. **Configurable Durability Mode**: The `DurabilityMode` setting controls
+  whether WAL is used at all, enabling operators to trade durability for
+  throughput.
+
+### Durability Modes
+
+Quiver supports two durability modes, configured via `QuiverConfig::durability`:
+
+| Mode           | Throughput | Data Loss on Crash    | Use Case                       |
+| -------------- | ---------- | --------------------- | ------------------------------ |
+| `Wal` (default)| Baseline   | Since last WAL fsync  | Production, critical data      |
+| `SegmentOnly`  | ~3x higher | Entire open segment   | High-throughput, loss-tolerant |
+
+#### `DurabilityMode::Wal` (Default)
+
+Each `RecordBundle` is written to the WAL before acknowledgement. On crash,
+only bundles written since the last WAL fsync are lost (controlled by
+`WalConfig::flush_interval`).
+
+```rust
+let config = QuiverConfig::default();
+// config.durability == DurabilityMode::Wal
+```
+
+#### `DurabilityMode::SegmentOnly`
+
+WAL writes are skipped entirely. Data is only durable after segment
+finalization. Provides approximately 3x higher throughput but a crash loses
+the entire open segment (potentially thousands of bundles).
+
+Use this when:
+
+- Throughput is more important than durability
+- Data can be re-fetched from upstream on crash
+- You have other durability guarantees (e.g., upstream acknowledgement)
+
+```rust
+use quiver::{QuiverConfig, DurabilityMode};
+
+let mut config = QuiverConfig::default();
+config.durability = DurabilityMode::SegmentOnly;
+```
+
+### Subscriber Lifecycle
+
+Quiver supports dynamic subscriber management with explicit registration.
+
+#### Registration
+
+- `register(id)`: Add a subscriber. Quiver automatically determines the
+  starting position based on whether a progress file exists for the subscriber:
+  - **Known subscriber** (progress file exists): Resume from last position,
+    receive all pending bundles.
+  - **New subscriber** (no progress file): Start from latest, receive only
+    newly-finalized bundles going forward.
+
+This simplifies the API - the embedding layer just calls `register(id)` and
+Quiver handles the rest.
+
+#### Deregistration
+
+- `unregister(id)`: Remove subscriber, mark all pending bundles as `Dropped`
+
+Unregistration is final and intended for permanent removal from configuration.
+The subscriber's progress file is updated to mark all pending bundles as
+`Dropped`, then the file is deleted. This allows segment cleanup to proceed.
+If a subscriber needs to return after unregistration, it registers fresh with
+`StartPosition::Latest`.
+
+During normal shutdown/restart, subscribers do NOT call `unregister()`. They
+simply stop consuming. On restart, they call `register(id, Resume)` and receive
+all pending bundles, including any that arrived during the shutdown window.
+This ensures zero data loss across restarts.
+
+#### Startup / Recovery
+
+Two-phase initialization handles the gap between recovery and active operation:
+
+1. **Load phase**: Quiver scans for `quiver.sub.*` progress files. Subscribers
+   with existing progress files are marked `PendingReregistration`.
+2. **Registration phase**: Embedding layer registers expected subscribers via
+   `register(id)`. Quiver automatically resumes known subscribers and starts
+   new subscribers from latest.
+3. **Activate phase**: Embedding layer calls `activate()`. Subscribers still in
+   `PendingReregistration` become orphans.
+
+*Future work*: Explicit orphan resolution API (e.g., `drop_orphan(id)`) could
+be added to allow the embedding layer to explicitly handle orphaned subscribers,
+recording `Dropped` for all their pending bundles. Currently, orphaned
+subscribers are tracked but require manual cleanup.
+
+This design keeps Quiver agnostic to configuration sources while enabling the
+embedding layer to coordinate startup properly.
+
+#### Operational Requirements
+
+**Full Flush Shutdown**: For planned maintenance where all pending data must be
+delivered before shutdown:
+
+1. Stop accepting new data (embedding layer stops calling `ingest()`)
+2. Force-finalize any open segment via `flush()`
+3. Wait for all subscribers to ack all pending bundles (monitor via
+   `oldest_incomplete_segment()` on the registry)
+4. Shut down cleanly
+
+*Future work*: Convenience APIs like `pending_bundle_count()` and
+`all_subscribers_drained()` could be added for the embedding layer to more
+easily monitor shutdown progress.
+
+**Recovery from Offline Period**: When a node recovers after extended downtime,
+the most recent data is typically highest priority. Quiver supports this via:
+
+- Per-segment completion tracking: Bundles can be acked in any order; segment
+  deletion is based on completion, not delivery order.
+- `segment_store().segment_sequences()`: Lists available segments for custom
+  ordering.
+- `claim_bundle(BundleRef)`: Claims specific bundles by segment/index, enabling
+  the embedding layer to implement priority policies.
+
+*Future work (if needed)*: A convenience API like
+`pending_bundles_in_range(subscriber, segment_range)` could be added to fetch
+pending bundles within a specific segment range, but the existing primitives
+are sufficient for most priority delivery scenarios.
+
+The embedding layer implements the priority policy (e.g., newest first with
+interleaved backfill) while Quiver tracks completion accurately.
 
 ### Terminology
 
 - **RecordBundle**: The generic ingestion unit Quiver stores in a segment.
-  Conceptually, it is a fixed-width array of optional payload type slots (e.g., slot
-  0 = root records, slot 1 = resource attributes). The type only exposes
+  Conceptually, it is a fixed-width array of optional payload type slots (e.g.,
+  slot 0 = root records, slot 1 = resource attributes). The type only exposes
   `arrow::record_batch::RecordBatch` values plus metadata needed to compute a
   schema fingerprint and row count.
-- **Payload Type Slot**: A stable identifier within a `RecordBundle`. Each slot maps
-  to exactly one logical payload kind for the embedding system. OTAP assigns
+- **Payload Type Slot**: A stable identifier within a `RecordBundle`. Each slot
+  maps to exactly one logical payload kind for the embedding system. OTAP assigns
   slots to `Logs`, `LogAttrs`, `ResourceAttrs`, etc.; another integration can
   provide its own slot table.
 - **Stream**: The ordered sequence of Arrow IPC messages Quiver writes for a
@@ -653,7 +924,7 @@ type synchronization between the Rust newtypes (`SlotId`, `StreamId`,
 Segment files are designed to be safely detectable as corrupt or incomplete:
 
 | Error Condition | Detection Mechanism | Recovery Action |
-|-----------------|---------------------|-----------------|
+| --------------- | ------------------- | --------------- |
 | Truncated file | File too short for trailer (< 16 bytes) | `SegmentError::Truncated` - skip file |
 | Invalid magic | Trailer magic bytes mismatch | `SegmentError::InvalidFormat` - skip file |
 | CRC mismatch | Computed CRC != stored CRC | `SegmentError::ChecksumMismatch` - skip file |
@@ -812,9 +1083,9 @@ subscribers and surfaced via metrics.
 
 `drop_oldest` must not leave subscribers with permanent, unfillable gaps. If a
 size emergency forces eviction of a finalized segment that still has unacked
-bundles for any subscriber, Quiver records synthetic `dropped` outcomes for
-each outstanding `(segment_seq, bundle_index, subscriber_id)` in `ack.log`
-before deletion.
+bundles for any subscriber, Quiver updates each affected subscriber's progress
+file with synthetic `dropped` outcomes for each outstanding
+`(segment_seq, bundle_index)` before deletion.
 
 - `dropped` is treated like an `ack` for advancing the high-water mark (HWM)
   and immediately removes the bundle from the subscriber's gap set.
@@ -911,10 +1182,13 @@ nodes:
     config:
       # Platform-appropriate persistent storage location
       path: ./quiver_data
+      # Durability mode: "wal" (default) or "segment_only"
+      # Use "segment_only" for ~3x throughput when data loss is acceptable
+      durability: wal
       segment:
         target_size: 32MB
       wal:
-        max_size: 4GB
+        max_size: 128MB
         flush_interval: 25ms
       retention:
         max_retain_after_ingestion_hours: 72
@@ -954,35 +1228,36 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   finishing each bundle, emits `Ack(segment_seq, bundle_index)` (or `Nack`) back
   to Quiver. The consumer-side cursor only advances to the next bundle once the
   acknowledgement for the current bundle is recorded.
-1. On every Ack/Nack Quiver appends a record to the shared acknowledgement log:
+1. On each Ack, Quiver updates the subscriber's in-memory progress state.
+  The embedding layer periodically calls `maintain()` to flush dirty progress
+  files and clean up completed segments. For example, after processing seg-120:
 
   ```text
-  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0
-    subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:07Z  segment=seg-120  bundle=0
-    subscriber=otlp_exporter     ack
-  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1
-    subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:08Z  segment=seg-120  bundle=1
-    subscriber=otlp_exporter     ack
-  ts=2025-11-10T18:22:09Z  segment=seg-120  bundle=2
-    subscriber=parquet_exporter  ack
-  ts=2025-11-10T18:22:10Z  segment=seg-120  bundle=2
-    subscriber=otlp_exporter     ack
+  quiver.sub.parquet_exporter:
+    oldest_incomplete_segment: 121
+    (no segment entries - seg-120 complete)
+
+  quiver.sub.otlp_exporter:
+    oldest_incomplete_segment: 121
+    (no segment entries - seg-120 complete)
   ```
 
-1. Once every subscriber has acknowledged bundle `0..=2` for `seg-120`, the
-  segment's outstanding bundle count drops to zero and it becomes eligible for
-  eviction according to the retention policy.
-1. During crash recovery Quiver replays the acknowledgement log alongside the
-  WAL to restore per-subscriber high-water marks; no per-subscriber WAL files
-  are required.
+1. Once every subscriber has acknowledged all bundles in `seg-120` (i.e.,
+  `oldest_incomplete_segment > 120` for all subscribers), the segment becomes
+  eligible for eviction according to the retention policy.
+1. During crash recovery Quiver reads each subscriber's progress file to
+  restore per-subscriber state directly--no log replay required.
 
-Nack handling reuses the same log: Quiver records the nack, retries delivery for
-the specific `(segment_seq, bundle_index)` according to OTAP policy, and keeps
-the segment pinned until every subscriber eventually acks each bundle or the
-operator opts to drop data via `drop_oldest` (which synthesizes `dropped`
-entries for the missing bundles).
+Nack handling is owned by the embedding layer, not Quiver. When an exporter
+returns a NACK, the embedding layer (e.g., persistence_processor):
+
+1. Computes retry delay using its backoff policy
+2. Schedules retry via the pipeline's delay mechanism
+3. Re-reads the bundle from Quiver when the retry fires
+4. Only calls `record_outcome(..., Dropped)` after all retries are exhausted
+
+Quiver's progress files never see transient NACKs, only final outcomes (`Ack`
+or `Dropped`). This keeps Quiver decoupled from retry policy decisions.
 
 ### Future Enhancements
 
@@ -1009,9 +1284,10 @@ collector. Storage lives on the same node; coordination is via shared memory
 atomics, not external daemons.
 
 **What happens on crash recovery?**: On restart we replay the data WAL to rebuild
-segments, replay `ack.log` to restore subscriber high-water marks, and immediately
-resume dispatch. Segments whose every bundle was acknowledged by all subscribers
-before the crash are eligible for deletion as soon as the steady-state sweeper runs.
+segments, read each `quiver.sub.<id>` progress file to restore subscriber state,
+and immediately resume dispatch. Segments whose every bundle was acknowledged by
+all subscribers before the crash are eligible for deletion as soon as the
+steady-state sweeper runs.
 
 ## Success Criteria
 
@@ -1029,13 +1305,17 @@ before the crash are eligible for deletion as soon as the steady-state sweeper r
 
 ### Open Questions
 
-- Subscriber lifecycle: how do we register/deregister subscribers and clean up state
-  when exporters are removed permanently?
-- Ack log scale: what rotation/checkpoint policy keeps replay time bounded under
-  heavy churn?
-- Observability: which metrics/logs expose ack log depth, gap set size, and
-  eviction/backpressure activity so operators can react early?
+- ~~Subscriber lifecycle: how do we register/deregister subscribers and clean up
+  state when exporters are removed permanently?~~ (Addressed in Subscriber
+  Lifecycle section: dynamic register/unregister with two-phase startup and
+  orphan detection.)
+- ~~Ack log scale: what rotation/checkpoint policy keeps replay time bounded under
+  heavy churn?~~ (Addressed: per-subscriber progress files replace the append-only
+  log. Each file contains current state snapshot, not a log to replay. No rotation
+  or compaction needed--files are atomically overwritten.)
+- Observability: which metrics/logs expose progress file state, incomplete segment
+  count, and eviction/backpressure activity so operators can react early?
 - Policy interaction: how does time-based retention interact with the size-cap
   safety net and steady-state sweeper - should one take precedence?
-- Failure handling: what safeguards do we need if `ack.log` or metadata become
+- Failure handling: what safeguards do we need if progress files or metadata become
   corrupted (checksums, repair tools, etc.)?

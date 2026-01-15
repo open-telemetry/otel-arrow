@@ -199,3 +199,14 @@ pub enum WalError {
     #[error("wal crash injected: {0}")]
     InjectedCrash(&'static str),
 }
+
+impl WalError {
+    /// Returns `true` if this is a capacity/backpressure error.
+    ///
+    /// WAL capacity errors are recoverable—the caller should wait for
+    /// segment finalization to advance the cursor and reclaim space.
+    #[must_use]
+    pub fn is_at_capacity(&self) -> bool {
+        matches!(self, Self::WalAtCapacity(_))
+    }
+}
