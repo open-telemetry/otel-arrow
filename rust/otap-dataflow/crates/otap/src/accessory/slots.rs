@@ -81,6 +81,11 @@ impl<UData> State<UData> {
         Some((key, ures))
     }
 
+    #[must_use]
+    pub fn get(&self, key: Key) -> Option<&UData> {
+        self.slots.get(key)
+    }
+
     /// Modify user data in a slot (if key is valid).
     #[must_use]
     pub fn get_mut(&mut self, key: Key) -> Option<&mut UData> {

@@ -21,10 +21,10 @@ use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
 use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{
-    ProcessorFactory,
+    ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     context::PipelineContext,
-    control::NodeControlMsg,
+    control::{AckMsg, NackMsg, NodeControlMsg},
     error::{Error as EngineError, ProcessorErrorKind},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -39,14 +39,17 @@ use serde_json::Value;
 
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
+    accessory::slots::Key,
     pdata::{Context, OtapPdata},
     transform_processor::routing::RouterImpl,
 };
 
 use self::config::{Config, Query};
+use self::context::Contexts;
 use self::metrics::Metrics;
 
 mod config;
+mod context;
 mod metrics;
 mod routing;
 
@@ -58,6 +61,7 @@ pub struct TransformProcessor {
     pipeline: Pipeline,
     execution_state: ExecutionState,
     signal_scope: SignalScope,
+    contexts: Contexts,
     metrics: MetricSet<Metrics>,
 }
 
@@ -127,6 +131,7 @@ impl TransformProcessor {
             signal_scope: SignalScope::try_from(&pipeline_expr)?,
             pipeline: Pipeline::new(pipeline_expr),
             metrics: pipeline_ctx.register_metrics::<Metrics>(),
+            contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             execution_state,
         })
     }
@@ -139,8 +144,11 @@ impl TransformProcessor {
         }
     }
 
-    async fn handle_routed_messages(
+    // TODO comments about what this is doing
+    async fn handle_exec_result(
         &mut self,
+        inbound_context: Context,
+        pipeline_result: Result<OtapArrowRecords, EngineError>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let router_impl = self
@@ -154,12 +162,43 @@ impl TransformProcessor {
                 error: "Routing error:".into(),
             })?;
 
-        for (route_name, otap_batch) in router_impl.routed.drain(..) {
-            let payload = OtapPayload::OtapArrowRecords(otap_batch);
-            // TODO -- need to properly handle Ack/Nack here by creating a new context, subscribing
-            // interests, and juggling the incoming/outgoing contexts & Ack/Nack messages correctly
-            let pdata = OtapPdata::new(Context::default(), payload);
+        if router_impl.routed.len() == 0 {
+            // there were no other record batches that were maybe split off this batch to be
+            // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
+            // and we can just handle the batch normally.
+            return match pipeline_result {
+                Ok(otap_batch) => {
+                    let pdata = OtapPdata::new(inbound_context, otap_batch.into());
+                    effect_handler.send_message(pdata).await?;
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            };
+        }
 
+        // keep error reason if there was an error, so we can send it to upstream in Nack once
+        // all routed outbound batches have been Ack/Nack'd
+        let error_reason = pipeline_result.as_ref().err().map(|e| e.to_string());
+
+        let inbound_ctx_key = self
+            .contexts
+            .insert_inbound(inbound_context, error_reason)?;
+
+        // juggle the context for the output of the pipeline. We need to do this b/c we'll be
+        // emitting this batch, plus any routed batches, and we don't want to Ack the inbound
+        // context until we receive Ack's from all downstream batches
+        if let Ok(otap_batch) = pipeline_result {
+            let mut pdata = OtapPdata::new(Context::default(), otap_batch.into());
+            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone())?;
+            effect_handler.subscribe_to(
+                Interests::NACKS | Interests::ACKS,
+                outbound_key.into(),
+                &mut pdata,
+            );
+            effect_handler.send_message(pdata).await?;
+        }
+
+        for (route_name, otap_batch) in router_impl.routed.drain(..) {
             // Find the port name that matches the route name.
             let port_name = effect_handler
                 .connected_ports()
@@ -173,10 +212,39 @@ impl TransformProcessor {
                 })?
                 .clone();
 
+            let payload = OtapPayload::OtapArrowRecords(otap_batch);
+            let context = Context::default();
+            let mut pdata = OtapPdata::new(context, payload);
+            let outbound_key = self.contexts.insert_outbound(inbound_ctx_key.clone())?;
+            effect_handler.subscribe_to(
+                Interests::NACKS | Interests::ACKS,
+                outbound_key.into(),
+                &mut pdata,
+            );
+
             effect_handler.send_message_to(port_name, pdata).await?;
         }
 
         Ok(())
+    }
+
+    async fn handle_ack_nack_inbound(
+        &mut self,
+        outbound_key: Key,
+        signal_type: SignalType,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
+            let (context, error_reason) = inbound;
+            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
+            if let Some(error) = error_reason {
+                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            } else {
+                effect_handler.notify_ack(AckMsg::new(pdata)).await
+            }
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -222,47 +290,57 @@ impl Processor<OtapPdata> for TransformProcessor {
                         });
                     }
                 }
+                NodeControlMsg::Ack(ack_message) => {
+                    self.handle_ack_nack_inbound(
+                        ack_message.calldata.try_into()?,
+                        ack_message.accepted.signal_type(),
+                        effect_handler,
+                    )
+                    .await?;
+                }
+                NodeControlMsg::Nack(nack_message) => {
+                    let outbound_key: Key = nack_message.calldata.try_into()?;
+                    self.contexts
+                        .set_failed(outbound_key.clone(), nack_message.reason);
+                    self.handle_ack_nack_inbound(
+                        outbound_key,
+                        nack_message.refused.signal_type(),
+                        effect_handler,
+                    )
+                    .await?;
+                }
                 _ => {
                     // other types of control messages are ignored for now
                 }
             },
             Message::PData(pdata) => {
                 let (context, payload) = pdata.into_parts();
-                let payload = if !self.should_process(&payload) {
+                if !self.should_process(&payload) {
                     // skip handling this pdata
-                    payload
+                    effect_handler
+                        .send_message(OtapPdata::new(context, payload))
+                        .await?;
                 } else {
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
                     otap_batch.decode_transport_optimized_ids()?;
-                    match self
+                    let result = self
                         .pipeline
                         .execute_with_state(otap_batch, &mut self.execution_state)
                         .await
-                    {
-                        Ok(otap_batch) => {
-                            self.metrics.msgs_transformed.inc();
-                            self.handle_routed_messages(effect_handler).await?;
-                            otap_batch.into()
-                        }
-                        Err(e) => {
-                            // forward the routed messages in the event of a failure to avoid
-                            // caching any batches that were routed before the pipeline fails
-                            self.handle_routed_messages(effect_handler).await?;
-
+                        .inspect(|_| self.metrics.msgs_transformed.inc())
+                        .map_err(|e| {
                             self.metrics.msgs_transform_failed.inc();
-                            return Err(EngineError::ProcessorError {
+                            EngineError::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
                                 error: format!("Error executing query engine pipeline {e}"),
                                 source_detail: e.to_string(),
-                            });
-                        }
-                    }
-                };
+                            }
+                        });
 
-                effect_handler
-                    .send_message(OtapPdata::new(context, payload))
-                    .await?;
+                    self.handle_exec_result(context, result, effect_handler)
+                        .await?;
+                };
             }
         };
 
