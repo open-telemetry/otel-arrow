@@ -15,8 +15,8 @@ use crate::node::{NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::processor::{ProcessorWrapper, ProcessorWrapperRuntime};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime, test_node};
-use otap_df_telemetry::MetricsSystem;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::InternalTelemetrySystem;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use std::future::Future;
@@ -118,6 +118,10 @@ impl ValidateContext {
     }
 }
 
+/// The name of the out_port that will be configured automatically on the [`ProcessorWrapper`] by
+/// the [`TestRuntime`].
+pub const TEST_OUT_PORT_NAME: &str = "out";
+
 /// A test runtime for simplifying processor tests.
 ///
 /// This structure encapsulates the common setup logic needed for testing processors,
@@ -134,7 +138,7 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
-    metrics_system: MetricsSystem,
+    metrics_system: InternalTelemetrySystem,
 
     _pd: PhantomData<PData>,
 }
@@ -146,7 +150,7 @@ pub struct TestPhase<PData> {
     processor: ProcessorWrapper<PData>,
     counters: CtrlMsgCounters,
     output_receiver: Option<Receiver<PData>>,
-    metrics_system: MetricsSystem,
+    metrics_system: InternalTelemetrySystem,
 }
 
 /// Data and operations for the validation phase of a processor.
@@ -167,7 +171,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with default configuration.
     #[must_use]
     pub fn new() -> Self {
-        let metrics_system = MetricsSystem::default();
+        let metrics_system = InternalTelemetrySystem::default();
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
 
@@ -187,7 +191,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns a handle to the metrics registry.
-    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
         self.metrics_system.registry()
     }
 
@@ -224,7 +228,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         // Set the output sender for the processor
         let _ = processor.set_pdata_sender(
             test_node(self.config().name.clone()),
-            "out".into(),
+            TEST_OUT_PORT_NAME.into(),
             pdata_sender,
         );
 

@@ -207,12 +207,12 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_config::node::NodeKind;
     use otap_df_telemetry::metrics::MetricSetHandler;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
 
     fn test_context() -> PipelineContext {
-        let registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(registry);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
             .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver)

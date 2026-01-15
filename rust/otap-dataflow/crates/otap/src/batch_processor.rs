@@ -1349,7 +1349,7 @@ mod tests {
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::fixtures::DataGenerator;
     use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -1358,33 +1358,33 @@ mod tests {
     /// Helper to create test pipeline context
     fn create_test_pipeline_context() -> (
         otap_df_engine::context::PipelineContext,
-        MetricsRegistryHandle,
+        TelemetryRegistryHandle,
     ) {
-        let metrics_registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry.clone());
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let pipeline_ctx = controller_ctx.pipeline_context_with(
             PipelineGroupId::from("test_group".to_string()),
             PipelineId::from("test_pipeline".to_string()),
             0,
             0,
         );
-        (pipeline_ctx, metrics_registry)
+        (pipeline_ctx, telemetry_registry)
     }
 
     /// Helper to set up a test runtime with batch processor
     fn setup_test_runtime(
         cfg: Value,
     ) -> (
-        MetricsRegistryHandle,
+        TelemetryRegistryHandle,
         otap_df_telemetry::reporter::MetricsReporter,
         otap_df_engine::testing::processor::TestPhase<OtapPdata>,
     ) {
         let rt = TestRuntime::new();
-        let metrics_registry = rt.metrics_registry();
+        let telemetry_registry = rt.metrics_registry();
         let metrics_reporter = rt.metrics_reporter();
 
         // Create processor using TestRuntime's registry
-        let controller = ControllerContext::new(metrics_registry.clone());
+        let controller = ControllerContext::new(telemetry_registry.clone());
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
@@ -1396,12 +1396,12 @@ mod tests {
 
         let phase = rt.set_processor(proc);
 
-        (metrics_registry, metrics_reporter, phase)
+        (telemetry_registry, metrics_reporter, phase)
     }
 
     /// Helper to verify consumed and produced item metrics
     fn verify_item_metrics(
-        metrics_registry: &MetricsRegistryHandle,
+        telemetry_registry: &TelemetryRegistryHandle,
         signal: SignalType,
         expected_items: usize,
     ) {
@@ -1410,7 +1410,7 @@ mod tests {
         let mut consumed_batches = 0u64;
         let mut produced_batches = 0u64;
 
-        metrics_registry.visit_current_metrics(|desc, _attrs, iter| {
+        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
             if desc.name == "otap.processor.batch" {
                 for (field, value) in iter {
                     match (signal, field.name) {
@@ -1634,7 +1634,7 @@ mod tests {
         F: FnOnce(&[EventOutputs]) + Send + 'static,
         P: Fn(usize, &OtapPdata) -> AckPolicy + Send + 'static,
     {
-        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(config);
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(config);
 
         // Collect events and extract inputs for reference
         let events: Vec<TestEvent> = events.collect();
@@ -1836,7 +1836,7 @@ mod tests {
                 // TODO: Not clear why, but this sleep is necessary (probably flaky)
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&metrics_registry, signal, input_item_count);
+                verify_item_metrics(&telemetry_registry, signal, input_item_count);
             });
     }
 
@@ -2362,7 +2362,7 @@ mod tests {
     /// arranges mixed-format inputs.
     #[test]
     fn test_preserve_mode_mixed_formats() {
-        let (metrics_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "preserve",
             "otap": {
                 "min_size": 100,  // Won't trigger size flush
@@ -2454,7 +2454,7 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_item_metrics(&metrics_registry, SignalType::Logs, 6);
+                verify_item_metrics(&telemetry_registry, SignalType::Logs, 6);
             });
     }
 }

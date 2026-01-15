@@ -16,6 +16,9 @@ pub enum DataExpression {
 
     /// Conditional data expression.
     Conditional(ConditionalDataExpression),
+
+    /// Output data expression
+    Output(OutputDataExpression),
 }
 
 impl DataExpression {
@@ -28,6 +31,7 @@ impl DataExpression {
             DataExpression::Summary(s) => s.try_fold(scope),
             DataExpression::Transform(t) => t.try_fold(scope),
             DataExpression::Conditional(c) => c.try_fold(scope),
+            DataExpression::Output(o) => o.try_fold(scope),
         }
     }
 }
@@ -39,6 +43,7 @@ impl Expression for DataExpression {
             DataExpression::Summary(s) => s.get_query_location(),
             DataExpression::Transform(t) => t.get_query_location(),
             DataExpression::Conditional(c) => c.get_query_location(),
+            DataExpression::Output(o) => o.get_query_location(),
         }
     }
 
@@ -48,6 +53,7 @@ impl Expression for DataExpression {
             DataExpression::Summary(_) => "DataExpression(Summary)",
             DataExpression::Transform(_) => "DataExpression(Transform)",
             DataExpression::Conditional(_) => "DataExpression(Conditional)",
+            DataExpression::Output(_) => "DataExpression(Output)",
         }
     }
 
@@ -57,6 +63,7 @@ impl Expression for DataExpression {
             DataExpression::Summary(s) => s.fmt_with_indent(f, indent),
             DataExpression::Transform(t) => t.fmt_with_indent(f, indent),
             DataExpression::Conditional(c) => c.fmt_with_indent(f, indent),
+            DataExpression::Output(o) => o.fmt_with_indent(f, indent),
         }
     }
 }
@@ -293,5 +300,91 @@ impl ConditionalDataExpressionBranch {
 
     pub fn get_expressions(&self) -> &[DataExpression] {
         &self.expressions
+    }
+}
+
+/// Data expression representing an operation that emits data to a sink.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputDataExpression {
+    query_location: QueryLocation,
+    output: OutputExpression,
+}
+
+impl OutputDataExpression {
+    pub fn new(query_location: QueryLocation, output: OutputExpression) -> Self {
+        Self {
+            query_location,
+            output,
+        }
+    }
+
+    pub fn get_output(&self) -> &OutputExpression {
+        &self.output
+    }
+
+    pub fn try_fold(&mut self, _scope: &PipelineResolutionScope) -> Result<(), ExpressionError> {
+        // No folding currently supported for output expressions.
+        Ok(())
+    }
+}
+
+impl Expression for OutputDataExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+
+    fn get_name(&self) -> &'static str {
+        "OutputDataExpression"
+    }
+
+    fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
+        writeln!(f, "Output:")?;
+        write!(f, "{indent}└── ")?;
+        match &self.output {
+            OutputExpression::NamedSink(expr) => {
+                expr.fmt_with_indent(f, format!("{indent}    ").as_str())
+            }
+        }
+    }
+}
+
+/// Expression representing an operation that emits data to a sink.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutputExpression {
+    /// Output data to a sink identified by name.
+    /// Currently this contains a static string because it's the only way we handle identifying
+    /// where to output the data. In the future we could support dynamic sink identified by a
+    /// variable, result of a function call, or other some expression, at which point we can change
+    /// this to contain the more general `StaticExpression`.
+    NamedSink(StringScalarExpression),
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::fmt;
+
+    // Helper struct to test fmt_with_indent by implementing Display
+    struct DisplayWrapper<'a, T: Expression>(&'a T, &'a str);
+
+    impl<'a, T: Expression> fmt::Display for DisplayWrapper<'a, T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.0.fmt_with_indent(f, self.1)
+        }
+    }
+
+    #[test]
+    fn test_output_expression_fmt_with_indent() {
+        let string_expr = StringScalarExpression::new(QueryLocation::new_fake(), "sink_name");
+        let output_expr = OutputExpression::NamedSink(string_expr.clone());
+        let output_data_expr = OutputDataExpression::new(QueryLocation::new_fake(), output_expr);
+        let output = format!("{}", DisplayWrapper(&output_data_expr, ""));
+        assert_eq!(
+            output,
+            format!(
+                "Output:\n\
+                └── {string_expr:?}\n"
+            )
+        );
     }
 }
