@@ -335,7 +335,11 @@ pub(crate) struct WalWriter {
 #[derive(Debug)]
 struct ActiveWalFile {
     /// Active WAL file descriptor.
-    file: File,
+    ///
+    /// Wrapped in `Option` to allow temporary ownership transfer during
+    /// synchronous flush in `Drop` (where we convert to std::fs::File).
+    /// Always `Some` during normal operation; only `None` transiently.
+    file: Option<File>,
     /// Scratch buffer used to serialize slot payloads before writing.
     payload_buffer: Vec<u8>,
     /// Scratch buffer for building complete WAL entries before writing.
@@ -675,7 +679,7 @@ impl WalWriter {
 impl ActiveWalFile {
     fn new(file: File, current_len: u64, buffer_decay_rate: (usize, usize)) -> Self {
         Self {
-            file,
+            file: Some(file),
             payload_buffer: Vec::new(),
             entry_buffer: Vec::new(),
             payload_high_water: 0,
@@ -691,13 +695,24 @@ impl ActiveWalFile {
         self.current_len
     }
 
+    /// Returns a mutable reference to the file, or an error if unavailable.
+    ///
+    /// The file is only `None` transiently during `flush_now_sync()` in Drop.
+    /// During normal async operations it should always be present.
+    fn file_ref(&mut self) -> WalResult<&mut File> {
+        self.file
+            .as_mut()
+            .ok_or(WalError::InternalError("file handle unavailable"))
+    }
+
     async fn seek_to_end(&mut self) -> WalResult<u64> {
-        let pos = self.file.seek(SeekFrom::End(0)).await?;
+        let file = self.file_ref()?;
+        let pos = file.seek(SeekFrom::End(0)).await?;
         Ok(pos)
     }
 
-    fn file_mut(&mut self) -> &mut File {
-        &mut self.file
+    fn file_mut(&mut self) -> WalResult<&mut File> {
+        self.file_ref()
     }
 
     fn set_len(&mut self, len: u64) {
@@ -705,7 +720,7 @@ impl ActiveWalFile {
     }
 
     fn replace_file(&mut self, file: File, new_len: u64) {
-        self.file = file;
+        self.file = Some(file);
         self.current_len = new_len;
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
@@ -750,7 +765,13 @@ impl ActiveWalFile {
         self.entry_buffer.extend_from_slice(&crc.to_le_bytes());
 
         // Single write syscall for the complete entry
-        self.file.write_all(&self.entry_buffer).await?;
+        // Note: we access file.as_mut() directly here to avoid borrow checker issues
+        // with self.entry_buffer being borrowed.
+        let file = self
+            .file
+            .as_mut()
+            .ok_or(WalError::InternalError("file handle unavailable"))?;
+        file.write_all(&self.entry_buffer).await?;
 
         // Adaptive shrinking: keep buffer sized appropriately for typical usage
         self.maybe_shrink_entry_buffer(total_size);
@@ -810,8 +831,9 @@ impl ActiveWalFile {
     }
 
     async fn flush_now(&mut self) -> WalResult<()> {
-        self.file.flush().await?;
-        sync_file_data(&self.file).await?;
+        let file = self.file_ref()?;
+        file.flush().await?;
+        sync_file_data(file).await?;
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
         Ok(())
@@ -822,14 +844,23 @@ impl ActiveWalFile {
     /// This temporarily converts the tokio File to a std File to perform
     /// a blocking sync_data call, then converts it back.
     fn flush_now_sync(&mut self) {
+        // Take ownership of the file temporarily. If already taken (shouldn't
+        // happen in Drop), skip the sync.
+        let Some(tokio_file) = self.file.take() else {
+            tracing::warn!("WAL drop flush skipped: file handle unavailable");
+            return;
+        };
+
         // try_into_std fails if the file has pending async operations.
         // In Drop, we expect the file to be idle.
-        let tokio_file = std::mem::replace(&mut self.file, placeholder_file());
         let std_file = match tokio_file.try_into_std() {
             Ok(f) => f,
             Err(tokio_file) => {
                 // Restore the file and give up - pending async ops
-                self.file = tokio_file;
+                self.file = Some(tokio_file);
+                tracing::warn!(
+                    "WAL drop flush skipped: file has pending async operations"
+                );
                 return;
             }
         };
@@ -837,10 +868,12 @@ impl ActiveWalFile {
         // Perform sync_data
         #[cfg(test)]
         test_support::record_sync_data();
-        let _ = std_file.sync_data();
+        if let Err(e) = std_file.sync_data() {
+            tracing::warn!(error = %e, "WAL drop flush failed during sync_data");
+        }
 
         // Convert back to tokio::fs::File
-        self.file = File::from_std(std_file);
+        self.file = Some(File::from_std(std_file));
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
     }
@@ -1295,7 +1328,7 @@ impl WalCoordinator {
         }
 
         // Cursor is in the active file - validate it's within bounds and on an entry boundary
-        let file_len = active_file.file_mut().metadata().await?.len();
+        let file_len = active_file.file_mut()?.metadata().await?.len();
         let data_within_active = cursor.safe_offset.saturating_sub(active_start);
         let file_offset = self.active_header_size.saturating_add(data_within_active);
 
@@ -1410,21 +1443,6 @@ fn system_time_to_nanos(ts: SystemTime) -> WalResult<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| WalError::InvalidTimestamp)?;
     i64::try_from(duration.as_nanos()).map_err(|_| WalError::InvalidTimestamp)
-}
-
-/// Creates a placeholder tokio::fs::File for use in `std::mem::replace`.
-///
-/// This opens `/dev/null` (Unix) or `NUL` (Windows) to create a valid but
-/// inert file handle. The placeholder is immediately replaced with the
-/// real file after the sync operation completes.
-fn placeholder_file() -> File {
-    #[cfg(unix)]
-    let path = "/dev/null";
-    #[cfg(windows)]
-    let path = "NUL";
-    // Use std::fs::File::open which is sync, then convert to tokio
-    let std_file = std::fs::File::open(path).expect("failed to open null device");
-    File::from_std(std_file)
 }
 
 async fn sync_file_data(file: &File) -> WalResult<()> {
