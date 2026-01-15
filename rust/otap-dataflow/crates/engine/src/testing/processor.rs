@@ -118,6 +118,10 @@ impl ValidateContext {
     }
 }
 
+/// The name of the out_port that will be configured automatically on the [`ProcessorWrapper`] by
+/// the [`TestRuntime`].
+pub const TEST_OUT_PORT_NAME: &str = "out";
+
 /// A test runtime for simplifying processor tests.
 ///
 /// This structure encapsulates the common setup logic needed for testing processors,
@@ -224,7 +228,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         // Set the output sender for the processor
         let _ = processor.set_pdata_sender(
             test_node(self.config().name.clone()),
-            "out".into(),
+            TEST_OUT_PORT_NAME.into(),
             pdata_sender,
         );
 
