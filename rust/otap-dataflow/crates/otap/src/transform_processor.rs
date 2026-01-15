@@ -163,6 +163,9 @@ impl TransformProcessor {
                 error: "Routing error:".into(),
             })?;
 
+        // TODO - there's probably some optimization we can make below where if there's only one
+        // non-empty batch to be output, we don't need to change any contexts or subscriptions
+
         if router_impl.routed.len() == 0 {
             // there were no other record batches that were maybe split off this batch to be
             // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
