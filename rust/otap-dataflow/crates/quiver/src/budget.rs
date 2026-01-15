@@ -31,8 +31,8 @@
 //! // Each engine gets its own budget - no sharing, no coordination
 //! let budget1 = Arc::new(DiskBudget::new(per_engine_cap, policy));
 //! let budget2 = Arc::new(DiskBudget::new(per_engine_cap, policy));
-//! let engine1 = QuiverEngine::new(config1, budget1)?;
-//! let engine2 = QuiverEngine::new(config2, budget2)?;
+//! let engine1 = QuiverEngine::open(config1, budget1).await?;
+//! let engine2 = QuiverEngine::open(config2, budget2).await?;
 //! ```
 //!
 //! This approach has zero cross-engine coordination overhead. Each engine

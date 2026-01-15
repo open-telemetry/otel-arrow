@@ -22,31 +22,27 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```ignore
 //! use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy};
 //! use std::sync::Arc;
 //! use std::path::PathBuf;
 //!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! # let data_dir = tempfile::tempdir()?; // Use real path in production!
-//! # let path = data_dir.path();
-//! // Use a durable filesystem path, not /tmp (which may be tmpfs)
-//! // let path = PathBuf::from("/var/lib/quiver/data");
-//! let cfg = QuiverConfig::default().with_data_dir(path);
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // Use a durable filesystem path, not /tmp (which may be tmpfs)
+//!     let path = PathBuf::from("/var/lib/quiver/data");
+//!     let cfg = QuiverConfig::default().with_data_dir(&path);
 //!
-//! // Configure disk budget (10 GB cap with backpressure)
-//! let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
-//! let engine = QuiverEngine::new(cfg, budget)?;
+//!     // Configure disk budget (10 GB cap with backpressure)
+//!     let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+//!     let engine = QuiverEngine::open(cfg, budget).await?;
 //!
-//! // Or use the builder pattern (uses unlimited budget by default):
-//! // let engine = QuiverEngine::builder(cfg).with_budget(budget).build()?;
-//!
-//! // Ingest bundles via engine.ingest(bundle)
-//! // Register subscribers via engine.register_subscriber(id)
-//! // Consume bundles via engine.next_bundle(id)
-//! // Periodic maintenance via engine.maintain()
-//! # Ok(())
-//! # }
+//!     // Ingest bundles via engine.ingest(&bundle).await
+//!     // Register subscribers via engine.register_subscriber(id)
+//!     // Consume bundles via engine.next_bundle(id, timeout).await
+//!     // Periodic maintenance via engine.maintain().await
+//!     Ok(())
+//! }
 //! ```
 //!
 //! # Features

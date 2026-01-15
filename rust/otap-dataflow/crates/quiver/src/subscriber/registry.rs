@@ -49,7 +49,7 @@ use super::error::{Result, SubscriberError};
 use super::handle::{BundleHandle, ResolutionCallback};
 use super::progress::{
     delete_progress_file_sync, progress_file_path, read_progress_file, scan_progress_files,
-    write_progress_file, write_progress_file_sync,
+    write_progress_file,
 };
 use super::state::SubscriberState;
 use super::types::{AckOutcome, BundleRef, SubscriberId};
@@ -712,79 +712,6 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the first error encountered after attempting all flushes.
     /// Check the dirty count after an error to see how many subscribers still
     /// need flushing.
-    ///
-    /// For async contexts, use [`flush_progress`](Self::flush_progress).
-    pub fn flush_progress_sync(&self) -> Result<usize> {
-        // Take the dirty set
-        let dirty: Vec<SubscriberId> = {
-            let mut dirty_set = self.dirty_subscribers.lock();
-            dirty_set.drain().collect()
-        };
-
-        if dirty.is_empty() {
-            return Ok(0);
-        }
-
-        // Collect data we need while holding read lock briefly
-        let to_flush: Vec<(SubscriberId, Arc<RwLock<SubscriberState>>)> = {
-            let subscribers = self.subscribers.read();
-            dirty
-                .into_iter()
-                .filter_map(|sub_id| subscribers.get(&sub_id).map(|s| (sub_id, s.clone())))
-                .collect()
-        };
-
-        let mut flushed = 0;
-        let mut first_error: Option<SubscriberError> = None;
-
-        for (sub_id, state_lock) in to_flush {
-            // Get state data with per-subscriber lock
-            let (entries, oldest_incomplete) = {
-                let state = state_lock.read();
-                let entries = state.to_progress_entries();
-                let oldest = state
-                    .oldest_incomplete_segment()
-                    .unwrap_or_else(|| SegmentSeq::new(0));
-                (entries, oldest)
-            };
-
-            match write_progress_file_sync(
-                &self.config.data_dir,
-                &sub_id,
-                oldest_incomplete,
-                &entries,
-            ) {
-                Ok(()) => {
-                    flushed += 1;
-                }
-                Err(e) => {
-                    // Re-add to dirty set for retry
-                    let mut dirty_set = self.dirty_subscribers.lock();
-                    let _ = dirty_set.insert(sub_id.clone());
-                    // Keep the first error, continue with remaining subscribers
-                    if first_error.is_none() {
-                        first_error = Some(e);
-                    }
-                }
-            }
-        }
-
-        // Return first error if any occurred, otherwise success
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(flushed),
-        }
-    }
-
-    /// Writes all dirty subscriber progress to disk.
-    ///
-    /// Returns the number of subscribers whose progress was successfully flushed.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first error encountered after attempting all flushes.
-    /// Check the dirty count after an error to see how many subscribers still
-    /// need flushing.
     pub async fn flush_progress(&self) -> Result<usize> {
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
@@ -1161,8 +1088,8 @@ mod tests {
         handle2.ack();
     }
 
-    #[test]
-    fn ack_persists_to_log() {
+    #[tokio::test]
+    async fn ack_persists_to_log() {
         let dir = tempdir().unwrap();
         let config = RegistryConfig::new(dir.path());
         let provider = Arc::new(MockSegmentProvider::new());
@@ -1179,7 +1106,7 @@ mod tests {
             handle.ack();
 
             // Flush progress files before closing
-            registry.flush_progress_sync().unwrap();
+            registry.flush_progress().await.unwrap();
         }
 
         // Reopen and verify state was recovered
@@ -1195,8 +1122,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reject_persists_to_log() {
+    #[tokio::test]
+    async fn reject_persists_to_log() {
         let dir = tempdir().unwrap();
         let config = RegistryConfig::new(dir.path());
         let provider = Arc::new(MockSegmentProvider::new());
@@ -1213,7 +1140,7 @@ mod tests {
             handle.reject(); // Dropped
 
             // Flush progress files before closing
-            registry.flush_progress_sync().unwrap();
+            registry.flush_progress().await.unwrap();
         }
 
         // Reopen and verify state was recovered

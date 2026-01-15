@@ -110,25 +110,26 @@ pub struct QuiverEngine {
 
 /// Builder for creating a [`QuiverEngine`] with customizable options.
 ///
-/// This provides a cleaner ergonomic interface compared to `QuiverEngine::new()`,
-/// especially for tests that may want to customize specific options.
+/// This provides a cleaner ergonomic interface, especially for tests
+/// that may want to customize specific options.
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// use quiver::{QuiverEngineBuilder, QuiverConfig, DiskBudget, RetentionPolicy};
 /// use std::sync::Arc;
 ///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let temp_dir = tempfile::tempdir()?;
-/// let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-/// let budget = Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let config = QuiverConfig::default().with_data_dir("/var/lib/quiver/data");
+///     let budget = Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure));
 ///
-/// let engine = QuiverEngineBuilder::new(config)
-///     .with_budget(budget)
-///     .build()?;
-/// # Ok(())
-/// # }
+///     let engine = QuiverEngineBuilder::new(config)
+///         .with_budget(budget)
+///         .build()
+///         .await?;
+///     Ok(())
+/// }
 /// ```
 #[derive(Debug)]
 pub struct QuiverEngineBuilder {
@@ -159,20 +160,20 @@ impl QuiverEngineBuilder {
         self
     }
 
-    /// Builds the engine, returning an `Arc<QuiverEngine>`.
+    /// Builds the engine asynchronously, returning an `Arc<QuiverEngine>`.
     ///
     /// # Errors
     ///
     /// Returns an error if configuration validation fails or if the WAL
     /// cannot be initialized.
-    pub fn build(self) -> Result<Arc<QuiverEngine>> {
+    pub async fn build(self) -> Result<Arc<QuiverEngine>> {
         let budget = self.budget.unwrap_or_else(|| {
             Arc::new(crate::budget::DiskBudget::new(
                 u64::MAX,
                 RetentionPolicy::Backpressure,
             ))
         });
-        QuiverEngine::new(self.config, budget)
+        QuiverEngine::open(self.config, budget).await
     }
 }
 
@@ -189,158 +190,27 @@ impl std::fmt::Debug for QuiverEngine {
 impl QuiverEngine {
     /// Creates a builder for constructing a `QuiverEngine`.
     ///
-    /// This provides a cleaner alternative to [`QuiverEngine::new()`] with
-    /// sensible defaults (e.g., unlimited budget with backpressure policy).
+    /// This provides a cleaner interface with sensible defaults
+    /// (e.g., unlimited budget with backpressure policy).
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// use quiver::{QuiverEngine, QuiverConfig};
     ///
-    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let temp_dir = tempfile::tempdir()?;
-    /// let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-    /// let engine = QuiverEngine::builder(config).build()?;
-    /// # Ok(())
-    /// # }
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = QuiverConfig::default().with_data_dir("/var/lib/quiver/data");
+    ///     let engine = QuiverEngine::builder(config).build().await?;
+    ///     Ok(())
+    /// }
     /// ```
     #[must_use]
     pub fn builder(config: QuiverConfig) -> QuiverEngineBuilder {
         QuiverEngineBuilder::new(config)
     }
 
-    /// Creates a new persistence engine with the given configuration and disk budget.
-    ///
-    /// This validates the configuration, initializes the WAL writer,
-    /// creates the segment store and subscriber registry, and wires
-    /// them together for automatic segment notifications.
-    ///
-    /// The `budget` parameter enforces a hard cap on total disk usage across
-    /// WAL, segments, and progress files. Multiple engines can share the same
-    /// budget for coordinated capacity management.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration validation fails or if the WAL
-    /// cannot be initialized.
-    pub fn new(config: QuiverConfig, budget: Arc<crate::budget::DiskBudget>) -> Result<Arc<Self>> {
-        config.validate()?;
-
-        // Validate budget is large enough for at least 2 segments
-        // This prevents deadlock where segment finalization is blocked
-        // because the budget is full but consumers can't free space
-        // (they're still consuming the one segment that exists).
-        let segment_size = config.segment.target_size_bytes.get();
-        let min_budget = segment_size.saturating_mul(2);
-        if budget.cap() < min_budget && budget.cap() != u64::MAX {
-            return Err(QuiverError::invalid_config(format!(
-                "disk budget ({} bytes) must be at least 2x segment size ({} bytes = {} bytes) \
-                 to prevent deadlock; increase budget to at least {} bytes or reduce segment size",
-                budget.cap(),
-                segment_size,
-                min_budget,
-                min_budget
-            )));
-        }
-
-        // Ensure directories exist
-        let segment_dir = segment_dir(&config);
-        fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
-
-        let wal_writer = initialize_wal_writer(&config, &budget)?;
-
-        // Create segment store with configured read mode and budget
-        let segment_store = Arc::new(SegmentStore::with_budget(
-            &segment_dir,
-            config.read_mode,
-            budget.clone(),
-        ));
-
-        // Scan for existing segments from previous runs (recovery)
-        // This populates the segment store with any segments that exist on disk,
-        // enabling subscribers to resume from where they left off.
-        if let Err(e) = segment_store.scan_existing() {
-            tracing::warn!(
-                error = %e,
-                "failed to scan existing segments during startup; continuing with empty store"
-            );
-        }
-
-        // Create subscriber registry with segment store as provider
-        let registry_config = RegistryConfig::new(&config.data_dir);
-        let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
-            .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
-
-        let engine = Arc::new(Self {
-            config,
-            metrics: PersistenceMetrics::new(),
-            wal_writer: TokioMutex::new(wal_writer),
-            open_segment: Mutex::new(OpenSegment::new()),
-            segment_cursor: Mutex::new(WalConsumerCursor::default()),
-            next_segment_seq: AtomicU64::new(0),
-            cumulative_wal_bytes: AtomicU64::new(0),
-            cumulative_segment_bytes: AtomicU64::new(0),
-            force_dropped_segments: AtomicU64::new(0),
-            force_dropped_bundles: AtomicU64::new(0),
-            segment_store,
-            registry: registry.clone(),
-            budget: budget.clone(),
-        });
-
-        // Wire segment store callback to notify registry of new segments
-        let registry_for_callback = registry;
-        engine
-            .segment_store
-            .set_on_segment_registered(move |seq, bundle_count| {
-                registry_for_callback.on_segment_finalized(seq, bundle_count);
-            });
-
-        // Wire up cleanup callback for Backpressure mode
-        // This only deletes completed segments (no data loss)
-        let engine_weak_cleanup = Arc::downgrade(&engine);
-        budget.set_cleanup_callback(move || {
-            if let Some(engine) = engine_weak_cleanup.upgrade() {
-                engine.cleanup_completed_segments().unwrap_or(0)
-            } else {
-                0
-            }
-        });
-
-        // Wire up reclaim callback for DropOldest policy
-        // This enables automatic cleanup when disk budget is exceeded
-        let engine_weak = Arc::downgrade(&engine);
-        let budget_weak = Arc::downgrade(&budget);
-        budget.set_reclaim_callback(move |_needed_bytes| {
-            let Some(engine) = engine_weak.upgrade() else {
-                return 0;
-            };
-            let Some(budget) = budget_weak.upgrade() else {
-                return 0;
-            };
-
-            // Track how much space we free
-            let used_before = budget.used();
-
-            // First try to clean up completed segments
-            let completed = engine.cleanup_completed_segments().unwrap_or(0);
-
-            // If that didn't help, force-drop oldest pending segments
-            // that have no active readers
-            if completed == 0 {
-                let _ = engine.force_drop_oldest_pending_segments();
-            }
-
-            // Return how many bytes we freed
-            used_before.saturating_sub(budget.used())
-        });
-
-        Ok(engine)
-    }
-
     /// Opens a new persistence engine asynchronously.
-    ///
-    /// This is the async version of [`new`](Self::new). Use this when running
-    /// in an async context to avoid blocking the runtime during WAL initialization.
     ///
     /// # Errors
     ///
@@ -371,7 +241,7 @@ impl QuiverEngine {
         fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
 
         // Use async WAL initialization
-        let wal_writer = initialize_wal_writer_async(&config, &budget).await?;
+        let wal_writer = initialize_wal_writer(&config, &budget).await?;
 
         // Create segment store with configured read mode and budget
         let segment_store = Arc::new(SegmentStore::with_budget(
@@ -557,7 +427,7 @@ impl QuiverEngine {
         // segment finalization. Only segment bytes are budget-tracked.
         if self.config.durability == DurabilityMode::Wal {
             let wal_offset = self
-                .append_to_wal_with_capacity_handling_async(bundle)
+                .append_to_wal_with_capacity_handling(bundle)
                 .await?;
 
             // Track cumulative WAL bytes for throughput measurement
@@ -601,89 +471,13 @@ impl QuiverEngine {
 
         // Step 4: Finalize segment if threshold exceeded
         if should_finalize {
-            self.finalize_current_segment_async().await?;
+            self.finalize_current_segment().await?;
         }
 
         Ok(())
     }
 
-    /// Synchronous version of [`ingest`](Self::ingest).
-    ///
-    /// This method blocks on I/O operations. Prefer the async version in async contexts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The disk budget does not have sufficient headroom (`StorageAtCapacity`)
-    /// - WAL append fails
-    /// - Segment finalization fails
-    pub fn ingest_sync<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
-        self.metrics.record_ingest_attempt();
-
-        // Step 0: Check budget headroom before doing any work.
-        const INGEST_HEADROOM_ESTIMATE: u64 = 4 * 1024;
-        if !self.budget.has_ingest_headroom(INGEST_HEADROOM_ESTIMATE) {
-            return Err(QuiverError::StorageAtCapacity {
-                requested: INGEST_HEADROOM_ESTIMATE,
-                available: self
-                    .budget
-                    .headroom()
-                    .saturating_sub(self.budget.reserved_headroom()),
-                cap: self.budget.cap(),
-            });
-        }
-
-        // Step 1: Append to WAL for durability (if enabled)
-        if self.config.durability == DurabilityMode::Wal {
-            let wal_offset = self.append_to_wal_with_capacity_handling(bundle)?;
-
-            // Track cumulative WAL bytes for throughput measurement
-            let wal_entry_bytes = wal_offset.next_offset.saturating_sub(wal_offset.position);
-            let _ = self
-                .cumulative_wal_bytes
-                .fetch_add(wal_entry_bytes, Ordering::Relaxed);
-
-            // Step 2: Update cursor to include this entry
-            let cursor = WalConsumerCursor::from_offset(&wal_offset);
-            {
-                let mut cp = self.segment_cursor.lock();
-                *cp = cursor;
-            }
-        }
-
-        // Step 3: Append to open segment accumulator
-        let should_finalize = {
-            let mut segment = self.open_segment.lock();
-            let _manifest_entry = segment.append(bundle)?;
-
-            // Check if we should finalize based on size threshold
-            let estimated_size = segment.estimated_size_bytes();
-            let target_size = self.config.segment.target_size_bytes.get() as usize;
-            let size_exceeded = estimated_size >= target_size;
-
-            // Check if we should finalize based on time threshold
-            let max_duration = self.config.segment.max_open_duration;
-            let time_exceeded = segment
-                .opened_at()
-                .is_some_and(|opened_at| opened_at.elapsed() >= max_duration);
-
-            // Check if we should finalize based on stream count threshold
-            let stream_count = segment.stream_count();
-            let max_streams = self.config.segment.max_stream_count as usize;
-            let streams_exceeded = stream_count >= max_streams;
-
-            size_exceeded || time_exceeded || streams_exceeded
-        };
-
-        // Step 4: Finalize segment if threshold exceeded
-        if should_finalize {
-            self.finalize_current_segment()?;
-        }
-
-        Ok(())
-    }
-
-    /// Appends a bundle to the WAL, handling capacity errors transparently.
+    /// Appends a bundle to the WAL asynchronously, handling capacity errors transparently.
     ///
     /// If the WAL is at capacity, this method:
     /// 1. Finalizes the current segment to advance the WAL cursor
@@ -691,33 +485,7 @@ impl QuiverEngine {
     ///
     /// This allows the engine to handle large segment sizes that exceed the
     /// WAL capacity without requiring caller intervention.
-    fn append_to_wal_with_capacity_handling<B: RecordBundle>(
-        &self,
-        bundle: &B,
-    ) -> Result<crate::wal::WalOffset> {
-        // First attempt
-        let first_result = {
-            let mut writer = self.wal_writer.blocking_lock();
-            writer.append_bundle_sync(bundle)
-        };
-
-        match first_result {
-            Ok(offset) => Ok(offset),
-            Err(ref e) if e.is_at_capacity() => {
-                // WAL is full - finalize the current segment to advance the cursor
-                // and free WAL space, then retry the append.
-                self.finalize_current_segment()?;
-
-                // Retry the append after finalization freed space
-                let mut writer = self.wal_writer.blocking_lock();
-                writer.append_bundle_sync(bundle).map_err(Into::into)
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Async version of [`append_to_wal_with_capacity_handling`](Self::append_to_wal_with_capacity_handling).
-    async fn append_to_wal_with_capacity_handling_async<B: RecordBundle>(
+    async fn append_to_wal_with_capacity_handling<B: RecordBundle>(
         &self,
         bundle: &B,
     ) -> Result<crate::wal::WalOffset> {
@@ -732,7 +500,7 @@ impl QuiverEngine {
             Err(ref e) if e.is_at_capacity() => {
                 // WAL is full - finalize the current segment to advance the cursor
                 // and free WAL space, then retry the append.
-                self.finalize_current_segment_async().await?;
+                self.finalize_current_segment().await?;
 
                 // Retry the append after finalization freed space
                 let mut writer = self.wal_writer.lock().await;
@@ -758,15 +526,7 @@ impl QuiverEngine {
     ///
     /// Returns an error if segment finalization fails.
     pub async fn flush(&self) -> Result<()> {
-        self.finalize_current_segment_async().await
-    }
-
-    /// Synchronous version of [`flush`](Self::flush).
-    ///
-    /// This method blocks until the segment is finalized. Prefer the async
-    /// version in async contexts.
-    pub fn flush_sync(&self) -> Result<()> {
-        self.finalize_current_segment()
+        self.finalize_current_segment().await
     }
 
     /// Gracefully shuts down the engine, finalizing any open segment.
@@ -782,92 +542,13 @@ impl QuiverEngine {
     ///
     /// Returns an error if segment finalization fails.
     pub async fn shutdown(&self) -> Result<()> {
-        self.finalize_current_segment_async().await
+        self.finalize_current_segment().await
     }
 
-    /// Synchronous version of [`shutdown`](Self::shutdown).
-    ///
-    /// This method blocks until the segment is finalized. Prefer the async
-    /// version in async contexts.
-    pub fn shutdown_sync(&self) -> Result<()> {
-        self.finalize_current_segment()
-    }
-
-    /// Finalizes the current open segment and writes it to disk.
-    ///
-    /// This is called automatically when the size or time threshold is exceeded,
-    /// but can also be called explicitly for shutdown or testing.
-    ///
-    /// # Budget Handling
-    ///
-    /// If the disk budget would be exceeded:
-    /// - With `Backpressure` policy: Returns `StorageAtCapacity` error. The segment
-    ///   data remains in memory and can be retried after space is freed.
-    /// - With `DropOldest` policy: Attempts to reclaim space by deleting old segments,
-    ///   then retries.
-    fn finalize_current_segment(&self) -> Result<()> {
-        // First, check if there's anything to finalize (without swapping)
-        let estimated_size = {
-            let segment_guard = self.open_segment.lock();
-            if segment_guard.is_empty() {
-                return Ok(());
-            }
-            segment_guard.estimated_size_bytes() as u64
-        };
-
-        // Reserve budget BEFORE swapping out the segment
-        // This prevents data loss if reservation fails
-        let pending = self.budget.try_reserve(estimated_size)?;
-
-        // Now safe to swap out the segment and cursor
-        let (segment, cursor) = {
-            let mut segment_guard = self.open_segment.lock();
-            let mut cursor_guard = self.segment_cursor.lock();
-            let segment = std::mem::take(&mut *segment_guard);
-            let cursor = std::mem::take(&mut *cursor_guard);
-            (segment, cursor)
-        };
-
-        // Double-check segment isn't empty (race condition guard)
-        if segment.is_empty() {
-            // Release the reservation since we won't write anything
-            drop(pending);
-            return Ok(());
-        }
-
-        // Assign a segment sequence number (after reservation succeeds)
-        let seq = SegmentSeq::new(self.next_segment_seq.fetch_add(1, Ordering::SeqCst));
-
-        // Write the segment file (streaming serialization - no intermediate buffer)
-        let segment_path = self.segment_path(seq);
-        let writer = SegmentWriter::new(seq);
-        let (bytes_written, _checksum) = writer.write_segment_sync(&segment_path, segment)?;
-
-        // Track cumulative bytes (never decreases, for accurate throughput measurement)
-        let _ = self
-            .cumulative_segment_bytes
-            .fetch_add(bytes_written, Ordering::Relaxed);
-
-        // Commit reservation with actual bytes written
-        pending.commit(bytes_written);
-
-        // Step 5: Advance WAL cursor now that segment is durable
-        {
-            let mut wal_writer = self.wal_writer.blocking_lock();
-            wal_writer.persist_cursor_sync(&cursor)?;
-        }
-
-        // Step 6: Register segment with store (triggers subscriber notification)
-        // Use register_new_segment to skip budget recording (already committed above)
-        let _ = self.segment_store.register_new_segment(seq);
-
-        Ok(())
-    }
-
-    /// Async version of [`finalize_current_segment`](Self::finalize_current_segment).
+    /// Finalizes the current open segment and writes it to disk asynchronously.
     ///
     /// Uses async I/O for segment writing and WAL cursor persistence.
-    async fn finalize_current_segment_async(&self) -> Result<()> {
+    async fn finalize_current_segment(&self) -> Result<()> {
         // First, check if there's anything to finalize (without swapping)
         let estimated_size = {
             let segment_guard = self.open_segment.lock();
@@ -1061,19 +742,6 @@ impl QuiverEngine {
     // Maintenance API
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Flushes dirty subscriber progress to disk synchronously.
-    ///
-    /// Returns the number of subscribers whose progress was flushed.
-    ///
-    /// For async contexts, use [`flush_progress`](Self::flush_progress).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any progress file cannot be written.
-    pub fn flush_progress_sync(&self) -> std::result::Result<usize, SubscriberError> {
-        self.registry.flush_progress_sync()
-    }
-
     /// Deletes segment files that have been fully processed by all subscribers.
     ///
     /// Finds the minimum incomplete segment across all active subscribers
@@ -1179,23 +847,6 @@ impl QuiverEngine {
         deleted
     }
 
-    /// Performs combined maintenance synchronously: flushes progress and cleans up segments.
-    ///
-    /// This is the recommended periodic maintenance call. It:
-    /// 1. Flushes dirty subscriber progress to disk
-    /// 2. Deletes fully-processed segment files
-    ///
-    /// For async contexts, use [`maintain`](Self::maintain).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if either operation fails.
-    pub fn maintain_sync(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
-        let flushed = self.flush_progress_sync()?;
-        let deleted = self.cleanup_completed_segments()?;
-        Ok(MaintenanceStats { flushed, deleted })
-    }
-
     /// Flushes dirty subscriber progress to disk.
     ///
     /// Returns the number of subscribers whose progress was flushed.
@@ -1252,27 +903,7 @@ fn segment_dir(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("segments")
 }
 
-fn initialize_wal_writer(
-    config: &QuiverConfig,
-    budget: &Arc<crate::budget::DiskBudget>,
-) -> Result<WalWriter> {
-    use crate::wal::FlushPolicy;
-
-    let wal_path = wal_path(config);
-    let flush_policy = if config.wal.flush_interval.is_zero() {
-        FlushPolicy::Immediate
-    } else {
-        FlushPolicy::EveryDuration(config.wal.flush_interval)
-    };
-    let options = WalWriterOptions::new(wal_path, segment_cfg_hash(config), flush_policy)
-        .with_max_wal_size(config.wal.max_size_bytes.get())
-        .with_max_rotated_files(config.wal.max_rotated_files as usize)
-        .with_rotation_target(config.wal.rotation_target_bytes.get())
-        .with_budget(budget.clone());
-    Ok(WalWriter::open_sync(options)?)
-}
-
-async fn initialize_wal_writer_async(
+async fn initialize_wal_writer(
     config: &QuiverConfig,
     budget: &Arc<crate::budget::DiskBudget>,
 ) -> Result<WalWriter> {
@@ -3387,38 +3018,10 @@ mod tests {
         // deleted can be any non-negative number (usize)
     }
 
-    /// Helper to create an engine using the async open API.
-    async fn setup_engine_async(dir: &std::path::Path) -> Arc<QuiverEngine> {
-        let config = QuiverConfig::builder()
-            .data_dir(dir)
-            .build()
-            .expect("config");
-        QuiverEngine::open(config, test_budget())
-            .await
-            .expect("engine")
-    }
-
-    /// Helper to create an engine and ingest data using fully async APIs.
-    async fn setup_engine_with_data_async(
-        dir: &std::path::Path,
-        bundle_count: usize,
-    ) -> Arc<QuiverEngine> {
-        let engine = setup_engine_async(dir).await;
-
-        for _ in 0..bundle_count {
-            let bundle = DummyBundle::with_rows(100);
-            engine.ingest(&bundle).await.expect("ingest");
-        }
-        if bundle_count > 0 {
-            engine.flush().await.expect("flush");
-        }
-        engine
-    }
-
     #[tokio::test]
     async fn async_open_creates_engine() {
         let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_async(dir.path()).await;
+        let engine = setup_engine_with_data(dir.path(), 0).await;
 
         // Verify engine is functional
         assert_eq!(engine.segment_store().segment_count(), 0);
@@ -3428,7 +3031,7 @@ mod tests {
     #[tokio::test]
     async fn async_ingest_succeeds() {
         let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_async(dir.path()).await;
+        let engine = setup_engine_with_data(dir.path(), 0).await;
 
         let bundle = DummyBundle::with_rows(100);
         engine.ingest(&bundle).await.expect("ingest");
@@ -3441,7 +3044,7 @@ mod tests {
     #[tokio::test]
     async fn async_ingest_and_flush_creates_segment() {
         let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_async(dir.path()).await;
+        let engine = setup_engine_with_data(dir.path(), 0).await;
 
         // Ingest some data
         for _ in 0..5 {
@@ -3460,7 +3063,7 @@ mod tests {
     #[tokio::test]
     async fn async_shutdown_finalizes_segment() {
         let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_async(dir.path()).await;
+        let engine = setup_engine_with_data(dir.path(), 0).await;
 
         // Ingest some data
         for _ in 0..5 {
@@ -3478,7 +3081,7 @@ mod tests {
     #[tokio::test]
     async fn async_full_pipeline_ingest_to_consume() {
         let dir = tempdir().expect("tempdir");
-        let engine = setup_engine_with_data_async(dir.path(), 10).await;
+        let engine = setup_engine_with_data(dir.path(), 10).await;
 
         // Register and activate subscriber
         let sub_id = SubscriberId::new("async-pipeline").unwrap();

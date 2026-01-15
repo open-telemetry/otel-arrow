@@ -32,30 +32,35 @@ use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, Subscriber
 use std::path::PathBuf;
 use std::sync::Arc;
 
-// Use a durable filesystem path, not /tmp (which may be tmpfs)
-let data_dir = PathBuf::from("/var/lib/quiver/data");
-let config = QuiverConfig::default().with_data_dir(&data_dir);
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Use a durable filesystem path, not /tmp (which may be tmpfs)
+    let data_dir = PathBuf::from("/var/lib/quiver/data");
+    let config = QuiverConfig::default().with_data_dir(&data_dir);
 
-// Configure disk budget (10 GB cap with backpressure)
-let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
-let engine = QuiverEngine::new(config, budget)?;
+    // Configure disk budget (10 GB cap with backpressure)
+    let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+    let engine = QuiverEngine::open(config, budget).await?;
 
-// Register a subscriber
-let sub_id = SubscriberId::new("my-exporter")?;
-engine.register_subscriber(sub_id.clone())?;
-engine.activate_subscriber(&sub_id)?;
+    // Register a subscriber
+    let sub_id = SubscriberId::new("my-exporter")?;
+    engine.register_subscriber(sub_id.clone())?;
+    engine.activate_subscriber(&sub_id)?;
 
-// Ingest data (bundles from upstream)
-// engine.ingest(&bundle)?;
+    // Ingest data (bundles from upstream)
+    // engine.ingest(&bundle).await?;
 
-// Consume bundles
-while let Some(handle) = engine.next_bundle(&sub_id)? {
-    // Process the bundle...
-    handle.ack();  // Acknowledge successful processing
+    // Consume bundles
+    while let Some(handle) = engine.next_bundle(&sub_id, None).await? {
+        // Process the bundle...
+        handle.ack();  // Acknowledge successful processing
+    }
+
+    // Periodic maintenance
+    engine.maintain().await?;
+    
+    Ok(())
 }
-
-// Periodic maintenance
-engine.maintain()?;
 ```
 
 ### Handling Backpressure
@@ -66,12 +71,12 @@ The embedding layer should handle this by slowing ingestion:
 ```rust,ignore
 use quiver::QuiverError;
 
-match engine.ingest(&bundle) {
+match engine.ingest(&bundle).await {
     Ok(()) => { /* success */ }
     Err(e) if e.is_at_capacity() => {
         // Backpressure: wait for subscribers to catch up and segments to be cleaned
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        engine.maintain()?;  // Try to clean up completed segments
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        engine.maintain().await?;  // Try to clean up completed segments
         // Retry ingestion...
     }
     Err(e) => return Err(e),  // Other errors are fatal

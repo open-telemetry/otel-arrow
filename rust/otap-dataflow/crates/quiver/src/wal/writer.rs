@@ -458,7 +458,7 @@ impl WalWriter {
         options.validate()?;
 
         let sidecar_path = cursor_sidecar_path(&options.path);
-        let cursor_state = load_cursor_state_async(&sidecar_path).await?;
+        let cursor_state = load_cursor_state(&sidecar_path).await?;
         let buffer_decay_rate = options.buffer_decay_rate;
 
         // Create coordinator first to scan for valid entries
@@ -470,11 +470,11 @@ impl WalWriter {
             active_wal_start,
         );
         coordinator
-            .reload_rotated_files_async(metadata.len())
+            .reload_rotated_files(metadata.len())
             .await?;
 
         // Scan to find the last valid entry and truncate any trailing garbage
-        let (next_sequence, valid_offset) = coordinator.detect_next_sequence_async().await?;
+        let (next_sequence, valid_offset) = coordinator.detect_next_sequence().await?;
         let current_file_len = file.metadata().await?.len();
 
         if valid_offset < current_file_len {
@@ -587,7 +587,7 @@ impl WalWriter {
             .to_wal_position(entry_start.saturating_add(entry_total_bytes));
 
         self.coordinator
-            .maybe_rotate_after_append_async(&mut self.active_file)
+            .maybe_rotate_after_append(&mut self.active_file)
             .await?;
 
         Ok(WalOffset {
@@ -605,7 +605,7 @@ impl WalWriter {
     /// Call this after downstream has confirmed durability (e.g., segment flush).
     pub(crate) async fn persist_cursor(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
         self.coordinator
-            .persist_cursor_async(&mut self.active_file, cursor)
+            .persist_cursor(&mut self.active_file, cursor)
             .await
     }
 
@@ -858,7 +858,7 @@ impl ActiveWalFile {
 
     async fn flush_now(&mut self) -> WalResult<()> {
         self.file.flush().await?;
-        sync_file_data_async(&self.file).await?;
+        sync_file_data(&self.file).await?;
         self.last_flush = Instant::now();
         self.unflushed_bytes = 0;
         Ok(())
@@ -1117,34 +1117,12 @@ impl WalCoordinator {
         self.active_header_size.saturating_add(data_within_active)
     }
 
-    /// Determines the next sequence number and last valid offset in the active file.
-    ///
-    /// Since sequence numbers are monotonically increasing, the highest sequence
-    /// is always in the active file (or the most recent rotated file if the active
-    /// file is empty after a rotation). Returns (next_sequence, active_file_valid_offset).
-    fn detect_next_sequence(&self) -> WalResult<(u64, u64)> {
-        let (active_seq, active_valid_offset) = self.scan_file_last_sequence(&self.options.path)?;
-
-        // If active file has entries, use its sequence
-        if let Some(seq) = active_seq {
-            return Ok((seq.wrapping_add(1), active_valid_offset));
-        }
-
-        // Active file is empty - check the most recent rotated file (highest rotation_id)
-        if let Some(most_recent) = self.rotated_files.iter().max_by_key(|f| f.rotation_id) {
-            let (seq, _) = self.scan_file_last_sequence(&most_recent.path)?;
-            if let Some(s) = seq {
-                return Ok((s.wrapping_add(1), active_valid_offset));
-            }
-        }
-
-        // No entries anywhere - start at sequence 0
-        Ok((0, active_valid_offset))
-    }
-
     /// Scans a WAL file and returns the last valid sequence number and the
     /// byte offset immediately after the last valid entry (i.e., where new
     /// writes should begin). Returns file offsets (not WAL positions).
+    ///
+    /// Note: Uses sync I/O via `WalReader` - this is acceptable because it's
+    /// only called during startup/recovery.
     fn scan_file_last_sequence(&self, path: &Path) -> WalResult<(Option<u64>, u64)> {
         if !path.exists() {
             return Ok((None, 0));
@@ -1175,7 +1153,35 @@ impl WalCoordinator {
     // Async methods
     // ─────────────────────────────────────────────────────────────────────────────
 
-    async fn reload_rotated_files_async(&mut self, active_len: u64) -> WalResult<()> {
+    /// Determines the next sequence number and last valid offset in the active file.
+    ///
+    /// Since sequence numbers are monotonically increasing, the highest sequence
+    /// is always in the active file (or the most recent rotated file if the active
+    /// file is empty after a rotation). Returns (next_sequence, active_file_valid_offset).
+    ///
+    /// Note: Uses sync I/O via `WalReader` internally - this is acceptable because
+    /// this method is only called during startup/recovery, not on the hot path.
+    async fn detect_next_sequence(&self) -> WalResult<(u64, u64)> {
+        let (active_seq, active_valid_offset) = self.scan_file_last_sequence(&self.options.path)?;
+
+        // If active file has entries, use its sequence
+        if let Some(seq) = active_seq {
+            return Ok((seq.wrapping_add(1), active_valid_offset));
+        }
+
+        // Active file is empty - check the most recent rotated file (highest rotation_id)
+        if let Some(most_recent) = self.rotated_files.iter().max_by_key(|f| f.rotation_id) {
+            let (seq, _) = self.scan_file_last_sequence(&most_recent.path)?;
+            if let Some(s) = seq {
+                return Ok((s.wrapping_add(1), active_valid_offset));
+            }
+        }
+
+        // No entries anywhere - start at sequence 0
+        Ok((0, active_valid_offset))
+    }
+
+    async fn reload_rotated_files(&mut self, active_len: u64) -> WalResult<()> {
         let discovered = discover_rotated_wal_files(&self.options.path)?;
         if discovered.is_empty() {
             self.aggregate_bytes = active_len;
@@ -1214,14 +1220,7 @@ impl WalCoordinator {
         Ok(())
     }
 
-    /// Async version of detect_next_sequence. Uses sync WalReader internally
-    /// as WAL reading is still sync (only startup cost).
-    async fn detect_next_sequence_async(&self) -> WalResult<(u64, u64)> {
-        // WalReader is still sync - this is acceptable for startup only
-        self.detect_next_sequence()
-    }
-
-    async fn maybe_rotate_after_append_async(
+    async fn maybe_rotate_after_append(
         &mut self,
         active_file: &mut ActiveWalFile,
     ) -> WalResult<()> {
@@ -1229,10 +1228,10 @@ impl WalCoordinator {
         if active_data_bytes <= self.options.rotation_target_bytes {
             return Ok(());
         }
-        self.rotate_active_file_async(active_file).await
+        self.rotate_active_file(active_file).await
     }
 
-    async fn rotate_active_file_async(&mut self, active_file: &mut ActiveWalFile) -> WalResult<()> {
+    async fn rotate_active_file(&mut self, active_file: &mut ActiveWalFile) -> WalResult<()> {
         if self.rotated_files.len() >= self.options.max_rotated_files {
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
@@ -1286,7 +1285,7 @@ impl WalCoordinator {
         // Update wal_position_start to match the new active file's header.
         let new_wal_start = new_wal_position_end;
         self.wal_position_start = new_wal_start;
-        let mut file = reopen_wal_file_async(
+        let mut file = reopen_wal_file(
             &self.options.path,
             self.options.segment_cfg_hash,
             new_wal_start,
@@ -1308,16 +1307,16 @@ impl WalCoordinator {
         Ok(())
     }
 
-    async fn persist_cursor_async(
+    async fn persist_cursor(
         &mut self,
         active_file: &mut ActiveWalFile,
         cursor: &WalConsumerCursor,
     ) -> WalResult<()> {
-        self.validate_cursor_async(active_file, cursor).await?;
-        self.write_cursor_sidecar_async(cursor).await
+        self.validate_cursor(active_file, cursor).await?;
+        self.write_cursor_sidecar(cursor).await
     }
 
-    async fn validate_cursor_async(
+    async fn validate_cursor(
         &mut self,
         active_file: &mut ActiveWalFile,
         cursor: &WalConsumerCursor,
@@ -1357,9 +1356,9 @@ impl WalCoordinator {
         Ok(())
     }
 
-    async fn write_cursor_sidecar_async(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
+    async fn write_cursor_sidecar(&mut self, cursor: &WalConsumerCursor) -> WalResult<()> {
         let wal_pos = cursor.safe_offset;
-        self.record_wal_position_async(wal_pos).await?;
+        self.record_wal_position(wal_pos).await?;
 
         // Only update active_file_validated_entry_boundary if the cursor is in the active file
         let active_start = self.active_wal_position_start();
@@ -1380,10 +1379,10 @@ impl WalCoordinator {
         }
 
         self.last_cursor_sequence = Some(cursor.safe_sequence);
-        self.purge_rotated_files_async().await
+        self.purge_rotated_files().await
     }
 
-    async fn record_wal_position_async(&mut self, wal_pos: u64) -> WalResult<()> {
+    async fn record_wal_position(&mut self, wal_pos: u64) -> WalResult<()> {
         if self.cursor_state.wal_position == wal_pos && self.sidecar_path.exists() {
             return Ok(());
         }
@@ -1391,7 +1390,7 @@ impl WalCoordinator {
         CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state).await
     }
 
-    async fn purge_rotated_files_async(&mut self) -> WalResult<()> {
+    async fn purge_rotated_files(&mut self) -> WalResult<()> {
         while let Some(front) = self.rotated_files.front() {
             if front.wal_position_end <= self.cursor_state.wal_position {
                 // On non-Unix platforms, read-only files cannot be deleted directly.
@@ -1475,7 +1474,7 @@ fn placeholder_file() -> File {
     File::from_std(std_file)
 }
 
-async fn sync_file_data_async(file: &File) -> WalResult<()> {
+async fn sync_file_data(file: &File) -> WalResult<()> {
     #[cfg(test)]
     test_support::record_sync_data();
     file.sync_data().await?;
@@ -1509,7 +1508,7 @@ fn cursor_sidecar_path(wal_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("quiver.wal.cursor"))
 }
 
-async fn load_cursor_state_async(path: &Path) -> WalResult<CursorSidecar> {
+async fn load_cursor_state(path: &Path) -> WalResult<CursorSidecar> {
     match CursorSidecar::read_from(path).await {
         Ok(state) => Ok(state),
         Err(WalError::InvalidCursorSidecar(_)) => Ok(default_cursor_state()),
@@ -1582,7 +1581,7 @@ fn discover_rotated_wal_files(base_path: &Path) -> WalResult<Vec<(u64, u64)>> {
     Ok(discovered)
 }
 
-async fn reopen_wal_file_async(
+async fn reopen_wal_file(
     path: &Path,
     segment_hash: [u8; 16],
     wal_position_start: u64,
