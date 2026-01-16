@@ -70,7 +70,7 @@ demonstrate the impact of batching on performance.
 
 - Total input load: 100,000 log records/second
 - Average log record size: 1 KB
-- Batch sizes tested: 10, 100, 1000, and 10000 records per request
+- Batch sizes tested: 10, 100, 1000, 5000, and 10000 records per request
 - Test duration: 60 seconds
 
 This wide range of batch sizes evaluates performance across diverse deployment
@@ -82,6 +82,7 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 
 <!-- TODO: We need to add BatchingProcessor to tests. -->
 <!-- TODO: Batch size influence might be most relevant when we do aggregation/transform etc. -->
+<!-- TODO: Add benchmark tests for batch sizes 10 and 100. -->
 
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
 
@@ -89,8 +90,9 @@ efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 |------------|-----------|--------------|------------|-------------|
 | 10/batch | TBD | TBD | TBD | TBD |
 | 100/batch | TBD | TBD | TBD | TBD |
-| 1000/batch | 17% | 47 MB | 718 KB/s | 748 KB/s |
-| 10000/batch | TBD | TBD | TBD | TBD |
+| 1000/batch | 17% | 46 MB | 718 KB/s | 750 KB/s |
+| 5000/batch | 7% | 50 MB | 390 KB/s | 422 KB/s |
+| 10000/batch | 5% | 58 MB | 350 KB/s | 383 KB/s |
 
 This represents the optimal scenario where the dataflow engine operates with its
 native protocol end-to-end, eliminating protocol conversion overhead.
@@ -101,8 +103,9 @@ native protocol end-to-end, eliminating protocol conversion overhead.
 |------------|-----------|--------------|------------|-------------|
 | 10/batch | TBD | TBD | TBD | TBD |
 | 100/batch | TBD | TBD | TBD | TBD |
-| 1000/batch | 43% | 53 MB | 2.1 MB/s | 2.2 MB/s |
-| 10000/batch | TBD | TBD | TBD | TBD |
+| 1000/batch | 43% | 52 MB | 2.1 MB/s | 2.2 MB/s |
+| 5000/batch | 40% | 79 MB | 1.9 MB/s | 2.0 MB/s |
+| 10000/batch | 40% | 80 MB | 1.8 MB/s | 1.9 MB/s |
 
 This scenario processes OTLP end-to-end using the standard OpenTelemetry
 protocol, providing a baseline for comparison with traditional OTLP-based
