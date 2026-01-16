@@ -14,12 +14,12 @@ components:
           - "--pipeline"
           - "./config.yaml"
           - "--core-id-range"
-          - "1-8"
+          - "1-12"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: 8
+        allocated_cores: 12
       prometheus:
         endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
   df-engine:
@@ -56,7 +56,7 @@ components:
           - "--pipeline"
           - "./config.yaml"
           - "--core-id-range"
-          - "9-10"
+          - "13-14"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
