@@ -1134,7 +1134,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1231,7 +1231,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1289,7 +1289,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1357,7 +1357,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1446,7 +1446,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1507,7 +1507,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1568,7 +1568,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1675,7 +1675,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1758,7 +1758,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1819,7 +1819,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -1966,7 +1966,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -2067,7 +2067,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -2146,7 +2146,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -2235,7 +2235,7 @@ mod tests {
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -2288,7 +2288,7 @@ mod tests {
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -2344,7 +2344,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -2451,7 +2451,7 @@ mod tests {
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);

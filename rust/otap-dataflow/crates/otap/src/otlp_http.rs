@@ -882,6 +882,7 @@ mod tests {
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
         use tokio::net::TcpStream;
         use tokio::sync::mpsc as tokio_mpsc;
@@ -907,7 +908,7 @@ mod tests {
         };
         let shutdown = CancellationToken::new();
 
-        let metrics_registry_handle = otap_df_telemetry::registry::MetricsRegistryHandle::new();
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
