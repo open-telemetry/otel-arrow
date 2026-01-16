@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768592615436,
+  "lastUpdate": 1768603837618,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -442,6 +442,66 @@ window.BENCHMARK_DATA = {
           {
             "name": "scaling_efficiency_avg",
             "value": 0.7205,
+            "unit": "",
+            "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b793a1e733d3f1c1a626430c0d93e00e9e6d98e2",
+          "message": "PerfTest - add passthrough scenario (#1810)\n\nAll existing tests add a dummy processor in the middle to force\nconversion into internal format. But there are real scenarios where\nengine can act as \"pass-through\" without having to do this conversion.\nThis adds a perf-test to continuously measure the throughput when\noperating as pass-through.\nModelled after saturation tests - where we put as much load as required\nto hit 100% CPU in engine. Local run shows it can do twice (minimum) the\nthroughput!",
+          "timestamp": "2026-01-16T22:14:05Z",
+          "tree_id": "1cf5cc0d17331750aa5a89bae24befe3b9d85c4a",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b793a1e733d3f1c1a626430c0d93e00e9e6d98e2"
+        },
+        "date": 1768603837236,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "scaling_efficiency_2_cores",
+            "value": 0.7595,
+            "unit": "",
+            "extra": "Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_4_cores",
+            "value": 0.8574,
+            "unit": "",
+            "extra": "Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_8_cores",
+            "value": 0.789,
+            "unit": "",
+            "extra": "Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_16_cores",
+            "value": 0.6176,
+            "unit": "",
+            "extra": "Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_24_cores",
+            "value": 0.6834,
+            "unit": "",
+            "extra": "Scaling efficiency at 24 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_avg",
+            "value": 0.7414,
             "unit": "",
             "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
