@@ -341,9 +341,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    let _ =
-                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
-                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
+                    // Create the guard before any fallible work so failed builds still clean up.
+                    let mut node_guard =
+                        Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
                     let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
                         || -> Result<ReceiverWrapper<PData>, Error> {
@@ -362,17 +362,21 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             ))
                         },
                     )?;
-                    let wrapper = wrapper
-                        .with_node_telemetry_guard(NodeTelemetryGuard::new(node_telemetry_handle));
+                    let wrapper = wrapper.with_node_telemetry_guard(
+                        node_guard.take().expect("node telemetry guard missing"),
+                    );
                     receivers.push(wrapper);
+                    let _ =
+                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
+                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                 }
                 otap_df_config::node::NodeKind::Processor => {
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    let _ =
-                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
-                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
+                    // Create the guard before any fallible work so failed builds still clean up.
+                    let mut node_guard =
+                        Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
                     let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
                         || -> Result<ProcessorWrapper<PData>, Error> {
@@ -391,17 +395,21 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             ))
                         },
                     )?;
-                    let wrapper = wrapper
-                        .with_node_telemetry_guard(NodeTelemetryGuard::new(node_telemetry_handle));
+                    let wrapper = wrapper.with_node_telemetry_guard(
+                        node_guard.take().expect("node telemetry guard missing"),
+                    );
                     processors.push(wrapper);
+                    let _ =
+                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
+                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                 }
                 otap_df_config::node::NodeKind::Exporter => {
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    let _ =
-                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
-                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
+                    // Create the guard before any fallible work so failed builds still clean up.
+                    let mut node_guard =
+                        Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
                     let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
                         || -> Result<ExporterWrapper<PData>, Error> {
@@ -420,9 +428,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             ))
                         },
                     )?;
-                    let wrapper = wrapper
-                        .with_node_telemetry_guard(NodeTelemetryGuard::new(node_telemetry_handle));
+                    let wrapper = wrapper.with_node_telemetry_guard(
+                        node_guard.take().expect("node telemetry guard missing"),
+                    );
                     exporters.push(wrapper);
+                    let _ =
+                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
+                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
