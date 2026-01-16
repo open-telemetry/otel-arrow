@@ -870,6 +870,326 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_int_value_via_config() {
+        // Test inserting an integer value via JSON configuration
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![KeyValue::new("existing", AnyValue::new_string("val"))],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "count", "value": 42},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-insert-int");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(log_attrs.iter().any(|kv| kv.key == "count"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_double_value_via_config() {
+        // Test inserting a double value via JSON configuration
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![KeyValue::new("existing", AnyValue::new_string("val"))],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "ratio", "value": 3.14159},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-insert-double");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(log_attrs.iter().any(|kv| kv.key == "ratio"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_bool_value_via_config() {
+        // Test inserting a boolean value via JSON configuration
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![KeyValue::new("existing", AnyValue::new_string("val"))],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "enabled", "value": true},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-insert-bool");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert!(log_attrs.iter().any(|kv| kv.key == "enabled"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_does_not_overwrite_existing() {
+        // Verify that insert action does NOT overwrite existing key (per OTel spec)
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![KeyValue::new("target_key", AnyValue::new_string("original_value"))],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "target_key", "value": "new_value"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-insert-no-overwrite");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Should have exactly one target_key with original value
+                let matching_attrs: Vec<_> = log_attrs
+                    .iter()
+                    .filter(|kv| kv.key == "target_key")
+                    .collect();
+                assert_eq!(matching_attrs.len(), 1);
+
+                // Value should be original, not overwritten
+                let value = matching_attrs[0]
+                    .value
+                    .as_ref()
+                    .expect("value")
+                    .value
+                    .as_ref()
+                    .expect("inner value");
+                match value {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                        s,
+                    ) => {
+                        assert_eq!(s, "original_value");
+                    }
+                    _ => panic!("expected string value"),
+                }
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_insert_multiple_keys_mixed_existing() {
+        // Test inserting multiple keys where some exist and some don't
+        let input = build_logs_with_attrs(
+            vec![],
+            vec![],
+            vec![
+                KeyValue::new("existing_a", AnyValue::new_string("val_a")),
+                KeyValue::new("existing_b", AnyValue::new_string("val_b")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "insert", "key": "existing_a", "value": "should_not_replace"},
+                {"action": "insert", "key": "new_key", "value": "new_value"},
+            ],
+            "apply_to": ["signal"]
+        });
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let node = test_node("attributes-processor-insert-mixed");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Should have 3 keys: existing_a (unchanged), existing_b, new_key
+                assert_eq!(log_attrs.len(), 3);
+                assert!(log_attrs.iter().any(|kv| kv.key == "existing_a"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "existing_b"));
+                assert!(log_attrs.iter().any(|kv| kv.key == "new_key"));
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
     fn test_delete_scoped_to_resource_only_logs() {
         // Resource has 'a', scope has 'a', log has 'a' and another key to keep batch non-empty
         let input = build_logs_with_attrs(

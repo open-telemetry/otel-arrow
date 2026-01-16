@@ -4342,4 +4342,500 @@ mod insert_tests {
         // Result should have: 2 original + 3 new = 5 rows
         assert_eq!(result.num_rows(), 5);
     }
+
+    #[test]
+    fn test_insert_int_value() {
+        // Test inserting Int values
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "count".into(),
+                LiteralValue::Int(42),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+
+        // Check the int value was inserted
+        let int_col = result
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        // First row (existing) should be null, second row (inserted) should be 42
+        assert!(int_col.is_null(0));
+        assert_eq!(int_col.value(1), 42);
+    }
+
+    #[test]
+    fn test_insert_double_value() {
+        // Test inserting Double values
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "ratio".into(),
+                LiteralValue::Double(3.14159),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+
+        let double_col = result
+            .column_by_name(consts::ATTRIBUTE_DOUBLE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!(double_col.is_null(0));
+        assert!((double_col.value(1) - 3.14159).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_insert_bool_value() {
+        // Test inserting Bool values
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "enabled".into(),
+                LiteralValue::Bool(true),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+
+        let bool_col = result
+            .column_by_name(consts::ATTRIBUTE_BOOL)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(bool_col.is_null(0));
+        assert!(bool_col.value(1));
+    }
+
+    #[test]
+    fn test_insert_multiple_value_types() {
+        // Test inserting multiple values of different types at once
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![
+                ("str_key".into(), LiteralValue::Str("str_val".into())),
+                ("int_key".into(), LiteralValue::Int(100)),
+                ("double_key".into(), LiteralValue::Double(2.5)),
+                ("bool_key".into(), LiteralValue::Bool(false)),
+            ])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 4);
+        assert_eq!(result.num_rows(), 5); // 1 original + 4 inserted
+    }
+
+    #[test]
+    fn test_insert_with_dictionary_encoded_keys() {
+        // Test inserting with dictionary-encoded key columns
+        let key_type = DataType::Dictionary(
+            Box::new(DataType::UInt8),
+            Box::new(DataType::Utf8),
+        );
+        let str_type = DataType::Dictionary(
+            Box::new(DataType::UInt8),
+            Box::new(DataType::Utf8),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, key_type.clone(), false),
+            Field::new(consts::ATTRIBUTE_STR, str_type.clone(), true),
+        ]));
+
+        let mut key_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        key_builder.append_value("existing_key");
+        let keys = Arc::new(key_builder.finish());
+
+        let mut val_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        val_builder.append_value("existing_value");
+        let vals = Arc::new(val_builder.finish());
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                keys,
+                vals,
+            ],
+        )
+        .unwrap();
+
+        // Insert a new key - should work with dictionary-encoded schema
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "new_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_insert_with_dictionary_encoded_keys_respects_existing() {
+        // Test that insert respects existing keys when using dictionary-encoded columns
+        let key_type = DataType::Dictionary(
+            Box::new(DataType::UInt8),
+            Box::new(DataType::Utf8),
+        );
+        let str_type = DataType::Dictionary(
+            Box::new(DataType::UInt8),
+            Box::new(DataType::Utf8),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, key_type.clone(), false),
+            Field::new(consts::ATTRIBUTE_STR, str_type.clone(), true),
+        ]));
+
+        let mut key_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        key_builder.append_value("existing_key");
+        let keys = Arc::new(key_builder.finish());
+
+        let mut val_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        val_builder.append_value("original_value");
+        let vals = Arc::new(val_builder.finish());
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                keys,
+                vals,
+            ],
+        )
+        .unwrap();
+
+        // Try to insert existing_key - should be skipped
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "existing_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No inserts because key already exists
+        assert_eq!(stats.inserted_entries, 0);
+        assert_eq!(result.num_rows(), 1);
+    }
+
+    #[test]
+    fn test_insert_with_uint16_dictionary_keys() {
+        // Test inserting with UInt16 dictionary-encoded key columns
+        let key_type = DataType::Dictionary(
+            Box::new(DataType::UInt16),
+            Box::new(DataType::Utf8),
+        );
+        let str_type = DataType::Dictionary(
+            Box::new(DataType::UInt16),
+            Box::new(DataType::Utf8),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, key_type.clone(), false),
+            Field::new(consts::ATTRIBUTE_STR, str_type.clone(), true),
+        ]));
+
+        let mut key_builder = StringDictionaryBuilder::<UInt16Type>::new();
+        key_builder.append_value("existing_key");
+        let keys = Arc::new(key_builder.finish());
+
+        let mut val_builder = StringDictionaryBuilder::<UInt16Type>::new();
+        val_builder.append_value("existing_value");
+        let vals = Arc::new(val_builder.finish());
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                keys,
+                vals,
+            ],
+        )
+        .unwrap();
+
+        // Insert new key and try to insert existing key
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![
+                ("existing_key".into(), LiteralValue::Str("should_skip".into())),
+                ("new_key".into(), LiteralValue::Str("new_value".into())),
+            ])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Only 1 insert (new_key), existing_key should be skipped
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_insert_with_empty_batch() {
+        // Test inserting when input batch is empty
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::new_empty(schema.clone());
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "key".into(),
+                LiteralValue::Str("value".into()),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No parents to insert into
+        assert_eq!(stats.inserted_entries, 0);
+        assert_eq!(result.num_rows(), 0);
+    }
+
+    #[test]
+    fn test_insert_with_multiple_parents() {
+        // Test insert correctly handles multiple different parent IDs
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // 3 parents: 0, 1, 2 with different existing keys
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 1, 2, 2, 2])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "b", "a", "x", "y", "z",
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "v0", "v1", "v2", "v3", "v4", "v5",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        // Insert "a" and "new_key"
+        // Parent 0: has "a" -> skip "a", insert "new_key"
+        // Parent 1: has "a" -> skip "a", insert "new_key"
+        // Parent 2: no "a" -> insert both "a" and "new_key"
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![
+                ("a".into(), LiteralValue::Str("inserted_a".into())),
+                ("new_key".into(), LiteralValue::Str("new_val".into())),
+            ])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // 1 + 1 + 2 = 4 inserts
+        assert_eq!(stats.inserted_entries, 4);
+        // 6 original + 4 inserted = 10
+        assert_eq!(result.num_rows(), 10);
+    }
+
+    #[test]
+    fn test_insert_with_null_in_key_column() {
+        // Test that null keys in original data are handled properly
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true), // nullable
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Parent 0 has a null key
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "new_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Should insert new_key for parent 0
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+    }
 }
