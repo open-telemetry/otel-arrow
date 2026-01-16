@@ -166,6 +166,26 @@ impl PipelinePhase {
             PipelinePhase::Rejected(_) => PhaseKind::Rejected,
         }
     }
+
+    /// Returns true if this phase represents a terminal state from which the pipeline
+    /// will not transition to another state without external intervention.
+    ///
+    /// Terminal states are: `Stopped`, `Deleted`, `Failed`, and `Rejected`.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            // Terminal states - pipeline has reached an end state
+            Self::Stopped | Self::Deleted | Self::Failed(_) | Self::Rejected(_) => true,
+            // Non-terminal states - pipeline is still actively transitioning
+            Self::Pending
+            | Self::Starting
+            | Self::Running
+            | Self::Draining
+            | Self::Updating
+            | Self::RollingBack
+            | Self::Deleting(_) => false,
+        }
+    }
 }
 
 /// Why admission/config were rejected (distinct from runtime failures).
