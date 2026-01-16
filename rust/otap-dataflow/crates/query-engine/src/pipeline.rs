@@ -319,8 +319,8 @@ mod test {
         MetricsData::decode(otlp_bytes.as_bytes()).unwrap()
     }
 
-    pub async fn exec_logs_pipeline<P: Parser>(kql_expr: &str, logs_data: LogsData) -> LogsData {
-        let parser_result = P::parse(kql_expr).unwrap();
+    pub async fn exec_logs_pipeline<P: Parser>(query: &str, logs_data: LogsData) -> LogsData {
+        let parser_result = P::parse(query).unwrap();
         exec_logs_pipeline_expr(parser_result.pipeline, logs_data).await
     }
 
