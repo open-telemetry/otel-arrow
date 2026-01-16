@@ -1,0 +1,37 @@
+[package]
+name = "otap-df-quiver-e2e"
+description = "End-to-end stress test harness for Quiver persistence layer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+keywords = ["opentelemetry", "arrow", "persistence", "quiver", "testing"]
+categories = ["development-tools::testing"]
+
+[[bin]]
+name = "quiver-e2e"
+path = "src/main.rs"
+
+[dependencies]
+quiver = { workspace = true, features = ["mmap"] }
+arrow-array.workspace = true
+arrow-schema.workspace = true
+tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+parking_lot.workspace = true
+rand.workspace = true
+clap.workspace = true
+ratatui = "0.30"
+crossterm = "0.29"
+sysinfo = "0.37"
+
+[target.'cfg(not(windows))'.dependencies]
+tikv-jemallocator.workspace = true
+tikv-jemalloc-ctl = { workspace = true, features = ["stats"] }
+
+[lints]
+workspace = true

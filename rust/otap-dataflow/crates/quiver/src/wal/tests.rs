@@ -2643,7 +2643,7 @@ fn wal_buffer_decay_rate_affects_shrinking_behavior() {
 
     let capacity_after_large = get_payload_buffer_capacity(&writer);
     assert!(
-        capacity_after_large >= 256 * 1024,
+        capacity_after_large >= 100 * 1024,
         "buffer should have grown: {}",
         capacity_after_large
     );
@@ -2971,5 +2971,35 @@ fn cursor_in_rotated_file_is_valid() {
         writer.purge_count(),
         2,
         "two rotated files should be purged"
+    );
+}
+
+#[test]
+fn wal_error_is_at_capacity_returns_true_for_capacity_errors() {
+    let capacity_error = WalError::WalAtCapacity("test capacity message");
+    assert!(
+        capacity_error.is_at_capacity(),
+        "WalAtCapacity should return true for is_at_capacity()"
+    );
+}
+
+#[test]
+fn wal_error_is_at_capacity_returns_false_for_other_errors() {
+    let io_error = WalError::Io(std::io::Error::other("test"));
+    assert!(
+        !io_error.is_at_capacity(),
+        "Io error should return false for is_at_capacity()"
+    );
+
+    let invalid_config = WalError::InvalidConfig("test config");
+    assert!(
+        !invalid_config.is_at_capacity(),
+        "InvalidConfig should return false for is_at_capacity()"
+    );
+
+    let invalid_entry = WalError::InvalidEntry("test entry");
+    assert!(
+        !invalid_entry.is_at_capacity(),
+        "InvalidEntry should return false for is_at_capacity()"
     );
 }

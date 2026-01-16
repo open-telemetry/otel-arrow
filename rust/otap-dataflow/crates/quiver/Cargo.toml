@@ -16,7 +16,7 @@ name = "quiver"
 path = "src/lib.rs"
 
 [features]
-default = ["otap-dataflow-integrations"]
+default = ["otap-dataflow-integrations", "mmap"]
 otap-dataflow-integrations = []
 serde = ["dep:serde"]
 mmap = ["dep:memmap2"]
@@ -32,6 +32,7 @@ blake3.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, optional = true }
 thiserror.workspace = true
+tracing.workspace = true
 memmap2 = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

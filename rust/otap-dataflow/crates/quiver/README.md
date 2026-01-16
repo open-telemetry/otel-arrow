@@ -1,34 +1,85 @@
-# Quiver (Experimental) - Arrow-Based Persistence for OTAP Dataflow - README
+# Quiver (Experimental) - Arrow-Based Persistence for OTAP Dataflow
 
-Quiver is a standalone, embeddable Arrow-based segment store
-packaged as a reusable Rust crate. See `ARCHITECTURE.md`
-for more details.
+Quiver is a standalone, embeddable Arrow-based segment store packaged as a
+reusable Rust crate. It provides durable buffering with crash recovery for
+telemetry pipelines. See `ARCHITECTURE.md` for design details.
 
-The crate currently exposes configuration scaffolding, placeholder engine APIs,
-and Criterion bench harness stubs. No bytes are persisted yet; every ingest
-call intentionally returns `QuiverError::Unimplemented`.
+## Features
 
-Integration with the `otap-df` binary is opt-in via the Cargo feature
-`quiver-persistence`. The feature is *disabled by default*, so release builds
-never pull in the experimental persistence code path unless the flag is
-explicitly enabled.
+- **Write-Ahead Log (WAL)**: Crash recovery with configurable flush policies
+- **Segment Storage**: Immutable Arrow IPC files with optional memory-mapped reads
+- **Multi-Subscriber**: Independent consumers with at-least-once delivery
+- **Progress Tracking**: Persistent progress files for subscriber state
+- **Automatic Cleanup**: Delete segments after all subscribers complete
 
 ## Status
 
-**Under Development, Not production-ready** This crate is
-being actively developed based on the specifications in `ARCHITECTURE.md`
-(which may be updated as development proceeds). *It is not yet complete,
-stable or suitable for taking a dependency on.*
+**Experimental** - This crate is under active development and the API may change.
+Not yet suitable for production use.
 
-## Quick start
+## Quick Start
 
 ```bash
 cd rust/otap-dataflow
 cargo test -p otap-df-quiver      # unit tests + doc tests
-cargo bench -p otap-df-quiver     # opt-in Criterion bench stub
-# Enable the downstream integration (still a stub) when needed
-cargo test -p otap-df --features quiver-persistence
+cargo bench -p otap-df-quiver     # Criterion benchmarks
 ```
 
-The bench currently measures the placeholder ingest path so we have a home for
-future perf instrumentation once real I/O lands.
+## Usage
+
+```rust,ignore
+use quiver::{QuiverEngine, QuiverConfig, DiskBudget, RetentionPolicy, SubscriberId};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+// Use a durable filesystem path, not /tmp (which may be tmpfs)
+let data_dir = PathBuf::from("/var/lib/quiver/data");
+let config = QuiverConfig::default().with_data_dir(&data_dir);
+
+// Configure disk budget (10 GB cap with backpressure)
+let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+let engine = QuiverEngine::new(config, budget)?;
+
+// Register a subscriber
+let sub_id = SubscriberId::new("my-exporter")?;
+engine.register_subscriber(sub_id.clone())?;
+engine.activate_subscriber(&sub_id)?;
+
+// Ingest data (bundles from upstream)
+// engine.ingest(&bundle)?;
+
+// Consume bundles
+while let Some(handle) = engine.next_bundle(&sub_id)? {
+    // Process the bundle...
+    handle.ack();  // Acknowledge successful processing
+}
+
+// Periodic maintenance
+engine.maintain()?;
+```
+
+### Handling Backpressure
+
+When the disk budget is exhausted, `ingest()` returns `QuiverError::StorageAtCapacity`.
+The embedding layer should handle this by slowing ingestion:
+
+```rust,ignore
+use quiver::QuiverError;
+
+match engine.ingest(&bundle) {
+    Ok(()) => { /* success */ }
+    Err(e) if e.is_at_capacity() => {
+        // Backpressure: wait for subscribers to catch up and segments to be cleaned
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        engine.maintain()?;  // Try to clean up completed segments
+        // Retry ingestion...
+    }
+    Err(e) => return Err(e),  // Other errors are fatal
+}
+```
+
+## Cargo Features
+
+- `mmap` (default): Memory-mapped segment reads for zero-copy access
+- `serde`: Serialization support for configuration types
+- `otap-dataflow-integrations`: Integration with otap-dataflow types
