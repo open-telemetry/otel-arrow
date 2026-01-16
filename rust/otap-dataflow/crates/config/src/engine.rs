@@ -31,6 +31,7 @@ pub struct EngineSettings {
     pub http_admin: Option<HttpAdminSettings>,
 
     /// Telemetry settings.
+    #[serde(default = "default_telemetry_settings")]
     pub telemetry: TelemetrySettings,
 }
 
@@ -60,6 +61,13 @@ impl Default for HttpAdminSettings {
         Self {
             bind_address: default_bind_address(),
         }
+    }
+}
+
+const fn default_telemetry_settings() -> TelemetrySettings {
+    TelemetrySettings {
+        reporting_channel_size: default_reporting_channel_size(),
+        flush_interval: default_reporting_interval()
     }
 }
 

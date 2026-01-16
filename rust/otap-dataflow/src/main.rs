@@ -5,8 +5,7 @@
 
 use clap::{ArgGroup, Parser};
 use otap_df_config::engine::{EngineConfig, HttpAdminSettings};
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
+use otap_df_config::pipeline::{CoreAllocation, CoreRange, PipelineConfig, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
@@ -144,12 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         (None, None) => None,
     };
-    let core_allocation_override_for_engine = core_allocation_override.clone();
-    let core_allocation_override_for_pipeline = core_allocation_override;
-    let http_admin_bind_for_engine = http_admin_bind.clone();
-    let http_admin_bind_for_pipeline = http_admin_bind;
-
-    let (pipeline_group_id, pipeline_id, pipeline_cfg, quota, admin_settings) =
+    let (pipeline_group_id, pipeline_id, mut pipeline_cfg, admin_settings) =
         if let Some(config_path) = config {
             let engine_cfg = EngineConfig::from_file(config_path)?;
             if engine_cfg.pipeline_groups.len() != 1 {
@@ -172,11 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let otap_df_config::pipeline_group::PipelineGroupConfig { pipelines, quota } =
-                pipeline_group_cfg;
-            let (pipeline_id, pipeline_cfg) =
-                pipelines.into_iter().next().expect("pipeline missing");
-            let admin_settings = if let Some(bind_address) = http_admin_bind_for_engine {
+            let (pipeline_id, pipeline_cfg) = pipeline_group_cfg
+                .pipelines
+                .into_iter()
+                .next()
+                .expect("pipeline missing");
+            let admin_settings = if let Some(bind_address) = http_admin_bind {
                 HttpAdminSettings { bind_address }
             } else if let Some(config_admin) = settings.http_admin {
                 config_admin
@@ -185,11 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bind_address: default_admin_bind.clone(),
                 }
             };
-            let quota = match core_allocation_override_for_engine {
-                Some(core_allocation) => Quota { core_allocation },
-                None => quota,
-            };
-            (pipeline_group_id, pipeline_id, pipeline_cfg, quota, admin_settings)
+            (pipeline_group_id, pipeline_id, pipeline_cfg, admin_settings)
         } else {
             // For now, we predefine pipeline group and pipeline IDs.
             // That will be replaced with a more dynamic approach in the future.
@@ -208,15 +199,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pipeline_id.clone(),
                 &pipeline_path,
             )?;
-            let core_allocation =
-                core_allocation_override_for_pipeline.unwrap_or(CoreAllocation::AllCores);
-            let quota = Quota { core_allocation };
             let admin_settings = HttpAdminSettings {
-                bind_address: http_admin_bind_for_pipeline
-                    .unwrap_or_else(|| default_admin_bind.clone()),
+                bind_address: http_admin_bind.unwrap_or_else(|| default_admin_bind.clone()),
             };
-            (pipeline_group_id, pipeline_id, pipeline_cfg, quota, admin_settings)
+            (pipeline_group_id, pipeline_id, pipeline_cfg, admin_settings)
         };
+
+    if let Some(core_allocation) = core_allocation_override {
+        pipeline_cfg.set_quota(Quota { core_allocation });
+    }
+
+    let quota = pipeline_cfg.quota().clone();
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
@@ -234,7 +227,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pipeline_group_id,
         pipeline_id,
         pipeline_cfg,
-        quota,
         admin_settings,
     );
     match result {

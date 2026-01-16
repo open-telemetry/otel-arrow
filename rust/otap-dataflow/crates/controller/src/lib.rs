@@ -23,8 +23,7 @@ use core_affinity::CoreId;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
-    pipeline::PipelineConfig,
-    pipeline_group::{CoreAllocation, Quota},
+    pipeline::{CoreAllocation, PipelineConfig, Quota},
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -63,13 +62,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         Self { pipeline_factory }
     }
 
-    /// Starts the controller with the given pipeline configuration and quota.
+    /// Starts the controller with the given pipeline configuration.
     pub fn run_forever(
         &self,
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         pipeline: PipelineConfig,
-        quota: Quota,
         admin_settings: HttpAdminSettings,
     ) -> Result<(), Error> {
         // Initialize metrics system and observed event store.
@@ -114,6 +112,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             spawn_thread_local_task("observed-state-store", move |cancellation_token| {
                 obs_state_store.run(cancellation_token)
             })?;
+
+        let quota = pipeline.quota().clone();
 
         // Start one thread per requested core
         // Get available CPU cores for pinning
@@ -454,7 +454,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline_group::CoreRange;
+    use otap_df_config::pipeline::CoreRange;
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
