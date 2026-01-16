@@ -91,6 +91,16 @@ impl RawLoggingLayer {
     pub fn new(writer: ConsoleWriter) -> Self {
         Self { writer }
     }
+
+    /// Process a tracing Event directly, bypassing the dispatcher.
+    pub fn dispatch_event(&self, event: &Event<'_>) {
+        // TODO: there are allocations implied in LogRecord::new that we
+        // would prefer to avoid; it will be an extensive change in the
+        // ProtoBuffer impl to stack-allocate this as a temporary.
+        let record = LogRecord::new(event);
+        let callsite = SavedCallsite::new(event.metadata());
+        self.writer.print_log_record(&record, &callsite);
+    }
 }
 
 /// Type alias for a cursor over a byte buffer.
@@ -119,13 +129,20 @@ impl ConsoleWriter {
     /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
     pub fn format_log_record(&self, record: &LogRecord, callsite: &SavedCallsite) -> String {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.write_log_record(&mut buf, record, callsite);
+        let len = self.encode_log_record(&mut buf, record, callsite);
         // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
-    /// Write a LogRecord to a byte buffer. Returns the number of bytes written.
-    pub fn write_log_record(
+    /// Print a LogRecord directly to stdout or stderr (based on level).
+    pub fn print_log_record(&self, record: &LogRecord, callsite: &SavedCallsite) {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = self.encode_log_record(&mut buf, record, callsite);
+        self.write_line(callsite.level(), &buf[..len]);
+    }
+
+    /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
+    fn encode_log_record(
         &self,
         buf: &mut [u8],
         record: &LogRecord,
@@ -323,15 +340,7 @@ where
     // Allocates a buffer on the stack, formats the event to a LogRecord
     // with partial OTLP bytes.
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        // TODO: there are allocations implied here that we would prefer
-        // to avoid, it will be an extensive change in the ProtoBuffer to
-        // stack-allocate this temporary.
-        let record = LogRecord::new(event);
-        let callsite = SavedCallsite::new(event.metadata());
-
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.writer.write_log_record(&mut buf, &record, &callsite);
-        self.writer.write_line(callsite.level(), &buf[..len]);
+        self.dispatch_event(event);
     }
 
     // Note! This tracing layer does not implement Span-related features
@@ -595,7 +604,7 @@ mod tests {
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let writer = ConsoleWriter::no_color();
-        let len = writer.write_log_record(&mut buf, &record, &test_callsite());
+        let len = writer.encode_log_record(&mut buf, &record, &test_callsite());
 
         // Fills exactly to capacity due to overflow.
         // Note! we could append a ... or some other indicator.
