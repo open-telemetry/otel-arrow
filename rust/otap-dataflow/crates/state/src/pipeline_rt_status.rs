@@ -249,6 +249,8 @@ impl PipelineRuntimeStatus {
                     );
                 }
             },
+            // Log events don't affect pipeline conditions.
+            EventType::Log(_) => {}
         }
     }
 

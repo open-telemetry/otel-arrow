@@ -36,6 +36,8 @@ pub mod attributes;
 pub mod collector;
 pub mod descriptor;
 pub mod error;
+/// Event types for lifecycle and log events.
+pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
