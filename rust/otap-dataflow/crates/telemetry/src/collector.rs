@@ -4,6 +4,7 @@
 //! Task periodically collecting the internal signals emitted by the engine and the pipelines.
 
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
@@ -58,6 +59,22 @@ impl InternalCollector {
                     // Channel closed, exit the loop
                     return Ok(());
                 }
+            }
+        }
+    }
+
+    /// Runs the collection loop until cancellation is requested.
+    ///
+    /// This method starts the internal signal collection loop and listens for a shutdown signal.
+    /// It returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
+    pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
+        tokio::select! {
+            res = self.run_collection_loop() => {
+                res
+            }
+            _ = cancel.cancelled() => {
+                // Shutdown requested; cancel the collection loop by dropping its future.
+                Ok(())
             }
         }
     }

@@ -40,11 +40,14 @@ pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
 pub mod metrics;
-pub mod opentelemetry_client;
+/// OpenTelemetry SDK provider configuration.
+pub mod otel_sdk;
 pub mod registry;
 pub mod reporter;
 pub mod self_tracing;
 pub mod semconv;
+/// Tokio tracing subscriber initialization.
+pub mod tracing_init;
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -68,8 +71,16 @@ pub use tracing::warn_span as otel_warn_span;
 pub mod entity;
 pub mod testing;
 
-/// The internal telemetry system that registers, collects, and reports internal signals.
+use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
+
+/// The internal telemetry system - unified entry point for all telemetry.
+///
+/// This system manages:
+/// - Internal multivariate metrics (registry, collection, reporting)
+/// - OpenTelemetry SDK providers (metrics and logs export)
+/// - Tokio tracing subscriber configuration
 pub struct InternalTelemetrySystem {
+    // === Internal Metrics Subsystem ===
     /// The telemetry registry that holds all registered entities and metrics (data + metadata).
     registry: TelemetryRegistryHandle,
 
@@ -81,12 +92,27 @@ pub struct InternalTelemetrySystem {
 
     /// The dispatcher that flushes internal telemetry metrics.
     dispatcher: Arc<metrics::dispatcher::MetricsDispatcher>,
+
+    // === OTel SDK Subsystem ===
+    /// OTel SDK meter provider for metrics export.
+    meter_provider: SdkMeterProvider,
+
+    /// OTel SDK logger provider for logs export.
+    logger_provider: SdkLoggerProvider,
+
+    /// Tokio runtime for OTLP exporters (kept alive).
+    _otel_runtime: Option<tokio::runtime::Runtime>,
 }
 
 impl InternalTelemetrySystem {
     /// Creates a new [`InternalTelemetrySystem`] initialized with the given configuration.
-    #[must_use]
-    pub fn new(config: &TelemetryConfig) -> Self {
+    ///
+    /// This creates:
+    /// 1. The internal metrics subsystem (registry, collector, reporter, dispatcher)
+    /// 2. The OpenTelemetry SDK providers (meter and logger)
+    /// 3. Initializes the global tracing subscriber
+    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+        // 1. Create internal metrics subsystem
         let telemetry_registry = TelemetryRegistryHandle::new();
         let (collector, reporter) =
             collector::InternalCollector::new(config, telemetry_registry.clone());
@@ -94,12 +120,25 @@ impl InternalTelemetrySystem {
             telemetry_registry.clone(),
             config.reporting_interval,
         ));
-        Self {
+
+        // 2. Create OTel SDK providers
+        let otel_client = otel_sdk::OpentelemetryClient::new(config)?;
+        let meter_provider = otel_client.meter_provider().clone();
+        let logger_provider = otel_client.logger_provider().clone();
+        let otel_runtime = otel_client.into_runtime();
+
+        // 3. Initialize global tracing subscriber
+        tracing_init::init_global_subscriber(config.logs.level, &logger_provider);
+
+        Ok(Self {
             registry: telemetry_registry,
             collector,
             reporter,
             dispatcher,
-        }
+            meter_provider,
+            logger_provider,
+            _otel_runtime: otel_runtime,
+        })
     }
 
     /// Returns a shareable/cloneable handle to the telemetry registry.
@@ -118,6 +157,24 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn dispatcher(&self) -> Arc<metrics::dispatcher::MetricsDispatcher> {
         self.dispatcher.clone()
+    }
+
+    /// Splits the system into the collection loop and a shutdown handle.
+    ///
+    /// Returns a tuple of:
+    /// - The collector that runs the aggregation loop
+    /// - A shutdown handle for the OTel SDK providers
+    ///
+    /// This allows the caller to run the collector in a separate task while
+    /// retaining the ability to shutdown the OTel providers.
+    #[must_use]
+    pub fn into_parts(self) -> (collector::InternalCollector, OtelShutdownHandle) {
+        let shutdown_handle = OtelShutdownHandle {
+            meter_provider: self.meter_provider,
+            logger_provider: self.logger_provider,
+            _otel_runtime: self._otel_runtime,
+        };
+        (self.collector, shutdown_handle)
     }
 
     /// Starts the internal signal collection loop and listens for a shutdown signal.
@@ -146,10 +203,58 @@ impl InternalTelemetrySystem {
     pub async fn run_collection_loop(self) -> Result<(), Error> {
         self.collector.run_collection_loop().await
     }
+
+    /// Shuts down the OpenTelemetry SDK providers.
+    pub fn shutdown(&self) -> Result<(), Error> {
+        let meter_shutdown_result = self.meter_provider.shutdown();
+        let logger_shutdown_result = self.logger_provider.shutdown();
+
+        if let Err(e) = meter_shutdown_result {
+            return Err(Error::ShutdownError(e.to_string()));
+        }
+
+        if let Err(e) = logger_shutdown_result {
+            return Err(Error::ShutdownError(e.to_string()));
+        }
+        Ok(())
+    }
 }
 
 impl Default for InternalTelemetrySystem {
     fn default() -> Self {
-        Self::new(&TelemetryConfig::default())
+        Self::new(&TelemetryConfig::default()).expect("default telemetry config should be valid")
+    }
+}
+
+/// Handle for shutting down OpenTelemetry SDK providers.
+///
+/// This handle is returned by [`InternalTelemetrySystem::into_parts`] and
+/// holds ownership of the OTel SDK providers and runtime. Call [`shutdown`](Self::shutdown)
+/// to gracefully shut down the providers before dropping.
+pub struct OtelShutdownHandle {
+    /// OTel SDK meter provider for metrics export.
+    meter_provider: SdkMeterProvider,
+
+    /// OTel SDK logger provider for logs export.
+    logger_provider: SdkLoggerProvider,
+
+    /// Tokio runtime for OTLP exporters (kept alive).
+    _otel_runtime: Option<tokio::runtime::Runtime>,
+}
+
+impl OtelShutdownHandle {
+    /// Shuts down the OpenTelemetry SDK providers.
+    pub fn shutdown(&self) -> Result<(), Error> {
+        let meter_shutdown_result = self.meter_provider.shutdown();
+        let logger_shutdown_result = self.logger_provider.shutdown();
+
+        if let Err(e) = meter_shutdown_result {
+            return Err(Error::ShutdownError(e.to_string()));
+        }
+
+        if let Err(e) = logger_shutdown_result {
+            return Err(Error::ShutdownError(e.to_string()));
+        }
+        Ok(())
     }
 }
