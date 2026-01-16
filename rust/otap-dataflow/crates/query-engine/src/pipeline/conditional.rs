@@ -214,12 +214,16 @@ impl PipelineStage for ConditionalPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use crate::pipeline::{Pipeline, test::exec_logs_pipeline_expr};
+    use crate::pipeline::{
+        Pipeline,
+        test::{exec_logs_pipeline, exec_logs_pipeline_expr},
+    };
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
         LogicalExpression, PipelineExpression, PipelineExpressionBuilder, QueryLocation,
     };
     use data_engine_kql_parser::{KqlParser, Parser};
+    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, KeyValue},
         logs::v1::LogRecord,
@@ -227,6 +231,10 @@ mod test {
     use otap_df_pdata::testing::round_trip::to_logs_data;
 
     use super::*;
+
+    // TODO Remote this `ConditionalTest` type and use the OPLParser in the test suites below
+    // once we have support for project-away in this parser
+    // https://github.com/open-telemetry/otel-arrow/issues/1763
 
     /// helper for constructing a pipeline with a conditional data expression.
     ///
@@ -248,7 +256,6 @@ mod test {
                     .unwrap()
                     .pipeline;
 
-                println!("pipeline {}", pipeline);
                 let condition = match pipeline.get_expressions().first() {
                     Some(DataExpression::Discard(discard)) => match discard.get_predicate() {
                         Some(LogicalExpression::Not(not)) => not.get_inner_expression().clone(),
@@ -303,17 +310,14 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = ConditionalTest {
-            branches: vec![(
-                "severity_text == \"ERROR\"",
-                "project-rename attributes[\"y\"] = attributes[\"x\"]",
-            )],
-            ..Default::default()
-        }
-        .as_logs_pipeline();
-
-        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
-
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            }"#,
+            to_logs_data(log_records),
+        )
+        .await;
         let expected = vec![
             LogRecord::build()
                 .severity_text("ERROR")
@@ -341,16 +345,16 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = ConditionalTest {
-            branches: vec![(
-                "severity_text == \"ERROR\"",
-                "project-rename attributes[\"y\"] = attributes[\"x\"]",
-            )],
-            default_branch: Some("project-rename attributes[\"z\"] = attributes[\"x\"]"),
-        }
-        .as_logs_pipeline();
-
-        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            } else {
+                project-rename attributes["z"] = attributes["x"]
+            }"#,
+            to_logs_data(log_records),
+        )
+        .await;
 
         let expected = vec![
             LogRecord::build()
