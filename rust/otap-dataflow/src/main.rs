@@ -3,7 +3,8 @@
 
 //! Create and run a multi-core pipeline
 
-use clap::Parser;
+use clap::{ArgGroup, Parser};
+use otap_df_config::engine::{EngineConfig, HttpAdminSettings};
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::pipeline_group::{CoreAllocation, CoreRange, Quota};
 use otap_df_config::{PipelineGroupId, PipelineId};
@@ -44,24 +45,33 @@ static GLOBAL: Jemalloc = Jemalloc;
     version,
     about,
     long_about = None,
-    after_help = system_info()
+    after_help = system_info(),
+    group = ArgGroup::new("config_source")
+        .required(true)
+        .multiple(false)
+        .args(["pipeline", "config"])
 )]
 struct Args {
     /// Path to the pipeline configuration file (.json, .yaml, or .yml)
-    #[arg(short, long)]
-    pipeline: PathBuf,
+    #[arg(short, long, value_name = "FILE", group = "config_source")]
+    pipeline: Option<PathBuf>,
+
+    /// Path to the engine configuration file (.json, .yaml, or .yml)
+    #[arg(short = 'c', long, value_name = "FILE", group = "config_source")]
+    config: Option<PathBuf>,
 
     /// Number of cores to use (0 for default)
-    #[arg(long, default_value = "0", conflicts_with = "core_id_range")]
-    num_cores: usize,
+    #[arg(long, conflicts_with = "core_id_range")]
+    num_cores: Option<usize>,
 
     /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3,5", "0..=3,6-7").
     #[arg(long, value_name = "START..END", value_parser = parse_core_id_allocation, conflicts_with = "num_cores")]
     core_id_range: Option<CoreAllocation>,
 
-    /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080")
-    #[arg(long, default_value = "127.0.0.1:8080")]
-    http_admin_bind: String,
+    /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080").
+    /// Defaults to 127.0.0.1:8080 when unset.
+    #[arg(long)]
+    http_admin_bind: Option<String>,
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -114,37 +124,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
 
-    let args = Args::parse();
-
-    // For now, we predefine pipeline group and pipeline IDs.
-    // That will be replaced with a more dynamic approach in the future.
-    let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
-    let pipeline_id: PipelineId = "default_pipeline".into();
+    let Args {
+        pipeline,
+        config,
+        num_cores,
+        core_id_range,
+        http_admin_bind,
+    } = Args::parse();
 
     println!("{}", system_info());
 
-    // Load pipeline configuration from file
-    let pipeline_cfg = PipelineConfig::from_file(
-        pipeline_group_id.clone(),
-        pipeline_id.clone(),
-        &args.pipeline,
-    )?;
+    let default_admin_bind = HttpAdminSettings::default().bind_address;
+    let core_allocation_override = match (core_id_range, num_cores) {
+        (Some(range), _) => Some(range),
+        (None, Some(num_cores)) => Some(if num_cores == 0 {
+            CoreAllocation::AllCores
+        } else {
+            CoreAllocation::CoreCount { count: num_cores }
+        }),
+        (None, None) => None,
+    };
+    let core_allocation_override_for_engine = core_allocation_override.clone();
+    let core_allocation_override_for_pipeline = core_allocation_override;
+    let http_admin_bind_for_engine = http_admin_bind.clone();
+    let http_admin_bind_for_pipeline = http_admin_bind;
+
+    let (pipeline_group_id, pipeline_id, pipeline_cfg, quota, admin_settings) =
+        if let Some(config_path) = config {
+            let engine_cfg = EngineConfig::from_file(config_path)?;
+            if engine_cfg.pipeline_groups.len() != 1 {
+                return Err(format!(
+                    "Engine config must define exactly one pipeline group, found {}",
+                    engine_cfg.pipeline_groups.len()
+                )
+                .into());
+            }
+            let EngineConfig {
+                settings,
+                pipeline_groups,
+            } = engine_cfg;
+            let (pipeline_group_id, pipeline_group_cfg) =
+                pipeline_groups.into_iter().next().expect("pipeline group missing");
+            if pipeline_group_cfg.pipelines.len() != 1 {
+                return Err(format!(
+                    "Engine config must define exactly one pipeline, found {}",
+                    pipeline_group_cfg.pipelines.len()
+                )
+                .into());
+            }
+            let otap_df_config::pipeline_group::PipelineGroupConfig { pipelines, quota } =
+                pipeline_group_cfg;
+            let (pipeline_id, pipeline_cfg) =
+                pipelines.into_iter().next().expect("pipeline missing");
+            let admin_settings = if let Some(bind_address) = http_admin_bind_for_engine {
+                HttpAdminSettings { bind_address }
+            } else if let Some(config_admin) = settings.http_admin {
+                config_admin
+            } else {
+                HttpAdminSettings {
+                    bind_address: default_admin_bind.clone(),
+                }
+            };
+            let quota = match core_allocation_override_for_engine {
+                Some(core_allocation) => Quota { core_allocation },
+                None => quota,
+            };
+            (pipeline_group_id, pipeline_id, pipeline_cfg, quota, admin_settings)
+        } else {
+            // For now, we predefine pipeline group and pipeline IDs.
+            // That will be replaced with a more dynamic approach in the future.
+            let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
+            let pipeline_id: PipelineId = "default_pipeline".into();
+            let pipeline_path = match pipeline {
+                Some(path) => path,
+                None => {
+                    return Err("Missing --pipeline argument".into());
+                }
+            };
+
+            // Load pipeline configuration from file
+            let pipeline_cfg = PipelineConfig::from_file(
+                pipeline_group_id.clone(),
+                pipeline_id.clone(),
+                &pipeline_path,
+            )?;
+            let core_allocation =
+                core_allocation_override_for_pipeline.unwrap_or(CoreAllocation::AllCores);
+            let quota = Quota { core_allocation };
+            let admin_settings = HttpAdminSettings {
+                bind_address: http_admin_bind_for_pipeline
+                    .unwrap_or_else(|| default_admin_bind.clone()),
+            };
+            (pipeline_group_id, pipeline_id, pipeline_cfg, quota, admin_settings)
+        };
 
     // Create controller and start pipeline with multi-core support
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-
-    // Map CLI arguments to the core allocation enum
-    let core_allocation = if let Some(range) = args.core_id_range {
-        range
-    } else if args.num_cores == 0 {
-        CoreAllocation::AllCores
-    } else {
-        CoreAllocation::CoreCount {
-            count: args.num_cores,
-        }
-    };
-
-    let quota = Quota { core_allocation };
 
     // Print the requested core configuration
     match &quota.core_allocation {
@@ -155,9 +230,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let admin_settings = otap_df_config::engine::HttpAdminSettings {
-        bind_address: args.http_admin_bind,
-    };
     let result = controller.run_forever(
         pipeline_group_id,
         pipeline_id,
