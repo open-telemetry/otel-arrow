@@ -759,7 +759,9 @@ impl PipelineMetricsMonitor {
 
 impl Drop for PipelineMetricsMonitor {
     fn drop(&mut self) {
-        let _ = self.registry.unregister_metric_set(self.metrics.metric_set_key());
+        let _ = self
+            .registry
+            .unregister_metric_set(self.metrics.metric_set_key());
         let _ = self
             .registry
             .unregister_metric_set(self.tokio_metrics.metric_set_key());

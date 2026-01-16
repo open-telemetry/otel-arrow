@@ -10,8 +10,8 @@
 
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::{PipelineGroupId, PipelineId};
-use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_engine::context::ControllerContext;
+use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
@@ -40,7 +40,10 @@ fn test_telemetry_registries_cleanup() {
         })
         .sum::<usize>();
     let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
-    assert!(channel_metrics_enabled, "channel metrics should be enabled for this test");
+    assert!(
+        channel_metrics_enabled,
+        "channel metrics should be enabled for this test"
+    );
 
     // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
     let expected_entities = 1 + node_count + node_count + (edge_count * 2);
@@ -112,8 +115,7 @@ fn build_test_pipeline_config(
         sub_folder: Some("model".to_owned()),
         refspec: None,
     };
-    let receiver_config =
-        FakeDataGeneratorConfig::new(traffic_config, registry_path);
+    let receiver_config = FakeDataGeneratorConfig::new(traffic_config, registry_path);
     let receiver_config_value =
         to_value(receiver_config).expect("failed to serialize receiver config");
 

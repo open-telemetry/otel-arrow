@@ -388,11 +388,10 @@ mod tests {
         );
         source_handle.set_control_channel_key(ctrl_key);
 
-        let out_metrics = source_ctx
-            .register_metric_set_for_entity::<ChannelSenderMetrics>(out_key);
+        let out_metrics =
+            source_ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(out_key);
         source_handle.track_metric_set(out_metrics.metric_set_key());
-        let in_metrics =
-            dest_ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(in_key);
+        let in_metrics = dest_ctx.register_metric_set_for_entity::<ChannelReceiverMetrics>(in_key);
         dest_handle.track_metric_set(in_metrics.metric_set_key());
         let _ = source_handle.register_metric_set::<ChannelSenderMetrics>();
         let _ = dest_handle.register_metric_set::<ChannelSenderMetrics>();
