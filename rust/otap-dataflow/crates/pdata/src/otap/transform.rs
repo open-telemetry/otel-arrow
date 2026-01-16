@@ -4432,7 +4432,7 @@ mod insert_tests {
             delete: None,
             insert: Some(InsertTransform::new(vec![(
                 "ratio".into(),
-                LiteralValue::Double(3.14159),
+                LiteralValue::Double(2.71828),
             )])),
         };
 
@@ -4448,7 +4448,7 @@ mod insert_tests {
             .downcast_ref::<Float64Array>()
             .unwrap();
         assert!(double_col.is_null(0));
-        assert!((double_col.value(1) - 3.14159).abs() < f64::EPSILON);
+        assert!((double_col.value(1) - 2.71828).abs() < f64::EPSILON);
     }
 
     #[test]
