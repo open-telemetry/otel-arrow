@@ -938,7 +938,7 @@ mod tests {
 
         let cfg = json!({
             "actions": [
-                {"action": "insert", "key": "ratio", "value": 3.14159},
+                {"action": "insert", "key": "ratio", "value": 1.2345},
             ],
             "apply_to": ["signal"]
         });
