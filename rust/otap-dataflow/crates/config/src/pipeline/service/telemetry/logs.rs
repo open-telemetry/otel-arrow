@@ -64,6 +64,16 @@ pub struct LoggingProviders {
     pub internal: ProviderMode,
 }
 
+impl LoggingProviders {
+    /// Returns true if this requires a LogsReporter channel for
+    /// asynchronous logging due to its global or engine setting.
+    /// (Internal providers are forbidden from this case in validate.)
+    #[must_use]
+    pub const fn needs_reporter(&self) -> bool {
+        self.global.needs_reporter() || self.engine.needs_reporter()
+    }
+}
+
 /// Logs producer: how log events are captured and routed.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]

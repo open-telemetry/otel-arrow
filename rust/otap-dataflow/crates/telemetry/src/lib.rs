@@ -29,8 +29,12 @@ use std::sync::Arc;
 
 use crate::error::Error;
 use crate::registry::TelemetryRegistryHandle;
+use crate::logs::LogsReceiver;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
+use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 pub mod attributes;
 pub mod collector;
@@ -39,7 +43,9 @@ pub mod error;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+pub mod logs;
 pub mod metrics;
+pub mod resource;
 pub mod telemetry_runtime;
 pub mod registry;
 pub mod reporter;
@@ -152,4 +158,35 @@ impl Default for InternalTelemetrySystem {
     fn default() -> Self {
         Self::new(&TelemetryConfig::default())
     }
+}
+
+/// Runtime settings for internal telemetry injection into a receiver.
+///
+/// This struct bundles the logs receiver channel and pre-encoded resource bytes
+/// that should be injected into the Internal Telemetry Receiver node.
+#[derive(Clone)]
+pub struct InternalTelemetrySettings {
+    /// The logs receiver channel.
+    pub logs_receiver: LogsReceiver,
+    /// Pre-encoded resource bytes for OTLP log encoding.
+    pub resource_bytes: bytes::Bytes,
+}
+
+/// Creates an `EnvFilter` for the given log level.
+///
+/// If `RUST_LOG` is set in the environment, it takes precedence for fine-grained control.
+/// Otherwise, falls back to the config level with known noisy dependencies (h2, hyper) silenced.
+#[must_use]
+pub fn get_env_filter(level: LogLevel) -> EnvFilter {
+    let level = match level {
+        LogLevel::Off => LevelFilter::OFF,
+        LogLevel::Debug => LevelFilter::DEBUG,
+        LogLevel::Info => LevelFilter::INFO,
+        LogLevel::Warn => LevelFilter::WARN,
+        LogLevel::Error => LevelFilter::ERROR,
+    };
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Default filter: use config level, but silence known noisy HTTP dependencies
+        EnvFilter::new(format!("{level},h2=off,hyper=off"))
+    })
 }
