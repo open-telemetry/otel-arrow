@@ -11,7 +11,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
 
-use crate::experimental::azure_monitor_exporter::config::{AuthConfig, AuthMethod};
+use super::Error;
+use super::config::{AuthConfig, AuthMethod};
 
 #[derive(Clone)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
@@ -27,7 +28,7 @@ pub struct Auth {
 // TODO: Remove print_stdout after logging is set up
 #[allow(clippy::print_stdout)]
 impl Auth {
-    pub fn new(auth_config: &AuthConfig) -> Result<Self, String> {
+    pub fn new(auth_config: &AuthConfig) -> Result<Self, Error> {
         let credential = Self::create_credential(auth_config)?;
 
         Ok(Self {
@@ -47,7 +48,7 @@ impl Auth {
         }
     }
 
-    pub async fn get_token(&self) -> Result<AccessToken, String> {
+    pub async fn get_token(&self) -> Result<AccessToken, Error> {
         // Try to use cached token
         {
             let cached = self.cached_token.read().await;
@@ -75,7 +76,7 @@ impl Auth {
                 Some(azure_core::credentials::TokenRequestOptions::default()),
             )
             .await
-            .map_err(|e| format!("Failed to get token: {e}"))?;
+            .map_err(Error::token_acquisition)?;
 
         // Update the cached token
         *cached = Some(token_response.clone());
@@ -88,7 +89,7 @@ impl Auth {
         *cached = None;
     }
 
-    fn create_credential(auth_config: &AuthConfig) -> Result<Arc<dyn TokenCredential>, String> {
+    fn create_credential(auth_config: &AuthConfig) -> Result<Arc<dyn TokenCredential>, Error> {
         match auth_config.method {
             AuthMethod::ManagedIdentity => {
                 let mut options = ManagedIdentityCredentialOptions::default();
@@ -101,7 +102,7 @@ impl Auth {
                 }
 
                 let credential = ManagedIdentityCredential::new(Some(options))
-                    .map_err(|e| format!("Failed to create managed identity credential: {e}"))?;
+                    .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?;
 
                 Ok(credential as Arc<dyn TokenCredential>)
             }
@@ -109,12 +110,7 @@ impl Auth {
                 println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
                 let credential =
                     DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
-                        .map_err(|e| {
-                            format!(
-                                "Failed to create developer tools credential: {e}. \
-                            Ensure Azure CLI or Azure Developer CLI is installed and logged in"
-                            )
-                        })?;
+                        .map_err(|e| Error::create_credential(AuthMethod::Development, e))?;
 
                 Ok(credential as Arc<dyn TokenCredential>)
             }
@@ -235,7 +231,13 @@ mod tests {
         let result = Auth::new(&auth_config);
         match result {
             Ok(auth) => assert_eq!(auth.scope, "https://test.scope"),
-            Err(err) => assert!(err.contains("Failed to create developer tools credential")),
+            Err(Error::Auth {
+                kind: super::super::error::AuthErrorKind::CreateCredential { method },
+                ..
+            }) => {
+                assert_eq!(method, AuthMethod::Development);
+            }
+            Err(err) => panic!("Unexpected error type: {:?}", err),
         }
     }
 
@@ -375,7 +377,13 @@ mod tests {
 
         let result = auth.get_token().await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Failed to get token"));
+        match result.unwrap_err() {
+            Error::Auth {
+                kind: super::super::error::AuthErrorKind::TokenAcquisition,
+                ..
+            } => {}
+            err => panic!("Expected Auth token acquisition error, got: {:?}", err),
+        }
     }
 
     #[tokio::test]
