@@ -68,10 +68,7 @@ pub fn create_env_filter(level: LogLevel) -> EnvFilter {
 ///
 /// TODO: Evaluate also alternatives for the contention caused by the global
 /// OpenTelemetry logger provider added as layer.
-pub fn init_global_subscriber(
-    log_level: LogLevel,
-    logger_provider: &SdkLoggerProvider,
-) {
+pub fn init_global_subscriber(log_level: LogLevel, logger_provider: &SdkLoggerProvider) {
     let filter = create_env_filter(log_level);
 
     // Formatting layer

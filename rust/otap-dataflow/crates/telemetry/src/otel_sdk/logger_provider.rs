@@ -27,9 +27,8 @@ pub struct LoggerProvider {
 impl LoggerProvider {
     /// Configures the OpenTelemetry SDK logger provider.
     ///
-    /// This creates the `SdkLoggerProvider` with the configured exporters.
-    /// Note: This does NOT initialize the global tracing subscriber.
-    /// Use `tracing_init::init_global_subscriber()` separately to set up tracing.
+    /// Use `tracing_init::init_global_subscriber()` separately to set up
+    /// tracing bridge.
     pub fn configure(
         sdk_resource: Resource,
         logger_config: &LogsConfig,
