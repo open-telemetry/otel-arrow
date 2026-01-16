@@ -6,35 +6,35 @@ ident = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 
 double_quote_string_char = _{
     !("\"" | "\\") ~ ANY
-    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
-    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+  | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+  | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 single_quote_string_char = _{
     !("'" | "\\") ~ ANY
-    | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
-    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+  | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+  | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 
 string_literal = {
     ("\"" ~ double_quote_string_char* ~ "\"")
-    | ("'" ~ single_quote_string_char* ~ "'")
+  | ("'" ~ single_quote_string_char* ~ "'")
 }
 
 identifier_expression = {
     ident
 }
 
-bool_true_token = @{ "true" }
+bool_true_token  = @{ "true" }
 bool_false_token = @{ "false" }
-null_token = @{ "null" }
+null_token       = @{ "null" }
 
 primitive_expression = {
     string_literal
-    | bool_true_token
-    | bool_false_token
-    | null_token
-    | identifier_expression
-    | "(" ~ expression ~ ")"
+  | bool_true_token
+  | bool_false_token
+  | null_token
+  | identifier_expression
+  | "(" ~ expression ~ ")"
 }
 
 index_expression = {
@@ -54,41 +54,42 @@ attribute_selection_expression = {
 
 member_expression = {
     index_expression
-    | attribute_selection_expression
-    | primitive_expression
-    // TODO function calls
+  | attribute_selection_expression
+  | primitive_expression // TODO function calls
 }
 
 integer_literal = @{
     ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
 }
 
-exponent_literal = { ^"e" ~ ("+" | "-")? ~ integer_literal }
-float_literal = @{
+exponent_literal =  { ^"e" ~ ("+" | "-")? ~ integer_literal }
+float_literal    = @{
     (integer_literal ~ "." ~ integer_literal ~ exponent_literal?)
-    | (integer_literal ~ exponent_literal)
+  | (integer_literal ~ exponent_literal)
 }
 
 number_literal = {
-    float_literal | integer_literal
+    float_literal
+  | integer_literal
 }
 
 negate_token = @{ "-" }
-not_token = @{ "not" }
+not_token    = @{ "not" }
 
 unary_expression = {
     number_literal
-    | negate_token ~ number_literal
-    // TODO negative unary
-    // | "-" ~ unary_expression
-    | not_token ~ unary_expression
-    | member_expression
+  | negate_token ~ number_literal // TODO negative unary
+  // | "-" ~ unary_expression
+
+  | not_token ~ unary_expression
+  | member_expression
 }
 
 additive_op_add = @{ "+" }
 additive_op_sub = @{ "-" }
-additive_op = _{
-    additive_op_add | additive_op_sub
+additive_op     = _{
+    additive_op_add
+  | additive_op_sub
 }
 
 additive_expression = {
@@ -98,18 +99,21 @@ additive_expression = {
 multiplicative_op_mul = @{ "*" }
 multiplicative_op_div = @{ "/" }
 multiplicative_op_mod = @{ "%" }
-multiplicative_op = _{
-    multiplicative_op_mul | multiplicative_op_div | multiplicative_op_mod
+multiplicative_op     = _{
+    multiplicative_op_mul
+  | multiplicative_op_div
+  | multiplicative_op_mod
 }
 
 multiplicative_expression = {
     unary_expression ~ (multiplicative_op ~ unary_expression)*
 }
 
-rel_op_eq = @{ "==" }
-rel_op_neq = @{ "!="}
-rel_op = _{
-    rel_op_eq | rel_op_neq
+rel_op_eq  = @{ "==" }
+rel_op_neq = @{ "!=" }
+rel_op     = _{
+    rel_op_eq
+  | rel_op_neq
 }
 
 rel_expression = {
@@ -131,7 +135,10 @@ expression = {
 }
 
 source = {
-    "logs" | "metrics" | "traces" | "signals"
+    "logs"
+  | "metrics"
+  | "traces"
+  | "signals"
 }
 
 if_condition_expression = {
@@ -147,9 +154,7 @@ else_expression = {
 }
 
 if_else_operator_call = {
-    if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}"
-    ~ ("else" ~ if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}")*
-    ~ (else_expression)?
+    if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}" ~ ("else" ~ if_condition_expression ~ "{" ~ if_else_branch_expression ~ "}")* ~ (else_expression)?
 }
 
 assignment_expression = {
@@ -178,11 +183,11 @@ route_to_operator_call = {
 
 operator_call = {
     set_operator_call
-    | rename_operator_call
-    | remove_map_keys_operator_call
-    | if_else_operator_call
-    | route_to_operator_call
-    | where_operator_call
+  | rename_operator_call
+  | remove_map_keys_operator_call
+  | if_else_operator_call
+  | route_to_operator_call
+  | where_operator_call
 }
 
 pipeline_stage = {
@@ -192,8 +197,6 @@ pipeline_stage = {
 pipeline = {
     source ~ ("|" ~ pipeline_stage)+
 }
-
-
 
 program = {
     SOI ~ pipeline ~ EOI
