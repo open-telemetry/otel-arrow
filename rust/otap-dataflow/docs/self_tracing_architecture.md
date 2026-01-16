@@ -56,7 +56,7 @@ telemetry pitfalls, as follows:
 - Non-blocking interfaces. We prefer to drop and count dropped
   internal log events than to block the pipeline.
 - Option to configure internal telemetry multiple ways, including the
-  no-op implementation, direct console output, and global or regional 
+  no-op implementation, direct console output, and global or regional
   logs consumers.
 
 ## OTLP-bytes first
@@ -107,7 +107,7 @@ Provider mode values are:
 - Noop: Ignore logging.
 - ITS: Use the internal telemetry system.
 - OpenTelemetry: Use the OpenTelemetry SDK.
-- ConsoleDirect: Synchronously write to the console. 
+- ConsoleDirect: Synchronously write to the console.
 - ConsoleAsync: Asynchronously write to the console.
 
 Note that the ITS and ConsoleAsync modes share a the same provider
@@ -158,7 +158,7 @@ service:
 # Normal pipeline node
 nodes:
   ...
-  
+
 # Internal telemetry pipeline nodes
 internal:
   kind: receiver
