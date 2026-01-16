@@ -99,32 +99,11 @@ settings:
 
 Provider mode values are:
 
-- Noop: Ignore these producers
-- Immediate: Use a non-blocking write to the internal logs channel.
-  This enables asynchronous logs reporting using the the configured output
-  mode.
-- OpenTelemetry: Use the OpenTelemetry SDK. This option has the most
-  comprehensive obsevability, including OpenTelemetry traces
-  integration.
-- Raw: Use the raw logger, meaning to synchronously write to the
-  console. For asynchronous console logging instead, use the Immediate
-  provider mode and the Direct output mode.
-
-## Output modes
-
-When any of the providers use Immediate mode, an engine-managed thread
-is responsible for consuming internal logs. In `direct` mode, this is
-a dedicated thread. This could become NUMA-regional as described in
-[README](./README.md) for metrics.
-
-The current output modes are:
-
-- Noop: Not a real output mode, this setting will cause an error when
-  any provider uses Buffered or Unbuffered.
-- Direct: Use raw console logging from the global or regional logging
-  thread. This is standard mode, offering asynchronous console logging.
-- Internal: Use an Internal Telemetry Receiver in the internal telemetry
-  pipeline nodes as the destination.
+- Noop: Ignore logging.
+- ITS: Use the internal telemetry system.
+- OpenTelemetry: Use the OpenTelemetry SDK.
+- ConsoleDirect: Synchronously write to the console. 
+- ConsoleAsync: Synchronously write to the console.
 
 ## Default configuration
 
@@ -139,10 +118,9 @@ service:
     logs:
       level: info
       providers:
-        global: immediate
-        engine: immediate
+        global: console_async
+        engine: console_async
         internal: noop
-      output: direct
 ```
 
 ## Internal Telemetry Receiver configuration
@@ -157,10 +135,9 @@ service:
     logs:
       level: info
       providers:
-        global: immediate  # sends to the ITR
-        engine: immediate  # sends to the ITR
-        internal: raw      # internal pipeline logs are raw-logged
-      output: internal     # logs route to the internal pipeline
+        global: its
+        engine: its
+        internal: console_direct
 
 # Normal pipeline node
 nodes:

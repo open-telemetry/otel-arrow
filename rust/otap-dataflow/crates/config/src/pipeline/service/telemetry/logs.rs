@@ -20,12 +20,6 @@ pub struct LogsConfig {
     #[serde(default = "default_providers")]
     pub providers: LoggingProviders,
 
-    /// What to do with collected log events. This applies when any ProviderMode
-    /// in providers indicates Buffered or Unbuffered. Does not apply if all
-    /// providers are in [Noop, Raw, OpenTelemetry].
-    #[serde(default = "default_output")]
-    pub output: OutputMode,
-
     /// OpenTelemetry SDK is configured via processors.
     #[serde(default)]
     pub processors: Vec<processors::LogProcessorConfig>,
@@ -78,14 +72,20 @@ pub enum ProviderMode {
     /// Log events are silently ignored.
     Noop,
 
-    /// Immediate delivery to the internal telemetry pipeline.
-    Immediate,
+    /// Delivery using the internal telemetry system.
+    ITS,
 
     /// Use OTel-Rust as the provider.
     OpenTelemetry,
 
+    /// Asynchronous console logging.
+    /// The caller writes to a channel the same as ITS deliver, but bypasses
+    /// the internal pipeline with console logging.
+    ConsoleAsync,
+
     /// Synchronous console logging. Note! This can block the producing thread.
-    Raw,
+    /// The caller writes directly to the console.
+    ConsoleDirect,
 }
 
 impl ProviderMode {
@@ -93,42 +93,16 @@ impl ProviderMode {
     /// asynchronous logging.
     #[must_use]
     pub fn needs_reporter(&self) -> bool {
-        matches!(self, Self::Immediate)
+        matches!(self, Self::ITS | Self::ConsoleAsync)
     }
 }
 
-/// Output mode: what the recipient does with received events for
-/// provider logging modes.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum OutputMode {
-    /// Noop prevents the use of the Unbuffered mode. This output mode
-    /// can be set when all providers are configured to avoid the
-    /// internal output configuration through Noop, Raw, or
-    /// OpenTelemetry settings.
-    Noop,
-
-    /// Direct console logging: format and print directly to console
-    /// (stdout/stderr) from the logs collector thread, bypasses any
-    /// internal use of the dataflow engine.  ERROR and WARN go to
-    /// stderr, others to stdout.
-    #[default]
-    Direct,
-
-    /// Route to the internal telemetry pipeline.
-    Internal,
-}
-
-fn default_output() -> OutputMode {
-    OutputMode::Direct
-}
-
 fn default_global_provider() -> ProviderMode {
-    ProviderMode::Immediate
+    ProviderMode::ITS
 }
 
 fn default_engine_provider() -> ProviderMode {
-    ProviderMode::Immediate
+    ProviderMode::ITS
 }
 
 fn default_internal_provider() -> ProviderMode {
@@ -137,8 +111,8 @@ fn default_internal_provider() -> ProviderMode {
 
 fn default_providers() -> LoggingProviders {
     LoggingProviders {
-        global: ProviderMode::Immediate,
-        engine: ProviderMode::Immediate,
+        global: default_global_provider(),
+        engine: default_engine_provider(),
         internal: default_internal_provider(),
     }
 }
@@ -148,7 +122,6 @@ impl Default for LogsConfig {
         Self {
             level: LogLevel::default(),
             providers: default_providers(),
-            output: default_output(),
             processors: Vec::new(),
         }
     }
@@ -158,11 +131,9 @@ impl LogsConfig {
     /// Validate the logs configuration.
     ///
     /// Returns an error if:
-    /// - `output` is `Noop` but a provider uses `Immediate`
-    ///   (logs would be sent but discarded)
+    /// - `internal` is configured to use ITS, ConsoleAsync (needs_reporter())
     /// - `engine` is `OpenTelemetry` but `global` is not
-    ///   (current implementation restriction: the SDK logger provider is only
-    ///   configured when global uses OpenTelemetry)
+    ///   (current implementation restriction).
     pub fn validate(&self) -> Result<(), Error> {
         if self.providers.internal.needs_reporter() {
             return Err(Error::InvalidUserConfig {
@@ -172,17 +143,6 @@ impl LogsConfig {
                 ),
             });
         }
-        if self.output == OutputMode::Noop {
-            let global_reports = self.providers.global.needs_reporter();
-            let engine_reports = self.providers.engine.needs_reporter();
-
-            if global_reports || engine_reports {
-                return Err(Error::InvalidUserConfig {
-                    error: "output mode is 'noop' but a provider uses an internal reporter".into(),
-                });
-            }
-        }
-
         // Current implementation restriction: engine OpenTelemetry requires global OpenTelemetry.
         // The SDK logger provider is only created when the global provider is OpenTelemetry.
         // This could be lifted in the future by creating the logger provider independently.
@@ -222,15 +182,13 @@ mod tests {
         }
     }
 
-    /// Helper to create a config with custom providers and output.
+    /// Helper to create a config with custom providers.
     fn config_with(
-        output: OutputMode,
         global: ProviderMode,
         engine: ProviderMode,
         internal: ProviderMode,
     ) -> LogsConfig {
         LogsConfig {
-            output,
             providers: providers(global, engine, internal),
             ..Default::default()
         }
@@ -255,16 +213,14 @@ mod tests {
         // Manual Default impl matches serde defaults
         let config = LogsConfig::default();
         assert_eq!(config.level, LogLevel::Info);
-        assert_eq!(config.output, OutputMode::Direct);
-        assert_eq!(config.providers.global, ProviderMode::Immediate);
-        assert_eq!(config.providers.engine, ProviderMode::Immediate);
+        assert_eq!(config.providers.global, ProviderMode::ITS);
+        assert_eq!(config.providers.engine, ProviderMode::ITS);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
         assert!(config.processors.is_empty());
 
         // Serde defaults should match Rust Default
         let parsed = parse("{}");
         assert_eq!(parsed.level, config.level);
-        assert_eq!(parsed.output, config.output);
         assert_eq!(parsed.providers.global, config.providers.global);
         assert_eq!(parsed.providers.engine, config.providers.engine);
         assert_eq!(parsed.providers.internal, config.providers.internal);
@@ -285,23 +241,11 @@ mod tests {
     }
 
     #[test]
-    fn test_output_mode_parsing() {
-        let cases = [
-            ("noop", OutputMode::Noop),
-            ("direct", OutputMode::Direct),
-            ("internal", OutputMode::Internal),
-        ];
-        for (name, expected) in cases {
-            assert_eq!(parse(&format!("output: {name}")).output, expected);
-        }
-    }
-
-    #[test]
     fn test_provider_mode_parsing() {
-        let config = parse("providers: { global: noop, engine: immediate, internal: raw }");
+        let config = parse("providers: { global: noop, engine: its, internal: console_direct }");
         assert_eq!(config.providers.global, ProviderMode::Noop);
-        assert_eq!(config.providers.engine, ProviderMode::Immediate);
-        assert_eq!(config.providers.internal, ProviderMode::Raw);
+        assert_eq!(config.providers.engine, ProviderMode::ITS);
+        assert_eq!(config.providers.internal, ProviderMode::ConsoleDirect);
 
         let config = parse("providers: { global: opentelemetry, engine: opentelemetry }");
         assert_eq!(config.providers.global, ProviderMode::OpenTelemetry);
@@ -315,9 +259,10 @@ mod tests {
         use ProviderMode::*;
         let cases = [
             (Noop, false),
-            (Immediate, true),
+            (ITS, true),
             (OpenTelemetry, false),
-            (Raw, false),
+            (ConsoleDirect, false),
+            (ConsoleAsync, true),
         ];
         for (mode, expected) in cases {
             assert_eq!(mode.needs_reporter(), expected, "{mode:?}");
@@ -334,51 +279,24 @@ mod tests {
     #[test]
     fn test_validate_internal_cannot_use_reporter() {
         use ProviderMode::*;
-        let config = config_with(OutputMode::Direct, Noop, Noop, Immediate);
+        let config = config_with(Noop, Noop, ITS);
         assert_invalid(&config, "internal provider is invalid");
-    }
 
-    #[test]
-    fn test_validate_noop_output_rejects_reporter_providers() {
-        use ProviderMode::*;
-        // Global sends to reporter but output is Noop
-        let config = config_with(OutputMode::Noop, Immediate, Noop, Noop);
-        assert_invalid(&config, "output mode is 'noop'");
-
-        // Engine sends to reporter but output is Noop
-        let config = config_with(OutputMode::Noop, Noop, Immediate, Noop);
-        assert_invalid(&config, "output mode is 'noop'");
-    }
-
-    #[test]
-    fn test_validate_noop_output_allows_non_reporter_providers() {
-        use ProviderMode::*;
-        // All providers that don't need reporter are fine with Noop output
-        for (global, engine) in [
-            (Noop, Noop),
-            (Noop, Raw),
-            (Raw, Noop),
-            (OpenTelemetry, OpenTelemetry),
-        ] {
-            let config = config_with(OutputMode::Noop, global, engine, Noop);
-            assert!(
-                config.validate().is_ok(),
-                "Failed for global={global:?}, engine={engine:?}"
-            );
-        }
+        let config = config_with(Noop, Noop, ConsoleAsync);
+        assert_invalid(&config, "internal provider is invalid");
     }
 
     #[test]
     fn test_validate_engine_otel_requires_global_otel() {
         use ProviderMode::*;
         // Engine OpenTelemetry without global OpenTelemetry fails
-        for global in [Noop, Immediate, Raw] {
-            let config = config_with(OutputMode::Direct, global, OpenTelemetry, Noop);
+        for global in [Noop, ITS, ConsoleDirect] {
+            let config = config_with(global, OpenTelemetry, Noop);
             assert_invalid(&config, "opentelemetry");
         }
 
         // Both OpenTelemetry succeeds
-        let config = config_with(OutputMode::Direct, OpenTelemetry, OpenTelemetry, Noop);
+        let config = config_with(OpenTelemetry, OpenTelemetry, Noop);
         assert!(config.validate().is_ok());
     }
 }
