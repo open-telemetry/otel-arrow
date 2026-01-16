@@ -867,10 +867,14 @@ pub fn transform_attributes_with_stats(
     };
 
     // Handle inserts
+    // According to OTel collector spec, `insert` only inserts if the key does not already exist.
+    // We need:
+    // - Original parent IDs from attrs_record_batch to know which parents exist
+    // - The transformed batch (rb) to check which (parent_id, key) pairs already exist
     if let Some(insert) = &transform.insert {
-        if let Some(parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
+        if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
             let (new_rows, count) =
-                create_inserted_batch(parent_ids, insert, rb.schema().as_ref())?;
+                create_inserted_batch(&rb, original_parent_ids, insert, rb.schema().as_ref())?;
             if count > 0 {
                 let combined = arrow::compute::concat_batches(&rb.schema(), &[rb, new_rows])
                     .map_err(|e| Error::Format {
@@ -3730,12 +3734,62 @@ mod test {
     }
 }
 
+/// Helper to extract string key from a record batch key column at a given index.
+/// Handles both plain Utf8 and Dictionary-encoded columns.
+fn get_key_at_index(key_col: &ArrayRef, idx: usize) -> Option<String> {
+    match key_col.data_type() {
+        DataType::Utf8 => key_col
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .and_then(|arr| {
+                if arr.is_null(idx) {
+                    None
+                } else {
+                    Some(arr.value(idx).to_string())
+                }
+            }),
+        DataType::Dictionary(k, _) => match **k {
+            DataType::UInt8 => key_col
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt8Type>>()
+                .and_then(|dict| {
+                    if dict.is_null(idx) {
+                        None
+                    } else {
+                        let values = dict.values().as_any().downcast_ref::<StringArray>()?;
+                        let key = dict.keys().value(idx);
+                        Some(values.value(key as usize).to_string())
+                    }
+                }),
+            DataType::UInt16 => key_col
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                .and_then(|dict| {
+                    if dict.is_null(idx) {
+                        None
+                    } else {
+                        let values = dict.values().as_any().downcast_ref::<StringArray>()?;
+                        let key = dict.keys().value(idx);
+                        Some(values.value(key as usize).to_string())
+                    }
+                }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Create a batch of inserted attributes.
+/// According to the OTel collector spec, `insert` only inserts if the key does NOT already exist.
+/// This function checks existing (parent_id, key) pairs in the current record batch and only
+/// inserts new keys.
 fn create_inserted_batch(
+    current_batch: &RecordBatch,
     parent_ids: &ArrayRef,
     insert: &InsertTransform,
     schema: &arrow::datatypes::Schema,
 ) -> Result<(RecordBatch, usize)> {
-    let parent_ids = parent_ids
+    let parent_ids_arr = parent_ids
         .as_any()
         .downcast_ref::<PrimitiveArray<UInt16Type>>()
         .ok_or_else(|| Error::ColumnDataTypeMismatch {
@@ -3744,10 +3798,24 @@ fn create_inserted_batch(
             actual: parent_ids.data_type().clone(),
         })?;
 
+    // Build a set of (parent_id, key) pairs that already exist
+    let mut existing_keys: BTreeMap<u16, BTreeSet<String>> = BTreeMap::new();
+    if let Some(key_col) = current_batch.column_by_name(consts::ATTRIBUTE_KEY) {
+        for i in 0..current_batch.num_rows() {
+            if !parent_ids_arr.is_null(i) {
+                let parent = parent_ids_arr.value(i);
+                if let Some(key) = get_key_at_index(key_col, i) {
+                    let _ = existing_keys.entry(parent).or_default().insert(key);
+                }
+            }
+        }
+    }
+
+    // Get unique parents
     let mut unique_parents = BTreeSet::new();
-    for i in 0..parent_ids.len() {
-        if !parent_ids.is_null(i) {
-            let _ = unique_parents.insert(parent_ids.value(i));
+    for i in 0..parent_ids_arr.len() {
+        if !parent_ids_arr.is_null(i) {
+            let _ = unique_parents.insert(parent_ids_arr.value(i));
         }
     }
 
@@ -3755,31 +3823,43 @@ fn create_inserted_batch(
         return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
     }
 
-    let num_parents = unique_parents.len();
-    let num_inserts = insert.entries.len();
-    let total_rows = num_parents * num_inserts;
+    // Compute which (parent, key, value) tuples to actually insert
+    // Only insert if the key doesn't already exist for that parent
+    let mut to_insert: Vec<(u16, &str, &LiteralValue)> = Vec::new();
+    for &parent in &unique_parents {
+        let parent_existing = existing_keys.get(&parent);
+        for (key, val) in &insert.entries {
+            let key_exists = parent_existing
+                .map(|keys| keys.contains(key))
+                .unwrap_or(false);
+            if !key_exists {
+                to_insert.push((parent, key.as_str(), val));
+            }
+        }
+    }
+
+    let total_rows = to_insert.len();
+    if total_rows == 0 {
+        return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
+    }
 
     // Build Parent ID column
     let mut new_parent_ids = PrimitiveBuilder::<UInt16Type>::with_capacity(total_rows);
-    for _parent in &unique_parents {
-        for _ in 0..num_inserts {
-            new_parent_ids.append_value(*_parent);
-        }
+    for (parent, _, _) in &to_insert {
+        new_parent_ids.append_value(*parent);
     }
     let new_parent_ids = Arc::new(new_parent_ids.finish()) as ArrayRef;
 
     // Build Attribute Type column
     let mut new_types = PrimitiveBuilder::<UInt8Type>::with_capacity(total_rows);
-    for _parent in &unique_parents {
-        for (_, val) in &insert.entries {
-            let type_val = match val {
-                LiteralValue::Str(_) => AttributeValueType::Str,
-                LiteralValue::Int(_) => AttributeValueType::Int,
-                LiteralValue::Double(_) => AttributeValueType::Double,
-                LiteralValue::Bool(_) => AttributeValueType::Bool,
-            };
-            new_types.append_value(type_val as u8);
-        }
+    for (_, _, val) in &to_insert {
+        let type_val = match val {
+            LiteralValue::Str(_) => AttributeValueType::Str,
+            LiteralValue::Int(_) => AttributeValueType::Int,
+            LiteralValue::Double(_) => AttributeValueType::Double,
+            LiteralValue::Bool(_) => AttributeValueType::Bool,
+        };
+        new_types.append_value(type_val as u8);
     }
     let new_types = Arc::new(new_types.finish()) as ArrayRef;
 
@@ -3796,29 +3876,23 @@ fn create_inserted_batch(
         DataType::Utf8 => {
             let mut builder =
                 arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
-            for _parent in &unique_parents {
-                for (key, _) in &insert.entries {
-                    builder.append_value(key);
-                }
+            for (_, key, _) in &to_insert {
+                builder.append_value(*key);
             }
             Arc::new(builder.finish())
         }
         DataType::Dictionary(k, _v) => match **k {
             DataType::UInt8 => {
                 let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
-                for _parent in &unique_parents {
-                    for (key, _) in &insert.entries {
-                        builder.append_value(key);
-                    }
+                for (_, key, _) in &to_insert {
+                    builder.append_value(*key);
                 }
                 Arc::new(builder.finish())
             }
             DataType::UInt16 => {
                 let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
-                for _parent in &unique_parents {
-                    for (key, _) in &insert.entries {
-                        builder.append_value(key);
-                    }
+                for (_, key, _) in &to_insert {
+                    builder.append_value(*key);
                 }
                 Arc::new(builder.finish())
             }
@@ -3853,13 +3927,11 @@ fn create_inserted_batch(
                 DataType::Utf8 => {
                     let mut builder =
                         arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
-                    for _parent in &unique_parents {
-                        for (_, val) in &insert.entries {
-                            if let LiteralValue::Str(s) = val {
-                                builder.append_value(s);
-                            } else {
-                                builder.append_null();
-                            }
+                    for (_, _, val) in &to_insert {
+                        if let LiteralValue::Str(s) = val {
+                            builder.append_value(s);
+                        } else {
+                            builder.append_null();
                         }
                     }
                     Arc::new(builder.finish())
@@ -3867,26 +3939,22 @@ fn create_inserted_batch(
                 DataType::Dictionary(k, v) if **v == DataType::Utf8 => match **k {
                     DataType::UInt8 => {
                         let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
-                        for _parent in &unique_parents {
-                            for (_, val) in &insert.entries {
-                                if let LiteralValue::Str(s) = val {
-                                    builder.append_value(s);
-                                } else {
-                                    builder.append_null();
-                                }
+                        for (_, _, val) in &to_insert {
+                            if let LiteralValue::Str(s) = val {
+                                builder.append_value(s);
+                            } else {
+                                builder.append_null();
                             }
                         }
                         Arc::new(builder.finish())
                     }
                     DataType::UInt16 => {
                         let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
-                        for _parent in &unique_parents {
-                            for (_, val) in &insert.entries {
-                                if let LiteralValue::Str(s) = val {
-                                    builder.append_value(s);
-                                } else {
-                                    builder.append_null();
-                                }
+                        for (_, _, val) in &to_insert {
+                            if let LiteralValue::Str(s) = val {
+                                builder.append_value(s);
+                            } else {
+                                builder.append_null();
                             }
                         }
                         Arc::new(builder.finish())
@@ -3910,13 +3978,11 @@ fn create_inserted_batch(
             match field.data_type() {
                 DataType::Int64 => {
                     let mut builder = PrimitiveBuilder::<Int64Type>::with_capacity(total_rows);
-                    for _parent in &unique_parents {
-                        for (_, val) in &insert.entries {
-                            if let LiteralValue::Int(v) = val {
-                                builder.append_value(*v);
-                            } else {
-                                builder.append_null();
-                            }
+                    for (_, _, val) in &to_insert {
+                        if let LiteralValue::Int(v) = val {
+                            builder.append_value(*v);
+                        } else {
+                            builder.append_null();
                         }
                     }
                     Arc::new(builder.finish())
@@ -3924,13 +3990,11 @@ fn create_inserted_batch(
                 DataType::Dictionary(k, v) if **v == DataType::Int64 => match **k {
                     DataType::UInt8 => {
                         let mut builder = PrimitiveDictionaryBuilder::<UInt8Type, Int64Type>::new();
-                        for _parent in &unique_parents {
-                            for (_, val) in &insert.entries {
-                                if let LiteralValue::Int(v) = val {
-                                    builder.append_value(*v);
-                                } else {
-                                    builder.append_null();
-                                }
+                        for (_, _, val) in &to_insert {
+                            if let LiteralValue::Int(v) = val {
+                                builder.append_value(*v);
+                            } else {
+                                builder.append_null();
                             }
                         }
                         Arc::new(builder.finish())
@@ -3938,13 +4002,11 @@ fn create_inserted_batch(
                     DataType::UInt16 => {
                         let mut builder =
                             PrimitiveDictionaryBuilder::<UInt16Type, Int64Type>::new();
-                        for _parent in &unique_parents {
-                            for (_, val) in &insert.entries {
-                                if let LiteralValue::Int(v) = val {
-                                    builder.append_value(*v);
-                                } else {
-                                    builder.append_null();
-                                }
+                        for (_, _, val) in &to_insert {
+                            if let LiteralValue::Int(v) = val {
+                                builder.append_value(*v);
+                            } else {
+                                builder.append_null();
                             }
                         }
                         Arc::new(builder.finish())
@@ -3968,13 +4030,11 @@ fn create_inserted_batch(
             match field.data_type() {
                 DataType::Float64 => {
                     let mut builder = PrimitiveBuilder::<Float64Type>::with_capacity(total_rows);
-                    for _parent in &unique_parents {
-                        for (_, val) in &insert.entries {
-                            if let LiteralValue::Double(v) = val {
-                                builder.append_value(*v);
-                            } else {
-                                builder.append_null();
-                            }
+                    for (_, _, val) in &to_insert {
+                        if let LiteralValue::Double(v) = val {
+                            builder.append_value(*v);
+                        } else {
+                            builder.append_null();
                         }
                     }
                     Arc::new(builder.finish())
@@ -3983,13 +4043,11 @@ fn create_inserted_batch(
                     DataType::UInt8 => {
                         let mut builder =
                             PrimitiveDictionaryBuilder::<UInt8Type, Float64Type>::new();
-                        for _parent in &unique_parents {
-                            for (_, val) in &insert.entries {
-                                if let LiteralValue::Double(v) = val {
-                                    builder.append_value(*v);
-                                } else {
-                                    builder.append_null();
-                                }
+                        for (_, _, val) in &to_insert {
+                            if let LiteralValue::Double(v) = val {
+                                builder.append_value(*v);
+                            } else {
+                                builder.append_null();
                             }
                         }
                         Arc::new(builder.finish())
@@ -3997,13 +4055,11 @@ fn create_inserted_batch(
                     DataType::UInt16 => {
                         let mut builder =
                             PrimitiveDictionaryBuilder::<UInt16Type, Float64Type>::new();
-                        for _parent in &unique_parents {
-                            for (_, val) in &insert.entries {
-                                if let LiteralValue::Double(v) = val {
-                                    builder.append_value(*v);
-                                } else {
-                                    builder.append_null();
-                                }
+                        for (_, _, val) in &to_insert {
+                            if let LiteralValue::Double(v) = val {
+                                builder.append_value(*v);
+                            } else {
+                                builder.append_null();
                             }
                         }
                         Arc::new(builder.finish())
@@ -4026,13 +4082,11 @@ fn create_inserted_batch(
         } else if name == consts::ATTRIBUTE_BOOL {
             // Note: Boolean Dictionaries are not standard/supported by simple builders
             let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
-            for _parent in &unique_parents {
-                for (_, val) in &insert.entries {
-                    if let LiteralValue::Bool(v) = val {
-                        builder.append_value(*v);
-                    } else {
-                        builder.append_null();
-                    }
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Bool(v) = val {
+                    builder.append_value(*v);
+                } else {
+                    builder.append_null();
                 }
             }
             Arc::new(builder.finish())
@@ -4179,5 +4233,113 @@ mod insert_tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(keys.value(0), "new");
+    }
+
+    #[test]
+    fn test_insert_does_not_overwrite_existing_key() {
+        // According to OTel collector spec, `insert` only inserts if the key does not already exist.
+        // This test verifies that existing keys are NOT overwritten.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Input: parent 0 has "existing_key"="original_value"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing_key"])),
+                Arc::new(StringArray::from_iter_values(vec!["original_value"])),
+            ],
+        )
+        .unwrap();
+
+        // Try to insert "existing_key"="new_value" - should be skipped because key exists
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![(
+                "existing_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No inserts should happen because the key already exists
+        assert_eq!(stats.inserted_entries, 0);
+
+        // Result should still contain 1 row with the original value
+        assert_eq!(result.num_rows(), 1);
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(keys.value(0), "existing_key");
+
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(vals.value(0), "original_value");
+    }
+
+    #[test]
+    fn test_insert_mixed_existing_and_new_keys() {
+        // Test: insert multiple keys where some exist and some don't
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Input: parent 0 has "a"="av", parent 1 has "b"="bv"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b"])),
+                Arc::new(StringArray::from_iter_values(vec!["av", "bv"])),
+            ],
+        )
+        .unwrap();
+
+        // Try to insert:
+        // - "a"="new_a" - should be skipped for parent 0 (exists), inserted for parent 1
+        // - "c"="cv" - should be inserted for both parents
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(vec![
+                ("a".into(), LiteralValue::Str("new_a".into())),
+                ("c".into(), LiteralValue::Str("cv".into())),
+            ])),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Should insert:
+        // - parent 0: "c" (not "a" because it exists)
+        // - parent 1: "a" and "c" (neither exists)
+        // Total: 3 inserts
+        assert_eq!(stats.inserted_entries, 3);
+
+        // Result should have: 2 original + 3 new = 5 rows
+        assert_eq!(result.num_rows(), 5);
     }
 }
