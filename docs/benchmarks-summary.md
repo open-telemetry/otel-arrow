@@ -144,7 +144,7 @@ eliminating shared-state synchronization overhead.
 | 8 Cores   | TBD            | TBD               | TBD          |
 | 16 Cores  | TBD            | TBD               | TBD          |
 
-*Scaling Efficiency = (Throughput at N cores) / (N * Single-core throughput)*
+Scaling Efficiency = (Throughput at N cores) / (N * Single-core throughput)
 
 ### Architecture
 
