@@ -138,10 +138,10 @@ Includes an attribute processor to force data materialization. Represents
 typical production workloads where collectors perform transformations such as
 filtering, attribute enrichment, renaming, or aggregation.
 
-| Protocol | Max Throughput | Memory Usage |
-|----------|----------------|--------------|
-| OTAP -> OTAP (Native) | TBD | TBD |
-| OTLP -> OTLP (Standard) | TBD | TBD |
+| Protocol | Max Throughput | CPU Usage | Memory Usage |
+|----------|----------------|-----------|--------------|
+| OTAP -> OTAP (Native) | TBD | TBD | TBD |
+| OTLP -> OTLP (Standard) | ~238K logs/sec | ~99% | ~38 MB |
 
 #### Scalability
 
@@ -151,17 +151,20 @@ eliminating shared-state synchronization overhead.
 
 **Test Parameters:**
 
-- Batch size: 500 records per request
-- Protocol: OTAP -> OTAP (native protocol)
+- Batch size: 512 records per request
+- Protocol: OTLP -> OTLP with attribute processing
 - Load: Maximum sustained throughput at each core count
 
-| CPU Cores | Max Throughput | Scaling Efficiency | Memory Usage |
-|-----------|----------------|-------------------|--------------|
-| 1 Core    | TBD            | 100% (baseline)   | TBD          |
-| 2 Cores   | TBD            | TBD               | TBD          |
-| 4 Cores   | TBD            | TBD               | TBD          |
-| 8 Cores   | TBD            | TBD               | TBD          |
-| 16 Cores  | TBD            | TBD               | TBD          |
+| CPU Cores | Max Throughput | CPU Usage | Scaling Efficiency | Memory Usage |
+|-----------|----------------|-----------|-------------------|--------------|
+| 1 Core    | ~238K logs/sec | ~99%      | 100% (baseline)   | ~38 MB       |
+| 2 Cores   | ~414K logs/sec | ~91%      | 87%               | ~55 MB       |
+| 4 Cores   | ~653K logs/sec | ~70%*     | 69%               | ~80 MB       |
+| 8 Cores   | ~1.47M logs/sec | ~82%*    | 78%               | ~178 MB      |
+| 16 Cores  | ~2.37M logs/sec | ~78%*    | 62%               | ~288 MB      |
+| 24 Cores  | ~3.67M logs/sec | ~77%*    | 64%               | ~461 MB      |
+
+TODO: Use more load-generator so saturate CPU at higher cores.
 
 Scaling Efficiency = (Throughput at N cores) / (N * Single-core throughput)
 
@@ -223,13 +226,6 @@ egress performance for each.
 
 ### Performance Comparison
 
-#### Baseline (Idle State)
-
-| Metric | OTel Collector | OTel Arrow | Improvement |
-|--------|---------------|------------|-------------|
-| CPU Usage | TBD | TBD | TBD |
-| Memory Usage | TBD | TBD | TBD |
-
 #### Standard Load (100K Syslog Messages/sec)
 
 | Metric | OTel Collector | OTel Arrow | Improvement |
@@ -238,16 +234,6 @@ egress performance for each.
 | Memory Usage | TBD | TBD | TBD |
 | Network Egress | TBD | TBD | TBD |
 | Throughput (messages/sec) | TBD | TBD | TBD |
-
-#### Saturation
-
-| Metric | OTel Collector | OTel Arrow | Improvement |
-|--------|---------------|------------|-------------|
-| Maximum Sustained Throughput | TBD | TBD | TBD |
-| Throughput / Core | TBD | TBD | TBD |
-| CPU at Saturation | TBD | TBD | TBD |
-| Memory at Saturation | TBD | TBD | TBD |
-| Behavior Under Overload | TBD | TBD | TBD |
 
 ### Key Findings
 
