@@ -40,7 +40,7 @@ pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
 pub mod metrics;
-pub mod opentelemetry_client;
+pub mod telemetry_runtime;
 pub mod registry;
 pub mod reporter;
 pub mod self_tracing;

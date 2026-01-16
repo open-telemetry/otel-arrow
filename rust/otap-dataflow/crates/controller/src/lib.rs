@@ -36,7 +36,7 @@ use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
+use otap_df_telemetry::telemetry_runtime::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
@@ -83,7 +83,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
+        let telemetry_runtime = OpentelemetryClient::new(telemetry_config)?;
         let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
@@ -257,7 +257,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        opentelemetry_client.shutdown()?;
+        telemetry_runtime.shutdown()?;
 
         Ok(())
     }

@@ -14,7 +14,7 @@ use otap_df_config::pipeline::service::telemetry::{
 
 use crate::{
     error::Error,
-    opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
+    telemetry_runtime::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -138,7 +138,7 @@ mod tests {
     use std::{f64::consts::PI, time::Duration};
 
     #[test]
-    fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
+    fn test_configure_minimal_telemetry_runtime() -> Result<(), Error> {
         let config = TelemetryConfig::default();
         let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn test_configure_opentelemetry_client() -> Result<(), Error> {
+    fn test_configure_telemetry_runtime() -> Result<(), Error> {
         let mut resource = std::collections::HashMap::new();
         _ = resource.insert(
             "service.name".to_string(),
