@@ -41,7 +41,7 @@ index_expression = {
     // TODO: the way this grammar is defined doesn't yet handle
     // - nested indexing (e.g. a["x"]["y"])
     // - computing index from some complex expression (e.g. a[i + 1])
-    //
+    // 
     // This should probably be defined as  `member_expression ~ "[" ~ expression ~ "]"
     // but that makes the grammar left recursive so it would need which makes parsing a
     // bit more complicated, so we can change the implementation when this is needed.
