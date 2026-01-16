@@ -1049,7 +1049,10 @@ mod tests {
         let input = build_logs_with_attrs(
             vec![],
             vec![],
-            vec![KeyValue::new("target_key", AnyValue::new_string("original_value"))],
+            vec![KeyValue::new(
+                "target_key",
+                AnyValue::new_string("original_value"),
+            )],
         );
 
         let cfg = json!({

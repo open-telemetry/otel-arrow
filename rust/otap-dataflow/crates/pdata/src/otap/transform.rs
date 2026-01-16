@@ -4553,14 +4553,8 @@ mod insert_tests {
     #[test]
     fn test_insert_with_dictionary_encoded_keys() {
         // Test inserting with dictionary-encoded key columns
-        let key_type = DataType::Dictionary(
-            Box::new(DataType::UInt8),
-            Box::new(DataType::Utf8),
-        );
-        let str_type = DataType::Dictionary(
-            Box::new(DataType::UInt8),
-            Box::new(DataType::Utf8),
-        );
+        let key_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let str_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -4608,14 +4602,8 @@ mod insert_tests {
     #[test]
     fn test_insert_with_dictionary_encoded_keys_respects_existing() {
         // Test that insert respects existing keys when using dictionary-encoded columns
-        let key_type = DataType::Dictionary(
-            Box::new(DataType::UInt8),
-            Box::new(DataType::Utf8),
-        );
-        let str_type = DataType::Dictionary(
-            Box::new(DataType::UInt8),
-            Box::new(DataType::Utf8),
-        );
+        let key_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let str_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -4664,14 +4652,8 @@ mod insert_tests {
     #[test]
     fn test_insert_with_uint16_dictionary_keys() {
         // Test inserting with UInt16 dictionary-encoded key columns
-        let key_type = DataType::Dictionary(
-            Box::new(DataType::UInt16),
-            Box::new(DataType::Utf8),
-        );
-        let str_type = DataType::Dictionary(
-            Box::new(DataType::UInt16),
-            Box::new(DataType::Utf8),
-        );
+        let key_type = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        let str_type = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -4705,7 +4687,10 @@ mod insert_tests {
             rename: None,
             delete: None,
             insert: Some(InsertTransform::new(vec![
-                ("existing_key".into(), LiteralValue::Str("should_skip".into())),
+                (
+                    "existing_key".into(),
+                    LiteralValue::Str("should_skip".into()),
+                ),
                 ("new_key".into(), LiteralValue::Str("new_value".into())),
             ])),
         };
