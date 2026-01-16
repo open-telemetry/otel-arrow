@@ -119,6 +119,22 @@ establishes the baseline "unit of capacity" for capacity planning.
 - Load: Continuously increased until the CPU core is fully saturated
 - Test duration: 60 seconds at maximum load
 
+##### Pass-through Mode
+
+Forwarding without data transformation. Represents the minimum engine overhead
+for load balancing and routing use cases.
+
+| Protocol | Max Throughput | Memory Usage |
+|----------|----------------|--------------|
+| OTAP -> OTAP (Native) | TBD | TBD |
+| OTLP -> OTLP (Standard) | TBD | TBD |
+
+##### With Processing
+
+Includes an attribute processor to force data materialization. Represents
+typical production workloads where collectors perform transformations such as
+filtering, attribute enrichment, renaming, or aggregation.
+
 | Protocol | Max Throughput | Memory Usage |
 |----------|----------------|--------------|
 | OTAP -> OTAP (Native) | TBD | TBD |
