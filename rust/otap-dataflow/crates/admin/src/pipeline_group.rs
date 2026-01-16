@@ -25,8 +25,9 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_state::PipelineKey;
+use otap_df_state::pipeline_status::PipelineStatus;
+use otap_df_telemetry::otel_info;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -87,6 +88,12 @@ async fn shutdown_all_pipelines(
 ) -> impl IntoResponse {
     let start_time = Instant::now();
 
+    otel_info!(
+        "Shutdown.Requested",
+        wait = params.wait,
+        timeout_secs = params.timeout_secs
+    );
+
     // Send shutdown message to all pipelines
     let errors: Vec<_> = state
         .ctrl_msg_senders
@@ -106,6 +113,7 @@ async fn shutdown_all_pipelines(
 
     // If there were errors sending shutdown messages, return immediately
     if !errors.is_empty() {
+        otel_info!("Shutdown.Failed", error_count = errors.len());
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ShutdownResponse {
@@ -118,6 +126,7 @@ async fn shutdown_all_pipelines(
 
     // If wait=false, return immediately with 202 Accepted
     if !params.wait {
+        otel_info!("Shutdown.Accepted", blocking = false);
         return (
             StatusCode::ACCEPTED,
             Json(ShutdownResponse {
@@ -129,12 +138,18 @@ async fn shutdown_all_pipelines(
     }
 
     // wait=true: Poll until all pipelines reach terminal state or timeout
+    otel_info!("Shutdown.BlockingWait", timeout_secs = params.timeout_secs);
     let timeout = Duration::from_secs(params.timeout_secs);
     let poll_interval = Duration::from_millis(100);
 
     loop {
         // Check if we've exceeded the timeout
         if start_time.elapsed() > timeout {
+            otel_info!(
+                "Shutdown.Timeout",
+                timeout_secs = params.timeout_secs,
+                elapsed_ms = start_time.elapsed().as_millis() as u64
+            );
             return (
                 StatusCode::GATEWAY_TIMEOUT,
                 Json(ShutdownResponse {
@@ -150,10 +165,14 @@ async fn shutdown_all_pipelines(
 
         // Check if all pipelines have terminated
         let snapshot = state.observed_state_store.snapshot();
-        let all_terminated = !snapshot.is_empty()
-            && snapshot.values().all(|status| status.is_terminated());
+        let all_terminated =
+            !snapshot.is_empty() && snapshot.values().all(|status| status.is_terminated());
 
         if all_terminated {
+            otel_info!(
+                "Shutdown.Completed",
+                elapsed_ms = start_time.elapsed().as_millis() as u64
+            );
             return (
                 StatusCode::OK,
                 Json(ShutdownResponse {
