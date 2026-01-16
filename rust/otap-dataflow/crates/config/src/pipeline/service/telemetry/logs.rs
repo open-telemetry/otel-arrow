@@ -46,14 +46,13 @@ pub enum LogLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LoggingProviders {
     /// Provider mode for non-engine threads. This defines the global Tokio
-    /// `tracing` subscriber. Default is Unbuffered. Note that Buffered
-    /// requires opt-in thread-local setup.
+    /// `tracing` subscriber. Default is ConsoleAsync.
     #[serde(default = "default_global_provider")]
     pub global: ProviderMode,
 
     /// Provider mod for engine/pipeline threads. This defines how the
     /// engine thread / core sets the Tokio `tracing`
-    /// subscriber. Default is Buffered. Internal logs will be flushed
+    /// subscriber. Default is ConsoleAsync. Internal logs will be flushed
     /// by either the Internal Telemetry Receiver or the main pipeline
     /// controller.
     #[serde(default = "default_engine_provider")]
@@ -78,13 +77,15 @@ pub enum ProviderMode {
     /// Use OTel-Rust as the provider.
     OpenTelemetry,
 
-    /// Asynchronous console logging.
-    /// The caller writes to a channel the same as ITS deliver, but bypasses
-    /// the internal pipeline with console logging.
+    /// Asynchronous console logging. The caller writes to a channel
+    /// the same as ITS delivery, but bypasses the internal pipeline
+    /// with console logging.
+    #[serde(rename = "console_async")]
     ConsoleAsync,
 
-    /// Synchronous console logging. Note! This can block the producing thread.
-    /// The caller writes directly to the console.
+    /// Synchronous console logging. Note! This can block the
+    /// producing thread.  The caller writes directly to the console.
+    #[serde(rename = "console_direct")]
     ConsoleDirect,
 }
 
@@ -92,20 +93,20 @@ impl ProviderMode {
     /// Returns true if this requires a LogsReporter channel for
     /// asynchronous logging.
     #[must_use]
-    pub fn needs_reporter(&self) -> bool {
+    pub const fn needs_reporter(&self) -> bool {
         matches!(self, Self::ITS | Self::ConsoleAsync)
     }
 }
 
-fn default_global_provider() -> ProviderMode {
-    ProviderMode::ITS
+const fn default_global_provider() -> ProviderMode {
+    ProviderMode::ConsoleAsync
 }
 
-fn default_engine_provider() -> ProviderMode {
-    ProviderMode::ITS
+const fn default_engine_provider() -> ProviderMode {
+    ProviderMode::ConsoleAsync
 }
 
-fn default_internal_provider() -> ProviderMode {
+const fn default_internal_provider() -> ProviderMode {
     ProviderMode::Noop
 }
 
@@ -206,15 +207,13 @@ mod tests {
         );
     }
 
-    // ==================== Defaults & Parsing ====================
-
     #[test]
     fn test_defaults() {
         // Manual Default impl matches serde defaults
         let config = LogsConfig::default();
         assert_eq!(config.level, LogLevel::Info);
-        assert_eq!(config.providers.global, ProviderMode::ITS);
-        assert_eq!(config.providers.engine, ProviderMode::ITS);
+        assert_eq!(config.providers.global, ProviderMode::ConsoleAsync);
+        assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
         assert!(config.processors.is_empty());
 
@@ -252,8 +251,6 @@ mod tests {
         assert_eq!(config.providers.engine, ProviderMode::OpenTelemetry);
     }
 
-    // ==================== ProviderMode::needs_reporter ====================
-
     #[test]
     fn test_needs_reporter() {
         use ProviderMode::*;
@@ -268,8 +265,6 @@ mod tests {
             assert_eq!(mode.needs_reporter(), expected, "{mode:?}");
         }
     }
-
-    // ==================== Validation ====================
 
     #[test]
     fn test_validate_default_succeeds() {
@@ -290,7 +285,7 @@ mod tests {
     fn test_validate_engine_otel_requires_global_otel() {
         use ProviderMode::*;
         // Engine OpenTelemetry without global OpenTelemetry fails
-        for global in [Noop, ITS, ConsoleDirect] {
+        for global in [Noop, ITS, ConsoleDirect, ConsoleAsync] {
             let config = config_with(global, OpenTelemetry, Noop);
             assert_invalid(&config, "opentelemetry");
         }

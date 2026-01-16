@@ -103,7 +103,11 @@ Provider mode values are:
 - ITS: Use the internal telemetry system.
 - OpenTelemetry: Use the OpenTelemetry SDK.
 - ConsoleDirect: Synchronously write to the console. 
-- ConsoleAsync: Synchronously write to the console.
+- ConsoleAsync: Asynchronously write to the console.
+
+Note that the ITS and ConsoleAsync modes share a the same provider
+logic, which writes to an internal channel. These modes differ in how
+the channel is consumed.
 
 ## Default configuration
 
@@ -127,7 +131,8 @@ service:
 
 In this configuration, the `InternalTelemetryReceiver` node consumes
 from the channel and emits `OtapPayload::ExportLogsRequest` into the
-pipeline.
+pipeline. The internal provider is configured to print directly to the
+console in case the internal telemetry pipeline experiences errors.
 
 ```yaml
 service:
