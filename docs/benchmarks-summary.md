@@ -121,8 +121,8 @@ establishes the baseline "unit of capacity" for capacity planning.
 
 | Protocol | Max Throughput | Memory Usage |
 |----------|----------------|--------------|
-| OTAP → OTAP (Native) | TBD | TBD |
-| OTLP → OTLP (Standard) | TBD | TBD |
+| OTAP -> OTAP (Native) | TBD | TBD |
+| OTLP -> OTLP (Standard) | TBD | TBD |
 
 #### Scalability
 
@@ -133,7 +133,7 @@ eliminating shared-state synchronization overhead.
 **Test Parameters:**
 
 - Batch size: 500 records per request
-- Protocol: OTAP → OTAP (native protocol)
+- Protocol: OTAP -> OTAP (native protocol)
 - Load: Maximum sustained throughput at each core count
 
 | CPU Cores | Max Throughput | Scaling Efficiency | Memory Usage |
@@ -144,7 +144,7 @@ eliminating shared-state synchronization overhead.
 | 8 Cores   | TBD            | TBD               | TBD          |
 | 16 Cores  | TBD            | TBD               | TBD          |
 
-*Scaling Efficiency = (Throughput at N cores) / (N × Single-core throughput)*
+*Scaling Efficiency = (Throughput at N cores) / (N * Single-core throughput)*
 
 ### Architecture
 
