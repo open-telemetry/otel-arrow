@@ -64,6 +64,16 @@ pub enum SubscriberError {
     #[error("subscriber registry is shutting down")]
     ShuttingDown,
 
+    /// Operation was cancelled, typically due to shutdown.
+    ///
+    /// This is a graceful cancellation, not an error. Operations that receive
+    /// this should clean up and return without considering it a failure.
+    #[error("operation cancelled: {reason}")]
+    Cancelled {
+        /// Reason for the cancellation (e.g., "shutdown requested").
+        reason: Cow<'static, str>,
+    },
+
     /// Progress file I/O error.
     #[error("progress file I/O error at {path}: {source}")]
     ProgressIo {
@@ -138,5 +148,21 @@ impl SubscriberError {
             path: path.into(),
             message: message.into(),
         }
+    }
+
+    /// Creates a new [`SubscriberError::Cancelled`] error.
+    #[must_use]
+    pub fn cancelled(reason: impl Into<Cow<'static, str>>) -> Self {
+        Self::Cancelled {
+            reason: reason.into(),
+        }
+    }
+
+    /// Returns `true` if this error indicates a graceful cancellation.
+    ///
+    /// Cancelled operations should clean up and return without logging errors.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled { .. })
     }
 }
