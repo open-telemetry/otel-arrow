@@ -327,9 +327,8 @@ mod test {
         test_invalid_renames_are_errors::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_delete_attributes() {
-        let result = exec_logs_pipeline::<KqlParser>(
+    async fn test_delete_attributes<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
             "logs | project-away attributes[\"x\"]",
             generate_logs_test_data(),
         )
@@ -345,7 +344,7 @@ mod test {
         );
 
         // test moving multiple attributes simultaneously from different payloads
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs |
                 project-away
                     attributes[\"x\"],
@@ -382,7 +381,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_delete_when_no_attrs_batch_present() {
+    async fn test_delete_attributes_kql_parser() {
+        test_delete_attributes::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_delete_attributes_opl_parser() {
+        test_delete_attributes::<OplParser>().await;
+    }
+
+    async fn test_delete_when_no_attrs_batch_present<P: Parser>() {
         let input = LogsData::new(vec![ResourceLogs::new(
             Resource::default(),
             vec![ScopeLogs::new(
@@ -391,7 +399,7 @@ mod test {
             )],
         )]);
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs |
                 project-away attributes[\"y\"],
                 resource.attributes[\"xr1\"],
@@ -415,13 +423,22 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_delete_all_attributes() {
+    async fn test_delete_when_no_attrs_batch_present_kql_parser() {
+        test_delete_when_no_attrs_batch_present::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_delete_when_no_attrs_batch_present_opl_parser() {
+        test_delete_when_no_attrs_batch_present::<OplParser>().await;
+    }
+
+    async fn test_delete_all_attributes<P: Parser>() {
         let input = generate_logs_test_data();
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(input));
-        let kql_expr = "logs |
+        let query = "logs |
             project-away attributes[\"x\"], attributes[\"x2\"]
         ";
-        let parser_result = KqlParser::parse(kql_expr).unwrap();
+        let parser_result = P::parse(query).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline.execute(otap_batch).await.unwrap();
 
@@ -429,5 +446,15 @@ mod test {
             result.get(ArrowPayloadType::LogAttrs).is_none(),
             "expected LogAttrs RecordBatch removed"
         )
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_attributes_kql_parser() {
+        test_delete_all_attributes::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_delete_all_attributes_opl_parser() {
+        test_delete_all_attributes::<OplParser>().await;
     }
 }
