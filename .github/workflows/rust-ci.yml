@@ -182,15 +182,17 @@ jobs:
       - name: Check opl.pest formatting
         if: steps.check_pest.outputs.changed == 'true'
         run: |
-          # Create a backup of the original file
+          # Create a backup of the original file before formatting.
+          # pestfmt modifies files in-place, so we need to preserve the original
+          # to compare and detect if any formatting changes are needed.
           cp rust/otap-dataflow/crates/opl/src/opl.pest /tmp/opl.pest.original
-          
+
           # Run pestfmt to format the file
           pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
-          
+
           # Compare with original
           if ! diff -q /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest > /dev/null; then
-            echo "❌ opl.pest is not formatted correctly"
+            echo "opl.pest is not formatted correctly"
             echo ""
             echo "Please run the following command to format it:"
             echo "  pestfmt rust/otap-dataflow/crates/opl/src/opl.pest"
@@ -199,7 +201,7 @@ jobs:
             diff -u /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest || true
             exit 1
           else
-            echo "✅ opl.pest is correctly formatted"
+            echo "opl.pest is correctly formatted"
           fi
 
   clippy:
