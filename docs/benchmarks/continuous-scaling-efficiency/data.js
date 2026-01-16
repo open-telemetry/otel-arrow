@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768541690948,
+  "lastUpdate": 1768543369068,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -160,6 +160,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "scaling_efficiency_avg",
             "value": 0.796,
+            "unit": "",
+            "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8e6891bb6def12af916041036a75eed2327c639a",
+          "message": "Add service::telemetry::logs::providers settings for internal logging setup (#1795)\n\nPart of https://github.com/open-telemetry/otel-arrow/pull/1771.\n\nPart of https://github.com/open-telemetry/otel-arrow/issues/1736.\n\nAs documented in https://github.com/open-telemetry/otel-arrow/pull/1741.\n\n~Updates that document to match this change reflecting the prototype in\n#1771.~\n\nRevised relative to #1771.\n\nAdds LoggingProviders (choice of default logging provider for global,\nengine, and internal-telemetry threads).\nAdds ProviderMode with names to select instrumentation behavior, with\n`its` referring to internal telemetry system.\n\nNote: These settings are somehow not ideally placed. They belong also in\nthe top-level settings, or with observed_state settings. However, since\nlogging is configured with resource and level, which are part of the\nservice::telemetry config area presently, we use that structure. After\nthe bulk of #1736 is finished we can restructure.",
+          "timestamp": "2026-01-16T05:28:35Z",
+          "tree_id": "96d19e1d2d7270601ccadb5cccae9099af9bd16d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/8e6891bb6def12af916041036a75eed2327c639a"
+        },
+        "date": 1768543368254,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "scaling_efficiency_2_cores",
+            "value": 0.9387,
+            "unit": "",
+            "extra": "Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_4_cores",
+            "value": 0.8769,
+            "unit": "",
+            "extra": "Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_8_cores",
+            "value": 0.776,
+            "unit": "",
+            "extra": "Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_16_cores",
+            "value": 0.6818,
+            "unit": "",
+            "extra": "Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_avg",
+            "value": 0.8184,
             "unit": "",
             "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
