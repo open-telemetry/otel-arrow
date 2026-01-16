@@ -40,7 +40,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::{Condvar, Mutex, RwLock};
+use parking_lot::{Mutex, RwLock};
+use tokio::sync::Notify;
 
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
@@ -114,10 +115,8 @@ pub struct SubscriberRegistry<P: SegmentProvider> {
     dirty_subscribers: Mutex<HashSet<SubscriberId>>,
     /// Segment data provider.
     segment_provider: Arc<P>,
-    /// Condvar for notifying waiting subscribers when new segments arrive.
-    /// The `Mutex<bool>` tracks whether there's pending data (set true on segment
-    /// finalization, reset to false when checked).
-    bundle_available: (Mutex<bool>, Condvar),
+    /// Async notification for waking waiting subscribers when new segments arrive.
+    bundle_available: Arc<Notify>,
 }
 
 impl<P: SegmentProvider> SubscriberRegistry<P> {
@@ -177,7 +176,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             subscribers: RwLock::new(subscribers),
             dirty_subscribers: Mutex::new(HashSet::new()),
             segment_provider,
-            bundle_available: (Mutex::new(false), Condvar::new()),
+            bundle_available: Arc::new(Notify::new()),
         });
 
         Ok(registry)
@@ -278,7 +277,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     ///
     /// Returns an error if the subscriber is not registered or if the progress
     /// file cannot be deleted.
-    pub fn unregister(&self, id: &SubscriberId) -> Result<()> {
+    pub async fn unregister(&self, id: &SubscriberId) -> Result<()> {
         // Remove from in-memory state
         {
             let mut subscribers = self.subscribers.write();
@@ -294,7 +293,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         }
 
         // Delete progress file
-        delete_progress_file(&self.config.data_dir, id)?;
+        delete_progress_file(&self.config.data_dir, id).await?;
 
         Ok(())
     }
@@ -314,21 +313,21 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
             }
         }
 
-        // Notify waiting subscribers that new bundles are available
-        let (lock, cvar) = &self.bundle_available;
-        let mut available = lock.lock();
-        *available = true;
-        let _ = cvar.notify_all();
+        // Notify async waiters that new bundles are available
+        self.bundle_available.notify_waiters();
     }
 
-    /// Returns the next pending bundle for a subscriber.
+    /// Polls for the next pending bundle without blocking.
     ///
-    /// Claims the bundle and returns a handle for resolution.
+    /// Claims the bundle and returns a handle for resolution. Returns `None`
+    /// immediately if no bundle is available.
+    ///
+    /// For async waiting, use [`next_bundle`](Self::next_bundle).
     ///
     /// # Errors
     ///
     /// Returns an error if the subscriber is not registered or not active.
-    pub fn next_bundle(
+    pub fn poll_next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
     ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
@@ -374,72 +373,133 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         )))
     }
 
-    /// Returns the next pending bundle, blocking until one is available.
+    /// Returns the next pending bundle, waiting asynchronously until one is available.
     ///
-    /// This is more efficient than polling `next_bundle` in a loop with sleeps,
-    /// as it uses a condvar to wait for new segment notifications.
+    /// This is the primary async API for receiving bundles. It uses tokio's
+    /// async notification to efficiently wait for new bundles.
     ///
     /// # Arguments
     ///
     /// * `id` - The subscriber ID
     /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
-    /// * `should_stop` - A function called periodically to check if waiting should stop
-    ///   (e.g., for shutdown). If it returns `true`, returns `Ok(None)`.
+    /// * `cancel` - Optional cancellation token. If provided and cancelled, returns
+    ///   `Err(SubscriberError::Cancelled)`.
     ///
     /// # Returns
     ///
     /// * `Ok(Some(handle))` - A bundle is available
-    /// * `Ok(None)` - Timeout expired or `should_stop` returned true
+    /// * `Ok(None)` - Timeout expired with no bundle available
+    /// * `Err(SubscriberError::Cancelled)` - Cancellation was requested
     /// * `Err(_)` - Subscriber not found or not active
-    pub fn next_bundle_blocking<F>(
+    ///
+    /// # Cancellation
+    ///
+    /// When a cancellation token is provided and becomes cancelled, this method
+    /// returns immediately with `Err(SubscriberError::Cancelled { .. })`. This
+    /// enables graceful shutdown without waiting for the timeout to expire.
+    ///
+    /// ```ignore
+    /// use tokio_util::sync::CancellationToken;
+    ///
+    /// let cancel = CancellationToken::new();
+    ///
+    /// // In consumer task:
+    /// match registry.next_bundle(&id, Some(Duration::from_secs(5)), Some(&cancel)).await {
+    ///     Ok(Some(handle)) => { /* process bundle */ },
+    ///     Ok(None) => { /* timeout, check if we should continue */ },
+    ///     Err(e) if e.is_cancelled() => { /* shutdown requested */ },
+    ///     Err(e) => { /* real error */ },
+    /// }
+    ///
+    /// // To trigger shutdown from another task:
+    /// cancel.cancel();
+    /// ```
+    pub async fn next_bundle(
         self: &Arc<Self>,
         id: &SubscriberId,
         timeout: Option<Duration>,
-        should_stop: F,
-    ) -> Result<Option<BundleHandle<RegistryCallback<P>>>>
-    where
-        F: Fn() -> bool,
-    {
-        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> Result<Option<BundleHandle<RegistryCallback<P>>>> {
+        let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+        let notify = self.bundle_available.clone();
 
         loop {
-            // Check for shutdown
-            if should_stop() {
-                return Ok(None);
+            // Check for cancellation first
+            if let Some(token) = cancel {
+                if token.is_cancelled() {
+                    return Err(SubscriberError::cancelled("shutdown requested"));
+                }
             }
 
-            // Try to get a bundle
-            match self.next_bundle(id)? {
+            // IMPORTANT: Register for notification BEFORE checking for bundles.
+            // This prevents a race condition where:
+            //   1. poll_next_bundle returns None
+            //   2. A segment is finalized and notify_waiters() is called
+            //   3. We call notified() but miss the notification
+            //   4. We wait forever (or until next notification)
+            //
+            // By registering first, any notification after this point will wake us.
+            let notified = notify.notified();
+
+            // Now check for available bundles
+            match self.poll_next_bundle(id)? {
                 Some(handle) => return Ok(Some(handle)),
                 None => {
-                    // No bundle available, wait for notification
-                    let (lock, cvar) = &self.bundle_available;
-                    let mut available = lock.lock();
+                    // No bundle available, wait for notification, timeout, or cancellation
+                    match (deadline, cancel) {
+                        (Some(deadline), Some(token)) => {
+                            // Both timeout and cancellation
+                            let now = tokio::time::Instant::now();
+                            if now >= deadline {
+                                return Ok(None);
+                            }
 
-                    // Check if data became available while acquiring lock
-                    if *available {
-                        *available = false;
-                        continue;
-                    }
+                            tokio::select! {
+                                biased;
 
-                    // Calculate remaining timeout
-                    let wait_duration = if let Some(deadline) = deadline {
-                        let now = std::time::Instant::now();
-                        if now >= deadline {
-                            return Ok(None);
+                                _ = token.cancelled() => {
+                                    return Err(SubscriberError::cancelled("shutdown requested"));
+                                }
+                                _ = tokio::time::timeout_at(deadline, notified) => {
+                                    // Either notified or timed out, loop around to check
+                                }
+                            }
                         }
-                        // Wait for at most 100ms to allow periodic shutdown checks
-                        (deadline - now).min(Duration::from_millis(100))
-                    } else {
-                        // No timeout, but still check shutdown periodically
-                        Duration::from_millis(100)
-                    };
+                        (Some(deadline), None) => {
+                            // Only timeout, no cancellation
+                            let now = tokio::time::Instant::now();
+                            if now >= deadline {
+                                return Ok(None);
+                            }
 
-                    // parking_lot's wait_for takes &mut guard, doesn't consume it
-                    let _ = cvar.wait_for(&mut available, wait_duration);
+                            match tokio::time::timeout_at(deadline, notified).await {
+                                Ok(()) => {
+                                    // Notified, loop around to try getting a bundle
+                                }
+                                Err(_) => {
+                                    // Timeout expired
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                        (None, Some(token)) => {
+                            // No timeout, but with cancellation
+                            tokio::select! {
+                                biased;
 
-                    // Reset the flag since we're about to check
-                    *available = false;
+                                _ = token.cancelled() => {
+                                    return Err(SubscriberError::cancelled("shutdown requested"));
+                                }
+                                _ = notified => {
+                                    // Notified, loop around to try getting a bundle
+                                }
+                            }
+                        }
+                        (None, None) => {
+                            // No timeout, no cancellation - just wait for notification
+                            notified.await;
+                        }
+                    }
                 }
             }
         }
@@ -645,7 +705,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
     /// Returns the first error encountered after attempting all flushes.
     /// Check the dirty count after an error to see how many subscribers still
     /// need flushing.
-    pub fn flush_progress(&self) -> Result<usize> {
+    pub async fn flush_progress(&self) -> Result<usize> {
         // Take the dirty set
         let dirty: Vec<SubscriberId> = {
             let mut dirty_set = self.dirty_subscribers.lock();
@@ -679,7 +739,9 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                 (entries, oldest)
             };
 
-            match write_progress_file(&self.config.data_dir, &sub_id, oldest_incomplete, &entries) {
+            match write_progress_file(&self.config.data_dir, &sub_id, oldest_incomplete, &entries)
+                .await
+            {
                 Ok(()) => {
                     flushed += 1;
                 }
@@ -943,23 +1005,23 @@ mod tests {
         assert!(registry.is_registered(&id));
     }
 
-    #[test]
-    fn unregister_subscriber() {
+    #[tokio::test]
+    async fn unregister_subscriber() {
         let (registry, _dir) = setup_registry();
 
         let id = SubscriberId::new("test-sub").unwrap();
         registry.register(id.clone()).unwrap();
-        registry.unregister(&id).unwrap();
+        registry.unregister(&id).await.unwrap();
 
         assert!(!registry.is_registered(&id));
     }
 
-    #[test]
-    fn unregister_not_registered() {
+    #[tokio::test]
+    async fn unregister_not_registered() {
         let (registry, _dir) = setup_registry();
 
         let id = SubscriberId::new("unknown").unwrap();
-        let result = registry.unregister(&id);
+        let result = registry.unregister(&id).await;
 
         assert!(matches!(result, Err(SubscriberError::NotFound { .. })));
     }
@@ -976,7 +1038,7 @@ mod tests {
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
 
-        let result = registry.next_bundle(&id).unwrap();
+        let result = registry.poll_next_bundle(&id).unwrap();
         assert!(result.is_none());
     }
 
@@ -990,7 +1052,7 @@ mod tests {
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
 
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
         assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
 
@@ -1008,19 +1070,19 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get first bundle (claims it)
-        let handle1 = registry.next_bundle(&id).unwrap().unwrap();
+        let handle1 = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle1.bundle_ref().bundle_index, BundleIndex::new(0));
 
         // Next should skip the claimed one
-        let handle2 = registry.next_bundle(&id).unwrap().unwrap();
+        let handle2 = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle2.bundle_ref().bundle_index, BundleIndex::new(1));
 
         handle1.ack();
         handle2.ack();
     }
 
-    #[test]
-    fn ack_persists_to_log() {
+    #[tokio::test]
+    async fn ack_persists_to_log() {
         let dir = tempdir().unwrap();
         let config = RegistryConfig::new(dir.path());
         let provider = Arc::new(MockSegmentProvider::new());
@@ -1033,11 +1095,11 @@ mod tests {
             registry.register(id.clone()).unwrap();
             registry.activate(&id).unwrap();
 
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             handle.ack();
 
             // Flush progress files before closing
-            registry.flush_progress().unwrap();
+            registry.flush_progress().await.unwrap();
         }
 
         // Reopen and verify state was recovered
@@ -1047,14 +1109,14 @@ mod tests {
             registry.activate(&id).unwrap();
 
             // First bundle should be skipped (already acked)
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
     }
 
-    #[test]
-    fn reject_persists_to_log() {
+    #[tokio::test]
+    async fn reject_persists_to_log() {
         let dir = tempdir().unwrap();
         let config = RegistryConfig::new(dir.path());
         let provider = Arc::new(MockSegmentProvider::new());
@@ -1067,11 +1129,11 @@ mod tests {
             registry.register(id.clone()).unwrap();
             registry.activate(&id).unwrap();
 
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             handle.reject(); // Dropped
 
             // Flush progress files before closing
-            registry.flush_progress().unwrap();
+            registry.flush_progress().await.unwrap();
         }
 
         // Reopen and verify state was recovered
@@ -1081,7 +1143,7 @@ mod tests {
             registry.activate(&id).unwrap();
 
             // First bundle should be skipped (dropped)
-            let handle = registry.next_bundle(&id).unwrap().unwrap();
+            let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
             assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(1));
             handle.ack();
         }
@@ -1098,12 +1160,12 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get and defer first bundle
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         let bundle_ref = handle.defer();
         assert_eq!(bundle_ref.bundle_index, BundleIndex::new(0));
 
         // Should be able to get it again
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
         handle.ack();
     }
@@ -1119,7 +1181,7 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get and defer
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         let bundle_ref = handle.defer();
 
         // Explicitly claim it
@@ -1139,7 +1201,7 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Get and ack
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         let bundle_ref = handle.bundle_ref();
         handle.ack();
 
@@ -1170,7 +1232,7 @@ mod tests {
         registry.segment_provider.add_segment(1, 5);
 
         // Should be able to get bundles
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
         handle.ack();
     }
@@ -1191,7 +1253,7 @@ mod tests {
         registry.activate(&id).unwrap();
 
         // Should see the segment (added during activate)
-        let handle = registry.next_bundle(&id).unwrap().unwrap();
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
         assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
         handle.ack();
     }
@@ -1215,8 +1277,8 @@ mod tests {
         registry.activate(&id2).unwrap();
 
         // Both should get bundle 0
-        let h1 = registry.next_bundle(&id1).unwrap().unwrap();
-        let h2 = registry.next_bundle(&id2).unwrap().unwrap();
+        let h1 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+        let h2 = registry.poll_next_bundle(&id2).unwrap().unwrap();
 
         assert_eq!(h1.bundle_ref().bundle_index, BundleIndex::new(0));
         assert_eq!(h2.bundle_ref().bundle_index, BundleIndex::new(0));
@@ -1247,7 +1309,7 @@ mod tests {
         );
 
         // Sub1 completes segment 1
-        let h = registry.next_bundle(&id1).unwrap().unwrap();
+        let h = registry.poll_next_bundle(&id1).unwrap().unwrap();
         h.ack();
 
         // Still waiting on sub2
@@ -1257,7 +1319,7 @@ mod tests {
         );
 
         // Sub2 completes segment 1
-        let h = registry.next_bundle(&id2).unwrap().unwrap();
+        let h = registry.poll_next_bundle(&id2).unwrap().unwrap();
         h.ack();
 
         // Now segment 2 is oldest incomplete
@@ -1267,134 +1329,225 @@ mod tests {
         );
     }
 
-    #[test]
-    fn next_bundle_blocking_returns_immediately_when_available() {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Async method tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn next_bundle_returns_bundle_when_available() {
         let (registry, _dir) = setup_registry();
         let provider = registry.segment_provider.clone();
-        provider.add_segment(1, 2);
+        provider.add_segment(1, 1);
 
-        let id = SubscriberId::new("test-sub").unwrap();
+        let id = SubscriberId::new("async-test").unwrap();
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
 
-        // Should return immediately since bundle is available
-        let start = std::time::Instant::now();
-        let handle = registry
-            .next_bundle_blocking(&id, Some(Duration::from_secs(5)), || false)
-            .unwrap()
-            .unwrap();
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "Should return immediately"
-        );
-        assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
-        handle.ack();
-    }
-
-    #[test]
-    fn next_bundle_blocking_respects_timeout() {
-        let (registry, _dir) = setup_registry();
-        // No segments added - no bundles available
-
-        let id = SubscriberId::new("test-sub").unwrap();
-        registry.register(id.clone()).unwrap();
-        registry.activate(&id).unwrap();
-
-        // Should timeout after ~200ms
-        let start = std::time::Instant::now();
+        // Async next_bundle should return the bundle (use timeout to avoid hang if test fails)
         let result = registry
-            .next_bundle_blocking(&id, Some(Duration::from_millis(200)), || false)
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
+            .await
             .unwrap();
-        let elapsed = start.elapsed();
-
-        assert!(result.is_none(), "Should return None on timeout");
-        assert!(
-            elapsed >= Duration::from_millis(200),
-            "Should wait for timeout"
-        );
-        assert!(
-            elapsed < Duration::from_millis(500),
-            "Should not wait too long"
-        );
+        assert!(result.is_some(), "should get bundle");
     }
 
-    #[test]
-    fn next_bundle_blocking_respects_stop_condition() {
+    #[tokio::test]
+    async fn next_bundle_waits_for_segment_notification() {
         use std::sync::atomic::{AtomicBool, Ordering};
-
-        let (registry, _dir) = setup_registry();
-        // No segments added - no bundles available
-
-        let id = SubscriberId::new("test-sub").unwrap();
-        registry.register(id.clone()).unwrap();
-        registry.activate(&id).unwrap();
-
-        let should_stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = should_stop.clone();
-
-        // Spawn a thread that will set should_stop after a short delay
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            stop_flag.store(true, Ordering::Relaxed);
-        });
-
-        // Should stop when the flag is set (checked every 100ms)
-        let start = std::time::Instant::now();
-        let result = registry
-            .next_bundle_blocking(&id, None, || should_stop.load(Ordering::Relaxed))
-            .unwrap();
-        let elapsed = start.elapsed();
-
-        assert!(result.is_none(), "Should return None when stopped");
-        assert!(
-            elapsed >= Duration::from_millis(100),
-            "Should wait at least one cycle"
-        );
-        assert!(
-            elapsed < Duration::from_millis(500),
-            "Should stop reasonably quickly"
-        );
-    }
-
-    #[test]
-    fn next_bundle_blocking_wakes_on_segment_finalized() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::time::Duration as TokioDuration;
 
         let (registry, _dir) = setup_registry();
         let provider = registry.segment_provider.clone();
-        // Start with no segments
 
-        let id = SubscriberId::new("test-sub").unwrap();
+        let id = SubscriberId::new("wait-test").unwrap();
         registry.register(id.clone()).unwrap();
         registry.activate(&id).unwrap();
 
+        let registry_for_notify = registry.clone();
         let got_bundle = Arc::new(AtomicBool::new(false));
         let got_bundle_clone = got_bundle.clone();
-        let registry_clone = registry.clone();
         let id_clone = id.clone();
 
-        // Spawn consumer thread that will block waiting for a bundle
-        let consumer = std::thread::spawn(move || {
-            let result = registry_clone
-                .next_bundle_blocking(&id_clone, Some(Duration::from_secs(5)), || false)
-                .unwrap();
+        // Spawn an async task to wait for the bundle with a timeout
+        let consumer = tokio::spawn(async move {
+            let result = registry
+                .next_bundle(&id_clone, Some(Duration::from_secs(5)), None)
+                .await
+                .expect("next_bundle should succeed");
             if result.is_some() {
                 got_bundle_clone.store(true, Ordering::Relaxed);
             }
         });
 
-        // Wait a bit, then add a segment
-        std::thread::sleep(Duration::from_millis(100));
-        provider.add_segment(1, 1);
-        registry.on_segment_finalized(SegmentSeq::new(1), 1);
+        // Give consumer task time to start waiting
+        tokio::time::sleep(TokioDuration::from_millis(50)).await;
 
-        // Consumer should wake up and get the bundle
-        consumer.join().unwrap();
+        // Now add a segment and notify
+        provider.add_segment(1, 1);
+        registry_for_notify.on_segment_finalized(SegmentSeq::new(1), 1);
+
+        // Consumer should complete within reasonable time
+        let result = tokio::time::timeout(TokioDuration::from_secs(10), consumer).await;
+        assert!(result.is_ok(), "consumer should complete");
         assert!(
             got_bundle.load(Ordering::Relaxed),
-            "Consumer should have received bundle"
+            "consumer should have received bundle"
         );
+    }
+
+    #[tokio::test]
+    async fn next_bundle_timeout_returns_none() {
+        let (registry, _dir) = setup_registry();
+        // No segments added - will timeout
+
+        let id = SubscriberId::new("timeout-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // next_bundle with short timeout should return None
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_millis(100)), None)
+            .await
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "should return None on timeout with no bundles"
+        );
+
+        // Verify we can still use the registry after timeout
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 1);
+        // Need to notify the registry about the new segment
+        registry.on_segment_finalized(SegmentSeq::new(1), 1);
+
+        let result2 = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
+            .await
+            .unwrap();
+        assert!(result2.is_some(), "should get bundle after segment added");
+    }
+
+    #[tokio::test]
+    async fn next_bundle_sequences_correctly() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3); // Segment with 3 bundles
+
+        let id = SubscriberId::new("sequence-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Get first bundle with async method (use timeout to avoid hang if test fails)
+        let handle1 = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
+            .await
+            .unwrap()
+            .expect("should get first bundle");
+        assert_eq!(handle1.bundle_ref().bundle_index, BundleIndex::new(0));
+        handle1.ack();
+
+        // Get second bundle with poll method
+        let handle2 = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle2.bundle_ref().bundle_index, BundleIndex::new(1));
+        handle2.ack();
+
+        // Get third bundle with async method again
+        let handle3 = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), None)
+            .await
+            .unwrap()
+            .expect("should get third bundle");
+        assert_eq!(handle3.bundle_ref().bundle_index, BundleIndex::new(2));
+        handle3.ack();
+
+        // No more bundles
+        let result = registry.poll_next_bundle(&id).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn next_bundle_returns_cancelled_when_token_is_cancelled() {
+        let (registry, _dir) = setup_registry();
+
+        let id = SubscriberId::new("cancel-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Create a cancellation token and cancel it immediately
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+
+        // next_bundle should return Cancelled immediately
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), Some(&cancel))
+            .await;
+
+        match result {
+            Err(e) => assert!(e.is_cancelled(), "should be a cancelled error"),
+            Ok(_) => panic!("should return error when cancelled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_bundle_cancellation_wakes_waiting_task() {
+        use tokio::time::Duration as TokioDuration;
+
+        let (registry, _dir) = setup_registry();
+
+        let id = SubscriberId::new("cancel-wake-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Create a cancellation token
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let registry_clone = registry.clone();
+        let id_clone = id.clone();
+
+        // Spawn a task that waits for a bundle (no segments, so it will block)
+        let waiter = tokio::spawn(async move {
+            registry_clone
+                .next_bundle(&id_clone, None, Some(&cancel_clone))
+                .await
+        });
+
+        // Give the waiter time to start waiting
+        tokio::time::sleep(TokioDuration::from_millis(50)).await;
+
+        // Cancel the token
+        cancel.cancel();
+
+        // The waiter should wake up and return Cancelled
+        let result = tokio::time::timeout(TokioDuration::from_secs(5), waiter)
+            .await
+            .expect("waiter should complete")
+            .expect("task should not panic");
+
+        match result {
+            Err(e) => assert!(e.is_cancelled(), "should be a cancelled error"),
+            Ok(_) => panic!("should return error when cancelled"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_bundle_with_timeout_and_cancellation() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 1);
+
+        let id = SubscriberId::new("timeout-cancel-test").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Create a cancellation token (not cancelled)
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // Should successfully get bundle even with cancel token present
+        let result = registry
+            .next_bundle(&id, Some(Duration::from_secs(5)), Some(&cancel))
+            .await
+            .unwrap();
+
+        assert!(result.is_some(), "should get bundle with uncancelled token");
     }
 }
