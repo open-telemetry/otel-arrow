@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768543369068,
+  "lastUpdate": 1768584823862,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -214,6 +214,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "scaling_efficiency_avg",
             "value": 0.8184,
+            "unit": "",
+            "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "145a1d29d3f03a0396fe5c03ffff08ca27e2e20a",
+          "message": "OPL parser support remove map keys operator call (#1804)\n\nCloses #1763\nCloses #1667 \n\nAdds to OPL parser support for an operator to remove keys from maps\n(attributes). The name of this operator, like in KQL, is `project-away`,\nbut there is an alias called `exclude`.\n\n```kql\nlogs | project-away attributes[\"x\"], attributes[\"y\"]\nlogs | exclude resource.attributes[\"z\"]\n// etc.\n```\n\nThis PR also uses the OPL parser in tests in the columnar query engine\nwhich use this operator. Finally, this cleans up the test code in\n`pipeline::conditional` to remove the `ConditionalTest` helper type that\nwas needed to setup the tests until we had this parser support.",
+          "timestamp": "2026-01-16T16:58:24Z",
+          "tree_id": "d1f134f53c1971d3c8c0c7061b1564f9f151216b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/145a1d29d3f03a0396fe5c03ffff08ca27e2e20a"
+        },
+        "date": 1768584822955,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "scaling_efficiency_2_cores",
+            "value": 0.9483,
+            "unit": "",
+            "extra": "Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_4_cores",
+            "value": 0.8057,
+            "unit": "",
+            "extra": "Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_8_cores",
+            "value": 0.8707,
+            "unit": "",
+            "extra": "Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_16_cores",
+            "value": 0.6293,
+            "unit": "",
+            "extra": "Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_avg",
+            "value": 0.8135,
             "unit": "",
             "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
