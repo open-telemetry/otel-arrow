@@ -13,10 +13,6 @@ use crate::reporter::MetricsReporter;
 
 /// Internal collector responsible for gathering internal telemetry signals (fow now only metric
 /// sets or multivariate metrics).
-///
-/// Note: Soon this collector will be replaced by an Internal Telemetry Reporter (ITR) pipeline
-/// based on an OTAP Dataflow engine processing internal signals. More specifically a special
-/// receiver will be created to ingest internal signals.
 pub struct InternalCollector {
     /// The registry where entities and metrics are declared and aggregated.
     registry: TelemetryRegistryHandle,
