@@ -10,6 +10,8 @@ pub struct Rfc3164Message<'a> {
     pub(super) timestamp: Option<&'a [u8]>,
     pub(super) hostname: Option<&'a [u8]>,
     pub(super) tag: Option<&'a [u8]>,
+    pub(super) app_name: Option<&'a [u8]>,
+    pub(super) proc_id: Option<&'a [u8]>,
     pub(super) content: Option<&'a [u8]>,
     pub(super) input: &'a [u8],
 }
@@ -25,6 +27,12 @@ pub struct Rfc3164Message<'a> {
 /// - The message is parsed for any identifiable fields (timestamp, hostname, etc.)
 /// - No default priority is assigned
 /// - The entire message may be treated as content if no structure is found
+///
+/// # TAG Parsing
+/// The TAG field in RFC 3164 often contains the application name and optionally
+/// a process ID in the format `appname[pid]`. This parser extracts:
+/// - `app_name`: The part before `[` (or the entire TAG if no `[` is present)
+/// - `proc_id`: The numeric content between `[` and `]` (only if it's a valid number)
 pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseError> {
     if input.is_empty() {
         return Err(parser::ParseError::EmptyInput);
@@ -100,14 +108,72 @@ pub fn parse_rfc3164(input: &[u8]) -> Result<Rfc3164Message<'_>, parser::ParseEr
             (None, None, Some(remaining))
         };
 
+    // Parse app_name and proc_id from the TAG field
+    // TAG format is typically: "appname" or "appname[pid]"
+    let (app_name, proc_id) = parse_tag_components(tag);
+
     Ok(Rfc3164Message {
         priority,
         timestamp,
         hostname,
         tag,
+        app_name,
+        proc_id,
         content,
         input,
     })
+}
+
+/// Parse app_name and proc_id from a TAG field.
+///
+/// The TAG field in RFC 3164 often follows the format `appname[pid]`.
+/// This function extracts:
+/// - `app_name`: Everything before the `[` character (or the entire TAG if no `[`)
+/// - `proc_id`: The content between `[` and `]`, only if it's a valid numeric value
+///
+/// # Examples
+/// - `"su"` -> app_name=`"su"`, proc_id=None
+/// - `"sshd[5678]"` -> app_name=`"sshd"`, proc_id=`"5678"`
+/// - `"app[worker-1]"` -> app_name=`"app"`, proc_id=None (non-numeric)
+/// - `"app[]"` -> app_name=`"app"`, proc_id=None (empty)
+fn parse_tag_components(tag: Option<&[u8]>) -> (Option<&[u8]>, Option<&[u8]>) {
+    let Some(tag) = tag else {
+        return (None, None);
+    };
+
+    if tag.is_empty() {
+        return (None, None);
+    }
+
+    // Find the position of '[' in the tag
+    let Some(bracket_pos) = tag.iter().position(|&b| b == b'[') else {
+        // No bracket found, entire tag is the app_name
+        return (Some(tag), None);
+    };
+
+    // Extract app_name (everything before '[')
+    let app_name = if bracket_pos > 0 {
+        Some(&tag[..bracket_pos])
+    } else {
+        None
+    };
+
+    // Find the closing bracket
+    let Some(close_bracket_pos) = tag.iter().position(|&b| b == b']') else {
+        // No closing bracket, treat entire tag as app_name (malformed)
+        return (Some(tag), None);
+    };
+
+    // Extract proc_id (content between '[' and ']')
+    if close_bracket_pos > bracket_pos + 1 {
+        let proc_id_bytes = &tag[bracket_pos + 1..close_bracket_pos];
+        // Only accept numeric proc_id values
+        if proc_id_bytes.iter().all(|&b| b.is_ascii_digit()) {
+            return (app_name, Some(proc_id_bytes));
+        }
+    }
+
+    (app_name, None)
 }
 
 #[cfg(test)]
@@ -125,6 +191,8 @@ mod tests {
         assert_eq!(result.timestamp, Some(b"Oct 11 22:14:15".as_slice()));
         assert_eq!(result.hostname, Some(b"mymachine".as_slice()));
         assert_eq!(result.tag, Some(b"su".as_slice()));
+        assert_eq!(result.app_name, Some(b"su".as_slice()));
+        assert_eq!(result.proc_id, None);
         assert_eq!(
             result.content,
             Some(b"'su root' failed for lonvick on /dev/pts/8".as_slice())
@@ -142,6 +210,8 @@ mod tests {
         assert_eq!(result.timestamp, None);
         assert_eq!(result.hostname, Some(b"hostname".as_slice()));
         assert_eq!(result.tag, Some(b"tag".as_slice()));
+        assert_eq!(result.app_name, Some(b"tag".as_slice()));
+        assert_eq!(result.proc_id, None);
         assert_eq!(result.content, Some(b"message content".as_slice()));
     }
 
@@ -319,5 +389,139 @@ mod tests {
         assert_eq!(result.hostname, None); // No content after timestamp
         assert_eq!(result.tag, None);
         assert_eq!(result.content, Some(b"".as_slice())); // Empty content
+    }
+
+    #[test]
+    fn test_tag_with_proc_id() {
+        let input = b"<34>Oct 11 22:14:15 mymachine sshd[5678]: Connection accepted";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, Some(b"Oct 11 22:14:15".as_slice()));
+        assert_eq!(result.hostname, Some(b"mymachine".as_slice()));
+        assert_eq!(result.tag, Some(b"sshd[5678]".as_slice()));
+        assert_eq!(result.app_name, Some(b"sshd".as_slice()));
+        assert_eq!(result.proc_id, Some(b"5678".as_slice()));
+        assert_eq!(result.content, Some(b"Connection accepted".as_slice()));
+    }
+
+    #[test]
+    fn test_tag_with_non_numeric_proc_id() {
+        let input = b"<34>Oct 11 22:14:15 mymachine app[worker-1]: Task started";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, Some(b"Oct 11 22:14:15".as_slice()));
+        assert_eq!(result.hostname, Some(b"mymachine".as_slice()));
+        assert_eq!(result.tag, Some(b"app[worker-1]".as_slice()));
+        assert_eq!(result.app_name, Some(b"app".as_slice()));
+        assert_eq!(result.proc_id, None); // Non-numeric proc_id should be None
+        assert_eq!(result.content, Some(b"Task started".as_slice()));
+    }
+
+    #[test]
+    fn test_tag_with_empty_brackets() {
+        let input = b"<34>hostname app[]: message";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, None);
+        assert_eq!(result.hostname, Some(b"hostname".as_slice()));
+        assert_eq!(result.tag, Some(b"app[]".as_slice()));
+        assert_eq!(result.app_name, Some(b"app".as_slice()));
+        assert_eq!(result.proc_id, None); // Empty brackets should result in None
+        assert_eq!(result.content, Some(b"message".as_slice()));
+    }
+
+    #[test]
+    fn test_tag_with_unclosed_bracket() {
+        let input = b"<34>hostname app[123: message";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, None);
+        assert_eq!(result.hostname, Some(b"hostname".as_slice()));
+        assert_eq!(result.tag, Some(b"app[123".as_slice()));
+        assert_eq!(result.app_name, Some(b"app[123".as_slice())); // Treat entire tag as app_name
+        assert_eq!(result.proc_id, None);
+        assert_eq!(result.content, Some(b"message".as_slice()));
+    }
+
+    #[test]
+    fn test_tag_with_only_brackets() {
+        let input = b"<34>hostname [123]: message";
+        let result = parse_rfc3164(input).unwrap();
+
+        let priority = result.priority.unwrap();
+        assert_eq!(priority.facility, 4);
+        assert_eq!(priority.severity, 2);
+        assert_eq!(result.timestamp, None);
+        assert_eq!(result.hostname, Some(b"hostname".as_slice()));
+        assert_eq!(result.tag, Some(b"[123]".as_slice()));
+        assert_eq!(result.app_name, None); // No app_name before bracket
+        assert_eq!(result.proc_id, Some(b"123".as_slice()));
+        assert_eq!(result.content, Some(b"message".as_slice()));
+    }
+
+    #[test]
+    fn test_parse_tag_components_directly() {
+        // Test the helper function directly
+        use super::parse_tag_components;
+
+        // Simple app name
+        assert_eq!(
+            parse_tag_components(Some(b"su")),
+            (Some(b"su".as_slice()), None)
+        );
+
+        // App name with numeric proc_id
+        assert_eq!(
+            parse_tag_components(Some(b"sshd[5678]")),
+            (Some(b"sshd".as_slice()), Some(b"5678".as_slice()))
+        );
+
+        // App name with non-numeric proc_id
+        assert_eq!(
+            parse_tag_components(Some(b"app[worker-1]")),
+            (Some(b"app".as_slice()), None)
+        );
+
+        // Empty brackets
+        assert_eq!(
+            parse_tag_components(Some(b"app[]")),
+            (Some(b"app".as_slice()), None)
+        );
+
+        // Only brackets with number
+        assert_eq!(
+            parse_tag_components(Some(b"[123]")),
+            (None, Some(b"123".as_slice()))
+        );
+
+        // None tag
+        assert_eq!(parse_tag_components(None), (None, None));
+
+        // Empty tag
+        assert_eq!(parse_tag_components(Some(b"")), (None, None));
+
+        // Unclosed bracket
+        assert_eq!(
+            parse_tag_components(Some(b"app[123")),
+            (Some(b"app[123".as_slice()), None)
+        );
+
+        // Extra content after closing bracket (ignored)
+        assert_eq!(
+            parse_tag_components(Some(b"app[123]extra")),
+            (Some(b"app".as_slice()), Some(b"123".as_slice()))
+        );
     }
 }
