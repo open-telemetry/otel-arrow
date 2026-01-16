@@ -126,7 +126,7 @@ steps:
   - name: Wait For Drain and Reset
     action:
       wait:
-        delay_seconds: 3
+        delay_seconds: {{drain_seconds | default(3)}}
   # Stop monitoring all components.
   - name: Stop Monitoring All
     action:

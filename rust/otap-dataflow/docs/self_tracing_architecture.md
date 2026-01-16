@@ -28,6 +28,11 @@ telemetry pipeline consists of one (global) or more (NUMA-regional)
 ITR components and any of the connected processor and exporter
 components reachable from ITR source nodes.
 
+Nodes of an internal telemetry pipeline have identical structure with
+ordinary pipeline nodes, however they are separate and isolated. The
+main dataflow engine knows nothing about the internal telemetry
+pipeline engine.
+
 ## Logs instrumentation
 
 The OTAP Dataflow engine has dedicated macros, and every component is
@@ -117,6 +122,12 @@ form of console logging (unlike the use of the `raw` provider mode, which
 is synchronous).
 
 ```yaml
+nodes:
+  # pipeline nodes
+
+internal:
+  # internal telemetry pipeline nodes
+
 service:
   telemetry:
     logs:
