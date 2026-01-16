@@ -30,7 +30,6 @@ use std::sync::Arc;
 use crate::error::Error;
 use crate::registry::TelemetryRegistryHandle;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
-use tokio_util::sync::CancellationToken;
 
 pub mod attributes;
 pub mod collector;
@@ -168,40 +167,13 @@ impl InternalTelemetrySystem {
     /// This allows the caller to run the collector in a separate task while
     /// retaining the ability to shutdown the OTel providers.
     #[must_use]
-    pub fn into_parts(self) -> (collector::InternalCollector, OtelShutdownHandle) {
-        let shutdown_handle = OtelShutdownHandle {
+    pub fn into_parts(self) -> (collector::InternalCollector, ShutdownHandle) {
+        let shutdown_handle = ShutdownHandle {
             meter_provider: self.meter_provider,
             logger_provider: self.logger_provider,
             _otel_runtime: self._otel_runtime,
         };
         (self.collector, shutdown_handle)
-    }
-
-    /// Starts the internal signal collection loop and listens for a shutdown signal.
-    /// This method returns when either the collection loop ends (Ok/Err) or the shutdown signal
-    /// fires.
-    pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
-        // Run the collector and race it against the shutdown signal.
-        let collector = self.collector;
-
-        tokio::select! {
-            res = collector.run_collection_loop() => {
-                res
-            }
-            _ = cancel.cancelled() => {
-                // Shutdown requested; cancel the collection loop by dropping its future.
-                Ok(())
-            }
-        }
-    }
-
-    /// Runs the internal signal collection loop, which collects signals from the reporting channel
-    /// and aggregates them into the registry.
-    ///
-    /// This method runs indefinitely until the signals channel is closed.
-    /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self) -> Result<(), Error> {
-        self.collector.run_collection_loop().await
     }
 
     /// Shuts down the OpenTelemetry SDK providers.
@@ -226,23 +198,23 @@ impl Default for InternalTelemetrySystem {
     }
 }
 
-/// Handle for shutting down OpenTelemetry SDK providers.
+/// Handle for shutting down telemetry providers.
 ///
 /// This handle is returned by [`InternalTelemetrySystem::into_parts`] and
 /// holds ownership of the OTel SDK providers and runtime. Call [`shutdown`](Self::shutdown)
 /// to gracefully shut down the providers before dropping.
-pub struct OtelShutdownHandle {
+pub struct ShutdownHandle {
     /// OTel SDK meter provider for metrics export.
     meter_provider: SdkMeterProvider,
 
     /// OTel SDK logger provider for logs export.
     logger_provider: SdkLoggerProvider,
 
-    /// Tokio runtime for OTLP exporters (kept alive).
+    /// Tokio runtime for OTLP exporters.
     _otel_runtime: Option<tokio::runtime::Runtime>,
 }
 
-impl OtelShutdownHandle {
+impl ShutdownHandle {
     /// Shuts down the OpenTelemetry SDK providers.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider.shutdown();
