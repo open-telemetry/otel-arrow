@@ -16,9 +16,9 @@ use std::rc::Rc;
 thread_local! {
     /// Defined when building a pipeline to associate telemetry with the pipeline entity.
     /// Present for the pipeline lifetime.
-    static PIPELINE_ENTITY_KEY: Cell<Option<EntityKey>> = Cell::new(None);
+    static PIPELINE_ENTITY_KEY: Cell<Option<EntityKey>> = const { Cell::new(None) };
     /// Set for each node being built to provide telemetry handle during construction.
-    static BUILD_NODE_TELEMETRY_HANDLE: RefCell<Option<NodeTelemetryHandle>> = RefCell::new(None);
+    static BUILD_NODE_TELEMETRY_HANDLE: RefCell<Option<NodeTelemetryHandle>> = const { RefCell::new(None) };
 }
 
 /// RAII guard that clears and unregisters the pipeline entity on drop.
