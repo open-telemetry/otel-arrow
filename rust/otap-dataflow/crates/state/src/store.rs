@@ -105,10 +105,6 @@ impl ObservedStateStore {
                 eprintln!("Observed event: {observed_event:?}")
             }
             EventType::Success(_) => { /* no console output for success events */ }
-            EventType::Log(_) => {
-                // Log events don't affect pipeline state; they are handled elsewhere.
-                return Ok(ApplyOutcome::NoChange);
-            }
         }
 
         // Log events and events without a pipeline key don't update state.
@@ -122,10 +118,7 @@ impl ObservedStateStore {
             );
             poisoned.into_inner()
         });
-        let pipeline_key = PipelineKey::new(
-            key.pipeline_group_id.clone(),
-            key.pipeline_id.clone(),
-        );
+        let pipeline_key = PipelineKey::new(key.pipeline_group_id.clone(), key.pipeline_id.clone());
 
         let ps = pipelines
             .entry(pipeline_key)

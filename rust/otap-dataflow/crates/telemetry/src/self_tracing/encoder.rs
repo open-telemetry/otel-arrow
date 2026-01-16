@@ -4,6 +4,7 @@
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
 use std::fmt::Write as FmtWrite;
+use std::time::SystemTime;
 
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::{field_num::common::*, field_num::logs::*, wire_types};
@@ -32,14 +33,24 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
     /// Encode a tracing Event as a complete LogRecord message.
     ///
     /// Returns the number of bytes written.
-    pub fn encode_log_record(&mut self, record: LogRecord, callsite: &SavedCallsite) -> usize {
+    pub fn encode_log_record(
+        &mut self,
+        time: SystemTime,
+        record: &LogRecord,
+        callsite: &SavedCallsite,
+    ) -> usize {
         let start_len = self.buf.len();
+
+        // Convert SystemTime to nanoseconds since UNIX epoch
+        let timestamp_ns = time
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
 
         // Encode time_unix_nano (field 1, fixed64)
         self.buf
             .encode_field_tag(LOG_RECORD_TIME_UNIX_NANO, wire_types::FIXED64);
-        self.buf
-            .extend_from_slice(&record.timestamp_ns.to_le_bytes());
+        self.buf.extend_from_slice(&timestamp_ns.to_le_bytes());
 
         // Encode severity_number (field 2, varint)
         let severity = level_to_severity_number(callsite.level());
