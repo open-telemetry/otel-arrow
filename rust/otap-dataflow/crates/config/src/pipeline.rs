@@ -43,9 +43,6 @@ pub struct PipelineConfig {
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    ///
-    /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
-    /// across multiple cores/threads without cloning the entire configuration.
     #[serde(default)]
     nodes: PipelineNodes,
 
@@ -77,6 +74,9 @@ pub enum PipelineType {
 }
 
 /// A collection of nodes forming a pipeline graph.
+///
+/// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
+/// across multiple cores/threads without cloning the entire configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(transparent)]
 pub struct PipelineNodes(HashMap<NodeId, Arc<NodeUserConfig>>);
@@ -504,8 +504,14 @@ impl PipelineConfig {
 
         // Validate internal pipeline if present
         if !self.internal.is_empty() {
+            // TODO: the location of the internal telemetry pipeline
+            // nodes is subject to change. Temporarily, we append
+            // ("_internal") to the pipeline_id. We need a way to
+            // refer to the set of node defining the internal
+            // pipeline.
+            let internal_id: PipelineId = format!("{}_internal", &pipeline_id).into();
             self.internal
-                .validate(pipeline_group_id, pipeline_id, &mut errors);
+                .validate(pipeline_group_id, &internal_id, &mut errors);
         }
 
         if !errors.is_empty() {
