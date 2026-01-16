@@ -1,6 +1,5 @@
-# Template for core scaling saturation tests
-# This template is instantiated by the saturation-*cores.yaml wrapper files
-name: Continuous - Saturation - {{num_cores}} Core(s)
+# Passthrough test (no processor in middle)
+name: Continuous - Passthrough
 components:
   load-generator:
     deployment:
@@ -15,12 +14,12 @@ components:
           - "--pipeline"
           - "./config.yaml"
           - "--core-id-range"
-          - "{{loadgen_core_range}}"
+          - "1-12"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: {{loadgen_cores}}
+        allocated_cores: 12
       prometheus:
         endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
   df-engine:
@@ -36,12 +35,12 @@ components:
           - "--pipeline"
           - "./config.yaml"
           - "--core-id-range"
-          - "{{engine_core_range}}"
+          - "0-0"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: {{num_cores}}  # The cores we're testing
+        allocated_cores: 1
       prometheus:
         endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
   backend-service:
@@ -57,25 +56,24 @@ components:
           - "--pipeline"
           - "./config.yaml"
           - "--core-id-range"
-          - "{{backend_core_range}}"
+          - "13-14"
           - "--http-admin-bind"
           - "0.0.0.0:8080"
     monitoring:
       docker_component:
-        allocated_cores: {{backend_cores}}
+        allocated_cores: 2
       prometheus:
         endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
 
 tests:
-  - name: OTLP-ATTR-OTLP
+  - name: OTLP-OTLP
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
       variables:
-        result_dir: "continuous_saturation_{{num_cores}}core"
-        engine_config_template: test_suites/integration/templates/configs/engine/backpressure/otlp-attr-otlp.yaml
+        result_dir: continuous_passthrough
+        engine_config_template: test_suites/integration/templates/configs/engine/passthrough/otlp-otlp.yaml
         loadgen_exporter_type: otlp
         backend_receiver_type: otlp
         observation_interval: 60
-        signals_per_second: null # Using null means loadgen don't self-cap the rate.
-        max_batch_size: {{max_batch_size}}
-
+        signals_per_second: null
+        max_batch_size: 512
