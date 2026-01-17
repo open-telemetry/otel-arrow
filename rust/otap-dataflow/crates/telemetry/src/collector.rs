@@ -3,6 +3,8 @@
 
 //! Task periodically collecting the internal signals emitted by the engine and the pipelines.
 
+use std::sync::Arc;
+
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
@@ -44,7 +46,7 @@ impl InternalCollector {
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self) -> Result<(), Error> {
+    pub async fn run_collection_loop(self: Arc<Self>) -> Result<(), Error> {
         loop {
             match self.metrics_receiver.recv_async().await {
                 Ok(metrics) => {
@@ -63,14 +65,16 @@ impl InternalCollector {
     ///
     /// This method starts the internal signal collection loop and listens for a shutdown signal.
     /// It returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
-    pub async fn run(self, cancel: CancellationToken) -> Result<(), Error> {
+    pub async fn run(self: Arc<Self>, cancel: CancellationToken) -> Result<(), Error> {
         tokio::select! {
-            res = self.run_collection_loop() => {
-                res
-            }
+            biased;
+
             _ = cancel.cancelled() => {
                 // Shutdown requested; cancel the collection loop by dropping its future.
                 Ok(())
+            }
+            res = self.run_collection_loop() => {
+                res
             }
         }
     }
@@ -224,7 +228,7 @@ mod tests {
 
         // Close immediately
         drop(_reporter);
-        collector.run_collection_loop().await.unwrap();
+        Arc::new(collector).run_collection_loop().await.unwrap();
     }
 
     #[tokio::test]
@@ -239,7 +243,7 @@ mod tests {
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
 
-        let handle = tokio::spawn(async move { collector.run_collection_loop().await });
+        let handle = tokio::spawn(async move { Arc::new(collector).run_collection_loop().await });
 
         // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
         reporter
@@ -289,7 +293,7 @@ mod tests {
         let key = metric_set.key;
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
-        let handle = tokio::spawn(async move { collector.run_collection_loop().await });
+        let handle = tokio::spawn(async move { Arc::new(collector).run_collection_loop().await });
 
         reporter
             .report_snapshot(create_test_snapshot(
