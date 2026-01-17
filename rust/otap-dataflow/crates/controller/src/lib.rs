@@ -15,15 +15,16 @@
 //! - TODO: Live pipeline updates
 //! - TODO: Better resource control
 //! - TODO: Monitoring
-//! - TODO: Support pipeline groups
+//! - TODO: Support multiple pipeline groups
 
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::engine::{EngineSettings, HttpAdminSettings};
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::{CoreAllocation, PipelineConfig, Quota},
+    pipeline_group::PipelineGroupConfig,
 };
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -31,13 +32,14 @@ use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::DeployedPipelineKey;
+use otap_df_state::{DeployedPipelineKey, PipelineKey};
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
+use std::collections::HashMap;
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -70,25 +72,68 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline: PipelineConfig,
         admin_settings: HttpAdminSettings,
     ) -> Result<(), Error> {
+        let engine_settings = EngineSettings {
+            http_admin: None,
+            telemetry: pipeline.service().telemetry.clone(),
+            observed_state: Default::default(),
+        };
+        let mut pipeline_group = PipelineGroupConfig::new();
+        pipeline_group
+            .add_pipeline(pipeline_id.clone(), pipeline)
+            .map_err(|e| Error::InvalidConfiguration { errors: vec![e] })?;
+        self.run_group_forever(pipeline_group_id, pipeline_group, engine_settings, admin_settings)
+    }
+
+    /// Starts the controller with the given pipeline group configuration.
+    pub fn run_group_forever(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_group: PipelineGroupConfig,
+        engine_settings: EngineSettings,
+        admin_settings: HttpAdminSettings,
+    ) -> Result<(), Error> {
+        let mut pipeline_groups = HashMap::new();
+        let _ = pipeline_groups.insert(pipeline_group_id, pipeline_group);
+        self.run_engine_forever(pipeline_groups, engine_settings, admin_settings)
+    }
+
+    /// Starts the controller with the given pipeline group configurations.
+    pub fn run_engine_forever(
+        &self,
+        pipeline_groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
+        engine_settings: EngineSettings,
+        admin_settings: HttpAdminSettings,
+    ) -> Result<(), Error> {
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let telemetry_config = &pipeline.service().telemetry;
-        let settings = pipeline.pipeline_settings();
+        let telemetry_config = &engine_settings.telemetry;
         otel_info!(
             "Controller.Start",
-            num_nodes = pipeline.node_iter().count(),
-            pdata_channel_size = settings.default_pdata_channel_size,
-            node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
-            pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
+            num_pipeline_groups = pipeline_groups.len(),
+            num_pipelines = pipeline_groups
+                .values()
+                .map(|group| group.pipelines.len())
+                .sum::<usize>()
         );
         let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
         let metrics_system = InternalTelemetrySystem::new(telemetry_config);
         let metrics_dispatcher = metrics_system.dispatcher();
         let metrics_reporter = metrics_system.reporter();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
-        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
+        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
         let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
+
+        for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
+            for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
+                let pipeline_key =
+                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
+                obs_state_store.register_pipeline_health_policy(
+                    pipeline_key,
+                    pipeline.pipeline_settings().health_policy.clone(),
+                );
+            }
+        }
 
         // Start the metrics aggregation
         let telemetry_registry = metrics_system.registry();
@@ -113,65 +158,86 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        let quota = pipeline.quota().clone();
+        let pipeline_count: usize = pipeline_groups
+            .values()
+            .map(|group| group.pipelines.len())
+            .sum();
+        let available_core_ids = if pipeline_count == 0 {
+            Vec::new()
+        } else {
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?
+        };
+        let mut threads = Vec::new();
+        let mut ctrl_msg_senders = Vec::new();
 
-        // Start one thread per requested core
-        // Get available CPU cores for pinning
-        let requested_cores = Self::select_cores_for_quota(
-            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?,
-            quota,
-        )?;
-        let mut threads = Vec::with_capacity(requested_cores.len());
-        let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
+        for (pipeline_group_id, pipeline_group) in pipeline_groups {
+            for (pipeline_id, pipeline) in pipeline_group.pipelines {
+                let quota = pipeline.quota().clone();
+                let requested_cores =
+                    Self::select_cores_for_quota(available_core_ids.clone(), quota)?;
 
-        // ToDo [LQ] Support multiple pipeline groups in the future.
+                for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+                    let pipeline_key = DeployedPipelineKey {
+                        pipeline_group_id: pipeline_group_id.clone(),
+                        pipeline_id: pipeline_id.clone(),
+                        core_id: core_id.id,
+                    };
+                    let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
+                        pipeline
+                            .pipeline_settings()
+                            .default_pipeline_ctrl_msg_channel_size,
+                    );
+                    ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
 
-        for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
-            let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: pipeline_group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                core_id: core_id.id,
-            };
-            let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
-                pipeline
-                    .pipeline_settings()
-                    .default_pipeline_ctrl_msg_channel_size,
-            );
-            ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
+                    let pipeline_config = pipeline.clone();
+                    let pipeline_factory = self.pipeline_factory;
+                    let pipeline_handle = controller_ctx.pipeline_context_with(
+                        pipeline_group_id.clone(),
+                        pipeline_id.clone(),
+                        core_id.id,
+                        thread_id,
+                    );
+                    let metrics_reporter = metrics_reporter.clone();
 
-            let pipeline_config = pipeline.clone();
-            let pipeline_factory = self.pipeline_factory;
-            let pipeline_handle = controller_ctx.pipeline_context_with(
-                pipeline_group_id.clone(),
-                pipeline_id.clone(),
-                core_id.id,
-                thread_id,
-            );
-            let metrics_reporter = metrics_reporter.clone();
+                    let thread_name = format!(
+                        "pipeline-{}-{}-core-{}",
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        core_id.id
+                    );
+                    let obs_evt_reporter = obs_evt_reporter.clone();
+                    let group_id = pipeline_group_id.clone();
+                    let pipeline_id = pipeline_id.clone();
+                    let handle = thread::Builder::new()
+                        .name(thread_name.clone())
+                        .spawn(move || {
+                            Self::run_pipeline_thread(
+                                pipeline_key,
+                                core_id,
+                                pipeline_config,
+                                pipeline_factory,
+                                pipeline_handle,
+                                obs_evt_reporter,
+                                metrics_reporter,
+                                pipeline_ctrl_msg_tx,
+                                pipeline_ctrl_msg_rx,
+                            )
+                        })
+                        .map_err(|e| Error::ThreadSpawnError {
+                            thread_name: thread_name.clone(),
+                            source: e,
+                        })?;
 
-            let thread_name = format!("pipeline-core-{}", core_id.id);
-            let obs_evt_reporter = obs_evt_reporter.clone();
-            let handle = thread::Builder::new()
-                .name(thread_name.clone())
-                .spawn(move || {
-                    Self::run_pipeline_thread(
-                        pipeline_key,
-                        core_id,
-                        pipeline_config,
-                        pipeline_factory,
-                        pipeline_handle,
-                        obs_evt_reporter,
-                        metrics_reporter,
-                        pipeline_ctrl_msg_tx,
-                        pipeline_ctrl_msg_rx,
-                    )
-                })
-                .map_err(|e| Error::ThreadSpawnError {
-                    thread_name: thread_name.clone(),
-                    source: e,
-                })?;
-
-            threads.push((thread_name, thread_id, core_id.id, handle));
+                    threads.push((
+                        thread_name,
+                        thread_id,
+                        core_id.id,
+                        group_id,
+                        pipeline_id,
+                        handle,
+                    ));
+                }
+            }
         }
 
         // Drop the original metrics sender so only pipeline threads hold references
@@ -202,9 +268,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, core_id, handle) in threads {
+        for (thread_name, thread_id, core_id, group_id, pipeline_id, handle) in threads {
             let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_group_id: group_id.clone(),
                 pipeline_id: pipeline_id.clone(),
                 core_id,
             };
@@ -241,6 +307,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     });
                 }
             }
+        }
+
+        // Check if any pipeline threads returned an error
+        if let Some(err) = results.into_iter().find_map(Result::err) {
+            return Err(err);
         }
 
         // ToDo Add CTRL-C handler to initiate graceful shutdown of pipelines and admin server.

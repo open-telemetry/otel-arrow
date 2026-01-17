@@ -8,7 +8,6 @@ pub mod service;
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
-use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::service::ServiceConfig;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
@@ -343,10 +342,6 @@ pub struct PipelineSettings {
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
 
-    /// Observed state settings.
-    #[serde(default)]
-    pub observed_state: ObservedStateSettings,
-
     /// Health policy.
     #[serde(default)]
     pub health_policy: HealthPolicy,
@@ -414,7 +409,6 @@ impl Default for PipelineSettings {
             default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
             default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
-            observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
             telemetry: TelemetrySettings::default(),
         }

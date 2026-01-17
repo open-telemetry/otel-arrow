@@ -420,6 +420,7 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
+    use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_config::pipeline::PipelineSettings;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
@@ -461,7 +462,7 @@ mod tests {
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let pipeline_settings = PipelineSettings::default();
-        let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+        let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let core_id = 0;
@@ -873,7 +874,7 @@ mod tests {
                 let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
                 let pipeline_settings = PipelineSettings::default();
-                let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+                let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
                 let pipeline_key = DeployedPipelineKey {
                     pipeline_group_id: Default::default(),
                     pipeline_id: Default::default(),

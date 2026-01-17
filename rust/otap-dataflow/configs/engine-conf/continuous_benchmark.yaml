@@ -17,8 +17,8 @@ pipeline_groups:
             type: core_set
             set:
               - type: CoreRange
-                start: 20
-                end: 45
+                start: 10
+                end: 35
 
         nodes:
           receiver:
@@ -52,8 +52,8 @@ pipeline_groups:
             type: core_set
             set:
               - type: CoreRange
-                start: 11
-                end: 11
+                start: 0
+                end: 0
         nodes:
           otlp_recv:
             kind: receiver
@@ -139,8 +139,8 @@ pipeline_groups:
             type: core_set
             set:
               - type: CoreRange
-                start: 12
-                end: 12
+                start: 1
+                end: 1
 
         nodes:
           receiver:
@@ -153,6 +153,35 @@ pipeline_groups:
                 dispatch_strategy: round_robin
             config:
               listening_addr: 127.0.0.1:4328
+
+          perf_noop:
+            kind: exporter
+            plugin_urn: urn:otel:noop:exporter
+            config: null
+
+  other_group:
+    pipelines:
+
+      p1:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 50
+                end: 50
+
+        nodes:
+          receiver:
+            kind: receiver
+            plugin_urn: urn:otel:otlp:receiver
+            out_ports:
+              out_port:
+                destinations:
+                  - perf_noop
+                dispatch_strategy: round_robin
+            config:
+              listening_addr: 127.0.0.1:4329
 
           perf_noop:
             kind: exporter

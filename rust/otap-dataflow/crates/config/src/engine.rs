@@ -5,6 +5,8 @@
 
 use crate::PipelineGroupId;
 use crate::error::{Context, Error};
+use crate::observed_state::ObservedStateSettings;
+use crate::pipeline::service::telemetry::TelemetryConfig;
 use crate::pipeline_group::PipelineGroupConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -24,27 +26,19 @@ pub struct EngineConfig {
 }
 
 /// Global settings for the engine.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct EngineSettings {
     /// Optional HTTP admin server configuration.
     pub http_admin: Option<HttpAdminSettings>,
 
-    /// Telemetry settings.
-    #[serde(default = "default_telemetry_settings")]
-    pub telemetry: TelemetrySettings,
-}
+    /// Telemetry backend configuration shared across pipelines.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 
-/// Configuration for the telemetry metrics system.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TelemetrySettings {
-    /// The size of the reporting channel.
-    #[serde(default = "default_reporting_channel_size")]
-    pub reporting_channel_size: usize,
-    /// The interval at which metrics are flushed and aggregated by the collector.
-    #[serde(default = "default_reporting_interval")]
-    pub flush_interval: std::time::Duration,
+    /// Observed state store settings shared across pipelines.
+    #[serde(default)]
+    pub observed_state: ObservedStateSettings,
 }
 
 /// Configuration for the HTTP admin endpoints.
@@ -62,21 +56,6 @@ impl Default for HttpAdminSettings {
             bind_address: default_bind_address(),
         }
     }
-}
-
-const fn default_telemetry_settings() -> TelemetrySettings {
-    TelemetrySettings {
-        reporting_channel_size: default_reporting_channel_size(),
-        flush_interval: default_reporting_interval()
-    }
-}
-
-const fn default_reporting_channel_size() -> usize {
-    100
-}
-
-const fn default_reporting_interval() -> std::time::Duration {
-    std::time::Duration::from_secs(1)
 }
 
 fn default_bind_address() -> String {
