@@ -81,7 +81,8 @@ assessment, highlighting both the overhead for small batches and the significant
 efficiency gains inherent to Arrow's columnar format at larger batch sizes.
 
 <!-- TODO: We need to add BatchingProcessor to tests. -->
-<!-- TODO: Batch size influence might be most relevant when we do aggregation/transform etc. -->
+<!-- TODO: Batch size influence might be most relevant when we
+ do aggregation/transform etc. -->
 <!-- TODO: Add benchmark tests for batch sizes 10 and 100. -->
 
 ##### Standard Load - OTAP -> OTAP (Native Protocol)
