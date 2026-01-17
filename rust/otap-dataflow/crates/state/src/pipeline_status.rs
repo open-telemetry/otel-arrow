@@ -55,6 +55,16 @@ impl PipelineStatus {
     }
 
     #[must_use]
+    /// Returns true if all cores have reached a terminal state (Stopped, Deleted, Failed, or Rejected).
+    /// Returns false if there are no cores tracked or if any core is still active.
+    pub fn is_terminated(&self) -> bool {
+        if self.cores.is_empty() {
+            return false;
+        }
+        self.cores.values().all(|c| c.phase.is_terminal())
+    }
+
+    #[must_use]
     /// Returns the aggregated/synthesized pipeline-level conditions.
     pub fn conditions(&self) -> Vec<Condition> {
         vec![
