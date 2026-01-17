@@ -4,7 +4,6 @@
 //! utilities for managing context of inbound and outbound requests
 //! produced by transform processor.
 
-use otap_df_engine::error::Error;
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
 
@@ -98,11 +97,15 @@ impl Contexts {
         }
     }
 
+    /// Set an error message on the inbound context associated with this outbound key explaining
+    /// why the batch processing failed
     pub fn set_failed(&mut self, outbound_key: Key, error_reason: String) {
-        if let Some(inbound) = self.inbound.get_mut(outbound_key) {
-            // keep the original error if it exists
-            if inbound.error_reason.is_none() {
-                inbound.error_reason = Some(error_reason)
+        if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key) {
+            if let Some(inbound) = self.inbound.get_mut(inbound_key) {
+                // keep the original error if it exists
+                if inbound.error_reason.is_none() {
+                    inbound.error_reason = Some(error_reason)
+                }
             }
         }
     }
@@ -115,11 +118,11 @@ impl Contexts {
     pub fn clear_outbound(&mut self, outbound_key: Key) -> Option<(Context, Option<String>)> {
         let inbound_key = {
             let outbound = self.outbound.get(outbound_key)?;
-            outbound.inbound_key.clone()
+            outbound.inbound_key
         };
 
         let num_outbound = {
-            let inbound = self.inbound.get_mut(inbound_key.clone())?;
+            let inbound = self.inbound.get_mut(inbound_key)?;
             inbound.num_outbound -= 1;
             inbound.num_outbound
         };
@@ -174,7 +177,7 @@ mod test {
             "inbound key should not be null when there are subscribers"
         );
 
-        let outbound_key = contexts.insert_outbound(inbound_key.clone()).unwrap();
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
         assert!(
             !outbound_key.is_null(),
             "outbound key should not be null when there are subscribers"
@@ -283,5 +286,117 @@ mod test {
         // Second clear with same key should fail (key is no longer valid)
         let result2 = contexts.clear_outbound(outbound_key);
         assert!(result2.is_none());
+    }
+
+    #[test]
+    fn test_set_failed_single_outbound() {
+        let mut contexts = new_contexts();
+        let context = create_context_with_subscribers();
+        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
+
+        // Set the outbound as failed
+        let error_msg = "export failed".to_string();
+        contexts.set_failed(outbound_key, error_msg.clone());
+
+        // Clear the outbound and verify error is returned
+        let result = contexts.clear_outbound(outbound_key);
+        assert!(result.is_some());
+        let (_, error_reason) = result.unwrap();
+        assert!(error_reason.is_some());
+        assert_eq!(error_reason.unwrap(), error_msg);
+    }
+
+    #[test]
+    fn test_set_failed_multiple_outbounds_first_error_wins() {
+        let mut contexts = new_contexts();
+        let context = create_context_with_subscribers();
+        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+
+        let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();
+        let outbound_key2 = contexts.insert_outbound(inbound_key).unwrap();
+        let outbound_key3 = contexts.insert_outbound(inbound_key).unwrap();
+
+        // Set first outbound as failed
+        let error_msg1 = "first error".to_string();
+        contexts.set_failed(outbound_key1, error_msg1.clone());
+
+        // Set second outbound as failed (should be ignored since error_reason is already set)
+        let error_msg2 = "second error".to_string();
+        contexts.set_failed(outbound_key2, error_msg2.clone());
+
+        // Clear all outbounds
+        assert!(contexts.clear_outbound(outbound_key1).is_none());
+        assert!(contexts.clear_outbound(outbound_key2).is_none());
+
+        // When clearing the last outbound, the first error should be returned
+        let result = contexts.clear_outbound(outbound_key3);
+        assert!(result.is_some());
+        let (_, error_reason) = result.unwrap();
+        assert!(error_reason.is_some());
+        assert_eq!(
+            error_reason.unwrap(),
+            error_msg1,
+            "First error should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_set_failed_with_invalid_key() {
+        let mut contexts = new_contexts();
+
+        // Create a key that doesn't exist
+        let invalid_key = {
+            let mut temp_contexts = new_contexts();
+            let ctx = create_context_with_subscribers();
+            let inbound_key = temp_contexts.insert_inbound(ctx, None).unwrap();
+            temp_contexts.insert_outbound(inbound_key).unwrap()
+        };
+
+        // Setting failed with invalid key should not panic
+        contexts.set_failed(invalid_key, "error".to_string());
+    }
+
+    #[test]
+    fn test_set_failed_with_null_key() {
+        let mut contexts = new_contexts();
+
+        // Create a context without subscribers (results in null key)
+        let context = create_context_without_subscribers();
+        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
+
+        assert!(outbound_key.is_null());
+
+        // Setting failed with null key should not panic
+        contexts.set_failed(outbound_key, "error".to_string());
+    }
+
+    #[test]
+    fn test_set_failed_does_not_override_inbound_error() {
+        let mut contexts = new_contexts();
+        let context = create_context_with_subscribers();
+
+        // Insert inbound with an initial error
+        let inbound_error = "initial inbound error".to_string();
+        let inbound_key = contexts
+            .insert_inbound(context, Some(inbound_error.clone()))
+            .unwrap();
+        let outbound_key = contexts.insert_outbound(inbound_key).unwrap();
+
+        // Try to set a different error via set_failed
+        let outbound_error = "outbound error".to_string();
+        contexts.set_failed(outbound_key, outbound_error);
+
+        // Clear outbound and verify the original inbound error is preserved
+        let result = contexts.clear_outbound(outbound_key);
+        assert!(result.is_some());
+        let (_, error_reason) = result.unwrap();
+        assert!(error_reason.is_some());
+        assert_eq!(
+            error_reason.unwrap(),
+            inbound_error,
+            "Original inbound error should be preserved"
+        );
     }
 }

@@ -166,7 +166,7 @@ impl TransformProcessor {
         // TODO - there's probably some optimization we can make below where if there's only one
         // non-empty batch to be output, we don't need to change any contexts or subscriptions
 
-        if router_impl.routed.len() == 0 {
+        if router_impl.routed.is_empty() {
             // there were no other record batches that were maybe split off this batch to be
             // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
             // and we can just handle the batch normally.
@@ -201,7 +201,7 @@ impl TransformProcessor {
             let mut pdata = OtapPdata::new(Context::default(), otap_batch.into());
             let outbound_key = self
                 .contexts
-                .insert_outbound(inbound_ctx_key.clone())
+                .insert_outbound(inbound_ctx_key)
                 .ok_or_else(|| EngineError::ProcessorError {
                     processor: effect_handler.processor_id(),
                     kind: ProcessorErrorKind::Other,
@@ -238,7 +238,7 @@ impl TransformProcessor {
             let mut pdata = OtapPdata::new(context, payload);
             let outbound_key = self
                 .contexts
-                .insert_outbound(inbound_ctx_key.clone())
+                .insert_outbound(inbound_ctx_key)
                 .ok_or_else(|| EngineError::ProcessorError {
                     processor: effect_handler.processor_id(),
                     kind: ProcessorErrorKind::Other,
@@ -336,8 +336,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
                 NodeControlMsg::Nack(nack_message) => {
                     let outbound_key: Key = nack_message.calldata.try_into()?;
-                    self.contexts
-                        .set_failed(outbound_key.clone(), nack_message.reason);
+                    self.contexts.set_failed(outbound_key, nack_message.reason);
                     self.handle_ack_nack_inbound(
                         outbound_key,
                         nack_message.refused.signal_type(),
@@ -387,6 +386,7 @@ impl Processor<OtapPdata> for TransformProcessor {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_channel::mpsc::Receiver;
     use serde_json::json;
 
     use otap_df_config::{PortName, node::NodeUserConfig};
@@ -676,13 +676,12 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
-    #[test]
-    fn test_simple_route_to() {
-        // test ensure it will only operate on all signals
-        let runtime = TestRuntime::<OtapPdata>::new();
-        let query = "logs | route_to \"test_port\"";
-        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
-
+    /// test helper function to set a pdata sender on the processor wrapper for the named out_port
+    /// returns the receiver for the channel
+    fn set_pdata_sender(
+        port_name: &'static str,
+        processor: &mut ProcessorWrapper<OtapPdata>,
+    ) -> Receiver<OtapPdata> {
         let test_node_id = NodeId {
             index: 1,
             name: "test_node".into(),
@@ -691,11 +690,22 @@ mod test {
         processor
             .set_pdata_sender(
                 test_node_id,
-                PortName::from("test_port"),
+                PortName::from(port_name),
                 Sender::Local(LocalSender::mpsc(test_port_tx)),
             )
             .unwrap();
 
+        test_port_rx
+    }
+
+    #[test]
+    fn test_simple_route_to() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "logs | route_to \"test_port\"";
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        let test_port_rx = set_pdata_sender("test_port", &mut processor);
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -755,26 +765,8 @@ mod test {
             }"#;
         let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
 
-        let test_node_id = NodeId {
-            index: 1,
-            name: "test_node".into(),
-        };
-        let (error_port_tx, error_port_rx) = otap_df_channel::mpsc::Channel::new(10);
-        processor
-            .set_pdata_sender(
-                test_node_id.clone(),
-                PortName::from("error_port"),
-                Sender::Local(LocalSender::mpsc(error_port_tx)),
-            )
-            .unwrap();
-        let (info_port_tx, info_port_rx) = otap_df_channel::mpsc::Channel::new(10);
-        processor
-            .set_pdata_sender(
-                test_node_id.clone(),
-                PortName::from("info_port"),
-                Sender::Local(LocalSender::mpsc(info_port_tx)),
-            )
-            .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+        let info_port_rx = set_pdata_sender("info_port", &mut processor);
 
         fn assert_logs_records_equal(otap_batch: OtapArrowRecords, log_record: LogRecord) {
             let result = otap_to_otlp(&otap_batch);
@@ -863,7 +855,6 @@ mod test {
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = "logs | where severity_text == \"INFO\"";
         let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
-        // let node_id = processor.node_id().index;
 
         runtime
             .set_processor(processor)
@@ -914,8 +905,8 @@ mod test {
     }
 
     #[test]
-    fn test_ack_nack_with_subscribers_with_routing() {
-        // test ensure it will only operate on all signals
+    fn test_ack_with_subscribers_with_routing() {
+        // TODO comment what this test is doing
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = r#"logs
             | if (severity_text == "ERROR") {
@@ -925,27 +916,8 @@ mod test {
             }"#;
         let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
 
-        // TODO we should make this into a helper
-        let test_node_id = NodeId {
-            index: 1,
-            name: "test_node".into(),
-        };
-        let (error_port_tx, error_port_rx) = otap_df_channel::mpsc::Channel::new(10);
-        processor
-            .set_pdata_sender(
-                test_node_id.clone(),
-                PortName::from("error_port"),
-                Sender::Local(LocalSender::mpsc(error_port_tx)),
-            )
-            .unwrap();
-        let (info_port_tx, info_port_rx) = otap_df_channel::mpsc::Channel::new(10);
-        processor
-            .set_pdata_sender(
-                test_node_id.clone(),
-                PortName::from("info_port"),
-                Sender::Local(LocalSender::mpsc(info_port_tx)),
-            )
-            .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+        let info_port_rx = set_pdata_sender("info_port", &mut processor);
 
         runtime
             .set_processor(processor)
@@ -1033,6 +1005,189 @@ mod test {
                 match ack_msg {
                     PipelineControlMsg::DeliverAck { node_id, .. } => {
                         assert_eq!(node_id, upstream_node_id);
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_nack_with_subscribers_with_routing_downstream_routed_error() {
+        // TODO comment what this test is doing
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![error_log_record.clone(), info_log_record.clone()],
+                        )],
+                    )],
+                }));
+
+                let upstream_node_id = 999;
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // get the outbound context from the default outport
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_ctx_default);
+
+                // get the outbound context from the routed outport
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // simulate an Ack coming from the message that got sent on the default out port
+                // let call_data
+                let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+                    outbound_ctx_default,
+                    OtapPayload::empty(SignalType::Logs),
+                )))
+                .unwrap();
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                    .await
+                    .unwrap();
+                // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                // simulate a Nack coming from the message that got routed
+                let (_, routed_nack) = Context::next_nack(NackMsg::new(
+                    "downstream routed error",
+                    OtapPdata::new(outbound_ctx_routed, OtapPayload::empty(SignalType::Logs)),
+                ))
+                .unwrap();
+                ctx.process(Message::Control(NodeControlMsg::Nack(routed_nack)))
+                    .await
+                    .unwrap();
+
+                // now ensure that we receive a Nack for the inbound b/c one of the downstream
+                // routed messages was Nack'd
+                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                match nack_msg {
+                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(nack.reason, "downstream routed error");
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_nack_with_subscribers_with_routing_downstream_default_error() {
+        // Test that we correctly Nack the inbound message when the batch that gets sent
+        // via the default outport is Nack'd by something downstream of this processor
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![error_log_record.clone(), info_log_record.clone()],
+                        )],
+                    )],
+                }));
+
+                let upstream_node_id = 999;
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // get the outbound context from the default outport
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_ctx_default);
+
+                // get the outbound context from the routed outport
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // simulate an Nack coming from the message that got sent on the default out port
+                // let call_data
+                let (_, nack) = Context::next_nack(NackMsg::new(
+                    "downstream default error",
+                    OtapPdata::new(outbound_ctx_default, OtapPayload::empty(SignalType::Logs)),
+                ))
+                .unwrap();
+                ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+                    .await
+                    .unwrap();
+                // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                // simulate a Ack coming from the message that got routed
+                let (_, routed_ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+                    outbound_ctx_routed,
+                    OtapPayload::empty(SignalType::Logs),
+                )))
+                .unwrap();
+                ctx.process(Message::Control(NodeControlMsg::Ack(routed_ack)))
+                    .await
+                    .unwrap();
+
+                // now ensure that we receive a Nack for the inbound b/c one of the downstream
+                // messages that was sent out default out port was Nack'd
+                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                match nack_msg {
+                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(nack.reason, "downstream default error");
                     }
                     other => {
                         panic!("got unexpected pipeline ctrl message {other:?}")
