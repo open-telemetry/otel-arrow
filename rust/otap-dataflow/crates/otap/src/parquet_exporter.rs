@@ -1507,7 +1507,7 @@ mod test {
         // Run everything on the local task set, including the metrics collector
         let _ = rt.block_on(local.run_until(async move {
             // Start collector in background
-            let (collector, _) = metrics_system.into_parts();
+            let collector = metrics_system.collector();
             let _handle = tokio::task::spawn_local(collector.run_collection_loop());
 
             tokio::join!(

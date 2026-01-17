@@ -266,7 +266,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     {
         let metrics_reporter = self.metrics_system.reporter();
         // Spawn metrics collection loop
-        let (collector, _) = self.metrics_system.into_parts();
+        let collector = self.metrics_system.collector();
         let metrics_collection_handle = self.rt.spawn(collector.run_collection_loop());
 
         // The entire scenario is run to completion before the validation phase

@@ -92,7 +92,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
-        let (internal_collector, otel_shutdown_handle) = telemetry_system.into_parts();
+        let internal_collector = telemetry_system.collector();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
                 internal_collector.run(cancellation_token)
@@ -256,7 +256,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        otel_shutdown_handle.shutdown()?;
+        telemetry_system.shutdown()?;
 
         Ok(())
     }
