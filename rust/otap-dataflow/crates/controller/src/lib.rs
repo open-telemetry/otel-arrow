@@ -36,7 +36,6 @@ use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
-use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
@@ -83,20 +82,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
-        let metrics_system = InternalTelemetrySystem::new(telemetry_config);
-        let metrics_dispatcher = metrics_system.dispatcher();
-        let metrics_reporter = metrics_system.reporter();
-        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let telemetry_system = InternalTelemetrySystem::new(telemetry_config)?;
+        let metrics_dispatcher = telemetry_system.dispatcher();
+        let metrics_reporter = telemetry_system.reporter();
+        let controller_ctx = ControllerContext::new(telemetry_system.registry());
         let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
         let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         // Start the metrics aggregation
-        let telemetry_registry = metrics_system.registry();
+        let telemetry_registry = telemetry_system.registry();
+        let internal_collector = telemetry_system.collector();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
-                metrics_system.run(cancellation_token)
+                internal_collector.run(cancellation_token)
             })?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
@@ -257,7 +256,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        opentelemetry_client.shutdown()?;
+        telemetry_system.shutdown()?;
 
         Ok(())
     }
