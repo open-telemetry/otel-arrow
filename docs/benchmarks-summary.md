@@ -127,10 +127,10 @@ establishes the baseline "unit of capacity" for capacity planning.
 Forwarding without data transformation. Represents the minimum engine overhead
 for load balancing and routing use cases.
 
-| Protocol | Max Throughput | Memory Usage |
-|----------|----------------|--------------|
-| OTAP -> OTAP (Native) | TBD | TBD |
-| OTLP -> OTLP (Standard) | TBD | TBD |
+| Protocol | Max Throughput | CPU Usage | Memory Usage |
+|----------|----------------|-----------|--------------|
+| OTAP -> OTAP (Native) | TBD | TBD | TBD |
+| OTLP -> OTLP (Standard) | ~566K logs/sec | ~98% | ~45 MB |
 
 ##### With Processing
 
