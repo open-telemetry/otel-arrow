@@ -475,3 +475,34 @@ where
     let dt: chrono::DateTime<chrono::Utc> = (*t).into();
     s.serialize_str(&dt.to_rfc3339())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::info_event;
+    use otap_df_config::DeployedPipelineKey;
+
+    fn test_key() -> DeployedPipelineKey {
+        DeployedPipelineKey {
+            pipeline_group_id: "test-ns".into(),
+            pipeline_id: "test-pipeline".into(),
+            core_id: 0,
+        }
+    }
+
+    #[test]
+    fn test_observed_event_with_log_record() {
+        // Create an ObservedEvent with an INFO message
+        let event = ObservedEvent::ready(
+            test_key(),
+            info_event!("pipeline.started", version = "1.0.0"),
+        );
+
+        let formatted = event
+            .message
+            .formatted()
+            .expect("should have formatted output");
+        assert!(formatted.contains("version=1.0.0"), "got: {}", formatted);
+        assert!(formatted.contains("pipeline.started"), "got: {}", formatted);
+    }
+}
