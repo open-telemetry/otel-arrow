@@ -395,7 +395,7 @@ mod test {
         control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
         local::message::LocalSender,
         message::Sender,
-        node::{Node, NodeWithPDataSender},
+        node::NodeWithPDataSender,
         testing::{
             processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
             test_node,
@@ -995,26 +995,23 @@ mod test {
 
                 // now we'll Ack the outbound messages and ensure that we eventually emit an ack
                 // for the inbound message
-                let call_data = outbound_context1.current_calldata().unwrap();
-                let mut ack1 = AckMsg::new(OtapPdata::new(
+                let (_, ack1) = Context::next_ack(AckMsg::new(OtapPdata::new(
                     outbound_context1,
                     OtapPayload::empty(SignalType::Logs),
-                ));
-                ack1.calldata = call_data;
+                )))
+                .unwrap();
 
-                let call_data = outbound_context2.current_calldata().unwrap();
-                let mut ack2 = AckMsg::new(OtapPdata::new(
+                let (_, ack2) = Context::next_ack(AckMsg::new(OtapPdata::new(
                     outbound_context2,
                     OtapPayload::empty(SignalType::Logs),
-                ));
-                ack2.calldata = call_data;
+                )))
+                .unwrap();
 
-                let call_data = outbound_context3.current_calldata().unwrap();
-                let mut ack3 = AckMsg::new(OtapPdata::new(
+                let (_, ack3) = Context::next_ack(AckMsg::new(OtapPdata::new(
                     outbound_context3,
                     OtapPayload::empty(SignalType::Logs),
-                ));
-                ack3.calldata = call_data;
+                )))
+                .unwrap();
 
                 ctx.process(Message::Control(NodeControlMsg::Ack(ack1)))
                     .await

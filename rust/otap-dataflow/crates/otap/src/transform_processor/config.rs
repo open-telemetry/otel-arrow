@@ -14,7 +14,7 @@ pub struct Config {
     #[serde(default = "default_inbound_request_limit")]
     pub inbound_request_limit: NonZeroUsize,
 
-    #[serde(default = "default_inbound_request_limit")]
+    #[serde(default = "default_outbound_request_limit")]
     pub outbound_request_limit: NonZeroUsize,
 }
 
