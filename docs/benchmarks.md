@@ -77,7 +77,18 @@ and 16 cores.
 *TODO: Update test output to include scalability ratios in addition to raw
 throughput numbers.*
 
-#### 7. Idle State
+#### 7. Pass-through Mode
+
+**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/>
+
+Tests maximum throughput in pass-through mode where the engine forwards data
+without transformation. This scenario represents the minimum engine overhead for
+load balancing and routing use cases. Unlike the saturation tests which include
+an attribute processor, pass-through mode allows the engine to forward data
+without materializing the internal representation, achieving significantly
+higher throughput.
+
+#### 8. Idle State
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/>
 
@@ -86,7 +97,7 @@ Measures resource consumption in idle state with two variations:
 - Single core configuration
 - All-cores configuration (128 cores)
 
-#### 8. Binary Size
+#### 9. Binary Size
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/binary-size/>
 
