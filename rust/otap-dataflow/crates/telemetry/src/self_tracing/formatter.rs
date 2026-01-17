@@ -100,8 +100,7 @@ impl RawLoggingLayer {
         // would prefer to avoid; it will be an extensive change in the
         // ProtoBuffer impl to stack-allocate this as a temporary.
         let record = LogRecord::new(event);
-        let callsite = SavedCallsite::new(event.metadata());
-        self.writer.print_log_record(time, &record, &callsite);
+        self.writer.print_log_record(time, &record);
     }
 }
 
@@ -129,54 +128,39 @@ impl ConsoleWriter {
     /// Format a LogRecord as a human-readable string (for testing/compatibility).
     ///
     /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
-    pub fn format_log_record(
-        &self,
-        time: SystemTime,
-        record: &LogRecord,
-        callsite: &SavedCallsite,
-    ) -> String {
+    pub fn format_log_record(&self, time: Option<SystemTime>, record: &LogRecord) -> String {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.encode_log_record(&mut buf, time, record, callsite);
+        let len = self.format_log_record_into(&mut buf, time, record);
         // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
     /// Print a LogRecord directly to stdout or stderr (based on level).
-    pub fn print_log_record(
-        &self,
-        time: SystemTime,
-        record: &LogRecord,
-        callsite: &SavedCallsite,
-    ) {
+    pub fn print_log_record(&self, time: SystemTime, record: &LogRecord) {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.encode_log_record(&mut buf, time, record, callsite);
-        self.write_line(callsite.level(), &buf[..len]);
+        let len = self.format_log_record_into(&mut buf, Some(time), record);
+        self.write_line(record.callsite().level(), &buf[..len]);
     }
 
     /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
-    fn encode_log_record(
+    fn format_log_record_into(
         &self,
         buf: &mut [u8],
-        time: SystemTime,
+        time: Option<SystemTime>,
         record: &LogRecord,
-        callsite: &SavedCallsite,
     ) -> usize {
         let mut w = Cursor::new(buf);
         let cm = self.color_mode;
 
-        // Convert SystemTime to nanoseconds since UNIX epoch
-        let timestamp_ns = time
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-
-        cm.write_ansi(&mut w, AnsiCode::Dim);
-        Self::write_timestamp(&mut w, timestamp_ns);
-        cm.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b"  ");
-        cm.write_level(&mut w, callsite.level());
+        if let Some(time) = time {
+            cm.write_ansi(&mut w, AnsiCode::Dim);
+            Self::write_timestamp(&mut w, time);
+            cm.write_ansi(&mut w, AnsiCode::Reset);
+            let _ = w.write_all(b"  ");
+        }
+        cm.write_level(&mut w, record.callsite().level());
         cm.write_ansi(&mut w, AnsiCode::Bold);
-        Self::write_event_name(&mut w, callsite);
+        Self::write_event_name(&mut w, record.callsite());
         cm.write_ansi(&mut w, AnsiCode::Reset);
         let _ = w.write_all(b": ");
         Self::write_body_attrs(&mut w, &record.body_attrs_bytes);
@@ -187,7 +171,7 @@ impl ConsoleWriter {
 
     /// Write callsite details as event_name to buffer.
     #[inline]
-    pub(crate) fn write_event_name(w: &mut BufWriter<'_>, callsite: &SavedCallsite) {
+    pub(crate) fn write_event_name(w: &mut BufWriter<'_>, callsite: SavedCallsite) {
         let _ = w.write_all(callsite.target().as_bytes());
         let _ = w.write_all(b"::");
         let _ = w.write_all(callsite.name().as_bytes());
@@ -198,29 +182,21 @@ impl ConsoleWriter {
 
     /// Write nanosecond timestamp as ISO 8601 (UTC) to buffer.
     #[inline]
-    fn write_timestamp(w: &mut BufWriter<'_>, nanos: u64) {
-        let secs = (nanos / 1_000_000_000) as i64;
-        let subsec_nanos = (nanos % 1_000_000_000) as u32;
+    fn write_timestamp(w: &mut BufWriter<'_>, time: SystemTime) {
+        let dt: DateTime<Utc> = time.into();
+        let millis = dt.timestamp_subsec_millis();
 
-        if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, subsec_nanos) {
-            let date = dt.date_naive();
-            let time = dt.time();
-            let millis = subsec_nanos / 1_000_000;
-
-            let _ = write!(
-                w,
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-                date.year(),
-                date.month(),
-                date.day(),
-                time.hour(),
-                time.minute(),
-                time.second(),
-                millis
-            );
-        } else {
-            let _ = w.write_all(b"<invalid>");
-        }
+        let _ = write!(
+            w,
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second(),
+            millis
+        );
     }
 
     /// Write body+attrs bytes to buffer using LogRecordView.
@@ -341,32 +317,6 @@ impl ConsoleWriter {
         }
     }
 
-    /// Write log content (level, event name, body/attrs) without timestamp or colors.
-    /// Used for serialization and as a building block for colored output.
-    pub(crate) fn write_log_content(
-        w: &mut BufWriter<'_>,
-        body_attrs_bytes: &Bytes,
-        callsite: &SavedCallsite,
-    ) {
-        let _ = w.write_all(callsite.level().as_str().as_bytes());
-        let _ = w.write_all(b"  ");
-        Self::write_event_name(w, callsite);
-        let _ = w.write_all(b": ");
-        Self::write_body_attrs(w, body_attrs_bytes);
-    }
-
-    /// Format a LogRecord without timestamp as a human-readable string.
-    ///
-    /// Output format: `INFO  target::name (file.rs:42): body [attr=value, ...]`
-    #[must_use]
-    pub fn format_log_body(&self, record: &LogRecord, callsite: &SavedCallsite) -> String {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = Cursor::new(buf.as_mut_slice());
-        Self::write_log_content(&mut w, &record.body_attrs_bytes, callsite);
-        let len = w.position() as usize;
-        String::from_utf8_lossy(&buf[..len]).into_owned()
-    }
-
     /// Write a log line to stdout or stderr.
     fn write_line(&self, level: &Level, data: &[u8]) {
         let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
@@ -409,6 +359,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
     use prost::Message;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tracing_subscriber::prelude::*;
 
     struct CaptureLayer {
@@ -423,16 +374,15 @@ mod tests {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             let time = SystemTime::now();
             let record = LogRecord::new(event);
-            let callsite = SavedCallsite::new(event.metadata());
 
             // Capture formatted output
             let writer = ConsoleWriter::no_color();
-            *self.formatted.lock().unwrap() = writer.format_log_record(time, &record, &callsite);
+            *self.formatted.lock().unwrap() = writer.format_log_record(Some(time), &record);
 
             // Capture full OTLP encoding
             let mut buf = ProtoBuffer::with_capacity(512);
             let mut encoder = DirectLogRecordEncoder::new(&mut buf);
-            let _ = encoder.encode_log_record(time, &record, &callsite);
+            let _ = encoder.encode_log_record(time, &record);
             *self.encoded.lock().unwrap() = buf.into_bytes();
         }
     }
@@ -453,10 +403,13 @@ mod tests {
         (&s[..24], s[26..].trim_end())
     }
 
+    // helps test that a timestamp formats to text and from proto timestamp the same.
     fn format_timestamp(nanos: u64) -> String {
+        let time = std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(nanos));
         let mut buf = [0u8; 32];
         let mut w = Cursor::new(buf.as_mut_slice());
-        ConsoleWriter::write_timestamp(&mut w, nanos);
+
+        ConsoleWriter::write_timestamp(&mut w, time.expect("valid"));
         let len = w.position() as usize;
         assert_eq!(len, 24);
         String::from_utf8_lossy(&buf[..len]).into_owned()
@@ -584,8 +537,7 @@ mod tests {
     fn test_timestamp_format() {
         // Create a specific timestamp: 2024-01-15T12:30:45.678Z
         let timestamp_ns: u64 = 1_705_321_845_678_000_000;
-        let time = std::time::UNIX_EPOCH
-            + std::time::Duration::from_nanos(timestamp_ns);
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
 
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
@@ -593,7 +545,7 @@ mod tests {
         };
 
         let writer = ConsoleWriter::no_color();
-        let output = writer.format_log_record(time, &record, &test_callsite());
+        let output = writer.format_log_record(Some(time), &record);
 
         // Note that the severity text is formatted using the Metadata::Level
         // so the text appears, unlike the protobuf case.
@@ -603,7 +555,7 @@ mod tests {
         );
 
         let writer = ConsoleWriter::color();
-        let output = writer.format_log_record(time, &record, &test_callsite());
+        let output = writer.format_log_record(Some(time), &record);
 
         // With ANSI codes: dim timestamp, green INFO, bold event name
         assert_eq!(
@@ -614,7 +566,7 @@ mod tests {
         // Verify full OTLP encoding with known callsite
         let mut buf = ProtoBuffer::with_capacity(256);
         let mut encoder = DirectLogRecordEncoder::new(&mut buf);
-        let _ = encoder.encode_log_record(time, &record, &test_callsite());
+        let _ = encoder.encode_log_record(time, &record);
         let decoded = ProtoLogRecord::decode(buf.into_bytes().as_ref()).expect("decode failed");
 
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
@@ -647,8 +599,7 @@ mod tests {
 
         // Create a specific timestamp: 2024-01-15T12:30:45.678Z
         let timestamp_ns: u64 = 1_705_321_845_678_000_000;
-        let time = std::time::UNIX_EPOCH
-            + std::time::Duration::from_nanos(timestamp_ns);
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
 
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
@@ -657,7 +608,7 @@ mod tests {
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let writer = ConsoleWriter::no_color();
-        let len = writer.encode_log_record(&mut buf, time, &record, &test_callsite());
+        let len = writer.format_log_record_into(&mut buf, Some(time), &record);
 
         // Fills exactly to capacity due to overflow.
         // Note! we could append a ... or some other indicator.
@@ -689,6 +640,7 @@ mod tests {
 
     static TEST_CALLSITE: TestCallsite = TestCallsite;
     struct TestCallsite;
+
     impl tracing::Callsite for TestCallsite {
         fn set_interest(&self, _: tracing::subscriber::Interest) {}
         fn metadata(&self) -> &tracing::Metadata<'_> {
@@ -706,8 +658,4 @@ mod tests {
         tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&TEST_CALLSITE)),
         tracing::metadata::Kind::EVENT,
     );
-
-    fn test_callsite() -> SavedCallsite {
-        SavedCallsite::new(&TEST_METADATA)
-    }
 }

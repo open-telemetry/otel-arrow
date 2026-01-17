@@ -25,7 +25,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_state::PipelineKey;
+use otap_df_config::PipelineKey;
 use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::otel_info;
 use serde::{Deserialize, Serialize};

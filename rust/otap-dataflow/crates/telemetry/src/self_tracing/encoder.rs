@@ -33,12 +33,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
     /// Encode a tracing Event as a complete LogRecord message.
     ///
     /// Returns the number of bytes written.
-    pub fn encode_log_record(
-        &mut self,
-        time: SystemTime,
-        record: &LogRecord,
-        callsite: &SavedCallsite,
-    ) -> usize {
+    pub fn encode_log_record(&mut self, time: SystemTime, record: &LogRecord) -> usize {
         let start_len = self.buf.len();
 
         // Convert SystemTime to nanoseconds since UNIX epoch
@@ -53,7 +48,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
         self.buf.extend_from_slice(&timestamp_ns.to_le_bytes());
 
         // Encode severity_number (field 2, varint)
-        let severity = level_to_severity_number(callsite.level());
+        let severity = level_to_severity_number(record.callsite().level());
         self.buf
             .encode_field_tag(LOG_RECORD_SEVERITY_NUMBER, wire_types::VARINT);
         self.buf.encode_varint(severity as u64);
@@ -61,7 +56,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
         // Node we skip encoding severity_text (field 3, string)
 
         // Encode event_name (field 12, string) - format: "target::name (file:line)"
-        encode_event_name(self.buf, callsite);
+        encode_event_name(self.buf, record.callsite());
 
         self.buf.extend_from_slice(&record.body_attrs_bytes);
 
@@ -71,7 +66,7 @@ impl<'buf> DirectLogRecordEncoder<'buf> {
 
 /// Encode the event name from callsite metadata.
 /// Format: "target::name (file:line)" or "target::name" if no file/line.
-fn encode_event_name(buf: &mut ProtoBuffer, callsite: &SavedCallsite) {
+fn encode_event_name(buf: &mut ProtoBuffer, callsite: SavedCallsite) {
     proto_encode_len_delimited_unknown_size!(
         LOG_RECORD_EVENT_NAME,
         {

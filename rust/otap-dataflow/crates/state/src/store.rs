@@ -3,14 +3,14 @@
 
 //! Set of structs defining an event-driven observed state store.
 
-use crate::PipelineKey;
+use crate::ObservedEventRingBuffer;
 use crate::error::Error;
-use crate::event::{EventType, ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
-use otap_df_config::pipeline::PipelineSettings;
+use otap_df_config::{PipelineKey, pipeline::PipelineSettings};
+use otap_df_telemetry::event::{EventType, ObservedEvent};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -108,9 +108,7 @@ impl ObservedStateStore {
         }
 
         // Log events and events without a pipeline key don't update state.
-        let Some(ref key) = observed_event.key else {
-            return Ok(ApplyOutcome::NoChange);
-        };
+        let key = &observed_event.key;
 
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             log::warn!(

@@ -3,16 +3,36 @@
 
 //! Definition of all signals/conditions that drive state transitions and log events.
 
-use otap_df_config::NodeId;
-use otap_df_config::node::NodeKind;
-use otap_df_config::{PipelineGroupId, PipelineId};
+use crate::self_tracing::LogRecord;
+use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind};
 use serde::Serialize;
-use serde::ser::{SerializeSeq, Serializer};
-use std::collections::VecDeque;
-use std::hash::Hash;
+use serde::ser::Serializer;
 use std::time::SystemTime;
 
-use crate::self_tracing::LogRecord;
+/// An observed event emitted by the engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct ObservedEvent {
+    // ---- Source identification ----
+    /// Unique key identifying the pipeline instance (None for global/log events).
+    #[serde(skip_serializing)]
+    pub key: DeployedPipelineKey,
+    /// When reporting a node-level event, the node it applies to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<NodeId>,
+    /// When reporting a node-level event, the kind of node it applies to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_kind: Option<NodeKind>,
+
+    // ---- Event context ----
+    /// Timestamp of when the event was observed.
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    pub time: SystemTime,
+    /// One of the defined event types (e.g. `StartRequested`, `Ready`, `RuntimeError`, ...).
+    pub r#type: EventType,
+    /// Message content for this event.
+    #[serde(skip_serializing_if = "EventMessage::is_none")]
+    pub message: EventMessage,
+}
 
 /// Message content for an observed event.
 #[derive(Debug, Clone, Serialize)]
@@ -22,17 +42,18 @@ pub enum EventMessage {
     None,
     /// A simple string message.
     Message(String),
-    /// A full log record.
+    /// A full log record (except timestamp).
     Log(LogRecord),
 }
 
 impl EventMessage {
-    /// Returns the message as a string slice if it's a simple message.
+    /// Returns the message as a string.
     #[must_use]
-    pub fn as_str(&self) -> Option<&str> {
+    pub fn formatted(&self) -> Option<String> {
         match self {
-            EventMessage::Message(s) => Some(s.as_str()),
-            _ => None,
+            EventMessage::None => None,
+            EventMessage::Message(s) => Some(s.as_str().into()),
+            EventMessage::Log(record) => Some(record.format()),
         }
     }
 
@@ -68,149 +89,6 @@ impl From<LogRecord> for EventMessage {
     fn from(record: LogRecord) -> Self {
         EventMessage::Log(record)
     }
-}
-
-/// Serialize a `SystemTime` as an RFC 3339 string.
-pub fn ts_to_rfc3339<S>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let dt: chrono::DateTime<chrono::Utc> = (*t).into();
-    s.serialize_str(&dt.to_rfc3339())
-}
-
-/// Unique key for identifying a pipeline within a pipeline group.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub struct PipelineKey {
-    pipeline_group_id: PipelineGroupId,
-    pipeline_id: PipelineId,
-}
-
-impl PipelineKey {
-    /// Construct a new PipelineKey from group and pipeline ids.
-    #[must_use]
-    pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
-        Self {
-            pipeline_group_id,
-            pipeline_id,
-        }
-    }
-
-    /// Returns the pipeline group identifier.
-    #[must_use]
-    pub fn pipeline_group_id(&self) -> &PipelineGroupId {
-        &self.pipeline_group_id
-    }
-
-    /// Returns the pipeline identifier.
-    #[must_use]
-    pub fn pipeline_id(&self) -> &PipelineId {
-        &self.pipeline_id
-    }
-
-    /// Returns a `group_id:pipeline_id` string representation.
-    #[must_use]
-    pub fn as_string(&self) -> String {
-        format!("{}:{}", self.pipeline_group_id, self.pipeline_id)
-    }
-}
-
-impl Serialize for PipelineKey {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let s = format!("{}:{}", self.pipeline_group_id, self.pipeline_id);
-        serializer.serialize_str(&s)
-    }
-}
-
-/// Unique key for identifying a pipeline running on a specific core.
-#[derive(Debug, Clone, Serialize)]
-pub struct DeployedPipelineKey {
-    /// The unique ID of the pipeline group the pipeline belongs to.
-    pub pipeline_group_id: PipelineGroupId,
-
-    /// The unique ID of the pipeline within its group.
-    pub pipeline_id: PipelineId,
-
-    /// The CPU core ID the pipeline is pinned to.
-    /// Note: Not using core_affinity::CoreId directly to avoid dependency leakage in this public API
-    pub core_id: usize,
-}
-
-/// A ring buffer for storing recent observed events.
-///
-/// When the buffer reaches capacity, the oldest event is dropped to make room
-/// for new events. Events are serialized in reverse order (newest first).
-#[derive(Debug, Clone)]
-pub struct ObservedEventRingBuffer {
-    buf: VecDeque<ObservedEvent>,
-    cap: usize,
-}
-
-impl Serialize for ObservedEventRingBuffer {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut seq = serializer.serialize_seq(Some(self.buf.len()))?;
-        for ev in self.buf.iter().rev() {
-            // <— reverse iteration
-            seq.serialize_element(ev)?;
-        }
-        seq.end()
-    }
-}
-
-impl ObservedEventRingBuffer {
-    /// Create a new ring buffer with the given capacity.
-    #[must_use]
-    pub fn new(cap: usize) -> Self {
-        Self {
-            buf: VecDeque::with_capacity(cap),
-            cap,
-        }
-    }
-
-    /// Push an event into the ring buffer, dropping the oldest if full.
-    pub fn push(&mut self, event: ObservedEvent) {
-        if self.buf.len() == self.cap {
-            _ = self.buf.pop_front(); // drop oldest
-        }
-        self.buf.push_back(event);
-    }
-
-    /// Returns true if the buffer is empty.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
-    }
-}
-
-/// An observed event emitted by the engine.
-#[derive(Debug, Clone, Serialize)]
-pub struct ObservedEvent {
-    // ---- Source identification ----
-    /// Unique key identifying the pipeline instance (None for global/log events).
-    #[serde(skip_serializing)]
-    pub key: Option<DeployedPipelineKey>,
-    /// When reporting a node-level event, the node it applies to.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<NodeId>,
-    /// When reporting a node-level event, the kind of node it applies to.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_kind: Option<NodeKind>,
-
-    // ---- Event context ----
-    /// Timestamp of when the event was observed.
-    #[serde(serialize_with = "ts_to_rfc3339")]
-    pub time: SystemTime,
-    /// One of the defined event types (e.g. `StartRequested`, `Ready`, `RuntimeError`, ...).
-    pub r#type: EventType,
-    /// Message content for this event.
-    #[serde(skip_serializing_if = "EventMessage::is_none")]
-    pub message: EventMessage,
 }
 
 /// Grouping of event types by category.
@@ -307,17 +185,11 @@ pub enum ErrorSummary {
 }
 
 impl ObservedEvent {
-    /// Returns the human-readable message if present (only for Message variant).
-    #[must_use]
-    pub fn message(&self) -> Option<&str> {
-        self.message.as_str()
-    }
-
     /// Create an `Admitted` engine-level event.
     #[must_use]
     pub fn admitted(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -330,7 +202,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn ready(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -343,7 +215,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn update_admitted(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -356,7 +228,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn update_applied(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -369,7 +241,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn rollback_complete(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -382,7 +254,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn drained(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -395,7 +267,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn deleted(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -412,7 +284,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -429,7 +301,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -446,7 +318,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -463,7 +335,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -480,7 +352,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -497,7 +369,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -514,7 +386,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -533,7 +405,7 @@ impl ObservedEvent {
         error: ErrorSummary,
     ) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: Some(node_id),
             node_kind: Some(node_kind),
             time: SystemTime::now(),
@@ -546,7 +418,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn start_requested(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -559,7 +431,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn shutdown_requested(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -572,7 +444,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn delete_requested(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -583,12 +455,9 @@ impl ObservedEvent {
 
     /// Create a `ForceDeleteRequested` request-level event.
     #[must_use]
-    pub fn force_delete_requested(
-        key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
-    ) -> Self {
+    pub fn log_record(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
         Self {
-            key: Some(key),
+            key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
@@ -596,4 +465,13 @@ impl ObservedEvent {
             message: message.into(),
         }
     }
+}
+
+/// Serialize a `SystemTime` as an RFC 3339 string.
+fn ts_to_rfc3339<S>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let dt: chrono::DateTime<chrono::Utc> = (*t).into();
+    s.serialize_str(&dt.to_rfc3339())
 }

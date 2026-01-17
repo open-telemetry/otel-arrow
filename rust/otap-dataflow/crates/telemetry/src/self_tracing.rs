@@ -26,7 +26,6 @@ pub use formatter::{ConsoleWriter, RawLoggingLayer};
 #[derive(Debug, Clone)]
 pub struct LogRecord {
     /// Callsite identifier used to look up cached callsite info.
-    /// The metadata can be accessed via `callsite_id.0.metadata()`.
     pub callsite_id: Identifier,
 
     /// Pre-encoded body and attributes in OTLP bytes.  These bytes
@@ -41,10 +40,7 @@ impl Serialize for LogRecord {
     where
         S: Serializer,
     {
-        // Format on-demand during serialization using metadata from the callsite
-        let callsite = SavedCallsite::new(self.callsite_id.0.metadata());
-        let formatted = ConsoleWriter::no_color().format_log_body(self, &callsite);
-        serializer.serialize_str(&formatted)
+        serializer.serialize_str(&self.format())
     }
 }
 
@@ -113,5 +109,17 @@ impl LogRecord {
             callsite_id: metadata.callsite(),
             body_attrs_bytes: buf.into_bytes(),
         }
+    }
+
+    /// The callsite.
+    #[must_use]
+    pub fn callsite(&self) -> SavedCallsite {
+        SavedCallsite::new(self.callsite_id.0.metadata())
+    }
+
+    /// The format (without timestamp).
+    #[must_use]
+    pub fn format(&self) -> String {
+        ConsoleWriter::no_color().format_log_record(None, self)
     }
 }
