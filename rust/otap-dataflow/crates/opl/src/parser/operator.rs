@@ -4,8 +4,9 @@
 use data_engine_expressions::{
     ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
     DiscardDataExpression, Expression, LogicalExpression, MapKeyRenameSelector,
-    MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
-    QueryLocation, RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+    MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
+    OutputDataExpression, OutputExpression, QueryLocation, ReduceMapTransformExpression,
+    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
     SourceScalarExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
@@ -14,7 +15,9 @@ use data_engine_parser_abstractions::{
 use pest::iterators::Pair;
 
 use crate::parser::assignment::parse_assignment_expression;
-use crate::parser::expression::parse_expression;
+use crate::parser::expression::{
+    parse_attribute_selection_expression, parse_expression, parse_index_expression,
+};
 use crate::parser::pipeline::{PipelineBuilder, parse_pipeline_stage};
 use crate::parser::{Rule, invalid_child_rule_error};
 
@@ -25,6 +28,9 @@ pub(crate) fn parse_operator_call(
     for rule in rule.into_inner() {
         match rule.as_rule() {
             Rule::if_else_operator_call => parse_if_else_operator_call(rule, pipeline_builder)?,
+            Rule::remove_map_keys_operator_call => {
+                parse_remove_map_keys_operator_call(rule, pipeline_builder)?
+            }
             Rule::rename_operator_call => parse_rename_operator_call(rule, pipeline_builder)?,
             Rule::route_to_operator_call => parse_route_to_operator_call(rule, pipeline_builder)?,
             Rule::set_operator_call => parse_set_operator_call(rule, pipeline_builder)?,
@@ -74,6 +80,59 @@ pub(crate) fn parse_route_to_operator_call(
             OutputDataExpression::new(query_location, OutputExpression::NamedSink(dest));
         pipeline_builder.push_data_expression(DataExpression::Output(output_expr));
     }
+
+    Ok(())
+}
+
+pub(crate) fn parse_remove_map_keys_operator_call(
+    rule: Pair<'_, Rule>,
+    pipeline_builder: &mut dyn PipelineBuilder,
+) -> Result<(), ParserError> {
+    let query_location = to_query_location(&rule);
+    let inner_rules = rule.into_inner();
+    let mut keys: Vec<MapSelector> = Vec::with_capacity(inner_rules.len());
+
+    for rule in inner_rules {
+        let rule_query_location = to_query_location(&rule);
+        let scalar_expr = match rule.as_rule() {
+            Rule::attribute_selection_expression => parse_attribute_selection_expression(rule),
+            Rule::index_expression => parse_index_expression(rule),
+            invalid_rule => {
+                return Err(invalid_child_rule_error(
+                    rule_query_location,
+                    Rule::remove_map_keys_operator_call,
+                    invalid_rule,
+                ));
+            }
+        }?
+        .into();
+
+        match scalar_expr {
+            ScalarExpression::Source(source_scalar_expr) => keys.push(MapSelector::ValueAccessor(
+                source_scalar_expr.into_value_accessor(),
+            )),
+            other => {
+                return Err(ParserError::SyntaxNotSupported(
+                    rule_query_location,
+                    format!(
+                        "remove map keys operator only supports identifying keys from source. Found {other:?}"
+                    ),
+                ));
+            }
+        }
+    }
+
+    let map_selection_expr = MapSelectionExpression::new_with_selectors(
+        query_location.clone(),
+        MutableValueExpression::Source(SourceScalarExpression::new(
+            query_location,
+            ValueAccessor::new(),
+        )),
+        keys,
+    );
+    pipeline_builder.push_data_expression(DataExpression::Transform(
+        TransformExpression::ReduceMap(ReduceMapTransformExpression::Remove(map_selection_expr)),
+    ));
 
     Ok(())
 }
@@ -300,8 +359,9 @@ mod tests {
     use data_engine_expressions::{
         ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
         DiscardDataExpression, EqualToLogicalExpression, LogicalExpression, MapKeyRenameSelector,
-        MutableValueExpression, NotLogicalExpression, OutputDataExpression, OutputExpression,
-        QueryLocation, RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+        MapSelectionExpression, MapSelector, MutableValueExpression, NotLogicalExpression,
+        OutputDataExpression, OutputExpression, QueryLocation, ReduceMapTransformExpression,
+        RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
         SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
         TransformExpression, ValueAccessor,
     };
@@ -550,6 +610,63 @@ mod tests {
                 ),
             ),
         );
+        assert_eq!(expressions[0], expected);
+    }
+
+    #[test]
+    pub fn test_remove_map_keys_operator_call() {
+        let query = r#"exclude
+            attributes["x"],
+            attributes["y"],
+            resource.attributes["z"]"#;
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut state).unwrap();
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 1);
+
+        let expected = DataExpression::Transform(TransformExpression::ReduceMap(
+            ReduceMapTransformExpression::Remove(MapSelectionExpression::new_with_selectors(
+                QueryLocation::new_fake(),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new(),
+                )),
+                vec![
+                    MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                        )),
+                    ])),
+                    MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "y"),
+                        )),
+                    ])),
+                    MapSelector::ValueAccessor(ValueAccessor::new_with_selectors(vec![
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                        )),
+                        ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(QueryLocation::new_fake(), "z"),
+                        )),
+                    ])),
+                ],
+            )),
+        ));
+
         assert_eq!(expressions[0], expected);
     }
 
