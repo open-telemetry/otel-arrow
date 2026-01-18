@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768621821171,
+  "lastUpdate": 1768724559575,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -622,6 +622,66 @@ window.BENCHMARK_DATA = {
           {
             "name": "scaling_efficiency_avg",
             "value": 0.6967,
+            "unit": "",
+            "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d8a0d6d381f1a9f2968c182c88920cb4ded93cc0",
+          "message": "Create entity and expose entity keys via thread locals and task locals (#1785)\n\nThe engine now creates the following entities:\n\n* **Pipeline** -> Stored in a thread local associated with the pipeline\nthread.\n* **Node** -> Stored in the task local of the node.\n* **Channel**\n  * **Sender entity** stored in the task local of the sender node.\n  * **Receiver entity** stored in the task local of the receiver node.\n\nAn entity cleanup mechanism is in place. A unit test has been added to\nvalidate this cleanup process.\n\nThe final goal is to be able to use these entities directly when\nreporting metric sets and events. This allows us to report the\nattributes of all our entities using a simple numerical ID.\n\nCloses https://github.com/open-telemetry/otel-arrow/issues/1791",
+          "timestamp": "2026-01-18T07:23:23Z",
+          "tree_id": "0c4a094815fe796e1d1add0c2bcef4a588b7a0f7",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d8a0d6d381f1a9f2968c182c88920cb4ded93cc0"
+        },
+        "date": 1768724559069,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "scaling_efficiency_2_cores",
+            "value": 0.7499,
+            "unit": "",
+            "extra": "Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_4_cores",
+            "value": 0.8118,
+            "unit": "",
+            "extra": "Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_8_cores",
+            "value": 0.7913,
+            "unit": "",
+            "extra": "Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_16_cores",
+            "value": 0.6642,
+            "unit": "",
+            "extra": "Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_24_cores",
+            "value": 0.6219,
+            "unit": "",
+            "extra": "Scaling efficiency at 24 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_avg",
+            "value": 0.7278,
             "unit": "",
             "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
