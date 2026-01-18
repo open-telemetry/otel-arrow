@@ -198,9 +198,6 @@ impl<PData> ExporterWrapper<PData> {
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
     ) -> Self {
-        if !channel_metrics_enabled {
-            return self;
-        }
         match self {
             ExporterWrapper::Local {
                 node_id,
@@ -227,23 +224,31 @@ impl<PData> ExporterWrapper<PData> {
                         if let Some(telemetry) = current_node_telemetry_handle() {
                             telemetry.set_control_channel_key(channel_entity_key);
                         }
-                        let sender_metrics = pipeline_ctx
-                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                channel_entity_key,
-                            );
-                        let receiver_metrics = pipeline_ctx
-                            .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                                channel_entity_key,
-                            );
-                        (
-                            LocalSender::mpsc_with_metrics(sender, channel_metrics, sender_metrics),
-                            LocalReceiver::mpsc_with_metrics(
-                                receiver,
-                                channel_metrics,
-                                receiver_metrics,
-                                runtime_config.control_channel.capacity as u64,
-                            ),
-                        )
+                        if channel_metrics_enabled {
+                            let sender_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelSenderMetrics>(
+                                    channel_entity_key,
+                                );
+                            let receiver_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                    channel_entity_key,
+                                );
+                            (
+                                LocalSender::mpsc_with_metrics(
+                                    sender,
+                                    channel_metrics,
+                                    sender_metrics,
+                                ),
+                                LocalReceiver::mpsc_with_metrics(
+                                    receiver,
+                                    channel_metrics,
+                                    receiver_metrics,
+                                    runtime_config.control_channel.capacity as u64,
+                                ),
+                            )
+                        } else {
+                            (LocalSender::mpsc(sender), LocalReceiver::mpsc(receiver))
+                        }
                     }
                     (sender, receiver) => {
                         let sender = match sender {
@@ -294,27 +299,31 @@ impl<PData> ExporterWrapper<PData> {
                         if let Some(telemetry) = current_node_telemetry_handle() {
                             telemetry.set_control_channel_key(channel_entity_key);
                         }
-                        let sender_metrics = pipeline_ctx
-                            .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                channel_entity_key,
-                            );
-                        let receiver_metrics = pipeline_ctx
-                            .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                                channel_entity_key,
-                            );
-                        (
-                            SharedSender::mpsc_with_metrics(
-                                sender,
-                                channel_metrics,
-                                sender_metrics,
-                            ),
-                            SharedReceiver::mpsc_with_metrics(
-                                receiver,
-                                channel_metrics,
-                                receiver_metrics,
-                                runtime_config.control_channel.capacity as u64,
-                            ),
-                        )
+                        if channel_metrics_enabled {
+                            let sender_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelSenderMetrics>(
+                                    channel_entity_key,
+                                );
+                            let receiver_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                    channel_entity_key,
+                                );
+                            (
+                                SharedSender::mpsc_with_metrics(
+                                    sender,
+                                    channel_metrics,
+                                    sender_metrics,
+                                ),
+                                SharedReceiver::mpsc_with_metrics(
+                                    receiver,
+                                    channel_metrics,
+                                    receiver_metrics,
+                                    runtime_config.control_channel.capacity as u64,
+                                ),
+                            )
+                        } else {
+                            (SharedSender::mpsc(sender), SharedReceiver::mpsc(receiver))
+                        }
                     }
                     (sender, receiver) => {
                         let sender = match sender {

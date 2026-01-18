@@ -838,37 +838,123 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         } else {
             match (use_shared_channels, num_destinations > 1) {
                 (true, true) => {
+                    let channel_mode = CHANNEL_MODE_SHARED;
+                    let channel_type = CHANNEL_TYPE_MPMC;
+                    let channel_impl = CHANNEL_IMPL_FLUME;
                     let (pdata_sender, pdata_receiver) = flume::bounded(buffer_size.get());
+                    let sender_entity_key = source_ctx.register_channel_entity(
+                        channel_id.clone(),
+                        channel_kind,
+                        channel_mode,
+                        channel_type,
+                        channel_impl,
+                    );
+                    source_telemetry.add_output_channel_key(port.clone(), sender_entity_key);
                     let pdata_sender = SharedSender::mpmc(pdata_sender);
                     let pdata_receivers = dest_contexts
                         .iter()
-                        .map(|_| Receiver::Shared(SharedReceiver::mpmc(pdata_receiver.clone())))
+                        .zip(dest_telemetries.iter())
+                        .map(|(ctx, telemetry)| {
+                            let receiver_entity_key = ctx.register_channel_entity(
+                                channel_id.clone(),
+                                channel_kind,
+                                channel_mode,
+                                channel_type,
+                                channel_impl,
+                            );
+                            telemetry.set_input_channel_key(receiver_entity_key);
+                            Receiver::Shared(SharedReceiver::mpmc(pdata_receiver.clone()))
+                        })
                         .collect::<Vec<_>>();
                     Ok((Sender::Shared(pdata_sender), pdata_receivers))
                 }
                 (true, false) => {
+                    let channel_mode = CHANNEL_MODE_SHARED;
+                    let channel_type = CHANNEL_TYPE_MPSC;
+                    let channel_impl = CHANNEL_IMPL_TOKIO;
                     let (pdata_sender, pdata_receiver) =
                         tokio::sync::mpsc::channel::<PData>(buffer_size.get());
+                    let sender_entity_key = source_ctx.register_channel_entity(
+                        channel_id.clone(),
+                        channel_kind,
+                        channel_mode,
+                        channel_type,
+                        channel_impl,
+                    );
+                    source_telemetry.add_output_channel_key(port.clone(), sender_entity_key);
+                    let ctx = dest_contexts.first().expect("dest_contexts is empty");
+                    let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
+                    let receiver_entity_key = ctx.register_channel_entity(
+                        channel_id.clone(),
+                        channel_kind,
+                        channel_mode,
+                        channel_type,
+                        channel_impl,
+                    );
+                    telemetry.set_input_channel_key(receiver_entity_key);
                     Ok((
                         Sender::Shared(SharedSender::mpsc(pdata_sender)),
                         vec![Receiver::Shared(SharedReceiver::mpsc(pdata_receiver))],
                     ))
                 }
                 (false, true) => {
+                    let channel_mode = CHANNEL_MODE_LOCAL;
+                    let channel_type = CHANNEL_TYPE_MPMC;
+                    let channel_impl = CHANNEL_IMPL_INTERNAL;
                     // ToDo(LQ): Use a local SPMC channel when available.
                     let (pdata_sender, pdata_receiver) =
                         otap_df_channel::mpmc::Channel::new(buffer_size);
+                    let sender_entity_key = source_ctx.register_channel_entity(
+                        channel_id.clone(),
+                        channel_kind,
+                        channel_mode,
+                        channel_type,
+                        channel_impl,
+                    );
+                    source_telemetry.add_output_channel_key(port.clone(), sender_entity_key);
                     let pdata_sender = LocalSender::mpmc(pdata_sender);
                     let pdata_receivers = dest_contexts
                         .iter()
-                        .map(|_| Receiver::Local(LocalReceiver::mpmc(pdata_receiver.clone())))
+                        .zip(dest_telemetries.iter())
+                        .map(|(ctx, telemetry)| {
+                            let receiver_entity_key = ctx.register_channel_entity(
+                                channel_id.clone(),
+                                channel_kind,
+                                channel_mode,
+                                channel_type,
+                                channel_impl,
+                            );
+                            telemetry.set_input_channel_key(receiver_entity_key);
+                            Receiver::Local(LocalReceiver::mpmc(pdata_receiver.clone()))
+                        })
                         .collect::<Vec<_>>();
                     Ok((Sender::Local(pdata_sender), pdata_receivers))
                 }
                 (false, false) => {
+                    let channel_mode = CHANNEL_MODE_LOCAL;
+                    let channel_type = CHANNEL_TYPE_MPSC;
+                    let channel_impl = CHANNEL_IMPL_INTERNAL;
                     // ToDo(LQ): Use a local SPSC channel when available.
                     let (pdata_sender, pdata_receiver) =
                         otap_df_channel::mpsc::Channel::new(buffer_size.get());
+                    let sender_entity_key = source_ctx.register_channel_entity(
+                        channel_id.clone(),
+                        channel_kind,
+                        channel_mode,
+                        channel_type,
+                        channel_impl,
+                    );
+                    source_telemetry.add_output_channel_key(port.clone(), sender_entity_key);
+                    let ctx = dest_contexts.first().expect("dest_contexts is empty");
+                    let telemetry = dest_telemetries.first().expect("dest_telemetries is empty");
+                    let receiver_entity_key = ctx.register_channel_entity(
+                        channel_id.clone(),
+                        channel_kind,
+                        channel_mode,
+                        channel_type,
+                        channel_impl,
+                    );
+                    telemetry.set_input_channel_key(receiver_entity_key);
                     Ok((
                         Sender::Local(LocalSender::mpsc(pdata_sender)),
                         vec![Receiver::Local(LocalReceiver::mpsc(pdata_receiver))],
