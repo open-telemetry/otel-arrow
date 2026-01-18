@@ -31,6 +31,7 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::DeployedPipelineKey;
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
@@ -385,6 +386,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // so that all logs within this scope include pipeline context.
         let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
         let _guard = span.enter();
+
+        // The controller creates a pipeline instance into a dedicated thread. The corresponding
+        // entity is registered here for proper context tracking and set into thread-local storage
+        // in order to be accessible by all components within this thread.
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
 
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
