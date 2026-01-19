@@ -98,7 +98,7 @@ impl Contexts {
     }
 
     /// Set an error message on the inbound context associated with this outbound key explaining
-    /// why the batch processing failed
+    /// why the batch processing failed. Note - this method does not clear the outbound
     pub fn set_failed(&mut self, outbound_key: Key, error_reason: String) {
         if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key) {
             if let Some(inbound) = self.inbound.get_mut(inbound_key) {
@@ -117,7 +117,7 @@ impl Contexts {
     /// Ack/NAck'd
     pub fn clear_outbound(&mut self, outbound_key: Key) -> Option<(Context, Option<String>)> {
         let inbound_key = {
-            let outbound = self.outbound.get(outbound_key)?;
+            let outbound = self.outbound.take(outbound_key)?;
             outbound.inbound_key
         };
 
@@ -397,6 +397,41 @@ mod test {
             error_reason.unwrap(),
             inbound_error,
             "Original inbound error should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_clear_outbound_removes_outbound_from_slotmap() {
+        let mut contexts = new_contexts();
+        let context = create_context_with_subscribers();
+        let inbound_key = contexts.insert_inbound(context, None).unwrap();
+
+        // Create two outbounds
+        let outbound_key1 = contexts.insert_outbound(inbound_key).unwrap();
+        let outbound_key2 = contexts.insert_outbound(inbound_key).unwrap();
+
+        // Clear outbound1 once (should decrement counter to 1)
+        let result1 = contexts.clear_outbound(outbound_key1);
+        assert!(
+            result1.is_none(),
+            "Should not complete because there's still one outbound"
+        );
+
+        // Try to clear outbound1 again - this should fail because the outbound
+        // should have been removed from the slotmap on the first clear.
+        // If clear_outbound doesn't call self.outbound.take(), this will incorrectly
+        // decrement the counter again and potentially complete the inbound prematurely.
+        let result2 = contexts.clear_outbound(outbound_key1);
+        assert!(
+            result2.is_none(),
+            "Clearing the same outbound twice should not decrement the counter again"
+        );
+
+        // Clear outbound2 - this should complete since we have 1 outbound remaining
+        let result3 = contexts.clear_outbound(outbound_key2);
+        assert!(
+            result3.is_some(),
+            "Should complete after clearing the second (and last) outbound"
         );
     }
 }
