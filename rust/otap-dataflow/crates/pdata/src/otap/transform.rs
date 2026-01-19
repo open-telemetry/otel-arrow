@@ -659,7 +659,8 @@ pub fn transform_attributes_with_stats(
             // Materialize the parent ID column if it exists. Renames/replacements can change
             // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
             // even when no rows are deleted.
-            let should_materialize_parent_ids = schema.column_with_name(consts::PARENT_ID).is_some();
+            let should_materialize_parent_ids =
+                schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -748,7 +749,8 @@ pub fn transform_attributes_with_stats(
             // Materialize the parent ID column if it exists. Renames/replacements can change
             // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
             // even when no rows are deleted.
-            let should_materialize_parent_ids = schema.column_with_name(consts::PARENT_ID).is_some();
+            let should_materialize_parent_ids =
+                schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -756,7 +758,6 @@ pub fn transform_attributes_with_stats(
             } else {
                 (attrs_record_batch.clone(), schema)
             };
-
 
             // TODO if there are any optional columns that now contain only null or default values,
             //  we should remove them here.
@@ -3512,7 +3513,9 @@ mod test {
                     AttributeValueType::Str as u8,
                     5,
                 ))),
-                Arc::new(StringArray::from_iter_values(vec!["k1", "k1", "k2", "k1", "k1"])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "k1", "k1", "k2", "k1", "k1",
+                ])),
                 Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
             ],
         )
@@ -3527,7 +3530,9 @@ mod test {
                     AttributeValueType::Str as u8,
                     5,
                 ))),
-                Arc::new(StringArray::from_iter_values(vec!["k1", "k1", "k1", "k1", "k1"])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "k1", "k1", "k1", "k1", "k1",
+                ])),
                 Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
             ],
         )
@@ -3540,7 +3545,9 @@ mod test {
                     "k2".into(),
                     "k1".into(),
                 )]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["does_not_exist".into()]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                    "does_not_exist".into(),
+                ]))),
             },
         )
         .unwrap();
@@ -3616,7 +3623,9 @@ mod test {
                     "k2".into(),
                     "k1".into(),
                 )]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["does_not_exist".into()]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter([
+                    "does_not_exist".into(),
+                ]))),
             },
         )
         .unwrap();
