@@ -71,7 +71,7 @@ fn test_telemetry_registries_cleanup() {
         pipeline_id,
         core_id: 0,
     };
-    let metrics_reporter = telemetry_system.reporter();
+    let metrics_reporter = telemetry_system.metrics_reporter();
     let event_reporter = observed_state_store.reporter();
 
     let shutdown_handle = std::thread::spawn(move || {

@@ -220,7 +220,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
 
     /// Returns a metrics reporter for use in the processor runtime.
     pub fn metrics_reporter(&self) -> MetricsReporter {
-        self.metrics_system.reporter()
+        self.metrics_system.metrics_reporter()
     }
 
     /// Returns the message counter.

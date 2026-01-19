@@ -34,11 +34,11 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
+use otap_df_telemetry::event::{ErrorSummary, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
+use std::sync::Arc;
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -83,13 +83,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
             pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
         );
-        let telemetry_system = InternalTelemetrySystem::new(telemetry_config)?;
-        let metrics_dispatcher = telemetry_system.dispatcher();
-        let metrics_reporter = telemetry_system.reporter();
-        let controller_ctx = ControllerContext::new(telemetry_system.registry());
+
+        // Create the observed state store first - the telemetry system needs its reporter
         let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
-        let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
-        let obs_state_handle = obs_state_store.handle(); // Only the querying API
+        let obs_evt_reporter = obs_state_store.reporter();
+        let obs_state_handle = obs_state_store.handle();
+
+        // Create the telemetry system with the event reporter
+        let telemetry_system =
+            InternalTelemetrySystem::new(telemetry_config, obs_evt_reporter.clone())?;
+
+        // Initialize the global tracing subscriber
+        telemetry_system.init_global_subscriber();
+
+        let metrics_dispatcher = telemetry_system.dispatcher();
+        let metrics_reporter = telemetry_system.metrics_reporter();
+        let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
@@ -181,15 +190,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let admin_server_handle =
             spawn_thread_local_task("http-admin", move |cancellation_token| {
                 // Convert the concrete senders to trait objects for the admin crate
-                let admin_senders: Vec<
-                    std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>,
-                > = ctrl_msg_senders
-                    .into_iter()
-                    .map(|sender| {
-                        std::sync::Arc::new(sender)
-                            as std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>
-                    })
-                    .collect();
+                let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
+                    ctrl_msg_senders
+                        .into_iter()
+                        .map(|sender| {
+                            Arc::new(sender)
+                                as Arc<dyn otap_df_engine::control::PipelineAdminSender>
+                        })
+                        .collect();
 
                 otap_df_admin::run(
                     admin_settings,

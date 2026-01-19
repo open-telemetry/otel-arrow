@@ -17,8 +17,7 @@ use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::TelemetrySettings;
-use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
+use otap_df_telemetry::event::{ErrorSummary, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
@@ -460,7 +459,7 @@ mod tests {
 
         // Create a dummy MetricsReporter for testing using MetricsSystem
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
-        let metrics_reporter = metrics_system.reporter();
+        let metrics_reporter = metrics_system.metrics_reporter();
         let pipeline_settings = PipelineSettings::default();
         let observed_state_store = ObservedStateStore::new(&pipeline_settings);
         let pipeline_group_id: PipelineGroupId = Default::default();
@@ -887,7 +886,7 @@ mod tests {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
                 let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
-                let metrics_reporter = metrics_system.reporter();
+                let metrics_reporter = metrics_system.metrics_reporter();
                 let pipeline_settings = PipelineSettings::default();
                 let observed_state_store = ObservedStateStore::new(&pipeline_settings);
                 let pipeline_key = DeployedPipelineKey {

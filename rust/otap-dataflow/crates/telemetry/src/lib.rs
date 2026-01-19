@@ -27,8 +27,11 @@
 
 use std::sync::Arc;
 
+use crate::event::ObservedEventReporter;
 use crate::error::Error;
 use crate::registry::TelemetryRegistryHandle;
+use crate::tracing_init::TracingSetup;
+use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 
 pub mod attributes;
@@ -79,7 +82,21 @@ use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 /// This system manages:
 /// - Internal multivariate metrics (registry, collection, reporting)
 /// - OpenTelemetry SDK providers (metrics and logs export)
-/// - Tokio tracing subscriber configuration
+/// - Tokio tracing subscriber configuration (deferred until `init_global_subscriber` is called)
+///
+/// # Initialization Pattern
+///
+/// Create the `ObservedStateStore` first, then pass its reporter to the telemetry system.
+/// The global tracing subscriber is NOT initialized during `new()` - call
+/// `init_global_subscriber()` when ready.
+///
+/// ```ignore
+/// let obs_store = ObservedStateStore::new(...);
+/// let telemetry = InternalTelemetrySystem::new(config, obs_store.reporter())?;
+/// 
+/// // Now initialize global logging (uses the reporter internally)
+/// telemetry.init_global_subscriber();
+/// ```
 pub struct InternalTelemetrySystem {
     // === Internal Metrics Subsystem ===
     /// The telemetry registry that holds all registered entities and metrics (data + metadata).
@@ -89,7 +106,7 @@ pub struct InternalTelemetrySystem {
     collector: Arc<collector::InternalCollector>,
 
     /// The process reporting metrics to an external system.
-    reporter: reporter::MetricsReporter,
+    metrics_reporter: reporter::MetricsReporter,
 
     /// The dispatcher that flushes internal telemetry metrics.
     dispatcher: Arc<metrics::dispatcher::MetricsDispatcher>,
@@ -98,11 +115,25 @@ pub struct InternalTelemetrySystem {
     /// OTel SDK meter provider for metrics export.
     meter_provider: SdkMeterProvider,
 
-    /// OTel SDK logger provider for logs export.
-    logger_provider: SdkLoggerProvider,
+    /// OTel SDK logger provider for logs export (optional, only for OpenTelemetry mode).
+    logger_provider: Option<SdkLoggerProvider>,
 
     /// Tokio runtime for OTLP exporters (kept alive).
     _otel_runtime: Option<tokio::runtime::Runtime>,
+
+    // === Logging Configuration ===
+    /// Log level from config.
+    log_level: LogLevel,
+
+    /// Global provider mode from config.
+    global_provider_mode: ProviderMode,
+
+    /// Engine provider mode from config.
+    engine_provider_mode: ProviderMode,
+
+    /// Event reporter for async logging modes (ConsoleAsync, future ITS).
+    /// Held internally so that both global and per-thread subscribers can use it.
+    event_reporter: ObservedEventReporter,
 }
 
 impl InternalTelemetrySystem {
@@ -110,12 +141,23 @@ impl InternalTelemetrySystem {
     ///
     /// This creates:
     /// 1. The internal metrics subsystem (registry, collector, reporter, dispatcher)
-    /// 2. The OpenTelemetry SDK providers (meter and logger)
-    /// 3. Initializes the global tracing subscriber
-    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+    /// 2. The OpenTelemetry SDK providers (meter, and optionally logger)
+    ///
+    /// The `event_reporter` is required for async logging modes (`ConsoleAsync`, future `ITS`).
+    /// Create the `ObservedStateStore` first and pass its reporter here.
+    ///
+    /// **Note:** The global tracing subscriber is NOT initialized here. Call
+    /// `init_global_subscriber()` when ready to start logging.
+    pub fn new(
+        config: &TelemetryConfig,
+        event_reporter: ObservedEventReporter,
+    ) -> Result<Self, Error> {
+        // Validate logs config
+        config.logs.validate().map_err(|e| Error::ConfigurationError(e.to_string()))?;
+
         // 1. Create internal metrics subsystem
         let telemetry_registry = TelemetryRegistryHandle::new();
-        let (collector, reporter) =
+        let (collector, metrics_reporter) =
             collector::InternalCollector::new(config, telemetry_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
             telemetry_registry.clone(),
@@ -123,23 +165,86 @@ impl InternalTelemetrySystem {
         ));
 
         // 2. Create OTel SDK providers
-        let otel_client = otel_sdk::OpentelemetryClient::new(config)?;
-        let meter_provider = otel_client.meter_provider().clone();
-        let logger_provider = otel_client.logger_provider().clone();
-        let otel_runtime = otel_client.into_runtime();
+        // Logger provider is only needed for OpenTelemetry mode
+        let needs_logger_provider = config.logs.providers.global == ProviderMode::OpenTelemetry
+            || config.logs.providers.engine == ProviderMode::OpenTelemetry;
 
-        // 3. Initialize global tracing subscriber
-        tracing_init::init_global_subscriber(config.logs.level, &logger_provider);
+        let otel_client = otel_sdk::OpentelemetryClient::new(config, needs_logger_provider)?;
+        let meter_provider = otel_client.meter_provider().clone();
+        let logger_provider = otel_client.logger_provider().cloned();
+        let otel_runtime = otel_client.into_runtime();
 
         Ok(Self {
             registry: telemetry_registry,
             collector: Arc::new(collector),
-            reporter,
+            metrics_reporter,
             dispatcher,
             meter_provider,
             logger_provider,
             _otel_runtime: otel_runtime,
+            log_level: config.logs.level,
+            global_provider_mode: config.logs.providers.global,
+            engine_provider_mode: config.logs.providers.engine,
+            event_reporter,
         })
+    }
+
+    /// Initialize the global tracing subscriber.
+    ///
+    /// This sets up the global subscriber based on the configured `global` provider mode.
+    /// The event reporter passed to `new()` is used internally for async modes.
+    pub fn init_global_subscriber(&self) {
+        let setup = self.tracing_setup_for(self.global_provider_mode);
+
+        if let Err(err) = setup.try_init_global(self.log_level) {
+            raw_error!("tracing.subscriber.init", error = err.to_string());
+        }
+    }
+
+    /// Returns a `TracingSetup` for the given provider mode.
+    ///
+    /// This is useful for per-thread subscriber configuration in the engine.
+    /// The event reporter is taken from the internal state.
+    #[must_use]
+    pub fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
+        match mode {
+            ProviderMode::Noop => TracingSetup::Noop,
+
+            ProviderMode::ConsoleDirect => TracingSetup::ConsoleDirect,
+
+            ProviderMode::ConsoleAsync => TracingSetup::ConsoleAsync {
+                reporter: self.event_reporter.clone(),
+            },
+
+            ProviderMode::OpenTelemetry => {
+                let provider = self.logger_provider.as_ref().expect(
+                    "OpenTelemetry mode requires logger_provider",
+                );
+                TracingSetup::OpenTelemetry {
+                    logger_provider: provider.clone(),
+                }
+            }
+
+            ProviderMode::ITS => {
+                // ITS mode not yet implemented - fall back to Noop
+                raw_error!("ITS provider mode not yet implemented, falling back to Noop");
+                TracingSetup::Noop
+            }
+        }
+    }
+
+    /// Returns a `TracingSetup` for engine threads.
+    ///
+    /// This uses the configured `engine` provider mode from the config.
+    #[must_use]
+    pub fn engine_tracing_setup(&self) -> TracingSetup {
+        self.tracing_setup_for(self.engine_provider_mode)
+    }
+
+    /// Returns the configured log level.
+    #[must_use]
+    pub fn log_level(&self) -> LogLevel {
+        self.log_level
     }
 
     /// Returns a shareable/cloneable handle to the telemetry registry.
@@ -156,8 +261,14 @@ impl InternalTelemetrySystem {
 
     /// Returns a shareable/cloneable handle to the metrics reporter.
     #[must_use]
-    pub fn reporter(&self) -> reporter::MetricsReporter {
-        self.reporter.clone()
+    pub fn metrics_reporter(&self) -> reporter::MetricsReporter {
+        self.metrics_reporter.clone()
+    }
+
+    /// Returns a clone of the event reporter for observed events.
+    #[must_use]
+    pub fn event_reporter(&self) -> ObservedEventReporter {
+        self.event_reporter.clone()
     }
 
     /// Returns a shareable handle to the metrics dispatcher.
@@ -169,7 +280,10 @@ impl InternalTelemetrySystem {
     /// Shuts down the OpenTelemetry SDK providers.
     pub fn shutdown(self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider.shutdown();
-        let logger_shutdown_result = self.logger_provider.shutdown();
+        let logger_shutdown_result = self
+            .logger_provider
+            .map(|p| p.shutdown())
+            .transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
@@ -184,6 +298,14 @@ impl InternalTelemetrySystem {
 
 impl Default for InternalTelemetrySystem {
     fn default() -> Self {
-        Self::new(&TelemetryConfig::default()).expect("default telemetry config should be valid")
+        // Create a dummy channel for testing - events will be dropped
+        let (sender, _receiver) = flume::bounded(1);
+        let dummy_reporter = ObservedEventReporter::new(
+            std::time::Duration::from_millis(1),
+            sender,
+        );
+
+        Self::new(&TelemetryConfig::default(), dummy_reporter)
+            .expect("default telemetry config should be valid")
     }
 }

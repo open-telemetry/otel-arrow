@@ -23,13 +23,18 @@ pub struct OpentelemetryClient {
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
-    logger_provider: SdkLoggerProvider,
+    logger_provider: Option<SdkLoggerProvider>,
     // TODO: Add traces providers.
 }
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
-    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
+    ///
+    /// # Arguments
+    /// * `config` - The telemetry configuration.
+    /// * `needs_logger_provider` - Whether to create a logger provider. Set to `true` if
+    ///   the global or engine provider mode is `OpenTelemetry`.
+    pub fn new(config: &TelemetryConfig, needs_logger_provider: bool) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
@@ -40,9 +45,14 @@ impl OpentelemetryClient {
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        let logger_provider = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
-
-        let (logger_provider, runtime) = logger_provider.into_parts();
+        // Only create logger provider if needed (for OpenTelemetry mode)
+        let (logger_provider, runtime) = if needs_logger_provider {
+            let lp = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
+            let (provider, rt) = lp.into_parts();
+            (Some(provider), rt)
+        } else {
+            (None, runtime)
+        };
 
         //TODO: Configure traces provider.
 
@@ -97,10 +107,13 @@ impl OpentelemetryClient {
         &self.meter_provider
     }
 
-    /// Get a reference to the logger provider.
+    /// Get a reference to the logger provider (if configured).
+    ///
+    /// Returns `None` if the logger provider was not created (i.e., when
+    /// `needs_logger_provider` was `false` in `new()`).
     #[must_use]
-    pub fn logger_provider(&self) -> &SdkLoggerProvider {
-        &self.logger_provider
+    pub fn logger_provider(&self) -> Option<&SdkLoggerProvider> {
+        self.logger_provider.as_ref()
     }
 
     /// Consume the client and return the tokio runtime (if any).
@@ -115,7 +128,10 @@ impl OpentelemetryClient {
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
-        let logger_provider_shutdown_result = self.logger_provider().shutdown();
+        let logger_provider_shutdown_result = self
+            .logger_provider()
+            .map(|p| p.shutdown())
+            .transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
@@ -149,7 +165,7 @@ mod tests {
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config)?;
+        let client = OpentelemetryClient::new(&config, false)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -183,7 +199,7 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let client = OpentelemetryClient::new(&config)?;
+        let client = OpentelemetryClient::new(&config, true)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();

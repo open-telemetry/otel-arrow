@@ -1408,7 +1408,7 @@ mod test {
         // Telemetry system: registry + reporter + background collector
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let telemetry_registry = metrics_system.registry();
-        let reporter = metrics_system.reporter();
+        let reporter = metrics_system.metrics_reporter();
 
         // Build exporter with metrics via from_config
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());

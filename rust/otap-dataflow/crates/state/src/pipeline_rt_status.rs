@@ -252,6 +252,8 @@ impl PipelineRuntimeStatus {
                     );
                 }
             },
+            // Log events don't affect conditions
+            EventType::Log => {}
         }
     }
 
@@ -441,6 +443,9 @@ impl PipelineRuntimeStatus {
             | (PipelinePhase::RollingBack, EventType::Error(ErrEv::UpdateFailed(_)))
             | (PipelinePhase::Draining, EventType::Request(Req::ShutdownRequested))
             | (PipelinePhase::Stopped, EventType::Success(OkEv::Drained)) => ApplyOutcome::NoChange,
+
+            // ----- Log events don't affect pipeline phase
+            (_, EventType::Log) => ApplyOutcome::NoChange,
 
             // Everything else is considered programmer error (strict mode).
             (phase, ev) => {

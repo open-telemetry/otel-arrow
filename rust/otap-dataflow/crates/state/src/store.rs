@@ -8,9 +8,8 @@ use crate::error::Error;
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
-use crate::reporter::ObservedEventReporter;
 use otap_df_config::{PipelineKey, pipeline::PipelineSettings};
-use otap_df_telemetry::event::{EventType, ObservedEvent};
+use otap_df_telemetry::event::{EventType, ObservedEvent, ObservedEventReporter};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -105,10 +104,20 @@ impl ObservedStateStore {
                 eprintln!("Observed event: {observed_event:?}")
             }
             EventType::Success(_) => { /* no console output for success events */ }
+            EventType::Log => {
+                // Log events are printed via the message's formatted output
+                if let Some(formatted) = observed_event.message.formatted() {
+                    eprintln!("{formatted}");
+                }
+                // Log events don't update pipeline state
+                return Ok(ApplyOutcome::NoChange);
+            }
         }
 
-        // Log events and events without a pipeline key don't update state.
-        let key = &observed_event.key;
+        // Events without a pipeline key don't update state.
+        let Some(key) = &observed_event.key else {
+            return Ok(ApplyOutcome::NoChange);
+        };
 
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             log::warn!(
