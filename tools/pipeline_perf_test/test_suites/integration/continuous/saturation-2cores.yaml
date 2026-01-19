@@ -8,4 +8,4 @@ from_template:
     loadgen_core_range: "2-7"
     backend_cores: 2
     backend_core_range: "8-9"
-    max_batch_size: 200
+    max_batch_size: 512
