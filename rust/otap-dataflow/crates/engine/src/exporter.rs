@@ -7,10 +7,15 @@
 //! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
 //! See [`shared::Exporter`] for the Send implementation.
 
-use crate::channel_metrics::{CHANNEL_KIND_CONTROL, ChannelMetricsRegistry, control_channel_id};
+use crate::channel_metrics::{
+    CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_CONTROL, CHANNEL_MODE_LOCAL,
+    CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPSC, ChannelMetricsRegistry, ChannelReceiverMetrics,
+    ChannelSenderMetrics, control_channel_id,
+};
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -44,9 +49,11 @@ pub enum ExporterWrapper<PData> {
         /// A sender for control messages.
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: Option<LocalReceiver<NodeControlMsg<PData>>>,
+        control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<Receiver<PData>>,
+        /// Telemetry guard for node lifecycle cleanup.
+        telemetry: Option<NodeTelemetryGuard>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -61,9 +68,11 @@ pub enum ExporterWrapper<PData> {
         /// A sender for control messages.
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
-        control_receiver: Option<SharedReceiver<NodeControlMsg<PData>>>,
+        control_receiver: SharedReceiver<NodeControlMsg<PData>>,
         /// Receiver for PData messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
+        /// Telemetry guard for node lifecycle cleanup.
+        telemetry: Option<NodeTelemetryGuard>,
     },
 }
 
@@ -101,8 +110,9 @@ impl<PData> ExporterWrapper<PData> {
             runtime_config: config.clone(),
             exporter: Box::new(exporter),
             control_sender: LocalSender::mpsc(control_sender),
-            control_receiver: Some(LocalReceiver::mpsc(control_receiver)),
+            control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
+            telemetry: None,
         }
     }
 
@@ -126,8 +136,59 @@ impl<PData> ExporterWrapper<PData> {
             runtime_config: config.clone(),
             exporter: Box::new(exporter),
             control_sender: SharedSender::mpsc(control_sender),
-            control_receiver: Some(SharedReceiver::mpsc(control_receiver)),
+            control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
+            telemetry: None,
+        }
+    }
+
+    pub(crate) fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        match self {
+            ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                ..
+            } => ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry: Some(guard),
+            },
+            ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                ..
+            } => ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry: Some(guard),
+            },
+        }
+    }
+
+    pub(crate) fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
+        match self {
+            ExporterWrapper::Local { telemetry, .. } => telemetry.take(),
+            ExporterWrapper::Shared { telemetry, .. } => telemetry.take(),
         }
     }
 
@@ -137,9 +198,6 @@ impl<PData> ExporterWrapper<PData> {
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
     ) -> Self {
-        if !channel_metrics_enabled {
-            return self;
-        }
         match self {
             ExporterWrapper::Local {
                 node_id,
@@ -149,32 +207,60 @@ impl<PData> ExporterWrapper<PData> {
                 user_config,
                 exporter,
                 pdata_receiver,
+                telemetry,
                 ..
             } => {
-                let channel_id = control_channel_id(&node_id);
-                let control_sender = match control_sender.into_mpsc() {
-                    Ok(sender) => LocalSender::mpsc_with_metrics(
-                        sender,
-                        pipeline_ctx,
-                        channel_metrics,
-                        channel_id.clone(),
-                        CHANNEL_KIND_CONTROL,
-                    ),
-                    Err(sender) => sender,
-                };
-                let control_receiver = match control_receiver {
-                    Some(control_receiver) => match control_receiver.into_mpsc() {
-                        Ok(receiver) => Some(LocalReceiver::mpsc_with_metrics(
-                            receiver,
-                            pipeline_ctx,
-                            channel_metrics,
-                            channel_id,
+                let control_sender = control_sender.into_mpsc();
+                let control_receiver = control_receiver.into_mpsc();
+                let (control_sender, control_receiver) = match (control_sender, control_receiver) {
+                    (Ok(sender), Ok(receiver)) => {
+                        let channel_entity_key = pipeline_ctx.register_channel_entity(
+                            control_channel_id(&node_id),
                             CHANNEL_KIND_CONTROL,
-                            runtime_config.control_channel.capacity as u64,
-                        )),
-                        Err(receiver) => Some(receiver),
-                    },
-                    None => None,
+                            CHANNEL_MODE_LOCAL,
+                            CHANNEL_TYPE_MPSC,
+                            CHANNEL_IMPL_INTERNAL,
+                        );
+                        if let Some(telemetry) = current_node_telemetry_handle() {
+                            telemetry.set_control_channel_key(channel_entity_key);
+                        }
+                        if channel_metrics_enabled {
+                            let sender_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelSenderMetrics>(
+                                    channel_entity_key,
+                                );
+                            let receiver_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                    channel_entity_key,
+                                );
+                            (
+                                LocalSender::mpsc_with_metrics(
+                                    sender,
+                                    channel_metrics,
+                                    sender_metrics,
+                                ),
+                                LocalReceiver::mpsc_with_metrics(
+                                    receiver,
+                                    channel_metrics,
+                                    receiver_metrics,
+                                    runtime_config.control_channel.capacity as u64,
+                                ),
+                            )
+                        } else {
+                            (LocalSender::mpsc(sender), LocalReceiver::mpsc(receiver))
+                        }
+                    }
+                    (sender, receiver) => {
+                        let sender = match sender {
+                            Ok(sender) => LocalSender::mpsc(sender),
+                            Err(sender) => sender,
+                        };
+                        let receiver = match receiver {
+                            Ok(receiver) => LocalReceiver::mpsc(receiver),
+                            Err(receiver) => receiver,
+                        };
+                        (sender, receiver)
+                    }
                 };
 
                 ExporterWrapper::Local {
@@ -185,6 +271,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_sender,
                     control_receiver,
                     pdata_receiver,
+                    telemetry,
                 }
             }
             ExporterWrapper::Shared {
@@ -195,32 +282,60 @@ impl<PData> ExporterWrapper<PData> {
                 user_config,
                 exporter,
                 pdata_receiver,
+                telemetry,
                 ..
             } => {
-                let channel_id = control_channel_id(&node_id);
-                let control_sender = match control_sender.into_mpsc() {
-                    Ok(sender) => SharedSender::mpsc_with_metrics(
-                        sender,
-                        pipeline_ctx,
-                        channel_metrics,
-                        channel_id.clone(),
-                        CHANNEL_KIND_CONTROL,
-                    ),
-                    Err(sender) => sender,
-                };
-                let control_receiver = match control_receiver {
-                    Some(control_receiver) => match control_receiver.into_mpsc() {
-                        Ok(receiver) => Some(SharedReceiver::mpsc_with_metrics(
-                            receiver,
-                            pipeline_ctx,
-                            channel_metrics,
-                            channel_id,
+                let control_sender = control_sender.into_mpsc();
+                let control_receiver = control_receiver.into_mpsc();
+                let (control_sender, control_receiver) = match (control_sender, control_receiver) {
+                    (Ok(sender), Ok(receiver)) => {
+                        let channel_entity_key = pipeline_ctx.register_channel_entity(
+                            control_channel_id(&node_id),
                             CHANNEL_KIND_CONTROL,
-                            runtime_config.control_channel.capacity as u64,
-                        )),
-                        Err(receiver) => Some(receiver),
-                    },
-                    None => None,
+                            CHANNEL_MODE_SHARED,
+                            CHANNEL_TYPE_MPSC,
+                            CHANNEL_IMPL_TOKIO,
+                        );
+                        if let Some(telemetry) = current_node_telemetry_handle() {
+                            telemetry.set_control_channel_key(channel_entity_key);
+                        }
+                        if channel_metrics_enabled {
+                            let sender_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelSenderMetrics>(
+                                    channel_entity_key,
+                                );
+                            let receiver_metrics = pipeline_ctx
+                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
+                                    channel_entity_key,
+                                );
+                            (
+                                SharedSender::mpsc_with_metrics(
+                                    sender,
+                                    channel_metrics,
+                                    sender_metrics,
+                                ),
+                                SharedReceiver::mpsc_with_metrics(
+                                    receiver,
+                                    channel_metrics,
+                                    receiver_metrics,
+                                    runtime_config.control_channel.capacity as u64,
+                                ),
+                            )
+                        } else {
+                            (SharedSender::mpsc(sender), SharedReceiver::mpsc(receiver))
+                        }
+                    }
+                    (sender, receiver) => {
+                        let sender = match sender {
+                            Ok(sender) => SharedSender::mpsc(sender),
+                            Err(sender) => sender,
+                        };
+                        let receiver = match receiver {
+                            Ok(receiver) => SharedReceiver::mpsc(receiver),
+                            Err(receiver) => receiver,
+                        };
+                        (sender, receiver)
+                    }
                 };
 
                 ExporterWrapper::Shared {
@@ -231,6 +346,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_sender,
                     control_receiver,
                     pdata_receiver,
+                    telemetry,
                 }
             }
         }
@@ -254,12 +370,6 @@ impl<PData> ExporterWrapper<PData> {
                 metrics_reporter,
             ) => {
                 let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
-                let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    kind: ExporterErrorKind::Configuration,
-                    error: "Control receiver not initialized".to_owned(),
-                    source_detail: String::new(),
-                })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -270,7 +380,7 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 let message_channel =
-                    message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
+                    message::MessageChannel::new(Receiver::Local(control_receiver), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             (
@@ -284,12 +394,6 @@ impl<PData> ExporterWrapper<PData> {
                 metrics_reporter,
             ) => {
                 let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
-                let control_rx = control_receiver.ok_or_else(|| Error::ExporterError {
-                    exporter: effect_handler.exporter_id(),
-                    kind: ExporterErrorKind::Configuration,
-                    error: "Control receiver not initialized".to_owned(),
-                    source_detail: String::new(),
-                })?;
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -299,7 +403,7 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
-                let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
+                let message_channel = shared::MessageChannel::new(control_receiver, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
         }

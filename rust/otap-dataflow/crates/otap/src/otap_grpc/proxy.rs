@@ -234,7 +234,7 @@ impl ProxyConfig {
 
         // Check if host should bypass proxy
         if self.should_bypass(host, port) {
-            otap_df_telemetry::otel_debug!("Proxy.Bypass", host = host, port = port);
+            otap_df_telemetry::otel_debug!("proxy.bypass", host = host, port = port);
             return None;
         }
 
@@ -247,13 +247,13 @@ impl ProxyConfig {
         if let Some(url) = proxy {
             if log::log_enabled!(log::Level::Debug) {
                 otap_df_telemetry::otel_debug!(
-                    "Proxy.Using",
+                    "proxy.using",
                     proxy = url.to_string(),
                     target = uri.to_string()
                 );
             }
         } else {
-            otap_df_telemetry::otel_debug!("Proxy.None", target = uri.to_string());
+            otap_df_telemetry::otel_debug!("proxy.none", target = uri.to_string());
         }
 
         proxy.map(|u| u.expose())
@@ -356,7 +356,7 @@ impl ProxyConfig {
                         }
                     }
                 } else {
-                    otap_df_telemetry::otel_warn!("Proxy.InvalidCidr", pattern = pattern_host);
+                    otap_df_telemetry::otel_warn!("proxy.invalid_cidr", pattern = pattern_host);
                 }
                 continue;
             }
@@ -485,7 +485,7 @@ async fn http_connect_tunnel_on_stream(
 
     // Avoid logging the raw request to reduce the risk of leaking headers or internal targets.
     otap_df_telemetry::otel_debug!(
-        "Proxy.ConnectRequest",
+        "proxy.connect_request",
         target = format!("{formatted_target}:{target_port}"),
         has_auth = proxy_auth.is_some()
     );
@@ -502,7 +502,7 @@ async fn http_connect_tunnel_on_stream(
         ));
     }
 
-    otap_df_telemetry::otel_debug!("Proxy.ConnectResponse", status_line = status_line.trim());
+    otap_df_telemetry::otel_debug!("proxy.connect_response", status_line = status_line.trim());
 
     // Parse "HTTP/1.1 200 Connection established".
     // Be robust to multiple ASCII spaces/tabs between tokens.
@@ -608,7 +608,7 @@ fn apply_socket_options(
         #[cfg(target_os = "windows")]
         if tcp_keepalive_retries.is_some() {
             otap_df_telemetry::otel_warn!(
-                "Proxy.KeepaliveRetriesIgnored",
+                "proxy.keepalive_retries_ignored",
                 platform = "windows",
                 message = "tcp_keepalive_retries is configured but ignored on Windows: TcpKeepalive::with_retries is not available on this platform"
             );
@@ -651,12 +651,12 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
     if let Some(proxy_url) = proxy_config.get_proxy_for_uri(target_uri) {
         let (proxy_host, proxy_port, proxy_auth) = parse_proxy_url(proxy_url)?;
 
-        otap_df_telemetry::otel_debug!("Proxy.Connecting", host = proxy_host, port = proxy_port);
+        otap_df_telemetry::otel_debug!("proxy.connecting", host = proxy_host, port = proxy_port);
         let stream = TcpStream::connect((proxy_host.as_str(), proxy_port))
             .await
             .map_err(|e| {
                 otap_df_telemetry::otel_warn!(
-                    "Proxy.ConnectFailed",
+                    "proxy.connect_failed",
                     host = proxy_host,
                     port = proxy_port,
                     error_kind = format!("{:?}", e.kind()),
@@ -664,7 +664,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                 );
                 ProxyError::ProxyConnectionFailed(e)
             })?;
-        otap_df_telemetry::otel_debug!("Proxy.Connected");
+        otap_df_telemetry::otel_debug!("proxy.connected");
 
         // Apply socket options to the proxy connection
         let stream = apply_socket_options(

@@ -129,7 +129,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             None => "uncapped".to_string(),
         };
         otel_info!(
-            "Receiver.Start",
+            "receiver.start",
             signals_per_second = rate_limit_status,
             max_batch_size = max_batch_size,
             metrics_per_iteration = metric_count,
@@ -180,7 +180,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 let remaining_time = wait_till - Instant::now();
                                 if remaining_time.as_secs_f64() > 0.0 {
                                     otel_debug!(
-                                        "RateLimit.Sleep",
+                                        "rate_limit.sleep",
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
                                         message = "Sleeping to maintain configured signal rate"
                                     );
@@ -189,7 +189,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
                             } else {
                                 otel_debug!(
-                                    "RateLimit.Uncapped",
+                                    "rate_limit.uncapped",
                                     message = "Rate limiting disabled, continuing immediately"
                                 );
                             }

@@ -119,7 +119,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
-            "Exporter.Start",
+            "exporter.start",
             grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
             message = "Starting OTLP Exporter"
         );
@@ -196,7 +196,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
             } else if inflight_exports.is_empty() {
                 let msg = msg_chan.recv().await?;
                 otel_debug!(
-                    "Exporter.Receive",
+                    "exporter.receive",
                     message = "Received message from pipeline"
                 );
                 msg
@@ -220,7 +220,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     msg = recv_fut => {
                         let msg = msg?;
-                        otel_debug!("Exporter.Receive", message = "Received message from pipeline");
+                        otel_debug!("exporter.receive", message = "Received message from pipeline");
                         msg
                     },
                 }
