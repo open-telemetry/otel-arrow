@@ -119,7 +119,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
-        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
+        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
         let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
