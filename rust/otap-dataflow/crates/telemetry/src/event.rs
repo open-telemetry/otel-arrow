@@ -13,7 +13,7 @@ use std::time::SystemTime;
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedEvent {
     // ---- Source identification ----
-    /// Unique key identifying the pipeline instance (None for global/log events).
+    /// Unique key identifying the pipeline instance.
     #[serde(skip_serializing)]
     pub key: DeployedPipelineKey,
     /// When reporting a node-level event, the node it applies to.
