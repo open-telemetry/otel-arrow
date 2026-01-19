@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768852765349,
+  "lastUpdate": 1768857285357,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -922,6 +922,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 10127210.999977686,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "1b503f3f269f3a1316cd414b1ee72443bc57cc02",
+          "message": "Move ObservedEvent into crates/telemetry, consolidated with self_tracing::LogRecord (#1818)\n\nThe ObservedEvent has associated flume channels and a connection with\nthe existing metrics and admin component which make it an appealing way\nto transport log events in the engine.\n\nMove PipelineKey, DeployedPipelineKey, CoreId types into crates/config.\n\nTherefore, moving ObservedEvent into crates/telemetry lets us\n(optionally) use the same channel already use for lifecycle events for\ntokio log records. The existing event structure is extended with a\n`EventMessage` enum which supports None, String, or LogRecord messages.\nThis way we can use a log record as the event message for all existing\nevent types. The `event.rs` file moves, only ObservedEventRingBuffer\nfrom that file remains in crates/state.\n\nThe LogRecord has been storing a timestamp. Now, we leave that to the\nObservedEvent struct. LogRecord passes through SystemTime everywhere it\nhas been used. Callers generally compute this and pass it in. Minor\ncleanup in self_tracing/formatter.rs, do not pass SavedCallsite it can\nbe calculated from record metadata as needed.\n\nIn internal_events, the raw_error! macro has been replaced with a helper\nto generate LogRecord values first, by level. This lets us pass\n`info_event!(\"string\", key=value)` to any of the event constructors and\nconstruct an OTLP bytes message instead of a String message.",
+          "timestamp": "2026-01-19T20:34:34Z",
+          "tree_id": "6b4eaf69b8e790706f385d4b96e952de7368cc6d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1b503f3f269f3a1316cd414b1ee72443bc57cc02"
+        },
+        "date": 1768857285011,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.0789324045181274,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 94.94328553005153,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 95.38665441486069,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.012109375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 47.95703125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 555987.20917483,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 561985.935452128,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002071,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10292582.903948208,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10242157.064321138,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
