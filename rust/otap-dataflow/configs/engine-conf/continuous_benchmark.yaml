@@ -1,11 +1,19 @@
+# This configuration file reproduces the continuous benchmarking setup used
+# in our CI pipelines. However, the systems: traffic generator, system under
+# test, and backend are all included in a single configuration for easier
+# local testing and debugging.
+
+# Engine-wide settings
 settings:
   http_admin:
     bind_address: 127.0.0.1:8085
 
+# Pipeline groups are used to logically separate different sets of
+# pipelines. We will introduce progressively more features around
+# pipeline groups in the future such as resource quotas, scheduling
+# policies, named channels, group life-cycle management, ...
 pipeline_groups:
-  # ========================================================================
-  # All the pipelines required for continuous benchmarking in a single group
-  # ========================================================================
+  # This group contains all the pipelines required for continuous benchmarking
   continuous_benchmark:
     pipelines:
       # ======================================================================
@@ -153,35 +161,6 @@ pipeline_groups:
                 dispatch_strategy: round_robin
             config:
               listening_addr: 127.0.0.1:4328
-
-          perf_noop:
-            kind: exporter
-            plugin_urn: urn:otel:noop:exporter
-            config: null
-
-  other_group:
-    pipelines:
-
-      p1:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 50
-                end: 50
-
-        nodes:
-          receiver:
-            kind: receiver
-            plugin_urn: urn:otel:otlp:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - perf_noop
-                dispatch_strategy: round_robin
-            config:
-              listening_addr: 127.0.0.1:4329
 
           perf_noop:
             kind: exporter
