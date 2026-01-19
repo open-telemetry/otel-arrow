@@ -9,14 +9,13 @@
 //! and metric sets are unregistered to avoid registry leaks.
 
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
-use otap_df_config::{PipelineGroupId, PipelineId};
+use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_otap::fake_data_generator::config::{Config as FakeDataGeneratorConfig, TrafficConfig};
-use otap_df_state::DeployedPipelineKey;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::to_value;

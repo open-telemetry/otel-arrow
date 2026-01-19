@@ -275,6 +275,25 @@ impl ParsedSyslogMessage<'_> {
             attributes_count += 1;
         }
 
+        if let Some(app_name) = msg.app_name {
+            log_attributes_arrow_records.append_key(SYSLOG_APP_NAME);
+            log_attributes_arrow_records
+                .any_values_builder
+                .append_str(app_name);
+            attributes_count += 1;
+        }
+
+        if let Some(proc_id) = msg.proc_id {
+            log_attributes_arrow_records.append_key(SYSLOG_PROCESS_ID);
+            log_attributes_arrow_records.any_values_builder.append_int(
+                std::str::from_utf8(proc_id)
+                    .unwrap_or_default()
+                    .parse::<i64>()
+                    .unwrap_or(0),
+            );
+            attributes_count += 1;
+        }
+
         if let Some(content) = msg.content {
             log_attributes_arrow_records.append_key(SYSLOG_CONTENT);
             log_attributes_arrow_records

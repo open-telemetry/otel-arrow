@@ -4,6 +4,7 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::channel_metrics::ChannelMetricsHandle;
+use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
@@ -13,12 +14,10 @@ use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeW
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
+use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_telemetry::reporter::MetricsReporter;
-
-use crate::context::PipelineContext;
-use otap_df_state::DeployedPipelineKey;
 use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
