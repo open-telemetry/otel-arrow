@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1768848302931,
+  "lastUpdate": 1768849837388,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -922,6 +922,66 @@ window.BENCHMARK_DATA = {
           {
             "name": "scaling_efficiency_avg",
             "value": 0.7046,
+            "unit": "",
+            "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "66651184+utpilla@users.noreply.github.com",
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "2bfa0c9d7a502bcb0b103b66c3749e9a95202907",
+          "message": "[syslog-cef-receiver] Add support for parsing tags for RFC 3164 (#1807)\n\nFixes #1729 \n\n## Changes\n- Parse `syslog.tag` field further into `syslog.app_name` and\n`syslog.process_id` when applicable for RFC 3164",
+          "timestamp": "2026-01-19T18:16:37Z",
+          "tree_id": "f98bbf92402dc99819fd7077543dc1c2e31da057",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2bfa0c9d7a502bcb0b103b66c3749e9a95202907"
+        },
+        "date": 1768849836887,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "scaling_efficiency_2_cores",
+            "value": 0.9179,
+            "unit": "",
+            "extra": "Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_4_cores",
+            "value": 0.707,
+            "unit": "",
+            "extra": "Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_8_cores",
+            "value": 0.7787,
+            "unit": "",
+            "extra": "Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_16_cores",
+            "value": 0.6135,
+            "unit": "",
+            "extra": "Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_24_cores",
+            "value": 0.6273,
+            "unit": "",
+            "extra": "Scaling efficiency at 24 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "scaling_efficiency_avg",
+            "value": 0.7289,
             "unit": "",
             "extra": "Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
