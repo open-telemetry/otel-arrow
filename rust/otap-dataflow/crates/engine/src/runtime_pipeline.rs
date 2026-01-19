@@ -8,6 +8,7 @@ use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
+use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
@@ -119,6 +120,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             channel_metrics,
         } = self;
 
+        // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
             .enable_all()
             .build()
@@ -128,61 +130,116 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         let mut futures = FuturesUnordered::new();
         let mut control_senders = ControlSenders::default();
 
-        // Create a task for each node type and pass the pipeline ctrl msg channel to each node, so
-        // they can communicate with the runtime pipeline.
+        // Spawn node tasks and register their control senders, scoping telemetry where available.
         for exporter in exporters {
+            let mut exporter = exporter;
+            let node_id = exporter.node_id();
             control_senders.register(
-                exporter.node_id(),
+                node_id.clone(),
                 NodeType::Exporter,
                 exporter.control_sender(),
             );
+            let telemetry_guard = exporter.take_telemetry_guard();
+            let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
+            let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
-            futures.push(local_tasks.spawn_local(async move {
-                exporter
+            let fut = async move {
+                let result = exporter
                     .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
-                    })
-            }));
+                    });
+                drop(telemetry_guard);
+                result
+            };
+            if let Some(handle) = telemetry_handle {
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else if let Some(key) = node_entity_key {
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else {
+                futures.push(local_tasks.spawn_local(fut));
+            }
         }
         for processor in processors {
+            let mut processor = processor;
+            let node_id = processor.node_id();
             control_senders.register(
-                processor.node_id(),
+                node_id.clone(),
                 NodeType::Processor,
                 processor.control_sender(),
             );
+            let telemetry_guard = processor.take_telemetry_guard();
+            let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
+            let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
-            futures.push(local_tasks.spawn_local(async move {
-                processor
+            let fut = async move {
+                let result = processor
                     .start(pipeline_ctrl_msg_tx, metrics_reporter)
-                    .await
-            }));
+                    .await;
+                drop(telemetry_guard);
+                result
+            };
+            if let Some(handle) = telemetry_handle {
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else if let Some(key) = node_entity_key {
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else {
+                futures.push(local_tasks.spawn_local(fut));
+            }
         }
         for receiver in receivers {
+            let mut receiver = receiver;
+            let node_id = receiver.node_id();
             control_senders.register(
-                receiver.node_id(),
+                node_id.clone(),
                 NodeType::Receiver,
                 receiver.control_sender(),
             );
+            let telemetry_guard = receiver.take_telemetry_guard();
+            let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
+            let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
             let pipeline_ctrl_msg_tx = pipeline_ctrl_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
-            futures.push(local_tasks.spawn_local(async move {
-                receiver
+            let fut = async move {
+                let result = receiver
                     .start(pipeline_ctrl_msg_tx, effect_metrics_reporter)
                     .await
                     .map(|terminal_state| {
                         report_terminal_metrics(&final_metrics_reporter, terminal_state);
-                    })
-            }));
+                    });
+                drop(telemetry_guard);
+                result
+            };
+            if let Some(handle) = telemetry_handle {
+                let input_key = handle.input_channel_key();
+                let output_keys = handle.output_channel_keys();
+                let node_ctx =
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else if let Some(key) = node_entity_key {
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
+            } else {
+                futures.push(local_tasks.spawn_local(fut));
+            }
         }
 
-        // Create a task to process pipeline control messages, i.e. messages sent from nodes to
-        // the pipeline engine.
+        // Spawn the control-plane task that routes node control messages to the pipeline engine.
         let internal_telemetry = config.pipeline_settings().telemetry.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
@@ -198,6 +255,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             manager.run().await
         }));
 
+        // Drive all local tasks until completion, returning the first error if any.
         rt.block_on(async {
             local_tasks
                 .run_until(async {

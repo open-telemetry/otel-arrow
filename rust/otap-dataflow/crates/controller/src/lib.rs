@@ -32,6 +32,7 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
@@ -76,7 +77,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let telemetry_config = &pipeline.service().telemetry;
         let settings = pipeline.pipeline_settings();
         otel_info!(
-            "Controller.Start",
+            "controller.start",
             num_nodes = pipeline.node_iter().count(),
             pdata_channel_size = settings.default_pdata_channel_size,
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
@@ -386,12 +387,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
         let _guard = span.enter();
 
+        // The controller creates a pipeline instance into a dedicated thread. The corresponding
+        // entity is registered here for proper context tracking and set into thread-local storage
+        // in order to be accessible by all components within this thread.
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
+
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
             otel_warn!(
-                "CoreAffinity.SetFailed",
+                "core_affinity.set_failed",
                 message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
             );
         }

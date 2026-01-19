@@ -47,6 +47,10 @@ pub struct PipelineAttributeSet {
     #[compose]
     pub engine_attrs: EngineAttributeSet,
 
+    /// Pipeline group identifier.
+    #[attribute]
+    pub pipeline_group_id: Cow<'static, str>,
+    /// Pipeline identifier as defined in the configuration.
     #[attribute]
     pub pipeline_id: Cow<'static, str>,
 }
