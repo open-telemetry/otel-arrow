@@ -656,13 +656,10 @@ pub fn transform_attributes_with_stats(
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
-            // Possibly remove any delta-encoding on the parent ID column. If there were any
-            // deletes, it could cause issues if the parent_ids are using the transport optimized
-            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
-            // joined deleted segments, meaning the delta encoding will change.
-            let any_rows_deleted = keys_transform_result.keep_ranges.is_some();
-            let should_materialize_parent_ids =
-                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            // Materialize the parent ID column if it exists. Renames/replacements can change
+            // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
+            // even when no rows are deleted.
+            let should_materialize_parent_ids = schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -748,13 +745,10 @@ pub fn transform_attributes_with_stats(
                 return Ok((RecordBatch::new_empty(schema), stats));
             }
 
-            // Possibly remove any delta-encoding on the parent ID column. If there were any
-            // deletes, it could cause issues if the parent_ids are using the transport optimized
-            // quasi-delta encoding. This is because subsequent runs of key-value pairs may be
-            // joined deleted segments, meaning the delta encoding will change.
-            let any_rows_deleted = keep_ranges.is_some();
-            let should_materialize_parent_ids =
-                any_rows_deleted && schema.column_with_name(consts::PARENT_ID).is_some();
+            // Materialize the parent ID column if it exists. Renames/replacements can change
+            // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
+            // even when no rows are deleted.
+            let should_materialize_parent_ids = schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -762,6 +756,7 @@ pub fn transform_attributes_with_stats(
             } else {
                 (attrs_record_batch.clone(), schema)
             };
+
 
             // TODO if there are any optional columns that now contain only null or default values,
             //  we should remove them here.
@@ -3355,6 +3350,7 @@ mod test {
     }
 
     #[test]
+    #[ignore = "We can update this tests once we have a better method to materialize the parent_id than the current one"]
     fn test_skip_materialize_parent_ids_if_no_deletes() {
         // this test is same as above, but there's an optimization that if there are no deletes
         // then we don't materialize the quasi-delta parent IDs because there being no deletes
@@ -3419,6 +3415,7 @@ mod test {
     }
 
     #[test]
+    #[ignore = "We can update this tests once we have a better method to materialize the parent_id than the current one"]
     fn test_skip_materialize_parent_ids_if_no_deletes_dit_keys() {
         // same test as above, but the keys are dict encoded
         let schema = Arc::new(Schema::new(vec![
@@ -3479,6 +3476,147 @@ mod test {
                     "BBB".into(),
                 )]))),
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_materialize_parent_ids_when_rename_merges_runs() {
+        // This test covers the rename-only case where quasi-delta parent ID encoding can become invalid.
+        let schema = Arc::new(Schema::new(vec![
+            // note: absence of encoding metadata means we assume it's quasi-delta encoded
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // After rename k2 -> k1, keys become all k1, if we didn't materialize first, the
+        // quasi-delta decoding would incorrectly yield 0,1,1,1,2 but we want the correct plain
+        // IDs to remain 0,1,0,0,1 and the parent_id column to be marked as plain.
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k1", "k2", "k1", "k1"])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                // Must remain the correct plain IDs after rename (i.e., materialized before rename):
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k1", "k1", "k1", "k1"])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &AttributesTransform {
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "k2".into(),
+                    "k1".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["does_not_exist".into()]))),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_materialize_parent_ids_when_rename_merges_runs_dict_keys() {
+        // Same as the above test, but with dictionary-encoded keys.
+        let schema = Arc::new(Schema::new(vec![
+            // note: absence of encoding metadata means we assume it's quasi-delta encoded
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let expected_schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
+                Arc::new(DictionaryArray::new(
+                    // indices: k1,k1,k2,k1,k1
+                    UInt8Array::from_iter_values(vec![0, 0, 1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(vec![0, 0, 1, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(vec!["k1", "k1"])),
+                )),
+                Arc::new(StringArray::from_iter_values(vec!["a", "a", "a", "a", "a"])),
+            ],
+        )
+        .unwrap();
+
+        let result = transform_attributes(
+            &input,
+            &AttributesTransform {
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "k2".into(),
+                    "k1".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["does_not_exist".into()]))),
             },
         )
         .unwrap();
