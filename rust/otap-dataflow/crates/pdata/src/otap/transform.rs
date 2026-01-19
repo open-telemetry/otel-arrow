@@ -3351,140 +3351,6 @@ mod test {
     }
 
     #[test]
-    #[ignore = "We can update this tests once we have a better method to materialize the parent_id than the current one"]
-    fn test_skip_materialize_parent_ids_if_no_deletes() {
-        // this test is same as above, but there's an optimization that if there are no deletes
-        // then we don't materialize the quasi-delta parent IDs because there being no deletes
-        // means the sequence remains valid
-        let schema = Arc::new(Schema::new(vec![
-            // note: absence of encoding metadata means we assume it's quasi-delta encoded
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        ]));
-
-        let input = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
-                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
-                    AttributeValueType::Str as u8,
-                    8,
-                ))),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "a", "a", "a", "a", "b", "b", "a", "a",
-                ])),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "1", "1", "2", "2", "3", "3", "2", "2",
-                ])),
-            ],
-        )
-        .unwrap();
-
-        let expected = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
-                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
-                    AttributeValueType::Str as u8,
-                    8,
-                ))),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "a", "a", "a", "a", "BBB", "BBB", "a", "a",
-                ])),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "1", "1", "2", "2", "3", "3", "2", "2",
-                ])),
-            ],
-        )
-        .unwrap();
-
-        let result = transform_attributes(
-            &input,
-            &AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
-                    "b".into(),
-                    "BBB".into(),
-                )]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(result, expected)
-    }
-
-    #[test]
-    #[ignore = "We can update this tests once we have a better method to materialize the parent_id than the current one"]
-    fn test_skip_materialize_parent_ids_if_no_deletes_dit_keys() {
-        // same test as above, but the keys are dict encoded
-        let schema = Arc::new(Schema::new(vec![
-            // note: absence of encoding metadata means we assume it's quasi-delta encoded
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(
-                consts::ATTRIBUTE_KEY,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                false,
-            ),
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        ]));
-
-        let input = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
-                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
-                    AttributeValueType::Str as u8,
-                    8,
-                ))),
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values(vec![0, 0, 0, 0, 1, 1, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(vec!["a", "b"])),
-                )),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "1", "1", "2", "2", "3", "3", "2", "2",
-                ])),
-            ],
-        )
-        .unwrap();
-
-        let expected = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1, 1, 1, 1])),
-                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
-                    AttributeValueType::Str as u8,
-                    8,
-                ))),
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values(vec![0, 0, 0, 0, 1, 1, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(vec!["a", "BBB"])),
-                )),
-                Arc::new(StringArray::from_iter_values(vec![
-                    "1", "1", "2", "2", "3", "3", "2", "2",
-                ])),
-            ],
-        )
-        .unwrap();
-
-        let result = transform_attributes(
-            &input,
-            &AttributesTransform {
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
-                    "b".into(),
-                    "BBB".into(),
-                )]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["e".into()]))),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(result, expected);
-    }
-
-    #[test]
     fn test_materialize_parent_ids_when_rename_merges_runs() {
         // This test covers the rename-only case where quasi-delta parent ID encoding can become invalid.
         let schema = Arc::new(Schema::new(vec![
@@ -3496,8 +3362,8 @@ mod test {
         ]));
 
         // After rename k2 -> k1, keys become all k1, if we didn't materialize first, the
-        // quasi-delta decoding would incorrectly yield 0,1,1,1,2 but we want the correct plain
-        // IDs to remain 0,1,0,0,1 and the parent_id column to be marked as plain.
+        // quasi-delta decoding would incorrectly yield 1,2,3,4,5 but we want the correct plain
+        // IDs to remain 1,2,1,1,2 and the parent_id column to be marked as plain.
         let expected_schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -3508,7 +3374,7 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
@@ -3525,7 +3391,7 @@ mod test {
             expected_schema,
             vec![
                 // Must remain the correct plain IDs after rename (i.e., materialized before rename):
-                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 1, 2])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
@@ -3584,7 +3450,7 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
@@ -3602,7 +3468,7 @@ mod test {
         let expected = RecordBatch::try_new(
             expected_schema,
             vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 0, 0, 1])),
+                Arc::new(UInt16Array::from_iter_values(vec![1, 2, 1, 1, 2])),
                 Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
                     AttributeValueType::Str as u8,
                     5,
