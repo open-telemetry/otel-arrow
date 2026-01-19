@@ -223,7 +223,8 @@ mod tests {
 
         // Test error_event!
         let err = Error::ConfigurationError("bad config".into());
-        let record = error_event!("error.event", error = ?err);
+        let record = error_event!("error.event", error = ?err); // I AM LINE 226
         assert_eq!(*record.callsite().level(), Level::ERROR);
+        assert_eq!(record.callsite().line(), Some(226u32));
     }
 }
