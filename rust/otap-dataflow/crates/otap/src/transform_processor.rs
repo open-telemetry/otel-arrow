@@ -145,7 +145,8 @@ impl TransformProcessor {
         }
     }
 
-    // TODO comments about what this is doing
+    /// sends any result batches that were produced by the pipeline to the appropriate outports
+    /// while managing subscriptions and context
     async fn handle_exec_result(
         &mut self,
         inbound_context: Context,
@@ -1038,7 +1039,8 @@ mod test {
 
     #[test]
     fn test_nack_with_subscribers_with_routing_downstream_routed_error() {
-        // TODO comment what this test is doing
+        // test that the inbound batch will be Nack'd with the reason from a downstream routed
+        // batch that was Nack'd by something downstreams
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = r#"logs
             | if (severity_text == "ERROR") {

@@ -430,7 +430,7 @@ mod test {
             "Should not complete because there's still one outbound"
         );
 
-        // Try to clear outbound1 again - this should fail because the outbound
+        // Try to clear outbound1 again - this should return None because the outbound
         // should have been removed from the slotmap on the first clear.
         // If clear_outbound doesn't call self.outbound.take(), this will incorrectly
         // decrement the counter again and potentially complete the inbound prematurely.
