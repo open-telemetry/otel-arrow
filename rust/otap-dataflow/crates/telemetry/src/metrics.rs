@@ -412,8 +412,10 @@ impl MetricSetRegistry {
         }
     }
 
-    pub(crate) fn unregister(&mut self, metrics_key: MetricSetKey) -> bool {
-        self.metrics.remove(metrics_key).is_some()
+    pub(crate) fn unregister(&mut self, metrics_key: MetricSetKey) -> Option<EntityKey> {
+        self.metrics
+            .remove(metrics_key)
+            .map(|entry| entry.entity_key)
     }
 
     /// Returns the total number of registered metrics sets.
@@ -606,9 +608,9 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        assert!(metrics.unregister(metrics_key));
+        assert!(metrics.unregister(metrics_key).is_some());
         assert_eq!(metrics.len(), 0);
-        assert!(!metrics.unregister(metrics_key));
+        assert!(metrics.unregister(metrics_key).is_none());
     }
 
     #[test]

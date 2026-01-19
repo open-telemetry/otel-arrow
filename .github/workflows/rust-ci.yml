@@ -154,6 +154,56 @@ jobs:
         run: cargo fmt --all -- --check
         working-directory: ./rust/${{ matrix.folder }}
 
+  # Checks that Pest grammar files are properly formatted using pestfmt.
+  # Only runs if opl.pest has been modified in PRs, or on pushes to main.
+  # To format locally: cargo install pest_fmt && pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
+  pest-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
+        with:
+          toolchain: stable
+      - name: Check if opl.pest was modified
+        id: check_pest
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            # For PRs, check if the file was changed
+            git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q "rust/otap-dataflow/crates/opl/src/opl.pest" && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            # For pushes to main, always check
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Install pestfmt
+        if: steps.check_pest.outputs.changed == 'true'
+        run: cargo install pest_fmt
+      - name: Check opl.pest formatting
+        if: steps.check_pest.outputs.changed == 'true'
+        run: |
+          # Create a backup of the original file before formatting.
+          # pestfmt modifies files in-place, so we need to preserve the original
+          # to compare and detect if any formatting changes are needed.
+          cp rust/otap-dataflow/crates/opl/src/opl.pest /tmp/opl.pest.original
+
+          # Run pestfmt to format the file
+          pestfmt rust/otap-dataflow/crates/opl/src/opl.pest
+
+          # Compare with original
+          if ! diff -q /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest > /dev/null; then
+            echo "opl.pest is not formatted correctly"
+            echo ""
+            echo "Please run the following command to format it:"
+            echo "  pestfmt rust/otap-dataflow/crates/opl/src/opl.pest"
+            echo ""
+            echo "Diff:"
+            diff -u /tmp/opl.pest.original rust/otap-dataflow/crates/opl/src/opl.pest || true
+            exit 1
+          else
+            echo "opl.pest is correctly formatted"
+          fi
+
   clippy:
     strategy:
       fail-fast: false
