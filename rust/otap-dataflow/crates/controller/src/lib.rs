@@ -77,7 +77,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let telemetry_config = &pipeline.service().telemetry;
         let settings = pipeline.pipeline_settings();
         otel_info!(
-            "Controller.Start",
+            "controller.start",
             num_nodes = pipeline.node_iter().count(),
             pdata_channel_size = settings.default_pdata_channel_size,
             node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
@@ -399,7 +399,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
             otel_warn!(
-                "CoreAffinity.SetFailed",
+                "core_affinity.set_failed",
                 message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
             );
         }

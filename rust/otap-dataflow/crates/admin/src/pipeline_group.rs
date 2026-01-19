@@ -89,7 +89,7 @@ async fn shutdown_all_pipelines(
     let start_time = Instant::now();
 
     otel_info!(
-        "Shutdown.Requested",
+        "shutdown.requested",
         wait = params.wait,
         timeout_secs = params.timeout_secs
     );
@@ -113,7 +113,7 @@ async fn shutdown_all_pipelines(
 
     // If there were errors sending shutdown messages, return immediately
     if !errors.is_empty() {
-        otel_info!("Shutdown.Failed", error_count = errors.len());
+        otel_info!("shutdown.failed", error_count = errors.len());
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ShutdownResponse {
@@ -126,7 +126,7 @@ async fn shutdown_all_pipelines(
 
     // If wait=false, return immediately with 202 Accepted
     if !params.wait {
-        otel_info!("Shutdown.Accepted", blocking = false);
+        otel_info!("shutdown.accepted", blocking = false);
         return (
             StatusCode::ACCEPTED,
             Json(ShutdownResponse {
@@ -138,7 +138,7 @@ async fn shutdown_all_pipelines(
     }
 
     // wait=true: Poll until all pipelines reach terminal state or timeout
-    otel_info!("Shutdown.BlockingWait", timeout_secs = params.timeout_secs);
+    otel_info!("shutdown.blocking_wait", timeout_secs = params.timeout_secs);
     let timeout = Duration::from_secs(params.timeout_secs);
     let poll_interval = Duration::from_millis(100);
 
@@ -146,7 +146,7 @@ async fn shutdown_all_pipelines(
         // Check if we've exceeded the timeout
         if start_time.elapsed() > timeout {
             otel_info!(
-                "Shutdown.Timeout",
+                "shutdown.timeout",
                 timeout_secs = params.timeout_secs,
                 elapsed_ms = start_time.elapsed().as_millis() as u64
             );
@@ -170,7 +170,7 @@ async fn shutdown_all_pipelines(
 
         if all_terminated {
             otel_info!(
-                "Shutdown.Completed",
+                "shutdown.completed",
                 elapsed_ms = start_time.elapsed().as_millis() as u64
             );
             return (
