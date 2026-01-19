@@ -202,11 +202,22 @@ impl TransformProcessor {
             let outbound_key = self
                 .contexts
                 .insert_outbound(inbound_ctx_key)
-                .ok_or_else(|| EngineError::ProcessorError {
-                    processor: effect_handler.processor_id(),
-                    kind: ProcessorErrorKind::Other,
-                    error: "outbound slots not available".into(),
-                    source_detail: "".into(),
+                .ok_or_else(|| {
+                    // if we can't emit the default batch, we won't be able to route any of the
+                    // routed batches, so clear them to ensure they're not stuck in the router's
+                    // buffer
+                    router_impl.routed.clear();
+
+                    // clear the inbound slot we allocated above as we haven't emitted anything
+                    // that would eventually get Ack/Nack'd to clear it later
+                    self.contexts.clear_inbound(inbound_ctx_key);
+
+                    EngineError::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Other,
+                        error: "outbound slots not available".into(),
+                        source_detail: "".into(),
+                    }
                 })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
@@ -239,11 +250,21 @@ impl TransformProcessor {
             let outbound_key = self
                 .contexts
                 .insert_outbound(inbound_ctx_key)
-                .ok_or_else(|| EngineError::ProcessorError {
-                    processor: effect_handler.processor_id(),
-                    kind: ProcessorErrorKind::Other,
-                    error: "outbound slots not available".into(),
-                    source_detail: "".into(),
+                .ok_or_else(|| {
+                    // the message could not be routed b/c there wasn't room for its context in
+                    // the outbound slot map. set error on the inbound key to ensure we eventually
+                    // nack the inbound request
+                    self.contexts.set_failed_inbound(
+                        inbound_ctx_key,
+                        "outbound slots were not available".into(),
+                    );
+
+                    EngineError::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Other,
+                        error: "outbound slots not available".into(),
+                        source_detail: "".into(),
+                    }
                 })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
@@ -336,7 +357,8 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
                 NodeControlMsg::Nack(nack_message) => {
                     let outbound_key: Key = nack_message.calldata.try_into()?;
-                    self.contexts.set_failed(outbound_key, nack_message.reason);
+                    self.contexts
+                        .set_failed_outbound(outbound_key, nack_message.reason);
                     self.handle_ack_nack_inbound(
                         outbound_key,
                         nack_message.refused.signal_type(),
@@ -1193,6 +1215,192 @@ mod test {
                         panic!("got unexpected pipeline ctrl message {other:?}")
                     }
                 };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_full_contexts_outbound_slots_for_routed_batch() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "outbound_request_limit": 1,
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![error_log_record.clone(), info_log_record.clone()],
+                        )],
+                    )],
+                }));
+
+                let upstream_node_id = 999;
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                // try to process the message. This should return an error b/c only 1
+                // outbound slot is available, but two outbound batches will be produced
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("process error");
+                assert!(err.to_string().contains("outbound slots not available"));
+
+                // we should still have sent the first batch produced
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_ctx_default);
+
+                // the second batch, which will have been routed, will not have been sent due to
+                // insufficient outbound slots
+                assert!(error_port_rx.is_empty());
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // because there's only one outbound message, if this message gets Ack'd, we should
+                // then Nack the inbound batch b/c some part of it was not processed
+                let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+                    outbound_ctx_default,
+                    OtapPayload::empty(SignalType::Logs),
+                )))
+                .unwrap();
+                ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                    .await
+                    .unwrap();
+
+                let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
+                match nack_msg {
+                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(nack.reason, "outbound slots were not available");
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_full_contexts_outbound_slots_for_default_batch() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "inbound_request_limit": 2,
+                "outbound_request_limit": 2,
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![error_log_record.clone(), info_log_record.clone()],
+                        )],
+                    )],
+                }));
+
+                let upstream_node_id = 999;
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+
+                // send a first batch that should fill up the slot map
+                ctx.process(Message::PData(pdata)).await.unwrap();
+
+                // send another pdata - this should fail b/c the outbound slot map is full
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("process error");
+                assert!(err.to_string().contains("outbound slots not available"));
+
+                // now drain and ack the the messages from the first batch to clear out the slot map
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                for pdata_ctx in [outbound_ctx_default, outbound_ctx_routed] {
+                    let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+                        pdata_ctx,
+                        OtapPayload::empty(SignalType::Logs),
+                    )))
+                    .unwrap();
+                    ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                        .await
+                        .unwrap();
+                }
+
+                // send another pdata and it should succeed b/c the slot map is cleared out
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata)).await.unwrap();
+
+                // send yet another failed batch -- we do this to ensure that when we returned
+                // an error for the first failed batch, that we cleared the inbound slot. If
+                // we didn't, we'd see an error saying the inbound slot cannot be allocated
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("process error");
+                assert!(err.to_string().contains("outbound slots not available"));
             })
             .validate(|_ctx| async move {})
     }

@@ -83,14 +83,14 @@ impl Contexts {
     ///
     /// Returns `None` if the outbound slot map is full.
     pub fn insert_outbound(&mut self, inbound_key: Key) -> Option<Key> {
-        // incr inbound
         if let Some(inbound) = self.inbound.get_mut(inbound_key) {
-            inbound.num_outbound += 1;
-
-            // insert outbound
+            // try insert outbound while increment inbound's counter if slot is available
             let outbound = Outbound { inbound_key };
             self.outbound
-                .allocate(|| (outbound, ()))
+                .allocate(|| {
+                    inbound.num_outbound += 1;
+                    (outbound, ())
+                })
                 .map(|(key, _)| key)
         } else {
             Some(Key::null())
@@ -99,15 +99,28 @@ impl Contexts {
 
     /// Set an error message on the inbound context associated with this outbound key explaining
     /// why the batch processing failed. Note - this method does not clear the outbound
-    pub fn set_failed(&mut self, outbound_key: Key, error_reason: String) {
+    pub fn set_failed_outbound(&mut self, outbound_key: Key, error_reason: String) {
         if let Some(inbound_key) = self.outbound.get(outbound_key).map(|o| o.inbound_key) {
-            if let Some(inbound) = self.inbound.get_mut(inbound_key) {
-                // keep the original error if it exists
-                if inbound.error_reason.is_none() {
-                    inbound.error_reason = Some(error_reason)
-                }
+            self.set_failed_inbound(inbound_key, error_reason);
+        }
+    }
+
+    /// Set an error message on the inbound context associated with this key explaining why the
+    /// batch processing failed.
+    pub fn set_failed_inbound(&mut self, inbound_key: Key, error_reason: String) {
+        if let Some(inbound) = self.inbound.get_mut(inbound_key) {
+            // keep the original error if it exists
+            if inbound.error_reason.is_none() {
+                inbound.error_reason = Some(error_reason)
             }
         }
+    }
+
+    /// Clears the inbound slot associated with this key.
+    ///
+    /// Note - this does not clear any outbound slots referencing this inbound key
+    pub fn clear_inbound(&mut self, inbound_key: Key) {
+        self.inbound.cancel(inbound_key);
     }
 
     /// Clears the outbound slot and returns the context and error reason if the inbound slot is now empty.
@@ -297,7 +310,7 @@ mod test {
 
         // Set the outbound as failed
         let error_msg = "export failed".to_string();
-        contexts.set_failed(outbound_key, error_msg.clone());
+        contexts.set_failed_outbound(outbound_key, error_msg.clone());
 
         // Clear the outbound and verify error is returned
         let result = contexts.clear_outbound(outbound_key);
@@ -319,11 +332,11 @@ mod test {
 
         // Set first outbound as failed
         let error_msg1 = "first error".to_string();
-        contexts.set_failed(outbound_key1, error_msg1.clone());
+        contexts.set_failed_outbound(outbound_key1, error_msg1.clone());
 
         // Set second outbound as failed (should be ignored since error_reason is already set)
         let error_msg2 = "second error".to_string();
-        contexts.set_failed(outbound_key2, error_msg2.clone());
+        contexts.set_failed_outbound(outbound_key2, error_msg2.clone());
 
         // Clear all outbounds
         assert!(contexts.clear_outbound(outbound_key1).is_none());
@@ -354,7 +367,7 @@ mod test {
         };
 
         // Setting failed with invalid key should not panic
-        contexts.set_failed(invalid_key, "error".to_string());
+        contexts.set_failed_outbound(invalid_key, "error".to_string());
     }
 
     #[test]
@@ -369,7 +382,7 @@ mod test {
         assert!(outbound_key.is_null());
 
         // Setting failed with null key should not panic
-        contexts.set_failed(outbound_key, "error".to_string());
+        contexts.set_failed_outbound(outbound_key, "error".to_string());
     }
 
     #[test]
@@ -386,7 +399,7 @@ mod test {
 
         // Try to set a different error via set_failed
         let outbound_error = "outbound error".to_string();
-        contexts.set_failed(outbound_key, outbound_error);
+        contexts.set_failed_outbound(outbound_key, outbound_error);
 
         // Clear outbound and verify the original inbound error is preserved
         let result = contexts.clear_outbound(outbound_key);
