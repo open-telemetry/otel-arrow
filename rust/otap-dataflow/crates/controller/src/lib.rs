@@ -3,19 +3,43 @@
 
 //! OTAP Dataflow Engine Controller
 //!
-//! This controller manages and monitors the execution of pipelines within the current process.
-//! It uses a thread-per-core model, where each thread is pinned to a specific CPU core.
-//! This approach maximizes multi-core efficiency and reduces contention between threads,
-//! ensuring that each pipeline runs on a dedicated core for predictable and optimal CPU usage.
+//! This controller is responsible for deploying, managing, and monitoring pipeline groups
+//! within the current process.
+//!
+//! Each pipeline configuration declares its CPU requirements through quota settings.
+//! Based on these settings, the controller allocates CPU cores and spawns one dedicated
+//! thread per assigned core. Threads are pinned to distinct CPU cores, following a
+//! strict thread-per-core model.
+//!
+//! A pipeline deployed on `n` cores results in `n` worker threads. Hot data paths are
+//! fully contained within each thread to maximize CPU cache locality and minimize
+//! cross-thread contention. Inter-thread communication is restricted to control
+//! messages and internal telemetry only.
+//!
+//! By default, pipelines are expected to run on dedicated CPU cores. It is possible
+//! to deploy multiple pipeline configurations on the same cores, primarily for
+//! consolidation, testing, or transitional deployments. This comes at the cost of
+//! reduced efficiency, especially cache locality. Even in this mode, pipeline
+//! instances run in independent threads and do not share mutable data structures.
+//!
+//! Pipelines do not perform implicit work stealing, dynamic scheduling, or automatic
+//! load balancing across threads. Any form of cross-pipeline or cross-thread data
+//! exchange must be explicitly modeled.
+//!
+//! In the future, controller-managed named channels will be introduced as the
+//! recommended mechanism to implement explicit load balancing and routing schemes
+//! within the engine. These channels will complement the existing SO_REUSEPORT-based
+//! load balancing mechanism already supported at the receiver level on operating
+//! systems that provide it.
+//!
+//! Pipelines can be gracefully shut down by sending control messages through their
+//! control channels.
 //!
 //! Future work includes:
-//! - TODO: Status and health checks for pipelines
-//! - TODO: Graceful shutdown of pipelines
+//! - TODO: Complete status and health checks for pipelines
 //! - TODO: Auto-restart threads in case of panic
 //! - TODO: Live pipeline updates
 //! - TODO: Better resource control
-//! - TODO: Monitoring
-//! - TODO: Support multiple pipeline groups
 
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
