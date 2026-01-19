@@ -164,6 +164,7 @@ macro_rules! raw_error {
     }};
 }
 
+#[cfg(test)]
 mod tests {
     #[test]
     fn test_raw_error() {

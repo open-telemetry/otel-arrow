@@ -1,0 +1,79 @@
+# Passthrough test (no processor in middle)
+name: Continuous - Passthrough
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "1-12"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 12
+      prometheus:
+        endpoint: http://localhost:8085/telemetry/metrics?format=prometheus&reset=false
+  df-engine:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8086:8080"
+        volumes:
+          - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "0-0"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/telemetry/metrics?format=prometheus&reset=false
+  backend-service:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8087:8080"
+        volumes:
+          - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
+        command:
+          - "--pipeline"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "13-14"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 2
+      prometheus:
+        endpoint: http://localhost:8087/telemetry/metrics?format=prometheus&reset=false
+
+tests:
+  - name: OTLP-OTLP
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
+      variables:
+        result_dir: continuous_passthrough
+        engine_config_template: test_suites/integration/templates/configs/engine/passthrough/otlp-otlp.yaml
+        loadgen_exporter_type: otlp
+        backend_receiver_type: otlp
+        observation_interval: 60
+        signals_per_second: null
+        max_batch_size: 512
