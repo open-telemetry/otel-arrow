@@ -3,15 +3,18 @@
 
 //! Observed per-core pipeline runtime status and phase transition logic.
 
+use crate::ObservedEventRingBuffer;
 use crate::conditions::{
     Condition, ConditionKind, ConditionReason, ConditionState, ConditionStatus,
 };
 use crate::error::Error;
 use crate::error::Error::InvalidTransition;
-use crate::event::{ErrorEvent as ErrEv, RequestEvent as Req, SuccessEvent as OkEv};
-use crate::event::{ErrorSummary, EventType, ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::{DeletionMode, FailReason, PipelinePhase};
 use chrono::{DateTime, Utc};
+use otap_df_telemetry::event::{
+    ErrorEvent as ErrEv, ErrorSummary, EventType, ObservedEvent, RequestEvent as Req,
+    SuccessEvent as OkEv,
+};
 use serde::Serialize;
 use serde::ser::SerializeStruct;
 use std::time::SystemTime;
@@ -558,13 +561,13 @@ impl Serialize for PipelineRuntimeStatus {
 }
 
 fn event_message(event: &ObservedEvent) -> Option<String> {
-    event.message().map(|s| s.to_string())
+    event.message.formatted()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{
+    use otap_df_telemetry::event::{
         ErrorEvent as ErrEv, ErrorSummary, RequestEvent as Req, SuccessEvent as OkEv,
     };
 

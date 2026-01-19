@@ -20,6 +20,7 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
+use otap_df_config::DeployedPipelineKey;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
@@ -33,10 +34,9 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::DeployedPipelineKey;
-use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
+use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
