@@ -929,7 +929,8 @@ mod test {
 
     #[test]
     fn test_ack_with_subscribers_with_routing() {
-        // TODO comment what this test is doing
+        // test to ensure we don't Ack the inbound batch until all outbound batches have been Ack'd
+        // in the case that the inbound batch has subscribers
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = r#"logs
             | if (severity_text == "ERROR") {
