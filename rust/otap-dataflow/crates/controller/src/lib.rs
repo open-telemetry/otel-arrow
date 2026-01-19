@@ -20,7 +20,7 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::{EngineSettings, HttpAdminSettings};
+use otap_df_config::engine::{EngineConfig, EngineSettings, HttpAdminSettings};
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::{CoreAllocation, PipelineConfig, Quota},
@@ -33,10 +33,10 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::{DeployedPipelineKey, PipelineKey};
 use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
+use otap_df_state::{DeployedPipelineKey, PipelineKey};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::collections::HashMap;
@@ -64,46 +64,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         Self { pipeline_factory }
     }
 
-    /// Starts the controller with the given pipeline configuration.
-    pub fn run_forever(
-        &self,
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        pipeline: PipelineConfig,
-        admin_settings: HttpAdminSettings,
-    ) -> Result<(), Error> {
-        let engine_settings = EngineSettings {
-            http_admin: None,
-            telemetry: pipeline.service().telemetry.clone(),
-            observed_state: Default::default(),
-        };
-        let mut pipeline_group = PipelineGroupConfig::new();
-        pipeline_group
-            .add_pipeline(pipeline_id.clone(), pipeline)
-            .map_err(|e| Error::InvalidConfiguration { errors: vec![e] })?;
-        self.run_group_forever(pipeline_group_id, pipeline_group, engine_settings, admin_settings)
-    }
-
-    /// Starts the controller with the given pipeline group configuration.
-    pub fn run_group_forever(
-        &self,
-        pipeline_group_id: PipelineGroupId,
-        pipeline_group: PipelineGroupConfig,
-        engine_settings: EngineSettings,
-        admin_settings: HttpAdminSettings,
-    ) -> Result<(), Error> {
-        let mut pipeline_groups = HashMap::new();
-        let _ = pipeline_groups.insert(pipeline_group_id, pipeline_group);
-        self.run_engine_forever(pipeline_groups, engine_settings, admin_settings)
-    }
-
-    /// Starts the controller with the given pipeline group configurations.
-    pub fn run_engine_forever(
-        &self,
-        pipeline_groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
-        engine_settings: EngineSettings,
-        admin_settings: HttpAdminSettings,
-    ) -> Result<(), Error> {
+    /// Starts the controller with the given engine configurations.
+    pub fn run_forever(&self, engine_config: EngineConfig) -> Result<(), Error> {
+        let EngineConfig {
+            settings: engine_settings,
+            pipeline_groups,
+        } = engine_config;
+        let admin_settings = engine_settings.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine_settings.telemetry;
@@ -125,8 +92,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
-                let pipeline_key =
-                    PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
+                let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
                 obs_state_store.register_pipeline_health_policy(
                     pipeline_key,
                     pipeline.pipeline_settings().health_policy.clone(),

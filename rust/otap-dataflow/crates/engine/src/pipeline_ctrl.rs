@@ -889,8 +889,8 @@ mod tests {
                 // Create a dummy MetricsReporter for testing
                 let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
-                let pipeline_settings = PipelineSettings::default();
-                let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
+                let observed_state_store =
+                    ObservedStateStore::new(&ObservedStateSettings::default());
                 let pipeline_key = DeployedPipelineKey {
                     pipeline_group_id: Default::default(),
                     pipeline_id: Default::default(),

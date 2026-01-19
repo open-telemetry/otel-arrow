@@ -3,11 +3,12 @@
 
 //! The configuration for the dataflow engine.
 
-use crate::PipelineGroupId;
 use crate::error::{Context, Error};
 use crate::observed_state::ObservedStateSettings;
+use crate::pipeline::PipelineConfig;
 use crate::pipeline::service::telemetry::TelemetryConfig;
 use crate::pipeline_group::PipelineGroupConfig;
+use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -131,6 +132,25 @@ impl EngineConfig {
                 })
             }
         }
+    }
+
+    /// Creates a new `EngineConfig` from a single pipeline definition.
+    pub fn from_pipeline(
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        pipeline: PipelineConfig,
+        settings: EngineSettings,
+    ) -> Result<Self, Error> {
+        let mut pipeline_group = PipelineGroupConfig::new();
+        pipeline_group.add_pipeline(pipeline_id, pipeline)?;
+        let mut pipeline_groups = HashMap::new();
+        let _ = pipeline_groups.insert(pipeline_group_id, pipeline_group);
+        let config = EngineConfig {
+            settings,
+            pipeline_groups,
+        };
+        config.validate()?;
+        Ok(config)
     }
 
     /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error

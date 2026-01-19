@@ -8,8 +8,8 @@
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.
 
-use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::observed_state::ObservedStateSettings;
+use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
