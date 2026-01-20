@@ -1324,4 +1324,173 @@ mod tests {
 
         remove_file(output_file).expect("Failed to remove file");
     }
+
+    /// Creates a debug processor test setup for ACK/NACK forwarding tests.
+    /// Returns (test_runtime, processor, pipeline_ctrl_tx, pipeline_ctrl_rx, output_file).
+    fn create_ack_nack_test_setup(
+        output_file: &str,
+    ) -> (
+        TestRuntime<OtapPdata>,
+        ProcessorWrapper<OtapPdata>,
+        otap_df_engine::control::PipelineCtrlMsgSender<OtapPdata>,
+        otap_df_engine::control::PipelineCtrlMsgReceiver<OtapPdata>,
+        String,
+    ) {
+        use otap_df_engine::control::pipeline_ctrl_msg_channel;
+
+        let test_runtime = TestRuntime::new();
+        let signals = HashSet::from([SignalActive::Logs]);
+        let config = Config::new(
+            Verbosity::Normal,
+            DisplayMode::Batch,
+            signals,
+            OutputMode::File(output_file.to_string()),
+            Vec::new(),
+            SamplingConfig::NoSampling,
+        );
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        let processor = ProcessorWrapper::local(
+            DebugProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(10);
+
+        (test_runtime, processor, pipeline_ctrl_tx, pipeline_ctrl_rx, output_file.to_string())
+    }
+
+    /// Creates test pdata without any payload (empty logs request).
+    fn create_empty_test_pdata() -> OtapPdata {
+        OtapPdata::new_default(
+            OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::from(vec![])).into(),
+        )
+    }
+
+    /// Tests that the debug processor forwards ACK messages upstream via the effect handler.
+    #[test]
+    fn test_debug_processor_forwards_ack_upstream() {
+        use crate::testing::TestCallData;
+        use otap_df_engine::control::{AckMsg, PipelineControlMsg};
+        use otap_df_engine::Interests;
+
+        let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
+            create_ack_nack_test_setup("debug_output_ack_test.txt");
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                    let test_calldata = TestCallData::default();
+                    let upstream_node_id = 42usize;
+                    let pdata = create_empty_test_pdata()
+                        .test_subscribe_to(Interests::ACKS, test_calldata.clone().into(), upstream_node_id);
+
+                    ctx.process(Message::ack_ctrl_msg(AckMsg::new(pdata)))
+                        .await
+                        .expect("Processor failed on ACK");
+
+                    match pipeline_ctrl_rx.try_recv() {
+                        Ok(PipelineControlMsg::DeliverAck { node_id, ack }) => {
+                            assert_eq!(node_id, upstream_node_id, "ACK should route to subscriber's node_id");
+                            let received_calldata: TestCallData = ack.calldata.try_into().unwrap();
+                            assert_eq!(received_calldata, test_calldata, "ACK should contain subscriber's calldata");
+                        }
+                        Ok(other) => panic!("Expected DeliverAck, got: {other:?}"),
+                        Err(e) => panic!("Expected ACK to be forwarded upstream: {e:?}"),
+                    }
+                })
+            })
+            .validate(|_| Box::pin(async {}));
+
+        let _ = remove_file(output_file);
+    }
+
+    /// Tests that the debug processor forwards NACK messages upstream via the effect handler.
+    #[test]
+    fn test_debug_processor_forwards_nack_upstream() {
+        use crate::testing::TestCallData;
+        use otap_df_engine::control::{NackMsg, PipelineControlMsg};
+        use otap_df_engine::Interests;
+
+        let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
+            create_ack_nack_test_setup("debug_output_nack_test.txt");
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                    let test_calldata = TestCallData::default();
+                    let upstream_node_id = 99usize;
+                    let nack_reason = "downstream unavailable";
+                    let pdata = create_empty_test_pdata()
+                        .test_subscribe_to(Interests::NACKS, test_calldata.clone().into(), upstream_node_id);
+
+                    ctx.process(Message::nack_ctrl_msg(NackMsg::new(nack_reason, pdata)))
+                        .await
+                        .expect("Processor failed on NACK");
+
+                    match pipeline_ctrl_rx.try_recv() {
+                        Ok(PipelineControlMsg::DeliverNack { node_id, nack }) => {
+                            assert_eq!(node_id, upstream_node_id, "NACK should route to subscriber's node_id");
+                            let received_calldata: TestCallData = nack.calldata.try_into().unwrap();
+                            assert_eq!(received_calldata, test_calldata, "NACK should contain subscriber's calldata");
+                            assert_eq!(nack.reason, nack_reason, "NACK reason should be preserved");
+                        }
+                        Ok(other) => panic!("Expected DeliverNack, got: {other:?}"),
+                        Err(e) => panic!("Expected NACK to be forwarded upstream: {e:?}"),
+                    }
+                })
+            })
+            .validate(|_| Box::pin(async {}));
+
+        let _ = remove_file(output_file);
+    }
+
+    /// Tests that ACK/NACK messages without subscribers are handled gracefully.
+    #[test]
+    fn test_debug_processor_ack_nack_no_subscriber() {
+        use otap_df_engine::control::{AckMsg, NackMsg};
+
+        let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
+            create_ack_nack_test_setup("debug_output_no_subscriber_test.txt");
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                    let pdata_no_sub = create_empty_test_pdata();
+
+                    ctx.process(Message::ack_ctrl_msg(AckMsg::new(pdata_no_sub.clone())))
+                        .await
+                        .expect("Processor should handle ACK with no subscriber");
+
+                    ctx.process(Message::nack_ctrl_msg(NackMsg::new("some reason", pdata_no_sub)))
+                        .await
+                        .expect("Processor should handle NACK with no subscriber");
+
+                    // Verify no messages were forwarded (channel should be empty)
+                    assert!(
+                        pipeline_ctrl_rx.try_recv().is_err(),
+                        "Expected no forwarded messages when there are no subscribers"
+                    );
+                })
+            })
+            .validate(|_| Box::pin(async {}));
+
+        let _ = remove_file(output_file);
+    }
 }
