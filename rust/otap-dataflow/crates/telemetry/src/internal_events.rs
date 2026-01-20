@@ -33,15 +33,10 @@ pub mod _private {
 /// ```
 // TODO: Remove `name` attribute duplication in logging macros below once `tracing::Fmt` supports displaying `name`.
 // See issue: https://github.com/tokio-rs/tracing/issues/2774
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_info {
-    ($name:expr $(,)?) => {
-        $crate::_private::info!( name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, $($key = $value),+, "");
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -59,18 +54,8 @@ macro_rules! otel_info {
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
-    ($name:expr $(,)?) => {
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::warn!(name: $name,
-                        target: env!("CARGO_PKG_NAME"),
-                        name = $name,
-                        $($key = {
-                                $value
-                        }),+,
-                        ""
-                )
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -86,15 +71,10 @@ macro_rules! otel_warn {
 /// use otap_df_telemetry::otel_debug;
 /// otel_debug!("processing.batch", batch_size = 100);
 /// ```
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr $(,)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, $($key = $value),+, "");
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -110,22 +90,10 @@ macro_rules! otel_debug {
 /// use otap_df_telemetry::otel_error;
 /// otel_error!("export.failure", error_code = 500);
 /// ```
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_error {
-    ($name:expr $(,)?) => {
-        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::error!(name: $name,
-                        target: env!("CARGO_PKG_NAME"),
-                        name = $name,
-                        $($key = {
-                                $value
-                        }),+,
-                        ""
-                )
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -144,13 +112,12 @@ macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
         use $crate::self_tracing::ConsoleWriter;
         let now = std::time::SystemTime::now();
-        let record = $crate::error_event!($name $(, $($fields)*)?);
+        let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
         ConsoleWriter::no_color().print_log_record(now, &record);
     }};
 }
 
 /// Internal macro that constructs a `LogRecord` from a static callsite.
-/// This is shared by the level-specific record macros.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __log_record_impl {
@@ -161,7 +128,7 @@ macro_rules! __log_record_impl {
         static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
             name: $name,
             kind: $crate::_private::Kind::EVENT,
-            target: module_path!(),
+            target: env!("CARGO_PKG_NAME"),
             level: $level,
             fields: $($($fields)*)?
         };
@@ -176,55 +143,14 @@ macro_rules! __log_record_impl {
     }};
 }
 
-/// Construct an INFO-level `LogRecord` without dispatching it.
-///
-/// Returns a `LogRecord` that can be used in `EventMessage::Log`.
-#[macro_export]
-macro_rules! info_event {
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::__log_record_impl!($crate::_private::Level::INFO, $name $(, $($fields)*)?)
-    };
-}
-
-/// Construct an ERROR-level `LogRecord` without dispatching it.
-///
-/// Returns a `LogRecord` that can be used in `EventMessage::Log`.
-#[macro_export]
-macro_rules! error_event {
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?)
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
-    use tracing::Level;
 
     #[test]
     fn test_raw_error() {
         let err = Error::ConfigurationError("bad config".into());
         raw_error!("raw error message", error = ?err);
         raw_error!("simple error message");
-    }
-
-    #[test]
-    fn test_log_record_macros() {
-        // Test info_event! with attributes
-        let record = info_event!("test.event", count = 42i64, name = "test");
-        let callsite = record.callsite();
-        assert_eq!(*callsite.level(), Level::INFO);
-        assert_eq!(callsite.name(), "test.event");
-
-        // Test the formatted output contains body and attributes
-        let formatted = record.format();
-        assert!(formatted.contains("count=42"), "got: {}", formatted);
-        assert!(formatted.contains("name=test"), "got: {}", formatted);
-
-        // Test error_event!
-        let err = Error::ConfigurationError("bad config".into());
-        let record = error_event!("error.event", error = ?err); // I AM LINE 226
-        assert_eq!(*record.callsite().level(), Level::ERROR);
-        assert_eq!(record.callsite().line(), Some(226u32));
     }
 }

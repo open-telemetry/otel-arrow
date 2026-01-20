@@ -18,6 +18,7 @@ use base64::Engine;
 use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
+use otap_df_telemetry::{otel_debug, otel_warn};
 use serde::Deserialize;
 use socket2::{Socket, TcpKeepalive};
 use std::borrow::Cow;
@@ -234,7 +235,7 @@ impl ProxyConfig {
 
         // Check if host should bypass proxy
         if self.should_bypass(host, port) {
-            otap_df_telemetry::otel_debug!("proxy.bypass", host = host, port = port);
+            otel_debug!("proxy.bypass", host = host, port = port);
             return None;
         }
 
@@ -245,15 +246,13 @@ impl ProxyConfig {
         };
 
         if let Some(url) = proxy {
-            if log::log_enabled!(log::Level::Debug) {
-                otap_df_telemetry::otel_debug!(
-                    "proxy.using",
-                    proxy = url.to_string(),
-                    target = uri.to_string()
-                );
-            }
+            otel_debug!(
+                "proxy.using",
+                proxy = url.to_string(),
+                target = uri.to_string(),
+            );
         } else {
-            otap_df_telemetry::otel_debug!("proxy.none", target = uri.to_string());
+            otel_debug!("proxy.none", target = uri.to_string());
         }
 
         proxy.map(|u| u.expose())
@@ -484,7 +483,7 @@ async fn http_connect_tunnel_on_stream(
     connect_request.push_str("\r\n");
 
     // Avoid logging the raw request to reduce the risk of leaking headers or internal targets.
-    otap_df_telemetry::otel_debug!(
+    otel_debug!(
         "proxy.connect_request",
         target = format!("{formatted_target}:{target_port}"),
         has_auth = proxy_auth.is_some()
@@ -502,7 +501,7 @@ async fn http_connect_tunnel_on_stream(
         ));
     }
 
-    otap_df_telemetry::otel_debug!("proxy.connect_response", status_line = status_line.trim());
+    otel_debug!("proxy.connect_response", status_line = status_line.trim());
 
     // Parse "HTTP/1.1 200 Connection established".
     // Be robust to multiple ASCII spaces/tabs between tokens.
@@ -651,11 +650,11 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
     if let Some(proxy_url) = proxy_config.get_proxy_for_uri(target_uri) {
         let (proxy_host, proxy_port, proxy_auth) = parse_proxy_url(proxy_url)?;
 
-        otap_df_telemetry::otel_debug!("proxy.connecting", host = proxy_host, port = proxy_port);
+        otel_debug!("proxy.connecting", host = proxy_host, port = proxy_port);
         let stream = TcpStream::connect((proxy_host.as_str(), proxy_port))
             .await
             .map_err(|e| {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "proxy.connect_failed",
                     host = proxy_host,
                     port = proxy_port,
@@ -664,7 +663,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                 );
                 ProxyError::ProxyConnectionFailed(e)
             })?;
-        otap_df_telemetry::otel_debug!("proxy.connected");
+        otel_debug!("proxy.connected");
 
         // Apply socket options to the proxy connection
         let stream = apply_socket_options(
