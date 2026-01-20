@@ -8,17 +8,16 @@ use crate::error::Error;
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
-use otap_df_config::{
-    PipelineKey, health::HealthPolicy, pipeline::PipelineConfig,
-    pipeline::service::telemetry::logs::ProviderMode,
-};
+use otap_df_config::PipelineKey;
+use otap_df_config::health::HealthPolicy;
+use otap_df_config::observed_state::ObservedStateSettings;
+use otap_df_config::pipeline::service::telemetry::logs::ProviderMode;
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::self_tracing::ConsoleWriter;
 use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
@@ -31,13 +30,16 @@ const RECENT_EVENTS_CAPACITY: usize = 10;
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateStore {
     #[serde(skip)]
-    reporting_timeout: Duration,
+    config: ObservedStateSettings,
 
     #[serde(skip)]
     fallback_mode: ProviderMode,
 
     #[serde(skip)]
-    health_policy: HealthPolicy,
+    default_health_policy: HealthPolicy,
+
+    #[serde(skip)]
+    health_policies: Arc<Mutex<HashMap<PipelineKey, HealthPolicy>>>,
 
     #[serde(skip)]
     sender: flume::Sender<ObservedEvent>,
@@ -68,8 +70,7 @@ impl ObservedStateHandle {
             Err(poisoned) => {
                 otel_error!(
                     "state.mutex_poisoned",
-                    context = "ObservedStateHandle::snapshot",
-                    action = "returning possibly stale snapshot"
+                    action = "continuing with stale snapshot"
                 );
                 poisoned.into_inner().clone()
             }
@@ -80,18 +81,14 @@ impl ObservedStateHandle {
 impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
     #[must_use]
-    pub fn new(config: &PipelineConfig) -> Self {
-        let (sender, receiver) = flume::bounded::<ObservedEvent>(
-            config
-                .pipeline_settings()
-                .observed_state
-                .reporting_channel_size,
-        );
+    pub fn new(config: &ObservedStateSettings, fallback_mode: ProviderMode) -> Self {
+        let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
-            reporting_timeout: config.pipeline_settings().observed_state.reporting_timeout,
-            fallback_mode: config.service().telemetry.logs.providers.internal,
-            health_policy: config.pipeline_settings().health_policy.clone(),
+            config: config.clone(),
+            fallback_mode,
+            default_health_policy: HealthPolicy::default(),
+            health_policies: Arc::new(Mutex::new(HashMap::new())),
             sender,
             receiver,
             console: ConsoleWriter::color(),
@@ -103,10 +100,26 @@ impl ObservedStateStore {
     #[must_use]
     pub fn reporter(&self) -> ObservedEventReporter {
         ObservedEventReporter::new(
-            self.reporting_timeout,
+            self.config.reporting_timeout,
             self.fallback_mode,
             self.sender.clone(),
         )
+    }
+
+    /// Registers or updates the health policy for a specific pipeline.
+    pub fn register_pipeline_health_policy(
+        &self,
+        pipeline_key: PipelineKey,
+        health_policy: HealthPolicy,
+    ) {
+        let mut policies = self.health_policies.lock().unwrap_or_else(|poisoned| {
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with stale health policy"
+            );
+            poisoned.into_inner()
+        });
+        _ = policies.insert(pipeline_key, health_policy);
     }
 
     /// Returns a handle that can be used to read the current observed state.
@@ -148,16 +161,21 @@ impl ObservedStateStore {
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             otel_error!(
                 "state.mutex_poisoned",
-                context = "ObservedStateStore::report",
                 action = "continuing with possibly inconsistent state"
             );
             poisoned.into_inner()
         });
         let pipeline_key = PipelineKey::new(key.pipeline_group_id.clone(), key.pipeline_id.clone());
 
+        let health_policy = self
+            .health_policies
+            .lock()
+            .ok()
+            .and_then(|policies| policies.get(&pipeline_key).cloned())
+            .unwrap_or_else(|| self.default_health_policy.clone());
         let ps = pipelines
             .entry(pipeline_key)
-            .or_insert_with(|| PipelineStatus::new(self.health_policy.clone()));
+            .or_insert_with(|| PipelineStatus::new(health_policy));
 
         // Upsert the core record and its condition snapshot
         let cs = ps

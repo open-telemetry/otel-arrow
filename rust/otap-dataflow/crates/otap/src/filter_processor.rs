@@ -113,7 +113,8 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
-                let arrow_records: OtapArrowRecords = payload.try_into()?;
+                let mut arrow_records: OtapArrowRecords = payload.try_into()?;
+                arrow_records.decode_transport_optimized_ids()?;
 
                 let filtered_arrow_records: OtapArrowRecords = match signal {
                     SignalType::Metrics => {
