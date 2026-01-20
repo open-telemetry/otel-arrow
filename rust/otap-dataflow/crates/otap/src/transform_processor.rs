@@ -1413,4 +1413,112 @@ mod test {
             })
             .validate(|_ctx| async move {})
     }
+
+    #[test]
+    fn test_ack_nack_full_contexts_inbound_slots() {
+        // Test that when inbound slots are full, the processor returns an error
+        // and properly cleans up so subsequent requests can succeed once slots are freed
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "inbound_request_limit": 1,
+                "outbound_request_limit": 10,
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
+                let info_log_record = LogRecord::build().severity_text("INFO").finish();
+                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![error_log_record.clone(), info_log_record.clone()],
+                        )],
+                    )],
+                }));
+
+                let upstream_node_id = 999;
+
+                // Send first batch - this should fill the single inbound slot
+                let pdata1 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata1)).await.unwrap();
+
+                // Try to send another batch - this should fail because inbound slot is full
+                let pdata2 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(2, 0).into(),
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata2))
+                    .await
+                    .expect_err("should fail when inbound slots full");
+                assert!(
+                    err.to_string().contains("inbound slots not available"),
+                    "Expected inbound slots error, got: {}",
+                    err
+                );
+
+                // Collect the outbound messages from the first batch
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                // Ack both outbound messages to free the inbound slot
+                for pdata_ctx in [outbound_ctx_default, outbound_ctx_routed] {
+                    let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+                        pdata_ctx,
+                        OtapPayload::empty(SignalType::Logs),
+                    )))
+                    .unwrap();
+                    ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                        .await
+                        .unwrap();
+                }
+
+                // Now try again - should succeed because inbound slot was freed
+                let pdata3 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(3, 0).into(),
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata3))
+                    .await
+                    .expect("should succeed after inbound slot freed");
+
+                // Verify we can process again and fill the slot
+                let pdata4 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(4, 0).into(),
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata4))
+                    .await
+                    .expect_err("should fail again when inbound slot full");
+                assert!(
+                    err.to_string().contains("inbound slots not available"),
+                    "Expected inbound slots error, got: {}",
+                    err
+                );
+            })
+            .validate(|_ctx| async move {})
+    }
 }
