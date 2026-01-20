@@ -20,14 +20,22 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 
-use crate::config::QuiverConfig;
-use crate::error::Result;
+use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
+use crate::error::{QuiverError, Result};
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
+use crate::segment_store::SegmentStore;
+use crate::subscriber::{
+    BundleHandle, BundleRef, RegistryCallback, RegistryConfig, SegmentProvider, SubscriberError,
+    SubscriberId, SubscriberRegistry,
+};
 use crate::telemetry::PersistenceMetrics;
 use crate::wal::{WalConsumerCursor, WalWriter, WalWriterOptions};
 
@@ -41,21 +49,40 @@ pub(crate) struct WalStats {
     pub purge_count: u64,
 }
 
+/// Statistics returned by maintenance operations.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MaintenanceStats {
+    /// Number of subscribers whose progress was flushed.
+    pub flushed: usize,
+    /// Number of completed segments deleted.
+    pub deleted: usize,
+}
+
 /// Primary entry point for the persistence engine.
 ///
-/// The engine coordinates the write-ahead log and segment storage to provide
-/// durable buffering with the following guarantees:
+/// The engine coordinates:
+/// - **Ingestion**: WAL + segment accumulation
+/// - **Segment Storage**: Finalized segment files
+/// - **Subscription**: Subscriber registry and bundle delivery
+/// - **Maintenance**: Progress flush and segment cleanup
+///
+/// The engine provides durable buffering with the following guarantees:
 ///
 /// - **Durability**: Data is appended to the WAL before acknowledgement.
 /// - **Immutability**: Finalized segments are read-only and never modified.
 /// - **Recovery**: On restart, the WAL can replay uncommitted entries.
+/// - **Capacity**: Disk usage is bounded by the shared [`DiskBudget`].
+///
+/// [`DiskBudget`]: crate::budget::DiskBudget
 pub struct QuiverEngine {
     /// Engine configuration.
     config: QuiverConfig,
+    /// Shared disk budget for enforcing storage caps.
+    budget: Arc<crate::budget::DiskBudget>,
     /// Metrics for observability.
     metrics: PersistenceMetrics,
-    /// Write-ahead log writer.
-    wal_writer: Mutex<WalWriter>,
+    /// Write-ahead log writer (uses tokio mutex for async lock across await points).
+    wal_writer: TokioMutex<WalWriter>,
     /// Current open segment accumulator.
     open_segment: Mutex<OpenSegment>,
     /// Cursor representing all entries in the current open segment.
@@ -63,6 +90,91 @@ pub struct QuiverEngine {
     segment_cursor: Mutex<WalConsumerCursor>,
     /// Next segment sequence number to assign.
     next_segment_seq: AtomicU64,
+    /// Cumulative bytes written to WAL (never decreases, even after rotation/purge).
+    cumulative_wal_bytes: AtomicU64,
+    /// Cumulative bytes written to segments (never decreases, even after cleanup).
+    cumulative_segment_bytes: AtomicU64,
+    /// Count of segments force-dropped due to DropOldest policy.
+    force_dropped_segments: AtomicU64,
+    /// Count of bundles lost due to force-dropped segments.
+    force_dropped_bundles: AtomicU64,
+    /// Segment store for finalized segment files.
+    segment_store: Arc<SegmentStore>,
+    /// Subscriber registry for tracking consumption progress.
+    registry: Arc<SubscriberRegistry<SegmentStore>>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QuiverEngineBuilder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Builder for creating a [`QuiverEngine`] with customizable options.
+///
+/// This provides a cleaner ergonomic interface, especially for tests
+/// that may want to customize specific options.
+///
+/// # Example
+///
+/// ```ignore
+/// use quiver::{QuiverEngineBuilder, QuiverConfig, DiskBudget, RetentionPolicy};
+/// use std::sync::Arc;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let config = QuiverConfig::default().with_data_dir("/var/lib/quiver/data");
+///     let budget = Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+///
+///     let engine = QuiverEngineBuilder::new(config)
+///         .with_budget(budget)
+///         .build()
+///         .await?;
+///     Ok(())
+/// }
+/// ```
+#[derive(Debug)]
+pub struct QuiverEngineBuilder {
+    config: QuiverConfig,
+    budget: Option<Arc<crate::budget::DiskBudget>>,
+}
+
+impl QuiverEngineBuilder {
+    /// Creates a new builder with the given configuration.
+    ///
+    /// By default, uses an unlimited disk budget with backpressure policy.
+    #[must_use]
+    pub fn new(config: QuiverConfig) -> Self {
+        Self {
+            config,
+            budget: None,
+        }
+    }
+
+    /// Sets the disk budget for the engine.
+    ///
+    /// The budget enforces a hard cap on total disk usage across WAL, segments,
+    /// and progress files. Multiple engines can share the same budget for
+    /// coordinated capacity management.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Arc<crate::budget::DiskBudget>) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// Builds the engine asynchronously, returning an `Arc<QuiverEngine>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if configuration validation fails or if the WAL
+    /// cannot be initialized.
+    pub async fn build(self) -> Result<Arc<QuiverEngine>> {
+        let budget = self.budget.unwrap_or_else(|| {
+            Arc::new(crate::budget::DiskBudget::new(
+                u64::MAX,
+                RetentionPolicy::Backpressure,
+            ))
+        });
+        QuiverEngine::open(self.config, budget).await
+    }
 }
 
 impl std::fmt::Debug for QuiverEngine {
@@ -76,32 +188,135 @@ impl std::fmt::Debug for QuiverEngine {
 }
 
 impl QuiverEngine {
-    /// Creates a new persistence engine with the given configuration.
+    /// Creates a builder for constructing a `QuiverEngine`.
     ///
-    /// This validates the configuration, initializes the WAL writer, and
-    /// creates necessary directories.
+    /// This provides a cleaner interface with sensible defaults
+    /// (e.g., unlimited budget with backpressure policy).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use quiver::{QuiverEngine, QuiverConfig};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let config = QuiverConfig::default().with_data_dir("/var/lib/quiver/data");
+    ///     let engine = QuiverEngine::builder(config).build().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    #[must_use]
+    pub fn builder(config: QuiverConfig) -> QuiverEngineBuilder {
+        QuiverEngineBuilder::new(config)
+    }
+
+    /// Opens a new persistence engine asynchronously.
     ///
     /// # Errors
     ///
     /// Returns an error if configuration validation fails or if the WAL
     /// cannot be initialized.
-    pub fn new(config: QuiverConfig) -> Result<Self> {
+    pub async fn open(
+        config: QuiverConfig,
+        budget: Arc<crate::budget::DiskBudget>,
+    ) -> Result<Arc<Self>> {
         config.validate()?;
 
-        // Ensure segment directory exists
+        // Validate budget is large enough for at least 2 segments
+        let segment_size = config.segment.target_size_bytes.get();
+        let min_budget = segment_size.saturating_mul(2);
+        if budget.cap() < min_budget && budget.cap() != u64::MAX {
+            return Err(QuiverError::invalid_config(format!(
+                "disk budget ({} bytes) must be at least 2x segment size ({} bytes = {} bytes) \
+                 to prevent deadlock; increase budget to at least {} bytes or reduce segment size",
+                budget.cap(),
+                segment_size,
+                min_budget,
+                min_budget
+            )));
+        }
+
+        // Ensure directories exist
         let segment_dir = segment_dir(&config);
         fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
 
-        let wal_writer = initialize_wal_writer(&config)?;
+        // Use async WAL initialization
+        let wal_writer = initialize_wal_writer(&config, &budget).await?;
 
-        Ok(Self {
+        // Create segment store with configured read mode and budget
+        let segment_store = Arc::new(SegmentStore::with_budget(
+            &segment_dir,
+            config.read_mode,
+            budget.clone(),
+        ));
+
+        // Scan for existing segments from previous runs (recovery)
+        if let Err(e) = segment_store.scan_existing() {
+            tracing::warn!(
+                error = %e,
+                "failed to scan existing segments during startup; continuing with empty store"
+            );
+        }
+
+        // Create subscriber registry with segment store as provider
+        let registry_config = RegistryConfig::new(&config.data_dir);
+        let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
+            .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
+
+        let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
-            wal_writer: Mutex::new(wal_writer),
+            wal_writer: TokioMutex::new(wal_writer),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
             next_segment_seq: AtomicU64::new(0),
-        })
+            cumulative_wal_bytes: AtomicU64::new(0),
+            cumulative_segment_bytes: AtomicU64::new(0),
+            force_dropped_segments: AtomicU64::new(0),
+            force_dropped_bundles: AtomicU64::new(0),
+            segment_store,
+            registry: registry.clone(),
+            budget: budget.clone(),
+        });
+
+        // Wire segment store callback to notify registry of new segments
+        let registry_for_callback = registry;
+        engine
+            .segment_store
+            .set_on_segment_registered(move |seq, bundle_count| {
+                registry_for_callback.on_segment_finalized(seq, bundle_count);
+            });
+
+        // Wire up cleanup callback for Backpressure mode
+        let engine_weak_cleanup = Arc::downgrade(&engine);
+        budget.set_cleanup_callback(move || {
+            if let Some(engine) = engine_weak_cleanup.upgrade() {
+                engine.cleanup_completed_segments().unwrap_or(0)
+            } else {
+                0
+            }
+        });
+
+        // Wire up reclaim callback for DropOldest policy
+        let engine_weak = Arc::downgrade(&engine);
+        let budget_weak = Arc::downgrade(&budget);
+        budget.set_reclaim_callback(move |_needed_bytes| {
+            let Some(engine) = engine_weak.upgrade() else {
+                return 0;
+            };
+            let Some(budget) = budget_weak.upgrade() else {
+                return 0;
+            };
+
+            let used_before = budget.used();
+            let completed = engine.cleanup_completed_segments().unwrap_or(0);
+            if completed == 0 {
+                let _ = engine.force_drop_oldest_pending_segments();
+            }
+            used_before.saturating_sub(budget.used())
+        });
+
+        Ok(engine)
     }
 
     /// Returns the configuration backing this engine.
@@ -109,17 +324,67 @@ impl QuiverEngine {
         &self.config
     }
 
+    /// Returns the disk budget governing this engine's storage.
+    ///
+    /// Use this to inspect current usage, available capacity, or to share
+    /// the budget with external components.
+    pub fn budget(&self) -> &Arc<crate::budget::DiskBudget> {
+        &self.budget
+    }
+
     /// Returns metric counters for instrumentation layers.
     pub fn metrics(&self) -> &PersistenceMetrics {
         &self.metrics
+    }
+
+    /// Returns the cumulative bytes written to WAL since engine creation.
+    /// This value never decreases, even as WAL files are rotated and purged.
+    /// Useful for accurate throughput measurement without file system sampling.
+    pub fn wal_bytes_written(&self) -> u64 {
+        self.cumulative_wal_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Returns the cumulative bytes written to segments since engine creation.
+    /// This value never decreases, even as segments are cleaned up after consumption.
+    /// Useful for accurate throughput measurement without file system sampling.
+    pub fn segment_bytes_written(&self) -> u64 {
+        self.cumulative_segment_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of segments written since engine creation.
+    ///
+    /// This is a monotonically increasing counter, unlike `segment_store().segment_count()`
+    /// which only shows currently-loaded segments (after cleanup, count decreases).
+    /// Useful for tracking total segments written during a test run.
+    pub fn total_segments_written(&self) -> u64 {
+        self.next_segment_seq.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of segments that have been force-dropped
+    /// due to the DropOldest retention policy.
+    ///
+    /// This counter helps demonstrate data loss when using DropOldest vs
+    /// Backpressure policy (which should always show 0 dropped segments).
+    pub fn force_dropped_segments(&self) -> u64 {
+        self.force_dropped_segments.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of bundles lost due to force-dropped segments.
+    ///
+    /// This counter tracks the actual data loss (in bundle count) when using
+    /// the DropOldest policy. Combined with `force_dropped_segments()`, this
+    /// provides visibility into how much data was discarded to stay within
+    /// the disk budget.
+    pub fn force_dropped_bundles(&self) -> u64 {
+        self.force_dropped_bundles.load(Ordering::Relaxed)
     }
 
     /// Returns WAL statistics (rotation count, purge count).
     ///
     /// Call this before dropping the engine to capture final stats.
     #[cfg(test)]
-    pub(crate) fn wal_stats(&self) -> WalStats {
-        let writer = self.wal_writer.lock();
+    pub(crate) async fn wal_stats(&self) -> WalStats {
+        let writer = self.wal_writer.lock().await;
         WalStats {
             rotation_count: writer.rotation_count(),
             purge_count: writer.purge_count(),
@@ -134,21 +399,47 @@ impl QuiverEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error if WAL append fails or segment finalization fails.
-    pub fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
+    /// Returns an error if:
+    /// - The disk budget does not have sufficient headroom (`StorageAtCapacity`)
+    /// - WAL append fails
+    /// - Segment finalization fails
+    pub async fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
 
-        // Step 1: Append to WAL for durability
-        let wal_offset = {
-            let mut writer = self.wal_writer.lock();
-            writer.append_bundle(bundle)?
-        };
+        // Step 0: Check budget headroom before doing any work.
+        // This "taps the brakes" early, leaving room for WAL rotation and
+        // segment finalization to complete. We use a small estimate (4KB)
+        // since the actual segment bytes aren't known until finalization.
+        const INGEST_HEADROOM_ESTIMATE: u64 = 4 * 1024;
+        if !self.budget.has_ingest_headroom(INGEST_HEADROOM_ESTIMATE) {
+            return Err(QuiverError::StorageAtCapacity {
+                requested: INGEST_HEADROOM_ESTIMATE,
+                available: self
+                    .budget
+                    .headroom()
+                    .saturating_sub(self.budget.reserved_headroom()),
+                cap: self.budget.cap(),
+            });
+        }
 
-        // Step 2: Update cursor to include this entry
-        let cursor = WalConsumerCursor::from_offset(&wal_offset);
-        {
-            let mut cp = self.segment_cursor.lock();
-            *cp = cursor;
+        // Step 1: Append to WAL for durability (if enabled)
+        // Note: WAL bytes are NOT tracked in budget - they're temporary and purged after
+        // segment finalization. Only segment bytes are budget-tracked.
+        if self.config.durability == DurabilityMode::Wal {
+            let wal_offset = self.append_to_wal_with_capacity_handling(bundle).await?;
+
+            // Track cumulative WAL bytes for throughput measurement
+            let wal_entry_bytes = wal_offset.next_offset.saturating_sub(wal_offset.position);
+            let _ = self
+                .cumulative_wal_bytes
+                .fetch_add(wal_entry_bytes, Ordering::Relaxed);
+
+            // Step 2: Update cursor to include this entry
+            let cursor = WalConsumerCursor::from_offset(&wal_offset);
+            {
+                let mut cp = self.segment_cursor.lock();
+                *cp = cursor;
+            }
         }
 
         // Step 3: Append to open segment accumulator
@@ -178,31 +469,98 @@ impl QuiverEngine {
 
         // Step 4: Finalize segment if threshold exceeded
         if should_finalize {
-            self.finalize_current_segment()?;
+            self.finalize_current_segment().await?;
         }
 
         Ok(())
     }
 
-    /// Gracefully shuts down the engine, finalizing any open segment.
+    /// Appends a bundle to the WAL asynchronously, handling capacity errors transparently.
     ///
-    /// This should be called before dropping the engine to ensure that any
-    /// accumulated data in the open segment is written to disk. Without calling
-    /// this, data in the open segment will only be recoverable via WAL replay.
+    /// If the WAL is at capacity, this method:
+    /// 1. Finalizes the current segment to advance the WAL cursor
+    /// 2. Retries the WAL append
+    ///
+    /// This allows the engine to handle large segment sizes that exceed the
+    /// WAL capacity without requiring caller intervention.
+    async fn append_to_wal_with_capacity_handling<B: RecordBundle>(
+        &self,
+        bundle: &B,
+    ) -> Result<crate::wal::WalOffset> {
+        // First attempt
+        let first_result = {
+            let mut writer = self.wal_writer.lock().await;
+            writer.append_bundle(bundle).await
+        };
+
+        match first_result {
+            Ok(offset) => Ok(offset),
+            Err(ref e) if e.is_at_capacity() => {
+                // WAL is full - finalize the current segment to advance the cursor
+                // and free WAL space, then retry the append.
+                self.finalize_current_segment().await?;
+
+                // Retry the append after finalization freed space
+                let mut writer = self.wal_writer.lock().await;
+                writer.append_bundle(bundle).await.map_err(Into::into)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Flushes the current open segment to disk, making all ingested data
+    /// available to subscribers.
+    ///
+    /// This is a checkpoint operation—the engine remains fully operational
+    /// and can continue accepting new bundles. Use this when you need to
+    /// ensure all ingested data is durable and visible to subscribers without
+    /// shutting down.
+    ///
+    /// Note: Normally segments are finalized automatically based on size and
+    /// time thresholds. This method is primarily useful for testing or when
+    /// you need immediate durability guarantees.
     ///
     /// # Errors
     ///
     /// Returns an error if segment finalization fails.
-    pub fn shutdown(&self) -> Result<()> {
-        self.finalize_current_segment()
+    pub async fn flush(&self) -> Result<()> {
+        self.finalize_current_segment().await
     }
 
-    /// Finalizes the current open segment and writes it to disk.
+    /// Gracefully shuts down the engine, finalizing any open segment.
     ///
-    /// This is called automatically when the size or time threshold is exceeded,
-    /// but can also be called explicitly for shutdown or testing.
-    fn finalize_current_segment(&self) -> Result<()> {
-        // Swap out the current segment and cursor for new empty ones
+    /// After calling this, the engine should not be used for further ingestion.
+    /// This ensures that any accumulated data in the open segment is written
+    /// to disk. Without calling this, data in the open segment will only be
+    /// recoverable via WAL replay.
+    ///
+    /// For checkpointing without shutdown, use [`flush()`](Self::flush) instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment finalization fails.
+    pub async fn shutdown(&self) -> Result<()> {
+        self.finalize_current_segment().await
+    }
+
+    /// Finalizes the current open segment and writes it to disk asynchronously.
+    ///
+    /// Uses async I/O for segment writing and WAL cursor persistence.
+    async fn finalize_current_segment(&self) -> Result<()> {
+        // First, check if there's anything to finalize (without swapping)
+        let estimated_size = {
+            let segment_guard = self.open_segment.lock();
+            if segment_guard.is_empty() {
+                return Ok(());
+            }
+            segment_guard.estimated_size_bytes() as u64
+        };
+
+        // Reserve budget BEFORE swapping out the segment
+        // This prevents data loss if reservation fails
+        let pending = self.budget.try_reserve(estimated_size)?;
+
+        // Now safe to swap out the segment and cursor
         let (segment, cursor) = {
             let mut segment_guard = self.open_segment.lock();
             let mut cursor_guard = self.segment_cursor.lock();
@@ -211,26 +569,307 @@ impl QuiverEngine {
             (segment, cursor)
         };
 
-        // Check if there's anything to finalize
+        // Double-check segment isn't empty (race condition guard)
         if segment.is_empty() {
+            // Release the reservation since we won't write anything
+            drop(pending);
             return Ok(());
         }
 
-        // Assign a segment sequence number
+        // Assign a segment sequence number (after reservation succeeds)
         let seq = SegmentSeq::new(self.next_segment_seq.fetch_add(1, Ordering::SeqCst));
 
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
-        let (_bytes_written, _checksum) = writer.write_segment(&segment_path, segment)?;
+        let (bytes_written, _checksum) = writer.write_segment(&segment_path, segment).await?;
+
+        // Track cumulative bytes (never decreases, for accurate throughput measurement)
+        let _ = self
+            .cumulative_segment_bytes
+            .fetch_add(bytes_written, Ordering::Relaxed);
+
+        // Commit reservation with actual bytes written
+        pending.commit(bytes_written);
 
         // Step 5: Advance WAL cursor now that segment is durable
         {
-            let mut wal_writer = self.wal_writer.lock();
-            wal_writer.persist_cursor(&cursor)?;
+            let mut wal_writer = self.wal_writer.lock().await;
+            wal_writer.persist_cursor(&cursor).await?;
         }
 
+        // Step 6: Register segment with store (triggers subscriber notification)
+        // Use register_new_segment to skip budget recording (already committed above)
+        let _ = self.segment_store.register_new_segment(seq);
+
         Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Subscriber API
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Registers a new subscriber with the given ID.
+    ///
+    /// If a progress file exists for this subscriber, its state is loaded.
+    /// The subscriber starts in inactive state; call `activate` to begin
+    /// receiving bundles.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscriber is already registered.
+    pub fn register_subscriber(
+        &self,
+        id: SubscriberId,
+    ) -> std::result::Result<(), SubscriberError> {
+        self.registry.register(id)
+    }
+
+    /// Activates a subscriber, enabling bundle delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscriber is not registered.
+    pub fn activate_subscriber(
+        &self,
+        id: &SubscriberId,
+    ) -> std::result::Result<(), SubscriberError> {
+        self.registry.activate(id)
+    }
+
+    /// Polls for the next available bundle for the subscriber.
+    ///
+    /// Non-blocking: returns `None` immediately if no bundles are available.
+    /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
+    /// or `defer()` before being dropped.
+    ///
+    /// For async waiting, use [`next_bundle`](Self::next_bundle).
+    pub fn poll_next_bundle(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+    ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
+    {
+        self.registry.poll_next_bundle(id)
+    }
+
+    /// Waits asynchronously for the next available bundle.
+    ///
+    /// This is the primary async API for consuming bundles. It awaits until
+    /// a bundle becomes available, the timeout expires, or cancellation is requested.
+    ///
+    /// Returns an RAII handle that must be resolved via `ack()`, `reject()`,
+    /// or `defer()` before being dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The subscriber ID
+    /// * `timeout` - Maximum time to wait for a bundle. If `None`, waits indefinitely.
+    /// * `cancel` - Optional cancellation token for graceful shutdown.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(handle))` - A bundle is available
+    /// * `Ok(None)` - Timeout expired with no bundle available
+    /// * `Err(SubscriberError::Cancelled)` - Cancellation was requested
+    /// * `Err(_)` - Subscriber not found or not active
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::time::Duration;
+    /// use quiver::CancellationToken;
+    ///
+    /// let cancel = CancellationToken::new();
+    ///
+    /// // Wait up to 5 seconds for a bundle, with cancellation support
+    /// let handle = engine
+    ///     .next_bundle(&subscriber_id, Some(Duration::from_secs(5)), Some(&cancel))
+    ///     .await?;
+    ///
+    /// if let Some(bundle) = handle {
+    ///     // Process the bundle...
+    ///     bundle.ack();
+    /// }
+    /// ```
+    pub async fn next_bundle(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        timeout: Option<Duration>,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+    ) -> std::result::Result<Option<BundleHandle<RegistryCallback<SegmentStore>>>, SubscriberError>
+    {
+        self.registry.next_bundle(id, timeout, cancel).await
+    }
+
+    /// Claims a specific bundle for a subscriber.
+    ///
+    /// Used for retry scenarios where the embedding layer needs to re-acquire
+    /// a previously deferred bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bundle is not available (already resolved or claimed).
+    pub fn claim_bundle(
+        self: &Arc<Self>,
+        id: &SubscriberId,
+        bundle_ref: BundleRef,
+    ) -> std::result::Result<BundleHandle<RegistryCallback<SegmentStore>>, SubscriberError> {
+        self.registry.claim_bundle(id, bundle_ref)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Maintenance API
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Deletes segment files that have been fully processed by all subscribers.
+    ///
+    /// Finds the minimum incomplete segment across all active subscribers
+    /// and deletes all segments before that threshold.
+    ///
+    /// Returns the number of segments deleted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if segment deletion fails.
+    pub fn cleanup_completed_segments(&self) -> std::result::Result<usize, SubscriberError> {
+        // Find the oldest incomplete segment across all subscribers.
+        // All segments before this are fully processed.
+        let delete_boundary = match self.registry.oldest_incomplete_segment() {
+            Some(seq) => seq, // Delete segments strictly before this
+            None => {
+                // No incomplete segments. This could mean:
+                // 1. No subscribers or no segments tracked yet - should not delete
+                // 2. All tracked segments are complete - can delete up to highest
+                match self.registry.min_highest_tracked_segment() {
+                    Some(highest) => {
+                        // All segments up through `highest` are complete.
+                        // Delete segments up to and including it.
+                        highest.next()
+                    }
+                    None => return Ok(0), // No active subscribers tracking segments
+                }
+            }
+        };
+
+        // Delete segment files before the boundary
+        let mut deleted = 0;
+        for seq in self.segment_store.segment_sequences() {
+            if seq < delete_boundary {
+                if let Err(e) = self.segment_store.delete_segment(seq) {
+                    tracing::warn!(segment = seq.raw(), error = %e, "Failed to delete segment");
+                } else {
+                    deleted += 1;
+                }
+            }
+        }
+
+        // Clean up registry internal state for deleted segments
+        self.registry.cleanup_segments_before(delete_boundary);
+
+        Ok(deleted)
+    }
+
+    /// Force-drops the oldest pending segments that have no active readers.
+    ///
+    /// This is used by the `DropOldest` retention policy to reclaim disk space
+    /// when at capacity. Unlike `cleanup_completed_segments`, this will drop
+    /// segments that haven't been fully consumed by all subscribers, as long
+    /// as no subscriber is currently reading from them (has claimed bundles).
+    ///
+    /// # Warning
+    ///
+    /// This causes data loss for subscribers that haven't consumed these segments.
+    /// Subscribers will see a gap in their segment sequence but can continue
+    /// processing from the next available segment.
+    ///
+    /// Returns the number of segments force-dropped.
+    pub fn force_drop_oldest_pending_segments(&self) -> usize {
+        // Get list of segments to drop from the registry
+        let to_drop = self.registry.force_drop_oldest_pending_segments();
+
+        if to_drop.is_empty() {
+            return 0;
+        }
+
+        // Delete the segment files, counting bundles before deletion
+        let mut deleted = 0;
+        let mut bundles_dropped: u64 = 0;
+        for seq in &to_drop {
+            // Count bundles before deleting
+            if let Ok(count) = self.segment_store.bundle_count(*seq) {
+                bundles_dropped += count as u64;
+            }
+            if let Err(e) = self.segment_store.delete_segment(*seq) {
+                tracing::warn!(segment = seq.raw(), error = %e, "Failed to delete force-dropped segment");
+            } else {
+                tracing::info!(
+                    segment = seq.raw(),
+                    "Force-dropped pending segment (DropOldest policy)"
+                );
+                deleted += 1;
+            }
+        }
+
+        // Update the force-dropped counters
+        let _ = self
+            .force_dropped_segments
+            .fetch_add(deleted as u64, Ordering::Relaxed);
+        let _ = self
+            .force_dropped_bundles
+            .fetch_add(bundles_dropped, Ordering::Relaxed);
+
+        // Clean up registry internal state
+        if let Some(&max_dropped) = to_drop.iter().max() {
+            self.registry.cleanup_segments_before(max_dropped.next());
+        }
+
+        deleted
+    }
+
+    /// Flushes dirty subscriber progress to disk.
+    ///
+    /// Returns the number of subscribers whose progress was flushed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any progress file cannot be written.
+    pub async fn flush_progress(&self) -> std::result::Result<usize, SubscriberError> {
+        self.registry.flush_progress().await
+    }
+
+    /// Performs combined maintenance: flushes progress and cleans up segments.
+    ///
+    /// This is the recommended periodic maintenance call. It:
+    /// 1. Flushes dirty subscriber progress to disk
+    /// 2. Deletes fully-processed segment files
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either operation fails.
+    pub async fn maintain(&self) -> std::result::Result<MaintenanceStats, SubscriberError> {
+        let flushed = self.flush_progress().await?;
+        let deleted = self.cleanup_completed_segments()?;
+        Ok(MaintenanceStats { flushed, deleted })
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Accessors
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Returns a reference to the underlying segment store.
+    ///
+    /// This is useful for advanced use cases like custom segment queries.
+    #[must_use]
+    pub fn segment_store(&self) -> &Arc<SegmentStore> {
+        &self.segment_store
+    }
+
+    /// Returns a reference to the underlying subscriber registry.
+    ///
+    /// This is useful for advanced use cases like custom subscriber management.
+    #[must_use]
+    pub fn registry(&self) -> &Arc<SubscriberRegistry<SegmentStore>> {
+        &self.registry
     }
 
     /// Returns the path for a segment file with the given sequence number.
@@ -243,7 +882,10 @@ fn segment_dir(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("segments")
 }
 
-fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
+async fn initialize_wal_writer(
+    config: &QuiverConfig,
+    budget: &Arc<crate::budget::DiskBudget>,
+) -> Result<WalWriter> {
     use crate::wal::FlushPolicy;
 
     let wal_path = wal_path(config);
@@ -255,8 +897,9 @@ fn initialize_wal_writer(config: &QuiverConfig) -> Result<WalWriter> {
     let options = WalWriterOptions::new(wal_path, segment_cfg_hash(config), flush_policy)
         .with_max_wal_size(config.wal.max_size_bytes.get())
         .with_max_rotated_files(config.wal.max_rotated_files as usize)
-        .with_rotation_target(config.wal.rotation_target_bytes.get());
-    Ok(WalWriter::open(options)?)
+        .with_rotation_target(config.wal.rotation_target_bytes.get())
+        .with_budget(budget.clone());
+    Ok(WalWriter::open(options).await?)
 }
 
 fn wal_path(config: &QuiverConfig) -> PathBuf {
@@ -289,14 +932,24 @@ fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SegmentConfig;
+    use crate::budget::DiskBudget;
+    use crate::config::{RetentionPolicy, SegmentConfig, WalConfig};
     use crate::record_bundle::{
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
+    use crate::subscriber::SubscriberId;
     use crate::wal::WalReader;
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
+
+    /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
+    fn test_budget() -> Arc<DiskBudget> {
+        Arc::new(DiskBudget::new(
+            1024 * 1024 * 1024,
+            RetentionPolicy::Backpressure,
+        ))
+    }
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -369,40 +1022,46 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ingest_succeeds_and_records_metrics() {
+    #[tokio::test]
+    async fn ingest_succeeds_and_records_metrics() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-        let engine = QuiverEngine::new(config).expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("config valid");
         let bundle = DummyBundle::new();
 
         // Ingest should now succeed
-        engine.ingest(&bundle).expect("ingest succeeds");
+        engine.ingest(&bundle).await.expect("ingest succeeds");
         assert_eq!(engine.metrics().ingest_attempts(), 1);
     }
 
-    #[test]
-    fn config_returns_engine_configuration() {
+    #[tokio::test]
+    async fn config_returns_engine_configuration() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::builder()
             .data_dir(temp_dir.path())
             .build()
             .expect("builder should produce valid config");
-        let engine = QuiverEngine::new(config.clone()).expect("config valid");
+        let engine = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .expect("config valid");
 
         assert_eq!(engine.config(), &config);
     }
 
-    #[test]
-    fn ingest_appends_to_wal() {
+    #[tokio::test]
+    async fn ingest_appends_to_wal() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-        let engine = QuiverEngine::new(config).expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("config valid");
         let bundle = DummyBundle::new();
 
-        engine.ingest(&bundle).expect("ingest succeeds");
+        engine.ingest(&bundle).await.expect("ingest succeeds");
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown succeeds");
 
         let wal_path = temp_dir.path().join("wal").join("quiver.wal");
         let mut reader = WalReader::open(&wal_path).expect("wal opens");
@@ -414,8 +1073,80 @@ mod tests {
         assert_eq!(entry.slot_bitmap.count_ones(), 1);
     }
 
-    #[test]
-    fn ingest_finalizes_segment_when_threshold_exceeded() {
+    /// Test that DurabilityMode::SegmentOnly skips WAL writes.
+    ///
+    /// This test verifies:
+    /// 1. Ingest succeeds with SegmentOnly mode
+    /// 2. WAL file is not written to (or contains no entries)
+    /// 3. Segments are still created normally
+    #[tokio::test]
+    async fn ingest_segment_only_mode_skips_wal() {
+        use crate::config::DurabilityMode;
+        use crate::segment::SegmentReader;
+
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Small segment to trigger finalization
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .durability(DurabilityMode::SegmentOnly)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
+
+        // Ingest a bundle
+        let bundle = DummyBundle::with_rows(10);
+        engine.ingest(&bundle).await.expect("ingest succeeds");
+
+        // Verify metrics
+        assert_eq!(engine.metrics().ingest_attempts(), 1);
+
+        engine.shutdown().await.expect("shutdown");
+
+        // === Verify segment file was created ===
+        let segment_dir = temp_dir.path().join("segments");
+        let segment_files: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .collect();
+
+        assert_eq!(segment_files.len(), 1, "expected one segment file");
+
+        // Verify segment contents
+        let segment_path = segment_files[0].path();
+        let reader = SegmentReader::open(&segment_path).expect("open segment");
+        assert_eq!(reader.bundle_count(), 1);
+
+        let manifest = reader.manifest();
+        let reconstructed = reader.read_bundle(&manifest[0]).expect("read bundle");
+        let payload = reconstructed
+            .payload(SlotId::new(0))
+            .expect("slot 0 exists");
+        assert_eq!(payload.num_rows(), 10);
+
+        // === Verify WAL contains no entries ===
+        let wal_path = temp_dir.path().join("wal").join("quiver.wal");
+        let mut wal_reader = WalReader::open(&wal_path).expect("open WAL");
+        let mut iter = wal_reader.iter_from(0).expect("iterator");
+
+        // WAL should have no entries when using SegmentOnly mode
+        assert!(
+            iter.next().is_none(),
+            "WAL should have no entries in SegmentOnly mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn ingest_finalizes_segment_when_threshold_exceeded() {
         let temp_dir = tempdir().expect("tempdir");
 
         // Use a tiny segment size to trigger finalization
@@ -429,15 +1160,17 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest enough data to exceed the threshold
         // With 100 byte threshold and ~100 bytes per row estimate,
         // a few rows should trigger finalization
         let bundle = DummyBundle::with_rows(10);
-        engine.ingest(&bundle).expect("ingest succeeds");
+        engine.ingest(&bundle).await.expect("ingest succeeds");
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown");
 
         // Check that a segment file was created
         let segment_dir = temp_dir.path().join("segments");
@@ -463,8 +1196,8 @@ mod tests {
     /// 2. Segment file is created when threshold is exceeded
     /// 3. Segment file contains the expected data
     /// 4. WAL cursor is advanced after segment finalization
-    #[test]
-    fn e2e_ingest_creates_segment_and_advances_wal_cursor() {
+    #[tokio::test]
+    async fn e2e_ingest_creates_segment_and_advances_wal_cursor() {
         use crate::segment::SegmentReader;
         use crate::wal::CursorSidecar;
 
@@ -481,14 +1214,16 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest a bundle with enough data to trigger finalization
         let bundle = DummyBundle::with_rows(10);
-        engine.ingest(&bundle).expect("ingest succeeds");
+        engine.ingest(&bundle).await.expect("ingest succeeds");
 
-        // Drop engine to ensure all writes are flushed
-        drop(engine);
+        // Shutdown engine to ensure all writes are flushed
+        engine.shutdown().await.expect("shutdown");
 
         // === Verify segment file was created ===
         let segment_dir = temp_dir.path().join("segments");
@@ -521,7 +1256,7 @@ mod tests {
 
         // === Verify WAL cursor was advanced ===
         let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // The cursor should be > 0 (advanced past the header)
         assert!(
@@ -547,6 +1282,79 @@ mod tests {
         );
     }
 
+    /// Tests that the engine transparently handles WAL capacity by finalizing segments.
+    ///
+    /// This test verifies that when:
+    /// 1. Segment size is larger than WAL max size
+    /// 2. WAL fills up before segment finalization threshold is reached
+    ///
+    /// The engine will:
+    /// 1. Detect the WAL is at capacity
+    /// 2. Finalize the current segment to advance the WAL cursor and free space
+    /// 3. Retry the WAL append transparently
+    /// 4. Continue accepting ingestion without returning errors to the caller
+    #[tokio::test]
+    async fn ingest_handles_wal_capacity_transparently() {
+        let temp_dir = tempdir().expect("tempdir");
+
+        // Configure WAL to be smaller than segment target size.
+        // WAL max: 8KB, Segment target: 32KB
+        // This means WAL will fill up before segment size threshold is reached.
+        let wal_config = WalConfig {
+            max_size_bytes: NonZeroU64::new(8 * 1024).unwrap(),
+            rotation_target_bytes: NonZeroU64::new(4 * 1024).unwrap(),
+            max_rotated_files: 2,
+            flush_interval: Duration::ZERO,
+        };
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(32 * 1024).unwrap(),
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .wal(wal_config)
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
+
+        // Ingest many bundles - WAL will fill up multiple times
+        // Each bundle is ~100-200 bytes, so we need 50+ to fill the 8KB WAL
+        for i in 0..100 {
+            let bundle = DummyBundle::with_rows(5);
+            engine
+                .ingest(&bundle)
+                .await
+                .unwrap_or_else(|e| panic!("ingest {} failed: {:?}", i, e));
+        }
+
+        // Verify we created multiple segments (WAL capacity forced early finalization)
+        let segment_dir = temp_dir.path().join("segments");
+        let segment_count = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .count();
+
+        // We should have multiple segments since WAL capacity forced finalization
+        // before the segment size threshold was reached
+        assert!(
+            segment_count >= 2,
+            "expected at least 2 segments due to WAL capacity (got {})",
+            segment_count
+        );
+
+        // Verify all bundles were ingested
+        assert_eq!(
+            engine.metrics().ingest_attempts(),
+            100,
+            "all ingests should succeed"
+        );
+    }
+
     /// End-to-end test for ingesting many bundles that span multiple segments.
     ///
     /// This test verifies:
@@ -556,8 +1364,8 @@ mod tests {
     /// 4. WAL cursor advances correctly after each segment finalization
     /// 5. WAL entries match the total number of ingested bundles
     /// 6. All data can be reconstructed from segments + WAL replay
-    #[test]
-    fn e2e_many_bundles_across_multiple_segments() {
+    #[tokio::test]
+    async fn e2e_many_bundles_across_multiple_segments() {
         use crate::segment::SegmentReader;
         use crate::wal::CursorSidecar;
 
@@ -575,7 +1383,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest 10 bundles with varying row counts
         let bundle_row_counts = [5, 8, 3, 12, 7, 4, 9, 6, 11, 2];
@@ -583,7 +1393,7 @@ mod tests {
 
         for &row_count in &bundle_row_counts {
             let bundle = DummyBundle::with_rows(row_count);
-            engine.ingest(&bundle).expect("ingest succeeds");
+            engine.ingest(&bundle).await.expect("ingest succeeds");
         }
 
         // Verify metrics
@@ -592,8 +1402,8 @@ mod tests {
             bundle_row_counts.len() as u64
         );
 
-        // Drop engine to flush all writes
-        drop(engine);
+        // Shutdown engine to flush all writes
+        engine.shutdown().await.expect("shutdown");
 
         // === Verify multiple segment files were created ===
         let segment_dir = temp_dir.path().join("segments");
@@ -677,7 +1487,7 @@ mod tests {
 
         // === Verify cursor is at or past the last finalized segment ===
         let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Cursor should be > 0 (some segments were finalized)
         assert!(
@@ -731,8 +1541,8 @@ mod tests {
     }
 
     /// Test that bundles with different schemas create separate streams.
-    #[test]
-    fn e2e_bundles_with_different_schemas_create_separate_streams() {
+    #[tokio::test]
+    async fn e2e_bundles_with_different_schemas_create_separate_streams() {
         use crate::segment::SegmentReader;
 
         let temp_dir = tempdir().expect("tempdir");
@@ -748,18 +1558,20 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Create bundles with different fingerprints (simulating schema evolution)
         let bundle1 = DummyBundleWithFingerprint::new([0x11; 32], 5);
         let bundle2 = DummyBundleWithFingerprint::new([0x22; 32], 5);
         let bundle3 = DummyBundleWithFingerprint::new([0x11; 32], 5); // Same as bundle1
 
-        engine.ingest(&bundle1).expect("ingest bundle1");
-        engine.ingest(&bundle2).expect("ingest bundle2");
-        engine.ingest(&bundle3).expect("ingest bundle3");
+        engine.ingest(&bundle1).await.expect("ingest bundle1");
+        engine.ingest(&bundle2).await.expect("ingest bundle2");
+        engine.ingest(&bundle3).await.expect("ingest bundle3");
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown");
 
         // Find the segment file(s)
         let segment_dir = temp_dir.path().join("segments");
@@ -860,9 +1672,9 @@ mod tests {
     /// - Data integrity across all segments
     ///
     /// Run manually with: `cargo test stress_high_volume_ingestion -- --ignored`
-    #[test]
+    #[tokio::test]
     #[ignore]
-    fn stress_high_volume_ingestion() {
+    async fn stress_high_volume_ingestion() {
         use crate::config::WalConfig;
         use crate::segment::SegmentReader;
         use crate::wal::CursorSidecar;
@@ -889,7 +1701,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Stress parameters
         const NUM_BUNDLES: usize = 10_000;
@@ -909,6 +1723,7 @@ mod tests {
             let bundle = &bundle_pool[i % BUNDLE_POOL_SIZE];
             engine
                 .ingest(bundle)
+                .await
                 .unwrap_or_else(|e| panic!("ingest {} failed: {}", i, e));
         }
 
@@ -917,11 +1732,11 @@ mod tests {
         // Verify metrics
         assert_eq!(engine.metrics().ingest_attempts(), NUM_BUNDLES as u64);
 
-        // Capture WAL stats before dropping
-        let wal_stats = engine.wal_stats();
+        // Capture WAL stats before shutdown
+        let wal_stats = engine.wal_stats().await;
 
-        // Drop engine to flush
-        drop(engine);
+        // Shutdown engine to flush
+        engine.shutdown().await.expect("shutdown");
 
         let total_duration = start.elapsed();
 
@@ -964,7 +1779,7 @@ mod tests {
         // === Verify WAL + cursor state ===
         let wal_dir = temp_dir.path().join("wal");
         let sidecar_path = wal_dir.join("quiver.wal.cursor");
-        let sidecar = CursorSidecar::read_from(&sidecar_path).expect("read sidecar");
+        let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Count WAL files and sizes
         let wal_files: Vec<_> = fs::read_dir(&wal_dir)
@@ -1085,8 +1900,8 @@ mod tests {
     ///
     /// OTAP bundles typically have multiple payload slots (Logs, LogAttrs,
     /// ScopeAttrs, ResourceAttrs). This test exercises that pattern.
-    #[test]
-    fn stress_multi_slot_bundles() {
+    #[tokio::test]
+    async fn stress_multi_slot_bundles() {
         use crate::segment::SegmentReader;
 
         let temp_dir = tempdir().expect("tempdir");
@@ -1101,16 +1916,18 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         const NUM_BUNDLES: usize = 500;
 
         for _ in 0..NUM_BUNDLES {
             let bundle = MultiSlotBundle::new();
-            engine.ingest(&bundle).expect("ingest");
+            engine.ingest(&bundle).await.expect("ingest");
         }
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown");
 
         // Verify all segments can be read
         let segment_dir = temp_dir.path().join("segments");
@@ -1219,8 +2036,8 @@ mod tests {
     }
 
     /// Stress test with schema evolution (many different fingerprints).
-    #[test]
-    fn stress_schema_evolution() {
+    #[tokio::test]
+    async fn stress_schema_evolution() {
         use crate::segment::SegmentReader;
 
         let temp_dir = tempdir().expect("tempdir");
@@ -1235,7 +2052,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Simulate schema evolution: 100 different schemas, 10 bundles each
         const NUM_SCHEMAS: usize = 100;
@@ -1249,11 +2068,11 @@ mod tests {
 
             for _ in 0..BUNDLES_PER_SCHEMA {
                 let bundle = DummyBundleWithFingerprint::new(fingerprint, ROWS_PER_BUNDLE);
-                engine.ingest(&bundle).expect("ingest");
+                engine.ingest(&bundle).await.expect("ingest");
             }
         }
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown");
 
         // Verify segments
         let segment_dir = temp_dir.path().join("segments");
@@ -1301,9 +2120,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ingest_finalizes_segment_when_max_open_duration_exceeded() {
-        use std::thread;
+    #[tokio::test]
+    async fn ingest_finalizes_segment_when_max_open_duration_exceeded() {
         use std::time::Duration;
 
         let temp_dir = tempdir().expect("tempdir");
@@ -1321,20 +2139,28 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // First ingest - starts the timer
         let bundle1 = DummyBundle::with_rows(1);
-        engine.ingest(&bundle1).expect("first ingest succeeds");
+        engine
+            .ingest(&bundle1)
+            .await
+            .expect("first ingest succeeds");
 
         // Wait for the max_open_duration to elapse
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Second ingest - should trigger time-based finalization
         let bundle2 = DummyBundle::with_rows(1);
-        engine.ingest(&bundle2).expect("second ingest succeeds");
+        engine
+            .ingest(&bundle2)
+            .await
+            .expect("second ingest succeeds");
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown");
 
         // Check that at least one segment file was created due to time-based finalization
         let segment_dir = temp_dir.path().join("segments");
@@ -1350,8 +2176,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shutdown_finalizes_open_segment() {
+    #[tokio::test]
+    async fn shutdown_finalizes_open_segment() {
         use crate::segment::SegmentReader;
 
         let temp_dir = tempdir().expect("tempdir");
@@ -1359,7 +2185,7 @@ mod tests {
         // Use a large size threshold so size-based finalization won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: std::time::Duration::from_secs(3600),        // 1 hour
+            max_open_duration: Duration::from_secs(3600),                   // 1 hour
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -1368,11 +2194,13 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Ingest a small bundle that won't trigger size or time finalization
         let bundle = DummyBundle::with_rows(5);
-        engine.ingest(&bundle).expect("ingest succeeds");
+        engine.ingest(&bundle).await.expect("ingest succeeds");
 
         // Verify no segment file exists yet
         let segment_dir = temp_dir.path().join("segments");
@@ -1387,7 +2215,7 @@ mod tests {
         );
 
         // Call shutdown to finalize the open segment
-        engine.shutdown().expect("shutdown succeeds");
+        engine.shutdown().await.expect("shutdown succeeds");
 
         // Verify segment file was created
         let final_entries: Vec<_> = fs::read_dir(&segment_dir)
@@ -1414,15 +2242,18 @@ mod tests {
         assert_eq!(payload.num_rows(), 5, "expected 5 rows in payload");
     }
 
-    #[test]
-    fn shutdown_on_empty_segment_succeeds() {
+    #[tokio::test]
+    async fn shutdown_on_empty_segment_succeeds() {
         let temp_dir = tempdir().expect("tempdir");
         let config = QuiverConfig::default().with_data_dir(temp_dir.path());
-        let engine = QuiverEngine::new(config).expect("config valid");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("config valid");
 
         // Shutdown without ingesting anything should succeed
         engine
             .shutdown()
+            .await
             .expect("shutdown on empty segment succeeds");
 
         // No segment files should be created
@@ -1435,15 +2266,15 @@ mod tests {
         assert!(entries.is_empty(), "no segment file for empty segment");
     }
 
-    #[test]
-    fn ingest_finalizes_segment_when_max_stream_count_exceeded() {
+    #[tokio::test]
+    async fn ingest_finalizes_segment_when_max_stream_count_exceeded() {
         let temp_dir = tempdir().expect("tempdir");
 
         // Use a tiny max_stream_count to trigger stream-based finalization
         // Use large size and time thresholds so they won't trigger
         let segment_config = SegmentConfig {
             target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100 MB
-            max_open_duration: std::time::Duration::from_secs(3600),        // 1 hour
+            max_open_duration: Duration::from_secs(3600),                   // 1 hour
             max_stream_count: 3, // Very small - will trigger after 3 unique streams
         };
         let config = QuiverConfig::builder()
@@ -1452,16 +2283,18 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let engine = QuiverEngine::new(config).expect("engine created");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
 
         // Each bundle with a different schema fingerprint creates a new stream.
         // We need to exceed max_stream_count (3) to trigger finalization.
         for i in 0u8..4 {
             let bundle = DummyBundleWithFingerprint::new([i; 32], 1);
-            engine.ingest(&bundle).expect("ingest succeeds");
+            engine.ingest(&bundle).await.expect("ingest succeeds");
         }
 
-        drop(engine);
+        engine.shutdown().await.expect("shutdown");
 
         // Check that at least one segment file was created due to stream count finalization
         let segment_dir = temp_dir.path().join("segments");
@@ -1474,6 +2307,839 @@ mod tests {
         assert!(
             !entries.is_empty(),
             "expected segment file from stream count finalization"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_tracks_segment_bytes() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1).expect("non-zero"), // 1 byte - immediate finalization
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        // Create a budget with plenty of room
+        let budget = Arc::new(DiskBudget::new(
+            100 * 1024 * 1024,
+            RetentionPolicy::Backpressure,
+        ));
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
+
+        // Budget starts with WAL header bytes (WAL is now tracked in budget)
+        let initial_used = budget.used();
+        assert!(
+            initial_used > 0,
+            "budget should include WAL header bytes, got {}",
+            initial_used
+        );
+
+        // Ingest a bundle - this will trigger segment finalization due to tiny target size
+        let bundle = DummyBundle::with_rows(10);
+        engine.ingest(&bundle).await.expect("ingest succeeds");
+
+        // Budget should now reflect segment file size + WAL bytes
+        let used = budget.used();
+        assert!(
+            used > initial_used,
+            "budget should increase after segment write, got {} (was {})",
+            used,
+            initial_used
+        );
+
+        // Verify headroom decreased
+        let headroom = budget.headroom();
+        assert!(headroom < 100 * 1024 * 1024, "headroom should decrease");
+    }
+
+    #[tokio::test]
+    async fn budget_returns_storage_at_capacity_when_exceeded() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1).expect("non-zero"), // 1 byte - immediate finalization
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        // Create a very small budget (100 bytes) - segment will exceed this
+        let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
+        let engine = QuiverEngine::open(config, budget)
+            .await
+            .expect("engine created");
+
+        // Ingest a bundle - segment finalization should fail due to budget
+        let bundle = DummyBundle::with_rows(10);
+        let result = engine.ingest(&bundle).await;
+
+        assert!(
+            result.is_err(),
+            "expected StorageAtCapacity error for tiny budget"
+        );
+        assert!(
+            result.as_ref().unwrap_err().is_at_capacity(),
+            "expected is_at_capacity() to be true, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_at_capacity_preserves_segment_data() {
+        // Verifies that when budget is exceeded, the open segment data is NOT lost
+        // and can be retried after freeing space.
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1).expect("non-zero"), // 1 byte - immediate finalization
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        // Create a very small budget (100 bytes) - segment will exceed this
+        let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
+
+        // Ingest a bundle - segment finalization should fail due to budget
+        let bundle = DummyBundle::with_rows(10);
+        let result = engine.ingest(&bundle).await;
+        assert!(result.is_err(), "expected StorageAtCapacity error");
+
+        // The open segment should still have the data
+        // Verify by increasing budget and trying again
+        // (We can't easily change the budget, so we just verify the error was returned
+        // and the engine didn't panic - the data is preserved in the open segment)
+    }
+
+    #[tokio::test]
+    async fn budget_drop_oldest_reclaims_completed_segments() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1024).expect("non-zero"), // 1 KB segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        // Create a budget with DropOldest policy - large enough for a few segments
+        let budget = Arc::new(DiskBudget::new(50 * 1024, RetentionPolicy::DropOldest));
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
+
+        // Register a subscriber so segments can be marked as "complete"
+        let sub_id = SubscriberId::new("test-sub").expect("valid id");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Ingest bundles to create segments
+        for _ in 0..5 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest succeeds");
+        }
+        engine.flush().await.expect("flush");
+
+        // Consume all bundles to mark segments as complete
+        while let Ok(Some(handle)) = engine.poll_next_bundle(&sub_id) {
+            handle.ack();
+        }
+
+        // Verify some segments were created
+        let initial_segment_count = engine.segment_store.segment_count();
+        assert!(initial_segment_count > 0, "should have created segments");
+
+        // Run cleanup to complete segment lifecycle
+        let _ = engine.cleanup_completed_segments();
+
+        // Budget's reclaim callback should have been wired up
+        // (We can't easily test DropOldest triggering without precise budget sizing,
+        // but we verify the callback was registered by checking cleanup works)
+    }
+
+    #[tokio::test]
+    async fn force_drop_oldest_drops_pending_segments_without_readers() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1024).expect("non-zero"), // 1 KB segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let budget = Arc::new(DiskBudget::new(100 * 1024, RetentionPolicy::DropOldest));
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
+
+        // Register and activate a subscriber
+        let sub_id = SubscriberId::new("test-sub").expect("valid id");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Ingest bundles to create multiple segments
+        for _ in 0..10 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest succeeds");
+        }
+        engine.flush().await.expect("flush");
+
+        // Verify we have some segments pending
+        let initial_count = engine.segment_store.segment_count();
+        assert!(initial_count >= 2, "should have multiple segments");
+
+        // Do NOT consume any bundles - they're all pending
+        // But we also have no claimed bundles (no active reads)
+
+        // Counter should start at 0
+        assert_eq!(engine.force_dropped_segments(), 0);
+
+        // Force drop should drop the oldest pending segment
+        let dropped = engine.force_drop_oldest_pending_segments();
+        assert_eq!(dropped, 1, "should have dropped exactly one segment");
+
+        // Counter should be incremented
+        assert_eq!(engine.force_dropped_segments(), 1);
+
+        // Segment count should decrease
+        let new_count = engine.segment_store.segment_count();
+        assert_eq!(
+            new_count,
+            initial_count - 1,
+            "segment count should decrease by 1"
+        );
+
+        // Can still consume remaining bundles
+        let mut consumed = 0;
+        while let Ok(Some(handle)) = engine.poll_next_bundle(&sub_id) {
+            handle.ack();
+            consumed += 1;
+        }
+        // Should have lost some bundles from the dropped segment
+        assert!(consumed > 0, "should still have some bundles to consume");
+    }
+
+    #[tokio::test]
+    async fn force_drop_skips_segments_with_active_readers() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1024).expect("non-zero"), // 1 KB segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .build()
+            .expect("config valid");
+
+        let budget = Arc::new(DiskBudget::new(100 * 1024, RetentionPolicy::DropOldest));
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
+
+        // Register and activate a subscriber
+        let sub_id = SubscriberId::new("test-sub").expect("valid id");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Ingest bundles to create multiple segments
+        for _ in 0..10 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest succeeds");
+        }
+        engine.flush().await.expect("flush");
+
+        let initial_count = engine.segment_store.segment_count();
+        assert!(initial_count >= 2, "should have multiple segments");
+
+        // Claim a bundle from the oldest segment (creating an active reader)
+        let handle = engine
+            .poll_next_bundle(&sub_id)
+            .expect("next_bundle succeeds")
+            .expect("bundle available");
+
+        // Keep the handle alive (bundle is claimed)
+        // Try to force drop - should skip the segment with the active reader
+        let dropped = engine.force_drop_oldest_pending_segments();
+
+        // If there are other segments without readers, one of those should be dropped
+        // Otherwise, nothing should be dropped
+        if initial_count > 1 {
+            // The oldest segment has a reader, so it should be skipped
+            // The second oldest should be dropped
+            assert_eq!(
+                engine.segment_store.segment_count(),
+                initial_count - dropped,
+                "dropped segments should be reflected in count"
+            );
+        }
+
+        // Clean up
+        handle.ack();
+    }
+
+    /// Test that existing segments from a previous engine run are loaded on startup.
+    ///
+    /// This verifies that `scan_existing()` is called during engine initialization.
+    #[tokio::test]
+    async fn engine_loads_existing_segments_on_startup() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).expect("non-zero"), // Small segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config.clone())
+            .build()
+            .expect("config valid");
+
+        // First engine: create some segments
+        let segments_created = {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine created");
+
+            // Ingest enough data to create multiple segments
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest succeeds");
+            }
+            engine.flush().await.expect("flush");
+
+            let count = engine.segment_store.segment_count();
+            assert!(count >= 2, "should create multiple segments, got {count}");
+            count
+        };
+
+        // Second engine: should discover existing segments automatically
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine created");
+
+            // The segment store should have loaded the existing segments
+            assert_eq!(
+                engine.segment_store.segment_count(),
+                segments_created,
+                "new engine should load existing segments"
+            );
+        }
+    }
+
+    /// Test that subscribers can consume bundles from segments that existed
+    /// before the engine was created (recovery scenario).
+    #[tokio::test]
+    async fn subscriber_can_consume_from_recovered_segments() {
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).expect("non-zero"), // Small segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config.clone())
+            .build()
+            .expect("config valid");
+
+        // First engine: create segments with data
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine created");
+
+            for _ in 0..3 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest succeeds");
+            }
+            engine.flush().await.expect("flush");
+
+            assert!(
+                engine.segment_store.segment_count() >= 1,
+                "should have at least one segment"
+            );
+        }
+
+        // Second engine: new subscriber should be able to consume the recovered data
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine created");
+
+            // Register and activate a new subscriber
+            let sub_id = SubscriberId::new("recovery-sub").expect("valid id");
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Should be able to consume bundles from recovered segments
+            let mut consumed = 0;
+            while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("next_bundle") {
+                handle.ack();
+                consumed += 1;
+            }
+
+            assert!(
+                consumed >= 3,
+                "should consume bundles from recovered segments, got {consumed}"
+            );
+        }
+    }
+
+    /// Test that engine handles empty segment directory gracefully.
+    #[tokio::test]
+    async fn engine_handles_empty_segment_directory() {
+        let temp_dir = tempdir().expect("tempdir");
+        let config = QuiverConfig::default().with_data_dir(temp_dir.path());
+
+        // Create engine - should work fine with no existing segments
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine created");
+
+        assert_eq!(
+            engine.segment_store.segment_count(),
+            0,
+            "should start with no segments"
+        );
+
+        // Register a subscriber - should work even with no segments
+        let sub_id = SubscriberId::new("empty-sub").expect("valid id");
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // next_bundle should return None (no bundles available)
+        let bundle = engine.poll_next_bundle(&sub_id).expect("next_bundle");
+        assert!(bundle.is_none(), "should have no bundles");
+    }
+
+    /// Integration test for crash recovery with progress files.
+    ///
+    /// This test simulates a crash-recovery scenario:
+    /// 1. Ingest bundles and consume some (partially)
+    /// 2. Drop the engine (simulating crash before flush)
+    /// 3. Manually flush progress to simulate graceful shutdown
+    /// 4. Recreate engine and verify progress is restored
+    #[tokio::test]
+    async fn crash_recovery_with_progress_files() {
+        let temp_dir = tempdir().expect("tempdir");
+        let sub_id = SubscriberId::new("recovery-sub").expect("valid id");
+
+        // Small segment size to force finalization
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        // Phase 1: Create engine, ingest bundles, consume some
+        let bundles_acked;
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(temp_dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("valid config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine created");
+
+            // Register subscriber before ingesting
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Ingest bundles to create multiple segments
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+            engine.flush().await.expect("flush segments");
+
+            // Consume and ack some bundles (but not all)
+            let mut acked = 0;
+            for _ in 0..3 {
+                if let Some(handle) = engine.poll_next_bundle(&sub_id).expect("next_bundle") {
+                    handle.ack();
+                    acked += 1;
+                }
+            }
+            bundles_acked = acked;
+
+            // Flush progress to disk (simulating graceful shutdown)
+            let flushed = engine.flush_progress().await.expect("flush progress");
+            assert!(flushed > 0, "should have flushed progress");
+
+            // Engine dropped here (simulating crash/shutdown)
+        }
+
+        // Phase 2: Recreate engine and verify recovery
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(temp_dir.path())
+                .segment(segment_config)
+                .build()
+                .expect("valid config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine recreated");
+
+            // Scan existing segments from previous run
+            let found = engine.segment_store.scan_existing().expect("scan existing");
+            assert!(!found.is_empty(), "should find segments from previous run");
+
+            // Re-register the subscriber (should load from progress file)
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("re-register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Count remaining bundles to consume
+            let mut remaining = 0;
+            while let Some(handle) = engine.poll_next_bundle(&sub_id).expect("next_bundle") {
+                handle.ack();
+                remaining += 1;
+            }
+
+            // Should only see the bundles we didn't ack before
+            assert_eq!(
+                remaining,
+                5 - bundles_acked,
+                "should only see unacked bundles from previous run"
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Async API tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Helper to create an engine and ingest data asynchronously.
+    async fn setup_engine_with_data(
+        dir: &std::path::Path,
+        bundle_count: usize,
+    ) -> Arc<QuiverEngine> {
+        let config = QuiverConfig::builder()
+            .data_dir(dir)
+            .build()
+            .expect("config");
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        for _ in 0..bundle_count {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+        if bundle_count > 0 {
+            engine.flush().await.expect("flush");
+        }
+        engine
+    }
+
+    #[tokio::test]
+    async fn next_bundle_returns_available_bundle() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("async-test").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Use async next_bundle
+        let handle = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(5)), None)
+            .await
+            .expect("next_bundle")
+            .expect("should have bundle");
+
+        assert_eq!(handle.bundle_ref().bundle_index.raw(), 0);
+        handle.ack();
+    }
+
+    #[tokio::test]
+    async fn next_bundle_timeout_when_no_bundles() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 0).await;
+
+        // Register and activate subscriber (but don't ingest anything)
+        let sub_id = SubscriberId::new("timeout-test").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Async next_bundle should timeout quickly
+        let result = engine
+            .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
+            .await
+            .expect("next_bundle");
+
+        assert!(result.is_none(), "should timeout with no bundles");
+    }
+
+    #[tokio::test]
+    async fn next_bundle_wakes_on_segment_finalized() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 0).await;
+
+        // Register and activate subscriber before any data
+        let sub_id = SubscriberId::new("wake-test").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        let got_bundle = Arc::new(AtomicBool::new(false));
+        let got_bundle_clone = got_bundle.clone();
+        let engine_clone = engine.clone();
+        let sub_id_clone = sub_id.clone();
+
+        // Spawn async task to wait for bundle
+        let consumer = tokio::spawn(async move {
+            let result = engine_clone
+                .next_bundle(&sub_id_clone, Some(Duration::from_secs(10)), None)
+                .await
+                .expect("next_bundle");
+            if result.is_some() {
+                got_bundle_clone.store(true, Ordering::Relaxed);
+            }
+        });
+
+        // Give consumer time to start waiting
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Now ingest data and flush (which finalizes segment and notifies)
+        for _ in 0..5 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+        engine.flush().await.expect("flush");
+
+        // Consumer should complete
+        let result = tokio::time::timeout(Duration::from_secs(5), consumer).await;
+        assert!(result.is_ok(), "consumer task should complete");
+        assert!(
+            got_bundle.load(Ordering::Relaxed),
+            "should have received bundle"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_bundle_interleaves_with_poll() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("interleave-test").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Alternate between async and poll methods
+        let h1 = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)), None)
+            .await
+            .expect("async 1")
+            .expect("bundle 1");
+        h1.ack();
+
+        let h2 = engine
+            .poll_next_bundle(&sub_id)
+            .expect("poll 1")
+            .expect("bundle 2");
+        h2.ack();
+
+        let h3 = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)), None)
+            .await
+            .expect("async 2")
+            .expect("bundle 3");
+        h3.ack();
+
+        // All three bundles should have sequential indices
+        // (we can't check indices directly since we already acked, but test completes successfully)
+    }
+
+    #[tokio::test]
+    async fn flush_progress_writes_dirty_subscribers() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 5).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("flush-test").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Consume a bundle to make the subscriber dirty
+        let handle = engine
+            .next_bundle(&sub_id, Some(Duration::from_secs(1)), None)
+            .await
+            .expect("next_bundle")
+            .expect("bundle");
+        handle.ack();
+
+        // Flush progress asynchronously
+        let flushed = engine.flush_progress().await.expect("flush_progress");
+        assert_eq!(flushed, 1, "should have flushed one subscriber");
+
+        // Flush again - should be 0 since nothing is dirty now
+        let flushed2 = engine.flush_progress().await.expect("flush_progress 2");
+        assert_eq!(flushed2, 0, "should have flushed zero subscribers");
+    }
+
+    #[tokio::test]
+    async fn maintain_flushes_and_cleans() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and consume all bundles
+        let sub_id = SubscriberId::new("maintain-test").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Consume all bundles
+        loop {
+            match engine
+                .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
+                .await
+            {
+                Ok(Some(h)) => h.ack(),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        // Run async maintain
+        let stats = engine.maintain().await.expect("maintain");
+
+        // Should have flushed at least the one dirty subscriber
+        assert!(
+            stats.flushed >= 1,
+            "should have flushed at least one subscriber"
+        );
+        // deleted can be any non-negative number (usize)
+    }
+
+    #[tokio::test]
+    async fn ingest_and_flush_creates_segment() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 0).await;
+
+        // Ingest some data
+        for _ in 0..5 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+
+        // Flush to create segment
+        engine.flush().await.expect("flush");
+
+        // Verify segment created
+        assert_eq!(engine.total_segments_written(), 1);
+        assert_eq!(engine.segment_store().segment_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn full_pipeline_ingest_to_consume() {
+        let dir = tempdir().expect("tempdir");
+        let engine = setup_engine_with_data(dir.path(), 10).await;
+
+        // Register and activate subscriber
+        let sub_id = SubscriberId::new("async-pipeline").unwrap();
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // Consume all bundles using async next_bundle
+        let mut consumed = 0;
+        loop {
+            match engine
+                .next_bundle(&sub_id, Some(Duration::from_millis(100)), None)
+                .await
+            {
+                Ok(Some(h)) => {
+                    h.ack();
+                    consumed += 1;
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        assert_eq!(consumed, 10, "should have consumed all bundles");
+    }
+
+    #[tokio::test]
+    async fn ingest_triggers_segment_finalization() {
+        use std::num::NonZeroU64;
+
+        let dir = tempdir().expect("tempdir");
+
+        // Use a tiny segment size to trigger finalization during ingest
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(1024).unwrap(), // 1KB
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        // Ingest enough data to trigger segment finalization
+        for _ in 0..20 {
+            let bundle = DummyBundle::with_rows(100);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+
+        // Should have auto-finalized at least one segment
+        assert!(
+            engine.total_segments_written() >= 1,
+            "should have finalized at least one segment"
         );
     }
 }

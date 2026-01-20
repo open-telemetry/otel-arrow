@@ -3,7 +3,7 @@
 
 //! A reporter of observed events.
 
-use crate::event::ObservedEvent;
+use otap_df_telemetry::event::ObservedEvent;
 use std::time::Duration;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.

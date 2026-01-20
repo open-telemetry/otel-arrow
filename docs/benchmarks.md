@@ -57,7 +57,17 @@ Processes approximately 5k logs/sec input and output.
 Standard load test processing 100k records/sec input and output on a single CPU
 core. This test runs with each commit to main.
 
-#### 5. Saturation and Scaling
+#### 5. Normal Load with Batch Size Variations
+
+**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/standardload-batch-size/>
+
+Standard load test (100k logs/sec) with varying input batch sizes: 10, 100, 512,
+1024, 4096, and 8192 records per request. Uses power-of-2 values that align with
+OTel SDK defaults (512 is the standard SDK batch size). Tests both OTAP->OTAP
+(native protocol) and OTLP->OTLP (standard protocol) configurations to evaluate
+the impact of batch size on CPU, memory, and network efficiency.
+
+#### 6. Saturation and Scaling
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-saturation/>
 
@@ -67,7 +77,18 @@ and 16 cores.
 *TODO: Update test output to include scalability ratios in addition to raw
 throughput numbers.*
 
-#### 6. Idle State
+#### 7. Pass-through Mode
+
+**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/>
+
+Tests maximum throughput in pass-through mode where the engine forwards data
+without transformation. This scenario represents the minimum engine overhead for
+load balancing and routing use cases. Unlike the saturation tests which include
+an attribute processor, pass-through mode allows the engine to forward data
+without materializing the internal representation, achieving significantly
+higher throughput.
+
+#### 8. Idle State
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/>
 
@@ -76,7 +97,7 @@ Measures resource consumption in idle state with two variations:
 - Single core configuration
 - All-cores configuration (128 cores)
 
-#### 7. Binary Size
+#### 9. Binary Size
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/binary-size/>
 

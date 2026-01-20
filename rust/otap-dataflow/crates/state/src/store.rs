@@ -3,18 +3,17 @@
 
 //! Set of structs defining an event-driven observed state store.
 
-use crate::PipelineKey;
+use crate::ObservedEventRingBuffer;
 use crate::error::Error;
-use crate::event::{EventType, ObservedEvent, ObservedEventRingBuffer};
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use crate::reporter::ObservedEventReporter;
-use otap_df_config::pipeline::PipelineSettings;
-use serde::{Serialize, Serializer};
+use otap_df_config::{PipelineKey, pipeline::PipelineSettings};
+use otap_df_telemetry::event::{EventType, ObservedEvent};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 use tokio_util::sync::CancellationToken;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
@@ -58,14 +57,6 @@ impl ObservedStateHandle {
             }
         }
     }
-}
-
-pub(crate) fn ts_to_rfc3339<S>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let dt: chrono::DateTime<chrono::Utc> = (*t).into();
-    s.serialize_str(&dt.to_rfc3339())
 }
 
 impl ObservedStateStore {
@@ -116,16 +107,16 @@ impl ObservedStateStore {
             EventType::Success(_) => { /* no console output for success events */ }
         }
 
+        // Log events and events without a pipeline key don't update state.
+        let key = &observed_event.key;
+
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             log::warn!(
                 "ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state"
             );
             poisoned.into_inner()
         });
-        let pipeline_key = PipelineKey {
-            pipeline_group_id: observed_event.key.pipeline_group_id.clone(),
-            pipeline_id: observed_event.key.pipeline_id.clone(),
-        };
+        let pipeline_key = PipelineKey::new(key.pipeline_group_id.clone(), key.pipeline_id.clone());
 
         let ps = pipelines
             .entry(pipeline_key)
@@ -134,7 +125,7 @@ impl ObservedStateStore {
         // Upsert the core record and its condition snapshot
         let cs = ps
             .cores
-            .entry(observed_event.key.core_id)
+            .entry(key.core_id)
             .or_insert_with(|| PipelineRuntimeStatus {
                 phase: PipelinePhase::Pending,
                 last_heartbeat_time: observed_event.time,

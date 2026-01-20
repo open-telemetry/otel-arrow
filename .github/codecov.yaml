@@ -5,6 +5,9 @@ coverage:
         target: auto # Increase
         threshold: 0.1% # Allow small fluctuation
 
+ignore:
+  - "rust/otap-dataflow/crates/quiver-e2e/**" # Test tool, not production code
+
 comment:
   layout: "header, diff, flags, components"
 
@@ -30,3 +33,7 @@ component_management:
       name: "otel-arrow-go"
       paths:
         - "go/"
+    - component_id: "quiver"
+      name: "quiver"
+      paths:
+        - "rust/otap-dataflow/crates/quiver/"

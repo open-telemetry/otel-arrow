@@ -11,15 +11,13 @@
 //! Example: `encode/3_attrs/1000_events` = 300 µs → 300 ns per event
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_pdata::otlp::ProtoBuffer;
+use otap_df_telemetry::self_tracing::{ConsoleWriter, DirectLogRecordEncoder, LogRecord};
+use std::time::SystemTime;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
-
-use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_telemetry::self_tracing::{
-    ConsoleWriter, DirectLogRecordEncoder, LogRecord, SavedCallsite,
-};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -28,16 +26,21 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-/// The operation to perform on each event within the layer.
+/// The operation to perform on each event within the layer.  The cost
+/// of generating the timestamp is not included in the  measurement.
 #[derive(Clone, Copy)]
 enum BenchOp {
-    /// Encode the event into a LogRecord only.
-    Encode,
-    /// Encode once, then format N times.
+    /// Encode the event body into a new LogRecord.  This includes
+    /// encoding the body and attributes, not callsite details or
+    /// timestamp.
+    NewRecord,
+    /// Encode once, then format standard representation (with
+    /// timestamp) N times.
     Format,
-    /// Encode and format together N times.
+    /// Encode and format standard representation (with timestamp) N
+    /// times.
     EncodeAndFormat,
-    /// Encode to protobuf N times.
+    /// Encode to complete protobuf (with timestamp) N times.
     EncodeProto,
 }
 
@@ -58,8 +61,9 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let now = SystemTime::now();
         match self.op {
-            BenchOp::Encode => {
+            BenchOp::NewRecord => {
                 for _ in 0..self.iterations {
                     let record = LogRecord::new(event);
                     let _ = std::hint::black_box(record);
@@ -69,10 +73,9 @@ where
                 // Encode once, format N times
                 let record = LogRecord::new(event);
                 let writer = ConsoleWriter::no_color();
-                let callsite = SavedCallsite::new(event.metadata());
 
                 for _ in 0..self.iterations {
-                    let line = writer.format_log_record(&record, &callsite);
+                    let line = writer.format_log_record(Some(now), &record);
                     let _ = std::hint::black_box(line);
                 }
             }
@@ -81,19 +84,17 @@ where
 
                 for _ in 0..self.iterations {
                     let record = LogRecord::new(event);
-                    let callsite = SavedCallsite::new(event.metadata());
-                    let line = writer.format_log_record(&record, &callsite);
+                    let line = writer.format_log_record(Some(now), &record);
                     let _ = std::hint::black_box(line);
                 }
             }
             BenchOp::EncodeProto => {
                 let mut buf = ProtoBuffer::new();
                 let mut encoder = DirectLogRecordEncoder::new(&mut buf);
-                let callsite = SavedCallsite::new(event.metadata());
 
                 for _ in 0..self.iterations {
                     encoder.clear();
-                    let size = encoder.encode_log_record(LogRecord::new(event), &callsite);
+                    let size = encoder.encode_log_record(now, &LogRecord::new(event));
                     let _ = std::hint::black_box(size);
                 }
             }
@@ -169,16 +170,16 @@ fn bench_op(c: &mut Criterion, group_name: &str, op: BenchOp) {
     group.finish();
 }
 
-fn bench_encode(c: &mut Criterion) {
-    bench_op(c, "encode", BenchOp::Encode);
+fn bench_new_record(c: &mut Criterion) {
+    bench_op(c, "new_record", BenchOp::NewRecord);
 }
 
 fn bench_format(c: &mut Criterion) {
     bench_op(c, "format", BenchOp::Format);
 }
 
-fn bench_encode_and_format(c: &mut Criterion) {
-    bench_op(c, "encode_and_format", BenchOp::EncodeAndFormat);
+fn bench_format_new_record(c: &mut Criterion) {
+    bench_op(c, "format_new_record", BenchOp::EncodeAndFormat);
 }
 
 fn bench_encode_proto(c: &mut Criterion) {
@@ -192,7 +193,7 @@ mod bench_entry {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_encode, bench_format, bench_encode_and_format, bench_encode_proto
+        targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto
     );
 }
 
