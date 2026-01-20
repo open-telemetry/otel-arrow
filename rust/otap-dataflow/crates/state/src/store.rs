@@ -8,11 +8,17 @@ use crate::error::Error;
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
-use otap_df_config::{PipelineKey, pipeline::PipelineSettings};
-use otap_df_telemetry::event::{EventType, ObservedEvent, ObservedEventReporter};
+use otap_df_config::{
+    PipelineKey, health::HealthPolicy, pipeline::PipelineConfig,
+    pipeline::service::telemetry::logs::ProviderMode,
+};
+use otap_df_telemetry::event::{EventMessage, EventType, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::self_tracing::ConsoleWriter;
+use otap_df_telemetry::{error_event, info_event};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
@@ -25,13 +31,22 @@ const RECENT_EVENTS_CAPACITY: usize = 10;
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateStore {
     #[serde(skip)]
-    config: PipelineSettings,
+    reporting_timeout: Duration,
+
+    #[serde(skip)]
+    health_policy: HealthPolicy,
+
+    #[serde(skip)]
+    fallback_logging: ProviderMode,
 
     #[serde(skip)]
     sender: flume::Sender<ObservedEvent>,
 
     #[serde(skip)]
     receiver: flume::Receiver<ObservedEvent>,
+
+    #[serde(skip)]
+    console: ConsoleWriter,
 
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
@@ -61,14 +76,21 @@ impl ObservedStateHandle {
 impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
     #[must_use]
-    pub fn new(config: &PipelineSettings) -> Self {
-        let (sender, receiver) =
-            flume::bounded::<ObservedEvent>(config.observed_state.reporting_channel_size);
+    pub fn new(config: &PipelineConfig) -> Self {
+        let (sender, receiver) = flume::bounded::<ObservedEvent>(
+            config
+                .pipeline_settings()
+                .observed_state
+                .reporting_channel_size,
+        );
 
         Self {
-            config: config.clone(),
+            reporting_timeout: config.pipeline_settings().observed_state.reporting_timeout,
+            health_policy: config.pipeline_settings().health_policy.clone(),
+            fallback_logging: config.service().telemetry.logs.providers.internal,
             sender,
             receiver,
+            console: ConsoleWriter::color(),
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -77,7 +99,8 @@ impl ObservedStateStore {
     #[must_use]
     pub fn reporter(&self) -> ObservedEventReporter {
         ObservedEventReporter::new(
-            self.config.observed_state.reporting_timeout,
+            self.reporting_timeout,
+            self.fallback_logging,
             self.sender.clone(),
         )
     }
@@ -91,28 +114,24 @@ impl ObservedStateStore {
     }
 
     /// Reports a new observed event in the store.
-    #[allow(
-        clippy::print_stderr,
-        reason = "Use `eprintln!` while waiting for https://github.com/open-telemetry/otel-arrow/issues/1237."
-    )]
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
-        // ToDo Event reporting see: https://github.com/open-telemetry/otel-arrow/issues/1237
-        // The code below is temporary and should be replaced with a proper event reporting
-        // mechanism (see previous todo).
         match &observed_event.r#type {
-            EventType::Request(_) | EventType::Error(_) => {
-                eprintln!("Observed event: {observed_event:?}")
-            }
-            EventType::Success(_) => { /* no console output for success events */ }
+            // TODO: QUESTION!
+            EventType::Request(_) => self.console.print_log_record(
+                observed_event.time,
+                &info_event!("Observed event", observed_event = ?observed_event),
+            ),
+            EventType::Error(_) => self.console.print_log_record(
+                observed_event.time,
+                &error_event!("Observed error", observed_event = ?observed_event),
+            ),
+            EventType::Success(_) => {}
             EventType::Log => {
-                // Log events are printed via the message's formatted output
-                if let Some(formatted) = observed_event.message.formatted() {
-                    eprintln!("{formatted}");
+                if let EventMessage::Log(record) = &observed_event.message {
+                    self.console.print_log_record(observed_event.time, record);
                 }
-                // Log events don't update pipeline state
-                return Ok(ApplyOutcome::NoChange);
             }
-        }
+        };
 
         // Events without a pipeline key don't update state.
         let Some(key) = &observed_event.key else {
@@ -129,7 +148,7 @@ impl ObservedStateStore {
 
         let ps = pipelines
             .entry(pipeline_key)
-            .or_insert_with(|| PipelineStatus::new(self.config.health_policy.clone()));
+            .or_insert_with(|| PipelineStatus::new(self.health_policy.clone()));
 
         // Upsert the core record and its condition snapshot
         let cs = ps

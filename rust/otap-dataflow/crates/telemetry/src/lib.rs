@@ -27,12 +27,12 @@
 
 use std::sync::Arc;
 
-use crate::event::ObservedEventReporter;
 use crate::error::Error;
+use crate::event::ObservedEventReporter;
 use crate::registry::TelemetryRegistryHandle;
 use crate::tracing_init::TracingSetup;
-use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
 
 pub mod attributes;
 pub mod collector;
@@ -93,7 +93,7 @@ use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 /// ```ignore
 /// let obs_store = ObservedStateStore::new(...);
 /// let telemetry = InternalTelemetrySystem::new(config, obs_store.reporter())?;
-/// 
+///
 /// // Now initialize global logging (uses the reporter internally)
 /// telemetry.init_global_subscriber();
 /// ```
@@ -131,8 +131,7 @@ pub struct InternalTelemetrySystem {
     /// Engine provider mode from config.
     engine_provider_mode: ProviderMode,
 
-    /// Event reporter for async logging modes (ConsoleAsync, future ITS).
-    /// Held internally so that both global and per-thread subscribers can use it.
+    /// Event reporter for asynchronous internal logging modes.
     event_reporter: ObservedEventReporter,
 }
 
@@ -153,7 +152,10 @@ impl InternalTelemetrySystem {
         event_reporter: ObservedEventReporter,
     ) -> Result<Self, Error> {
         // Validate logs config
-        config.logs.validate().map_err(|e| Error::ConfigurationError(e.to_string()))?;
+        config
+            .logs
+            .validate()
+            .map_err(|e| Error::ConfigurationError(e.to_string()))?;
 
         // 1. Create internal metrics subsystem
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -217,9 +219,10 @@ impl InternalTelemetrySystem {
             },
 
             ProviderMode::OpenTelemetry => {
-                let provider = self.logger_provider.as_ref().expect(
-                    "OpenTelemetry mode requires logger_provider",
-                );
+                let provider = self
+                    .logger_provider
+                    .as_ref()
+                    .expect("OpenTelemetry mode requires logger_provider");
                 TracingSetup::OpenTelemetry {
                     logger_provider: provider.clone(),
                 }
@@ -280,10 +283,7 @@ impl InternalTelemetrySystem {
     /// Shuts down the OpenTelemetry SDK providers.
     pub fn shutdown(self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider.shutdown();
-        let logger_shutdown_result = self
-            .logger_provider
-            .map(|p| p.shutdown())
-            .transpose();
+        let logger_shutdown_result = self.logger_provider.map(|p| p.shutdown()).transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
@@ -298,14 +298,15 @@ impl InternalTelemetrySystem {
 
 impl Default for InternalTelemetrySystem {
     fn default() -> Self {
-        // Create a dummy channel for testing - events will be dropped
+        // Dummy channel for testing. Events will be dropped.
         let (sender, _receiver) = flume::bounded(1);
+        let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(
-            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(0),
+            ProviderMode::Noop,
             sender,
         );
 
-        Self::new(&TelemetryConfig::default(), dummy_reporter)
-            .expect("default telemetry config should be valid")
+        Self::new(&config, dummy_reporter).expect("default telemetry config should be valid")
     }
 }

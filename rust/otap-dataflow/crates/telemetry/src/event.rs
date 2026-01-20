@@ -4,7 +4,9 @@
 //! Definition of all signals/conditions that drive state transitions and log events.
 
 use crate::self_tracing::LogRecord;
-use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind};
+use otap_df_config::{
+    DeployedPipelineKey, NodeId, node::NodeKind, pipeline::service::telemetry::logs::ProviderMode,
+};
 use serde::Serialize;
 use serde::ser::Serializer;
 use std::time::{Duration, SystemTime};
@@ -13,33 +15,41 @@ use std::time::{Duration, SystemTime};
 #[derive(Clone)]
 pub struct ObservedEventReporter {
     timeout: Duration,
+    fallback_mode: ProviderMode,
     sender: flume::Sender<ObservedEvent>,
 }
 
 impl ObservedEventReporter {
     /// Creates a new `ObservedEventReporter` with the given sender channel.
     #[must_use]
-    pub fn new(timeout: Duration, sender: flume::Sender<ObservedEvent>) -> Self {
-        Self { timeout, sender }
+    pub fn new(
+        timeout: Duration,
+        fallback_mode: ProviderMode,
+        sender: flume::Sender<ObservedEvent>,
+    ) -> Self {
+        Self {
+            timeout,
+            fallback_mode,
+            sender,
+        }
     }
 
     /// Report an observed event.
-    ///
-    /// Note: This method is use as the internal logging path, therefore it should not
-
-    //. This method does not return an error if sending the event to the reporting channel
-    /// fails, as this is not sufficient reason to interrupt the normal flow of the system under
-    /// observation. However, an error message is logged to the standard error output.
     pub fn report(&self, event: ObservedEvent) {
-        match self.sender.send_timeout(event, self.timeout) {
+        let sent = self.sender.send_timeout(event, self.timeout);
+        if self.fallback_mode != ProviderMode::ConsoleDirect {
+            // Valid: Noop or ConsoleDirect.
+            return;
+        }
+        match sent {
             Err(flume::SendTimeoutError::Timeout(event)) => {
                 crate::raw_error!("Timeout sending observed event", event = ?event);
             }
             Err(flume::SendTimeoutError::Disconnected(event)) => {
-                crate::raw_error!("Disconnected event", event = ?event);
+                crate::raw_error!("Disconnect sending observed event", event = ?event);
             }
             Ok(_) => {}
-        }
+        };
     }
 }
 
@@ -87,7 +97,7 @@ impl EventMessage {
         match self {
             EventMessage::None => None,
             EventMessage::Message(s) => Some(s.as_str().into()),
-            EventMessage::Log(record) => Some(record.format()),
+            EventMessage::Log(record) => Some(record.format_without_timestamp()),
         }
     }
 

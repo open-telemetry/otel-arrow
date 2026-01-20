@@ -60,11 +60,13 @@ fn test_telemetry_registries_cleanup() {
 
     assert_eq!(registry.entity_count(), expected_entities);
 
-    let pipeline_settings = config.pipeline_settings().clone();
-    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-        pipeline_ctrl_msg_channel(pipeline_settings.default_pipeline_ctrl_msg_channel_size);
+    let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(
+        config
+            .pipeline_settings()
+            .default_pipeline_ctrl_msg_channel_size,
+    );
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
-    let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+    let observed_state_store = ObservedStateStore::new(&config);
 
     let pipeline_key = DeployedPipelineKey {
         pipeline_group_id,

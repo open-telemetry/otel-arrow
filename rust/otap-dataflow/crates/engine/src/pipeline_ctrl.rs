@@ -419,7 +419,7 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
-    use otap_df_config::pipeline::PipelineSettings;
+    use otap_df_config::pipeline::PipelineConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
     use std::collections::HashMap;
@@ -460,10 +460,12 @@ mod tests {
         // Create a dummy MetricsReporter for testing using MetricsSystem
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.metrics_reporter();
-        let pipeline_settings = PipelineSettings::default();
-        let observed_state_store = ObservedStateStore::new(&pipeline_settings);
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
+        let pipeline_config =
+            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), "")
+                .expect("valid");
+        let observed_state_store = ObservedStateStore::new(&pipeline_config);
         let core_id = 0;
         let thread_id = 0;
         let controller_context = ControllerContext::new(metrics_system.registry());
@@ -492,7 +494,7 @@ mod tests {
             control_senders,
             observed_state_store.reporter(),
             metrics_reporter,
-            pipeline_settings.telemetry.clone(),
+            pipeline_config.pipeline_settings().telemetry.clone(),
             Vec::new(),
         );
         (
@@ -887,16 +889,18 @@ mod tests {
                 // Create a dummy MetricsReporter for testing
                 let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.metrics_reporter();
-                let pipeline_settings = PipelineSettings::default();
-                let observed_state_store = ObservedStateStore::new(&pipeline_settings);
-                let pipeline_key = DeployedPipelineKey {
-                    pipeline_group_id: Default::default(),
-                    pipeline_id: Default::default(),
-                    core_id: 0,
-                };
                 let pipeline_group_id: PipelineGroupId = Default::default();
                 let pipeline_id: PipelineId = Default::default();
                 let core_id = 0;
+                let pipeline_key = DeployedPipelineKey {
+                    pipeline_group_id: pipeline_group_id.clone(),
+                    pipeline_id: pipeline_id.clone(),
+                    core_id,
+                };
+                let pipeline_config =
+                    PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), "")
+                        .expect("valid");
+                let observed_state_store = ObservedStateStore::new(&pipeline_config);
                 let thread_id = 0;
                 let controller_context = ControllerContext::new(metrics_system.registry());
                 let pipeline_context = PipelineContext::new(

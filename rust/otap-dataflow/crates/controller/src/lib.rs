@@ -85,7 +85,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         // Create the observed state store first - the telemetry system needs its reporter
-        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
+        let obs_state_store = ObservedStateStore::new(&pipeline);
         let obs_evt_reporter = obs_state_store.reporter();
         let obs_state_handle = obs_state_store.handle();
 

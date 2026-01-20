@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(callsite.name(), "test.event");
 
         // Test the formatted output contains body and attributes
-        let formatted = record.format();
+        let formatted = record.format_without_timestamp();
         assert!(formatted.contains("count=42"), "got: {}", formatted);
         assert!(formatted.contains("name=test"), "got: {}", formatted);
 

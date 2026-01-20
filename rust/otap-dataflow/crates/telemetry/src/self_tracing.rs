@@ -40,7 +40,7 @@ impl Serialize for LogRecord {
     where
         S: Serializer,
     {
-        serializer.serialize_str(&self.format())
+        serializer.serialize_str(&self.format_without_timestamp())
     }
 }
 
@@ -119,7 +119,7 @@ impl LogRecord {
 
     /// The format (without timestamp).
     #[must_use]
-    pub fn format(&self) -> String {
+    pub fn format_without_timestamp(&self) -> String {
         ConsoleWriter::no_color().format_log_record(None, self)
     }
 }
