@@ -23,6 +23,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{CallData, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
@@ -245,16 +246,22 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .await?;
                     }
                     NodeControlMsg::Ack(ackmsg) => {
-                        let dd: DebugCallData = ackmsg.calldata.try_into()?;
-                        debug_output
-                            .output_message(&format!("ACK received after {:?}\n", dd.elapsed()))
-                            .await?;
+                        if let Ok(dd) = DebugCallData::try_from(ackmsg.calldata.clone()) {
+                            debug_output
+                                .output_message(&format!("ACK received after {:?}\n", dd.elapsed()))
+                                .await?;
+                        }
+                        // Forward ACK upstream to continue the acknowledgment chain
+                        effect_handler.notify_ack(ackmsg).await?;
                     }
                     NodeControlMsg::Nack(nackmsg) => {
-                        let dd: DebugCallData = nackmsg.calldata.try_into()?;
-                        debug_output
-                            .output_message(&format!("NACK received after {:?}\n", dd.elapsed()))
-                            .await?;
+                        if let Ok(dd) = DebugCallData::try_from(nackmsg.calldata.clone()) {
+                            debug_output
+                                .output_message(&format!("NACK received after {:?}\n", dd.elapsed()))
+                                .await?;
+                        }
+                        // Forward NACK upstream to continue the rejection chain
+                        effect_handler.notify_nack(nackmsg).await?;
                     }
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
