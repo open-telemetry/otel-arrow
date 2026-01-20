@@ -128,10 +128,8 @@ impl OpentelemetryClient {
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
-        let logger_provider_shutdown_result = self
-            .logger_provider()
-            .map(|p| p.shutdown())
-            .transpose();
+        let logger_provider_shutdown_result =
+            self.logger_provider().map(|p| p.shutdown()).transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
