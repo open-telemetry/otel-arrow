@@ -1,34 +1,35 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Task periodically collecting the metrics emitted by the engine and the pipelines.
+//! Task periodically collecting the internal signals emitted by the engine and the pipelines.
+
+use std::sync::Arc;
 
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
 use crate::metrics::MetricSetSnapshot;
-use crate::registry::MetricsRegistryHandle;
+use crate::registry::TelemetryRegistryHandle;
 use crate::reporter::MetricsReporter;
 
-/// Metrics collector.
-///
-/// In this project, metrics are multivariate, meaning that multiple metrics are reported together
-/// sharing the timestamp and the same set of attributes.
-pub struct MetricsCollector {
-    /// The metrics registry where metrics are declared and aggregated.
-    registry: MetricsRegistryHandle,
+/// Internal collector responsible for gathering internal telemetry signals (fow now only metric
+/// sets or multivariate metrics).
+pub struct InternalCollector {
+    /// The registry where entities and metrics are declared and aggregated.
+    registry: TelemetryRegistryHandle,
 
     /// Receiver for incoming metrics.
-    /// The message is a tuple of (MetricsKey, MultivariateMetrics).
+    /// The message is a combination of a MetricSetKey and collection of MetricValues.
     /// The metrics key is the aggregation key for the metrics,
     metrics_receiver: flume::Receiver<MetricSetSnapshot>,
 }
 
-impl MetricsCollector {
-    /// Creates a new `MetricsCollector` with a pipeline.
+impl InternalCollector {
+    /// Creates a new `InternalCollector` with a pipeline.
     pub(crate) fn new(
         config: &TelemetryConfig,
-        registry: MetricsRegistryHandle,
+        registry: TelemetryRegistryHandle,
     ) -> (Self, MetricsReporter) {
         let (metrics_sender, metrics_receiver) =
             flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
@@ -45,17 +46,35 @@ impl MetricsCollector {
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self) -> Result<(), Error> {
+    pub async fn run_collection_loop(self: Arc<Self>) -> Result<(), Error> {
         loop {
             match self.metrics_receiver.recv_async().await {
                 Ok(metrics) => {
                     self.registry
-                        .accumulate_snapshot(metrics.key, &metrics.metrics);
+                        .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
                 }
                 Err(_) => {
                     // Channel closed, exit the loop
                     return Ok(());
                 }
+            }
+        }
+    }
+
+    /// Runs the collection loop until cancellation is requested.
+    ///
+    /// This method starts the internal signal collection loop and listens for a shutdown signal.
+    /// It returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
+    pub async fn run(self: Arc<Self>, cancel: CancellationToken) -> Result<(), Error> {
+        tokio::select! {
+            biased;
+
+            _ = cancel.cancelled() => {
+                // Shutdown requested; cancel the collection loop by dropping its future.
+                Ok(())
+            }
+            res = self.run_collection_loop() => {
+                res
             }
         }
     }
@@ -74,7 +93,7 @@ mod tests {
     };
     use crate::metrics::MetricSetHandler;
     use crate::metrics::MetricValue;
-    use crate::registry::MetricsKey;
+    use crate::registry::MetricSetKey;
     use std::collections::HashMap;
     use std::fmt::Debug;
     use std::time::Duration;
@@ -188,15 +207,15 @@ mod tests {
         }
     }
 
-    fn create_test_snapshot(key: MetricsKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
+    fn create_test_snapshot(key: MetricSetKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
             metrics: values,
         }
     }
 
-    fn create_test_registry() -> MetricsRegistryHandle {
-        MetricsRegistryHandle::new()
+    fn create_test_registry() -> TelemetryRegistryHandle {
+        TelemetryRegistryHandle::new()
     }
 
     // --- Tests without any pipeline, asserting on the registry state ---
@@ -204,27 +223,27 @@ mod tests {
     #[tokio::test]
     async fn test_collector_without_pipeline_returns_none_on_channel_close() {
         let config = create_test_config(100);
-        let registry = create_test_registry();
-        let (collector, _reporter) = MetricsCollector::new(&config, registry);
+        let telemetry_registry = create_test_registry();
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry);
 
         // Close immediately
         drop(_reporter);
-        collector.run_collection_loop().await.unwrap();
+        Arc::new(collector).run_collection_loop().await.unwrap();
     }
 
     #[tokio::test]
     async fn test_accumulates_snapshots_into_registry() {
         let config = create_test_config(10);
-        let registry = create_test_registry();
+        let telemetry_registry = create_test_registry();
 
         // Register a metric set to get a valid key
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
-            registry.register(MockAttributeSet::new("attr"));
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(&config, registry.clone());
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
 
-        let handle = tokio::spawn(async move { collector.run_collection_loop().await });
+        let handle = tokio::spawn(async move { Arc::new(collector).run_collection_loop().await });
 
         // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
         reporter
@@ -247,7 +266,7 @@ mod tests {
 
         // Inspect current metrics without resetting
         let mut collected = Vec::new();
-        registry.visit_current_metrics(|_desc, _attrs, iter| {
+        telemetry_registry.visit_current_metrics(|_desc, _attrs, iter| {
             for (field, value) in iter {
                 collected.push((field.name, value));
             }
@@ -268,13 +287,13 @@ mod tests {
     #[tokio::test]
     async fn test_visit_then_reset_via_registry_api() {
         let config = create_test_config(10);
-        let registry = create_test_registry();
+        let telemetry_registry = create_test_registry();
         let metric_set: crate::metrics::MetricSet<MockMetricSet> =
-            registry.register(MockAttributeSet::new("attr"));
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
         let key = metric_set.key;
 
-        let (collector, reporter) = MetricsCollector::new(&config, registry.clone());
-        let handle = tokio::spawn(async move { collector.run_collection_loop().await });
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let handle = tokio::spawn(async move { Arc::new(collector).run_collection_loop().await });
 
         reporter
             .report_snapshot(create_test_snapshot(
@@ -287,7 +306,7 @@ mod tests {
 
         // First visit should see the non-zero and then reset
         let mut first = Vec::new();
-        registry.visit_metrics_and_reset(|_d, _a, iter| {
+        telemetry_registry.visit_metrics_and_reset(|_d, _a, iter| {
             for (f, v) in iter {
                 first.push((f.name, v));
             }
@@ -302,7 +321,7 @@ mod tests {
 
         // Second visit should see nothing
         let mut count = 0;
-        registry.visit_metrics_and_reset(|_, _, _| {
+        telemetry_registry.visit_metrics_and_reset(|_, _, _| {
             count += 1;
         });
         assert_eq!(count, 0);

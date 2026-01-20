@@ -22,6 +22,20 @@ data.
 > provided as a means to test and validate OTAP pipelines built using
 > the dataflow engine.
 
+## Architecture
+
+![OTAP Dataflow Engine architecture](docs/images/architecture-high-level.svg)
+
+The controller is the local control plane for pipeline groups. It allocates CPU
+cores, spawns one worker thread per core, and owns lifecycle, coordination, and
+runtime observability. Each pipeline runs a single-threaded engine instance per
+assigned core, hot data paths stay within that thread, while cross-thread
+coordination is handled through control messages and internal telemetry.
+
+The admin HTTP server and observed-state store are driven by the controller for
+runtime visibility and control. For details, see the controller and engine crate
+READMEs.
+
 ## Features
 
 The OTAP Dataflow engine consists of a number of major pieces. Here
@@ -71,9 +85,12 @@ the many N-to-1 relationships expressed within an OTAP request.
 
 ## Major components
 
-### Engine
+### Controller and Engine
 
-[See crate README.](./crates/engine/README.md)
+See the controller and engine crate READMEs:
+
+- [controller](./crates/controller/README.md).
+- [engine](./crates/engine/README.md),
 
 The `otap_df_engine` crate is located in `crates/engine`, here we
 find the engine's overall architecture expressed:
@@ -105,7 +122,7 @@ crates/engine/lib.rs:    Effect handler extensions, pipeline factory
 |-- runtime_pipeline.rs: Builds the graph of component channels
 ```
 
-### OTAP: OTel-Arrow Protocol pipline data
+### OTAP: OTel-Arrow Protocol pipeline data
 
 [See crate README.](./crates/otap/README.md)
 
@@ -234,10 +251,10 @@ establish the performance of the OTAP Dataflow system.
 
 [See crate README.](./crates/controller/README.md)
 
-The `otap_df_controller` crate is located in `crates/controller` is
+The `otap_df_controller` crate is located in `crates/controller` and is
 the main entry point to construct an OTAP Dataflow pipeline instance. The
-controller type, `otap_df_controller::Controller<PData>`, manages building
-and running one or more pipelines.
+controller type, `otap_df_controller::Controller<PData>`, manages building,
+running, and supervising one or more pipelines.
 
 This component is responsible for making the assignment between OTAP
 dataflow pipeline and individually-numbered CPU instances. The

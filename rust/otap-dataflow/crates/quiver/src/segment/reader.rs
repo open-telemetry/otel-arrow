@@ -41,6 +41,8 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
@@ -82,6 +84,16 @@ pub struct ReconstructedBundle {
 }
 
 impl ReconstructedBundle {
+    /// Creates an empty bundle for testing purposes.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            bundle_index: 0,
+            payloads: HashMap::new(),
+            _backing: Arc::new(Buffer::from_vec(Vec::<u8>::new())),
+        }
+    }
+
     /// Returns the bundle index from the manifest.
     #[must_use]
     pub fn bundle_index(&self) -> u32 {
@@ -300,7 +312,6 @@ impl StreamDecoder {
 /// Provides zero-copy access to stream data when using memory-mapped I/O.
 /// The primary API is [`read_bundle`](Self::read_bundle) which reconstructs
 /// a [`ReconstructedBundle`] from its manifest entry.
-#[derive(Debug)]
 pub struct SegmentReader {
     /// The backing buffer (may be mmap or heap allocation).
     buffer: Arc<Buffer>,
@@ -312,6 +323,22 @@ pub struct SegmentReader {
     stream_by_id: HashMap<StreamId, usize>,
     /// Batch manifest (parsed on open).
     manifest: Vec<ManifestEntry>,
+    /// Cached stream decoders for efficient repeated reads.
+    /// Lazily populated on first access to each stream.
+    stream_decoders: RwLock<HashMap<StreamId, StreamDecoder>>,
+}
+
+impl std::fmt::Debug for SegmentReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SegmentReader")
+            .field("buffer_len", &self.buffer.len())
+            .field("footer", &self.footer)
+            .field("streams", &self.streams)
+            .field("stream_by_id", &self.stream_by_id)
+            .field("manifest", &self.manifest)
+            .field("cached_decoders", &self.stream_decoders.read().len())
+            .finish()
+    }
 }
 
 impl SegmentReader {
@@ -347,7 +374,7 @@ impl SegmentReader {
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
         let buffer = Buffer::from(data);
-        Self::from_buffer_with_path(buffer, Some(path.to_path_buf()))
+        Self::from_buffer(buffer, Some(path.to_path_buf()))
     }
 
     /// Opens a segment file with memory mapping for zero-copy access.
@@ -390,14 +417,11 @@ impl SegmentReader {
         let bytes = bytes::Bytes::from_owner(mmap);
         let buffer = Buffer::from(bytes);
 
-        Self::from_buffer_with_path(buffer, Some(path.to_path_buf()))
+        Self::from_buffer(buffer, Some(path.to_path_buf()))
     }
 
     /// Creates a reader from a pre-loaded buffer with an optional path for error messages.
-    fn from_buffer_with_path(
-        buffer: Buffer,
-        path: Option<std::path::PathBuf>,
-    ) -> Result<Self, SegmentError> {
+    fn from_buffer(buffer: Buffer, path: Option<std::path::PathBuf>) -> Result<Self, SegmentError> {
         let file_size = buffer.len();
 
         // Need at least trailer size
@@ -473,6 +497,7 @@ impl SegmentReader {
             streams,
             stream_by_id,
             manifest,
+            stream_decoders: RwLock::new(HashMap::new()),
         })
     }
 
@@ -538,41 +563,10 @@ impl SegmentReader {
     /// Returns [`SegmentError::StreamNotFound`] if a referenced stream doesn't exist.
     /// Returns [`SegmentError::Arrow`] if IPC decoding fails.
     pub fn read_bundle(&self, entry: &ManifestEntry) -> Result<ReconstructedBundle, SegmentError> {
-        let mut payloads = HashMap::new();
+        let mut payloads = HashMap::with_capacity(entry.slot_count());
 
         for (slot_id, chunk_ref) in entry.slots() {
-            let stream_meta =
-                self.stream(chunk_ref.stream_id)
-                    .ok_or_else(|| SegmentError::StreamNotFound {
-                        stream_id: chunk_ref.stream_id,
-                    })?;
-
-            // Validate stream region before slicing
-            Self::validate_region(
-                self.buffer.len(),
-                stream_meta.byte_offset,
-                stream_meta.byte_length,
-                "stream data",
-            )?;
-
-            // Get the stream's buffer slice
-            let stream_buffer = self.buffer.slice_with_length(
-                stream_meta.byte_offset as usize,
-                stream_meta.byte_length as usize,
-            );
-
-            // Decode the specific batch
-            let decoder = StreamDecoder::new(stream_buffer)?;
-            let batch = decoder
-                .get_batch(chunk_ref.chunk_index.raw() as usize)?
-                .ok_or_else(|| SegmentError::InvalidFormat {
-                    message: format!(
-                        "chunk {} in stream {:?} returned None",
-                        chunk_ref.chunk_index.raw(),
-                        chunk_ref.stream_id
-                    ),
-                })?;
-
+            let batch = self.read_chunk_cached(chunk_ref.stream_id, chunk_ref.chunk_index)?;
             let _ = payloads.insert(slot_id, batch);
         }
 
@@ -629,6 +623,92 @@ impl SegmentReader {
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Reads a chunk using cached stream decoders for efficiency.
+    ///
+    /// On first access to a stream, the decoder is created and cached.
+    /// Subsequent reads from the same stream reuse the cached decoder,
+    /// avoiding repeated IPC footer parsing and dictionary loading.
+    fn read_chunk_cached(
+        &self,
+        stream_id: StreamId,
+        chunk_index: ChunkIndex,
+    ) -> Result<RecordBatch, SegmentError> {
+        // Fast path: check if decoder already exists with read lock
+        {
+            let cache = self.stream_decoders.read();
+            if let Some(decoder) = cache.get(&stream_id) {
+                return decoder
+                    .get_batch(chunk_index.raw() as usize)?
+                    .ok_or_else(|| SegmentError::InvalidFormat {
+                        message: format!(
+                            "chunk {} in stream {:?} returned None",
+                            chunk_index.raw(),
+                            stream_id
+                        ),
+                    });
+            }
+        }
+
+        // Slow path: need to create decoder
+        // Create decoder outside the lock to minimize lock time
+        let stream_meta = self
+            .stream(stream_id)
+            .ok_or_else(|| SegmentError::StreamNotFound { stream_id })?;
+
+        Self::validate_region(
+            self.buffer.len(),
+            stream_meta.byte_offset,
+            stream_meta.byte_length,
+            "stream data",
+        )?;
+
+        let stream_buffer = self.buffer.slice_with_length(
+            stream_meta.byte_offset as usize,
+            stream_meta.byte_length as usize,
+        );
+
+        let new_decoder = StreamDecoder::new(stream_buffer)?;
+
+        // Insert with write lock, but release lock before reading the batch
+        // to minimize contention on concurrent reads
+        {
+            let mut cache = self.stream_decoders.write();
+            // Double-check another thread didn't insert while we were creating
+            use std::collections::hash_map::Entry;
+            match cache.entry(stream_id) {
+                Entry::Occupied(_) => {
+                    // Another thread beat us; drop our decoder and use theirs
+                    // (will be read in the next block)
+                }
+                Entry::Vacant(e) => {
+                    let _ = e.insert(new_decoder);
+                }
+            }
+            // Write lock released here
+        }
+
+        // Now read with read lock (either our decoder or the one another thread inserted)
+        let cache = self.stream_decoders.read();
+        let decoder = cache
+            .get(&stream_id)
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "decoder for stream {:?} disappeared unexpectedly",
+                    stream_id
+                ),
+            })?;
+
+        decoder
+            .get_batch(chunk_index.raw() as usize)?
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: format!(
+                    "chunk {} in stream {:?} returned None",
+                    chunk_index.raw(),
+                    stream_id
+                ),
+            })
+    }
 
     /// Validates that a region (offset, length) fits within the buffer.
     fn validate_region(
@@ -970,7 +1050,7 @@ mod tests {
 
     impl TestSegment {
         /// Creates a test segment with 2 bundles in a single stream.
-        fn new() -> Self {
+        async fn new() -> Self {
             let dir = tempdir().expect("tempdir");
             let path = dir.path().join("test.qseg");
 
@@ -994,7 +1074,10 @@ mod tests {
             let bundle_count = open_segment.bundle_count();
 
             let writer = SegmentWriter::new(SegmentSeq::new(1));
-            let _ = writer.write_segment(&path, open_segment).expect("write");
+            let _ = writer
+                .write_segment(&path, open_segment)
+                .await
+                .expect("write");
 
             Self {
                 dir,
@@ -1005,9 +1088,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reader_opens_valid_segment() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_opens_valid_segment() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
 
@@ -1016,9 +1099,9 @@ mod tests {
         assert_eq!(reader.version(), 1);
     }
 
-    #[test]
-    fn reader_returns_stream_metadata() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_returns_stream_metadata() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let streams = reader.streams();
@@ -1029,9 +1112,9 @@ mod tests {
         assert_eq!(streams[0].row_count, 5); // 2 + 3
     }
 
-    #[test]
-    fn reader_returns_manifest_entries() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_returns_manifest_entries() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let manifest = reader.manifest();
@@ -1041,9 +1124,9 @@ mod tests {
         assert_eq!(manifest[1].bundle_index, 1);
     }
 
-    #[test]
-    fn reader_reads_bundle() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_reads_bundle() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let entry = reader.manifest()[0].clone();
@@ -1064,9 +1147,9 @@ mod tests {
         assert!(payloads.contains_key(&SlotId::new(0)));
     }
 
-    #[test]
-    fn reader_file_size() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_file_size() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
 
@@ -1076,9 +1159,9 @@ mod tests {
         assert!(reader.file_size() > 0);
     }
 
-    #[test]
-    fn reader_reads_chunk() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_reads_chunk() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
@@ -1192,8 +1275,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn roundtrip_dictionary_encoded_data() {
+    #[tokio::test]
+    async fn roundtrip_dictionary_encoded_data() {
         // This test exercises the dictionary reading code path in StreamDecoder::new
         // (lines 174-178) by using dictionary-encoded string columns.
         use arrow_array::types::Int32Type;
@@ -1233,7 +1316,10 @@ mod tests {
         let _ = open_segment.append(&bundle);
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_segment(&path, open_segment).expect("write");
+        let _ = writer
+            .write_segment(&path, open_segment)
+            .await
+            .expect("write");
 
         // Read back and verify
         let reader = SegmentReader::open(&path).expect("open");
@@ -1255,9 +1341,9 @@ mod tests {
         assert_eq!(dict_col.len(), 5);
     }
 
-    #[test]
-    fn reader_detects_checksum_mismatch() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_detects_checksum_mismatch() {
+        let seg = TestSegment::new().await;
 
         // Make the file writable so we can corrupt it for testing
         #[cfg(unix)]
@@ -1285,9 +1371,9 @@ mod tests {
         assert!(matches!(result, Err(SegmentError::ChecksumMismatch { .. })));
     }
 
-    #[test]
-    fn reader_stream_lookup_by_id() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_stream_lookup_by_id() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
@@ -1300,9 +1386,9 @@ mod tests {
         assert!(missing.is_none());
     }
 
-    #[test]
-    fn reader_chunk_out_of_bounds() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_chunk_out_of_bounds() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let stream_id = reader.streams()[0].id;
@@ -1311,8 +1397,8 @@ mod tests {
         assert!(matches!(result, Err(SegmentError::InvalidFormat { .. })));
     }
 
-    #[test]
-    fn roundtrip_multiple_slots() {
+    #[tokio::test]
+    async fn roundtrip_multiple_slots() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("multi_slot.qseg");
 
@@ -1332,7 +1418,10 @@ mod tests {
         let _ = open_segment.append(&bundle);
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_segment(&path, open_segment).expect("write");
+        let _ = writer
+            .write_segment(&path, open_segment)
+            .await
+            .expect("write");
 
         // Read back
         let reader = SegmentReader::open(&path).expect("open");
@@ -1354,9 +1443,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reconstructed_bundle_into_payloads() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reconstructed_bundle_into_payloads() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open(&seg.path).expect("open");
         let entry = reader.manifest()[0].clone();
@@ -1369,9 +1458,9 @@ mod tests {
     }
 
     #[cfg(feature = "mmap")]
-    #[test]
-    fn reader_opens_mmap() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn reader_opens_mmap() {
+        let seg = TestSegment::new().await;
 
         let reader = SegmentReader::open_mmap(&seg.path).expect("open_mmap");
 
@@ -1380,9 +1469,9 @@ mod tests {
     }
 
     #[cfg(feature = "mmap")]
-    #[test]
-    fn mmap_bundle_outlives_reader() {
-        let seg = TestSegment::new();
+    #[tokio::test]
+    async fn mmap_bundle_outlives_reader() {
+        let seg = TestSegment::new().await;
 
         let bundle = {
             let reader = SegmentReader::open_mmap(&seg.path).expect("open_mmap");
@@ -1406,8 +1495,8 @@ mod tests {
     /// the returned RecordBatch data buffers point into the mmap region rather
     /// than to copied memory.
     #[cfg(feature = "mmap")]
-    #[test]
-    fn mmap_multi_stream_alignment() {
+    #[tokio::test]
+    async fn mmap_multi_stream_alignment() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("multi_stream_mmap.qseg");
 
@@ -1436,7 +1525,10 @@ mod tests {
         let _ = open_segment.append(&bundle);
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let _ = writer.write_segment(&path, open_segment).expect("write");
+        let _ = writer
+            .write_segment(&path, open_segment)
+            .await
+            .expect("write");
 
         // Read back with mmap
         let reader = SegmentReader::open_mmap(&path).expect("open_mmap");

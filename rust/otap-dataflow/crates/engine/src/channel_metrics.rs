@@ -207,12 +207,12 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_config::node::NodeKind;
     use otap_df_telemetry::metrics::MetricSetHandler;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
 
     fn test_context() -> PipelineContext {
-        let registry = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(registry);
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
             .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver)
@@ -247,13 +247,16 @@ mod tests {
         let pipeline_ctx = test_context();
         let mut registry = ChannelMetricsRegistry::default();
         let (sender, receiver) = mpsc::Channel::new(1);
-        let sender = LocalSender::mpsc_with_metrics(
-            sender,
-            &pipeline_ctx,
-            &mut registry,
+        let channel_entity_key = pipeline_ctx.register_channel_entity(
             "test:sender".into(),
             CHANNEL_KIND_PDATA,
+            CHANNEL_MODE_LOCAL,
+            CHANNEL_TYPE_MPSC,
+            CHANNEL_IMPL_INTERNAL,
         );
+        let sender_metrics =
+            pipeline_ctx.register_metric_set_for_entity::<ChannelSenderMetrics>(channel_entity_key);
+        let sender = LocalSender::mpsc_with_metrics(sender, &mut registry, sender_metrics);
         sender.try_send(1).unwrap();
         assert!(matches!(sender.try_send(2), Err(SendError::Full(_))));
         drop(receiver);
@@ -273,14 +276,17 @@ mod tests {
         let mut registry = ChannelMetricsRegistry::default();
         let (sender, receiver) = mpsc::Channel::new(1);
         let sender = LocalSender::mpsc(sender);
-        let mut receiver = LocalReceiver::mpsc_with_metrics(
-            receiver,
-            &pipeline_ctx,
-            &mut registry,
+        let channel_entity_key = pipeline_ctx.register_channel_entity(
             "test:receiver".into(),
             CHANNEL_KIND_PDATA,
-            1,
+            CHANNEL_MODE_LOCAL,
+            CHANNEL_TYPE_MPSC,
+            CHANNEL_IMPL_INTERNAL,
         );
+        let receiver_metrics = pipeline_ctx
+            .register_metric_set_for_entity::<ChannelReceiverMetrics>(channel_entity_key);
+        let mut receiver =
+            LocalReceiver::mpsc_with_metrics(receiver, &mut registry, receiver_metrics, 1);
 
         assert!(matches!(receiver.try_recv(), Err(RecvError::Empty)));
         sender.try_send(1).unwrap();

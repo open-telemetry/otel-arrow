@@ -195,7 +195,21 @@ pub enum WalError {
     /// Configuration parameter is invalid.
     #[error("invalid wal configuration: {0}")]
     InvalidConfig(&'static str),
+    /// Internal state is inconsistent; indicates a bug.
+    #[error("wal internal error: {0}")]
+    InternalError(&'static str),
     /// Test-only failure that simulates a crash at a specific point.
     #[error("wal crash injected: {0}")]
     InjectedCrash(&'static str),
+}
+
+impl WalError {
+    /// Returns `true` if this is a capacity/backpressure error.
+    ///
+    /// WAL capacity errors are recoverable—the caller should wait for
+    /// segment finalization to advance the cursor and reclaim space.
+    #[must_use]
+    pub fn is_at_capacity(&self) -> bool {
+        matches!(self, Self::WalAtCapacity(_))
+    }
 }

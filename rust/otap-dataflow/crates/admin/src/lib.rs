@@ -20,7 +20,7 @@ use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_engine::control::PipelineAdminSender;
 use otap_df_state::store::ObservedStateHandle;
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 
 /// Shared state for the HTTP admin server.
 #[derive(Clone)]
@@ -29,7 +29,7 @@ struct AppState {
     observed_state_store: ObservedStateHandle,
 
     /// The metrics registry for querying current metrics.
-    metrics_registry: MetricsRegistryHandle,
+    metrics_registry: TelemetryRegistryHandle,
 
     /// The control message senders for controlling pipelines.
     ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
@@ -40,7 +40,7 @@ pub async fn run(
     config: HttpAdminSettings,
     observed_store: ObservedStateHandle,
     ctrl_msg_senders: Vec<Arc<dyn PipelineAdminSender>>,
-    metrics_registry: MetricsRegistryHandle,
+    metrics_registry: TelemetryRegistryHandle,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let app_state = AppState {

@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error;
+use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::terminal_state::TerminalState;
@@ -22,6 +23,7 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use super::auth::Auth;
 use super::client::LogsIngestionClientPool;
 use super::config::Config;
+use super::error::Error;
 use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::in_flight_exports::{CompletedExport, InFlightExports};
@@ -51,11 +53,11 @@ pub struct AzureMonitorExporter {
 #[allow(clippy::print_stdout)]
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
-    pub fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
+    pub fn new(config: Config) -> Result<Self, ConfigError> {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+            .map_err(|e| ConfigError::InvalidUserConfig {
                 error: e.to_string(),
             })?;
 
@@ -81,7 +83,7 @@ impl AzureMonitorExporter {
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
         completed_export: CompletedExport,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         let CompletedExport {
             batch_id,
             client,
@@ -110,7 +112,7 @@ impl AzureMonitorExporter {
         batch_id: u64,
         row_count: f64,
         duration: std::time::Duration,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
         self.stats.add_messages(completed_messages.len() as f64);
@@ -131,8 +133,8 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         batch_id: u64,
         row_count: f64,
-        error: String,
-    ) -> Result<(), Error> {
+        error: Error,
+    ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
         self.stats.add_failed_messages(failed_messages.len() as f64);
@@ -146,7 +148,10 @@ impl AzureMonitorExporter {
 
         for (_, context, payload) in failed_messages {
             effect_handler
-                .notify_nack(NackMsg::new(&error, OtapPdata::new(context, payload)))
+                .notify_nack(NackMsg::new(
+                    error.to_string(),
+                    OtapPdata::new(context, payload),
+                ))
                 .await?;
         }
         Ok(())
@@ -167,14 +172,14 @@ impl AzureMonitorExporter {
         let next_token_refresh = token_valid_until - token_expiry_buffer;
         max(
             next_token_refresh,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            tokio::time::Instant::now() + tokio::time::Duration::from_secs(30),
         )
     }
 
     async fn queue_pending_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         let pending_batch = match self.gzip_batcher.take_pending_batch() {
             Some(batch) => batch,
             None => return Ok(()), // No pending batch - nothing to do
@@ -207,7 +212,7 @@ impl AzureMonitorExporter {
         payload: OtapPayload,
         logs_view: &T,
         msg_id: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         if context.may_return_payload() {
             self.state.add_msg_to_data(msg_id, context, payload);
         } else {
@@ -230,29 +235,30 @@ impl AzureMonitorExporter {
                     self.queue_pending_batch(effect_handler).await?;
                 }
                 Ok(gzip_batcher::PushResult::TooLarge) => {
+                    let error = Error::LogEntryTooLarge;
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
-                                "Log entry too large to export",
+                                error.to_string(),
                                 OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
-                    return Err(Error::InternalError {
-                        message: "Log entry too large to export".to_string(),
+                    return Err(EngineError::InternalError {
+                        message: error.to_string(),
                     });
                 }
-                Err(e) => {
+                Err(error) => {
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
-                                "Failed to add log entry to batch",
+                                error.to_string(),
                                 OtapPdata::new(context, payload),
                             ))
                             .await?;
                     }
-                    return Err(Error::InternalError {
-                        message: format!("Failed to add log entry to batch: {:?}", e),
+                    return Err(EngineError::InternalError {
+                        message: error.to_string(),
                     });
                 }
             }
@@ -273,7 +279,7 @@ impl AzureMonitorExporter {
     async fn drain_in_flight_exports(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         let completed_exports = self.in_flight_exports.drain().await;
         for completed_export in completed_exports {
             self.finalize_export(effect_handler, completed_export)
@@ -285,22 +291,68 @@ impl AzureMonitorExporter {
     async fn queue_current_batch(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         match self.gzip_batcher.finalize() {
             Ok(FinalizeResult::Ok) => {
                 return self.queue_pending_batch(effect_handler).await;
             }
             Ok(FinalizeResult::Empty) => Ok(()),
-            Err(e) => Err(Error::InternalError {
-                message: format!("Failed to finalize batch: {:?}", e),
+            Err(error) => Err(EngineError::InternalError {
+                message: error.to_string(),
             }),
+        }
+    }
+
+    async fn try_refresh_token(&mut self, auth: &Auth) -> AccessToken {
+        let min_delay_secs = 5.0_f64;
+        let max_delay_secs = 30.0_f64;
+        let max_jitter_perc = 0.10_f64; // 10% as decimal
+
+        let mut attempt = 0_i32;
+        loop {
+            attempt += 1;
+
+            match auth.get_token().await {
+                Ok(token) => {
+                    println!(
+                        "[AzureMonitorExporter] Obtained access token, expires on {}",
+                        token.expires_on
+                    );
+                    return token;
+                }
+                Err(e) => {
+                    println!(
+                        "[AzureMonitorExporter] Failed to obtain access token (attempt {}): {e}",
+                        attempt
+                    );
+                }
+            }
+
+            // Calculate exponential backoff: 5s, 10s, 20s, 30s (capped)
+            let base_delay_secs = min_delay_secs * 2.0_f64.powi(attempt - 1);
+            let capped_delay_secs = base_delay_secs.min(max_delay_secs);
+
+            // Add jitter: random value between -max_jitter_perc% and +max_jitter_perc% of the delay
+            let jitter_range = capped_delay_secs * max_jitter_perc;
+            let jitter = if jitter_range > 0.0 {
+                let random_factor = rand::random::<f64>() * 2.0 - 1.0;
+                random_factor * jitter_range
+            } else {
+                0.0
+            };
+
+            let delay_secs = (capped_delay_secs + jitter).max(1.0);
+            let delay = tokio::time::Duration::from_secs_f64(delay_secs);
+
+            println!("[AzureMonitorExporter] Retrying in {:.1}s...", delay_secs);
+            tokio::time::sleep(delay).await;
         }
     }
 
     async fn handle_shutdown(
         &mut self,
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         self.queue_current_batch(effect_handler).await?;
         self.drain_in_flight_exports(effect_handler).await?;
 
@@ -322,7 +374,7 @@ impl AzureMonitorExporter {
         effect_handler: &EffectHandler<OtapPdata>,
         msg: Result<Message<OtapPdata>, RecvError>,
         msg_id: &mut u64,
-    ) -> Result<(), Error> {
+    ) -> Result<(), EngineError> {
         match msg {
             Ok(Message::PData(pdata)) => {
                 *msg_id += 1;
@@ -336,8 +388,11 @@ impl AzureMonitorExporter {
                                 let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
 
                                 let logs_view = OtapLogsView::try_from(&otap_arrow_records)
-                                    .map_err(|e| Error::InternalError {
-                                        message: format!("Failed to create OtapLogsView: {:?}", e),
+                                    .map_err(|e| {
+                                        let error = Error::LogsViewCreationFailed { source: e };
+                                        EngineError::InternalError {
+                                            message: error.to_string(),
+                                        }
                                     })?;
 
                                 self.handle_logs_view(
@@ -379,8 +434,9 @@ impl AzureMonitorExporter {
             Ok(_) => {} // Ignore other message types
 
             Err(e) => {
-                return Err(Error::InternalError {
-                    message: format!("Channel error: {e}"),
+                let error = Error::ChannelRecv(e);
+                return Err(EngineError::InternalError {
+                    message: error.to_string(),
                 });
             }
         }
@@ -396,7 +452,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
-    ) -> Result<TerminalState, Error> {
+    ) -> Result<TerminalState, EngineError> {
         effect_handler
             .info(&format!(
                 "[AzureMonitorExporter] Starting: endpoint={}, stream={}, dcr={}",
@@ -406,18 +462,24 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let auth = Auth::new(&self.config.auth).map_err(|e| Error::InternalError {
-            message: format!("Failed to create auth handler: {e}"),
+        let auth = Auth::new(&self.config.auth).map_err(|e| {
+            let error = Error::AuthHandlerCreation(Box::new(e));
+            EngineError::InternalError {
+                message: error.to_string(),
+            }
         })?;
 
-        let token = auth.get_token().await.map_err(|e| Error::InternalError {
-            message: format!("Failed to refresh token: {e}"),
-        })?;
-
+        let token = self.try_refresh_token(&auth).await;
         self.client_pool
             .initialize(&self.config.api, &auth)
             .await
-            .expect("Failed to initialize client pool");
+            .map_err(|e| {
+                let error = Error::ClientPoolInit(Box::new(e));
+                EngineError::InternalError {
+                    message: error.to_string(),
+                }
+            })?;
+
         let mut next_token_refresh = Self::get_next_token_refresh(token);
         let mut next_stats_print =
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
@@ -432,11 +494,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 biased;
 
                 _ = tokio::time::sleep_until(next_token_refresh) => {
-                    let token = auth.get_token()
-                        .await
-                        .map_err(|e| Error::InternalError { message: format!("Failed to refresh token: {e}") })?;
-
-                    next_token_refresh = Self::get_next_token_refresh(token);
+                    let new_token = self.try_refresh_token(&auth).await;
+                    next_token_refresh = Self::get_next_token_refresh(new_token);
                 }
 
                 completed = self.in_flight_exports.next_completion() => {
@@ -553,6 +612,7 @@ mod tests {
     use crate::pdata::Context;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
+    use http::StatusCode;
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -694,13 +754,14 @@ mod tests {
             .add_msg_to_data(msg_id, context.clone(), payload);
         exporter.state.add_batch_msg_relationship(batch_id, msg_id);
 
+        let error = Error::ServerError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: "Simulated error".to_string(),
+            retry_after: None,
+        };
+
         let _ = exporter
-            .handle_export_failure(
-                &effect_handler,
-                batch_id,
-                10.0,
-                "Simulated error".to_string(),
-            )
+            .handle_export_failure(&effect_handler, batch_id, 10.0, error)
             .await;
 
         // Verify stats

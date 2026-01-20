@@ -371,16 +371,18 @@ mod tests {
         use otap_df_engine::message::Message;
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-        use otap_df_telemetry::MetricsSystem;
-        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use otap_df_telemetry::InternalTelemetrySystem;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use otap_df_telemetry::reporter::MetricsReporter;
         use std::collections::HashMap;
         use std::time::Duration;
         use tokio::task::JoinHandle;
 
-        fn collect_metrics_map(registry: &MetricsRegistryHandle) -> HashMap<String, u64> {
+        fn collect_metrics_map(
+            telemetry_registry: &TelemetryRegistryHandle,
+        ) -> HashMap<String, u64> {
             let mut out = HashMap::new();
-            registry.visit_current_metrics(|_desc, _attrs, iter| {
+            telemetry_registry.visit_current_metrics(|_desc, _attrs, iter| {
                 for (field, value) in iter {
                     let _ = out.insert(field.name.to_string(), value.to_u64_lossy());
                 }
@@ -389,15 +391,16 @@ mod tests {
         }
 
         // Helper to start/stop telemetry collection on the local task set.
-        // Returns the registry, a cloneable reporter, and the spawned collector task handle.
-        fn start_telemetry() -> (MetricsRegistryHandle, MetricsReporter, JoinHandle<()>) {
-            let telemetry = MetricsSystem::default();
-            let registry = telemetry.registry();
+        // Returns the telemetry registry, a cloneable reporter, and the spawned collector task handle.
+        fn start_telemetry() -> (TelemetryRegistryHandle, MetricsReporter, JoinHandle<()>) {
+            let telemetry = InternalTelemetrySystem::default();
+            let telemetry_registry = telemetry.registry();
             let reporter = telemetry.reporter();
             let collector_task = tokio::task::spawn_local(async move {
-                let _ = telemetry.run_collection_loop().await;
+                let collector = telemetry.collector();
+                let _ = collector.run_collection_loop().await;
             });
-            (registry, reporter, collector_task)
+            (telemetry_registry, reporter, collector_task)
         }
 
         // Stops telemetry collection by dropping the reporter and aborting the collector task.
@@ -410,11 +413,11 @@ mod tests {
         fn test_metrics_named_logs_success() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                // Telemetry setup (registry + collector + reporter)
-                let (registry, reporter, collector_task) = start_telemetry();
+                // Telemetry setup (telemetry registry + collector + reporter)
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 // Pipeline + node context
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_success");
 
@@ -455,7 +458,7 @@ mod tests {
                 // Allow collector to accumulate snapshot
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let metrics = collect_metrics_map(&registry);
+                let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
                     metrics.get("signals.received.logs").copied().unwrap_or(0),
                     1
@@ -485,9 +488,9 @@ mod tests {
         fn test_metrics_named_logs_failure() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_failure");
 
@@ -520,7 +523,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let metrics = collect_metrics_map(&registry);
+                let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
                     metrics.get("signals.received.logs").copied().unwrap_or(0),
                     1
@@ -549,9 +552,9 @@ mod tests {
         fn test_metrics_default_logs_success() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_success");
 
@@ -587,7 +590,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let metrics = collect_metrics_map(&registry);
+                let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
                     metrics.get("signals.received.logs").copied().unwrap_or(0),
                     1
@@ -616,9 +619,9 @@ mod tests {
         fn test_metrics_default_logs_failure() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_failure");
 
@@ -653,7 +656,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let metrics = collect_metrics_map(&registry);
+                let metrics = collect_metrics_map(&telemetry_registry);
                 assert_eq!(
                     metrics.get("signals.received.logs").copied().unwrap_or(0),
                     1
@@ -683,9 +686,9 @@ mod tests {
         fn test_metrics_named_traces_success() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_traces_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -718,7 +721,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.traces").copied().unwrap_or(0),
@@ -738,9 +741,9 @@ mod tests {
         fn test_metrics_named_traces_failure() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_traces_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -771,7 +774,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.traces").copied().unwrap_or(0),
@@ -791,9 +794,9 @@ mod tests {
         fn test_metrics_default_traces_success() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_traces_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -826,7 +829,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.traces").copied().unwrap_or(0),
@@ -846,9 +849,9 @@ mod tests {
         fn test_metrics_default_traces_failure() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_traces_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -879,7 +882,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.traces").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.traces").copied().unwrap_or(0),
@@ -900,9 +903,9 @@ mod tests {
         fn test_metrics_named_metrics_success() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_metrics_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -935,7 +938,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.metrics").copied().unwrap_or(0),
@@ -957,9 +960,9 @@ mod tests {
         fn test_metrics_named_metrics_failure() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_named_metrics_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -990,7 +993,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.metrics").copied().unwrap_or(0),
@@ -1012,9 +1015,9 @@ mod tests {
         fn test_metrics_default_metrics_success() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_metrics_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -1047,7 +1050,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.metrics").copied().unwrap_or(0),
@@ -1069,9 +1072,9 @@ mod tests {
         fn test_metrics_default_metrics_failure() {
             let (rt, local) = setup_test_runtime();
             rt.block_on(local.run_until(async move {
-                let (registry, reporter, collector_task) = start_telemetry();
+                let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
-                let controller = ControllerContext::new(registry.clone());
+                let controller = ControllerContext::new(telemetry_registry.clone());
                 let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
                 let node_id = test_node("signal_router_default_metrics_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -1102,7 +1105,7 @@ mod tests {
                     .expect("collect telemetry failed");
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
-                let m = collect_metrics_map(&registry);
+                let m = collect_metrics_map(&telemetry_registry);
                 assert_eq!(m.get("signals.received.metrics").copied().unwrap_or(0), 1);
                 assert_eq!(
                     m.get("signals.routed.named.metrics").copied().unwrap_or(0),

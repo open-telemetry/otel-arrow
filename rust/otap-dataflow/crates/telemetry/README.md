@@ -63,7 +63,13 @@ See the [telemetry-macros crate](../telemetry-macros) for details.
 - Structured events and spans.
 - NUMA-aware aggregation.
 
-![Architecture Phase 2](assets/Metrics%20Phase%202.svg)
+The Internal Telemetry System (ITS) is moving in the direction depicted below:
+
+![Architecture Phase 2](assets/ITS.svg)
+
+Our own OTAP Dataflow Engine will be configured to consume our internal
+telemetry streams, and will be used to export to external backends such as
+Prometheus, OTLP-compatible systems, or OTAP-compatible systems.
 
 Note: The recent telemetry guidelines defined in `/docs/telemetry` are
 still being implemented in this SDK. Expect changes and improvements over time.

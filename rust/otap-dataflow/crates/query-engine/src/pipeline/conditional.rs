@@ -18,6 +18,7 @@ use otap_df_pdata::otap::{Logs, Metrics, Traces};
 
 use crate::error::Result;
 use crate::pipeline::filter::{Composite, FilterExec, filter_otap_batch};
+use crate::pipeline::state::ExecutionState;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// This [`PipelineStage`] implementation will conditionally apply child pipeline stages on rows
@@ -88,6 +89,7 @@ impl PipelineStage for ConditionalPipelineStage {
         session_ctx: &SessionContext,
         config_options: &ConfigOptions,
         task_context: Arc<TaskContext>,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let root_batch = match otap_batch.root_record_batch() {
             Some(root_batch) => root_batch,
@@ -146,6 +148,7 @@ impl PipelineStage for ConditionalPipelineStage {
                         session_ctx,
                         config_options,
                         task_context.clone(),
+                        exec_state,
                     )
                     .await?;
             }
@@ -167,6 +170,7 @@ impl PipelineStage for ConditionalPipelineStage {
                             session_ctx,
                             config_options,
                             task_context.clone(),
+                            exec_state,
                         )
                         .await?;
                 }
@@ -210,12 +214,9 @@ impl PipelineStage for ConditionalPipelineStage {
 
 #[cfg(test)]
 mod test {
-    use crate::pipeline::{Pipeline, test::exec_logs_pipeline_expr};
-    use data_engine_expressions::{
-        ConditionalDataExpression, ConditionalDataExpressionBranch, DataExpression,
-        LogicalExpression, PipelineExpression, PipelineExpressionBuilder, QueryLocation,
-    };
-    use data_engine_kql_parser::{KqlParser, Parser};
+    use crate::pipeline::{Pipeline, test::exec_logs_pipeline};
+    use data_engine_parser_abstractions::Parser;
+    use otap_df_opl::parser::OplParser;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, KeyValue},
         logs::v1::LogRecord,
@@ -223,68 +224,6 @@ mod test {
     use otap_df_pdata::testing::round_trip::to_logs_data;
 
     use super::*;
-
-    /// helper for constructing a pipeline with a conditional data expression.
-    ///
-    /// this is needed because we don't yet have parser implemented for these types of expressions
-    #[derive(Default)]
-    struct ConditionalTest {
-        /// tuples of (logical_expr, data_exprs) specified in kql
-        branches: Vec<(&'static str, &'static str)>,
-
-        /// data expr for the default branch specified in kql
-        default_branch: Option<&'static str>,
-    }
-
-    impl ConditionalTest {
-        fn as_logs_pipeline(&self) -> PipelineExpression {
-            let mut branch_exprs = vec![];
-            for (condition, data_exprs) in &self.branches {
-                let pipeline = KqlParser::parse(&format!("logs | where {condition}"))
-                    .unwrap()
-                    .pipeline;
-
-                println!("pipeline {}", pipeline);
-                let condition = match pipeline.get_expressions().first() {
-                    Some(DataExpression::Discard(discard)) => match discard.get_predicate() {
-                        Some(LogicalExpression::Not(not)) => not.get_inner_expression().clone(),
-                        // shouldn't happen unless we change how we parse discard expressions
-                        other => unreachable!("unexpected expr {other:?}"),
-                    },
-                    // shouldn't happen as the pipeline has an expression
-                    other => unreachable!("unexpected expr {other:?}"),
-                };
-
-                let exprs_pipeline = KqlParser::parse(&format!("logs | {data_exprs}"))
-                    .unwrap()
-                    .pipeline;
-
-                branch_exprs.push(ConditionalDataExpressionBranch::new(
-                    QueryLocation::new_fake(),
-                    condition,
-                    exprs_pipeline.get_expressions().to_vec(),
-                ));
-            }
-
-            let mut conditional_expr = ConditionalDataExpression::new(QueryLocation::new_fake());
-            for branch in branch_exprs {
-                conditional_expr = conditional_expr.with_branch(branch);
-            }
-
-            if let Some(data_exprs) = self.default_branch {
-                let exprs_pipeline = KqlParser::parse(&format!("logs | {data_exprs}"))
-                    .unwrap()
-                    .pipeline;
-                conditional_expr =
-                    conditional_expr.with_default_branch(exprs_pipeline.get_expressions().to_vec());
-            }
-
-            PipelineExpressionBuilder::new("test")
-                .with_expressions(vec![DataExpression::Conditional(conditional_expr)])
-                .build()
-                .unwrap()
-        }
-    }
 
     #[tokio::test]
     async fn test_conditional_no_default_branch() {
@@ -299,17 +238,14 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = ConditionalTest {
-            branches: vec![(
-                "severity_text == \"ERROR\"",
-                "project-rename attributes[\"y\"] = attributes[\"x\"]",
-            )],
-            ..Default::default()
-        }
-        .as_logs_pipeline();
-
-        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
-
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            }"#,
+            to_logs_data(log_records),
+        )
+        .await;
         let expected = vec![
             LogRecord::build()
                 .severity_text("ERROR")
@@ -337,16 +273,16 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = ConditionalTest {
-            branches: vec![(
-                "severity_text == \"ERROR\"",
-                "project-rename attributes[\"y\"] = attributes[\"x\"]",
-            )],
-            default_branch: Some("project-rename attributes[\"z\"] = attributes[\"x\"]"),
-        }
-        .as_logs_pipeline();
-
-        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"
+            logs | if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            } else {
+                project-rename attributes["z"] = attributes["x"]
+            }"#,
+            to_logs_data(log_records),
+        )
+        .await;
 
         let expected = vec![
             LogRecord::build()
@@ -385,22 +321,16 @@ mod test {
                 .finish(),
         ];
 
-        let pipeline_expr = ConditionalTest {
-            branches: vec![
-                (
-                    "severity_text == \"ERROR\"",
-                    "project-rename attributes[\"y\"] = attributes[\"x\"]",
-                ),
-                (
-                    "event_name == \"test\"",
-                    "project-rename attributes[\"z\"] = attributes[\"x\"]",
-                ),
-            ],
-            default_branch: Some("project-away attributes[\"x\"]"),
-        }
-        .as_logs_pipeline();
-
-        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+        let query = r#"logs |
+            if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            } else if (event_name == "test") {
+                project-rename attributes["z"] = attributes["x"]
+            } else {
+                project-away attributes["x"]
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
 
         let expected = vec![
             LogRecord::build()
@@ -442,27 +372,18 @@ mod test {
                 .attributes(vec![KeyValue::new("x", AnyValue::new_string("test"))])
                 .finish(),
         ];
-
-        let pipeline_expr = ConditionalTest {
-            branches: vec![
-                (
-                    "severity_text == \"INFO\"",
-                    "project-rename attributes[\"y\"] = attributes[\"x\"]",
-                ),
-                (
-                    "severity_text == \"ERROR\"",
-                    "project-rename attributes[\"z\"] = attributes[\"x\"]",
-                ),
-                (
-                    "severity_text == \"WARN\"",
-                    "project-rename attributes[\"a\"] = attributes[\"x\"]",
-                ),
-            ],
-            default_branch: Some("project-away attributes[\"x\"]"),
-        }
-        .as_logs_pipeline();
-
-        let result = exec_logs_pipeline_expr(pipeline_expr, to_logs_data(log_records)).await;
+        let query = r#"logs |
+            if (severity_text == "INFO") {
+                project-rename attributes["y"] = attributes["x"]
+            } else if (severity_text == "ERROR") {
+                project-rename attributes["z"] = attributes["x"]
+            } else if (severity_text == "WARN") {
+                project-rename attributes["a"] = attributes["x"]
+            } else {
+                project-away attributes["x"]
+            }
+        "#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(log_records)).await;
 
         let expected = vec![
             LogRecord::build()
@@ -484,20 +405,19 @@ mod test {
 
     #[tokio::test]
     async fn test_empty_batch() {
-        let pipeline_expr = ConditionalTest {
-            branches: vec![
-                (
-                    "severity_text == \"ERROR\"",
-                    "project-rename attributes[\"y\"] = attributes[\"x\"]",
-                ),
-                (
-                    "event_name == \"test\"",
-                    "project-rename attributes[\"z\"] = attributes[\"x\"]",
-                ),
-            ],
-            default_branch: Some("project-away attributes[\"x\"]"),
-        }
-        .as_logs_pipeline();
+        let pipeline_expr = OplParser::parse(
+            r#"logs |
+            if (severity_text == "ERROR") {
+                project-rename attributes["y"] = attributes["x"]
+            } else if (event_name == "test") {
+                project-rename attributes["z"] = attributes["x"]
+            } else {
+                project-away attributes["x"]
+            }
+        "#,
+        )
+        .unwrap()
+        .pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
 
         let input = OtapArrowRecords::Logs(Logs::default());

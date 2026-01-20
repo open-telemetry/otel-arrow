@@ -44,6 +44,7 @@ use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
     try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
 };
+use crate::pipeline::state::ExecutionState;
 
 pub mod optimize;
 
@@ -1711,6 +1712,7 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
+        _exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         if otap_batch.root_record_batch().is_none() {
             // if batch is empty, no filtering to do
@@ -3200,8 +3202,7 @@ mod test {
         test_filter_with_nulls::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_filter_numeric_comparison_binary_operators() {
+    async fn run_filter_numeric_comparison_binary_operators_test<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3229,7 +3230,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] > 2",
             to_logs_data(log_records.clone()),
         )
@@ -3239,7 +3240,7 @@ mod test {
             &[log_records[2].clone()],
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] >= 2",
             to_logs_data(log_records.clone()),
         )
@@ -3249,7 +3250,7 @@ mod test {
             &[log_records[1].clone(), log_records[2].clone()],
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] < 2",
             to_logs_data(log_records.clone()),
         )
@@ -3259,7 +3260,7 @@ mod test {
             &[log_records[0].clone()],
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] <= 2",
             to_logs_data(log_records.clone()),
         )
@@ -3268,6 +3269,16 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()],
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_numeric_comparison_binary_operators_kql_parser() {
+        run_filter_numeric_comparison_binary_operators_test::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_numeric_comparison_binary_operators_opl_parser() {
+        run_filter_numeric_comparison_binary_operators_test::<OplParser>().await;
     }
 
     async fn test_filter_nomatch<P: Parser>() {
@@ -3414,8 +3425,7 @@ mod test {
         test_filter_no_attrs::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_filter_property_is_null() {
+    async fn test_filter_property_is_null<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3442,8 +3452,8 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where severity_text == string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where severity_text == {null_lit}"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3454,8 +3464,8 @@ mod test {
         );
 
         // check it's supported if null literal on the left and column on the right
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) == severity_text",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} == severity_text"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3467,7 +3477,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_property_is_not_null() {
+    async fn test_filter_property_is_null_kql_parser() {
+        test_filter_property_is_null::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_null_opl_parser() {
+        test_filter_property_is_null::<OplParser>("null").await;
+    }
+
+    async fn run_filter_property_is_not_null<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3494,8 +3513,9 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where severity_text != string(null)",
+        // severity_text != <null>
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where severity_text != {null_lit}"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3505,9 +3525,9 @@ mod test {
             &[log_records[0].clone(), log_records[2].clone()],
         );
 
-        // check it's supported if null literal on the left and column on the right
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) != severity_text",
+        // <null> != severity_text
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} != severity_text"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3519,7 +3539,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_property_is_null_missing_column() {
+    async fn test_filter_property_is_not_null_kql_parser() {
+        run_filter_property_is_not_null::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_not_null_opl_parser() {
+        run_filter_property_is_not_null::<OplParser>("null").await;
+    }
+
+    async fn run_filter_property_is_null_missing_column<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3549,8 +3578,8 @@ mod test {
         let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where severity_text == string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where severity_text == {null_lit}"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3565,8 +3594,8 @@ mod test {
         );
 
         // check it's supported if null literal on the left and column on the right
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) == severity_text",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} == severity_text"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3582,7 +3611,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_property_is_not_null_missing_column() {
+    async fn test_filter_property_is_null_missing_column_kql_parser() {
+        run_filter_property_is_null_missing_column::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_null_missing_column_opl_parser() {
+        run_filter_property_is_null_missing_column::<OplParser>("null").await;
+    }
+
+    async fn run_filter_property_is_not_null_missing_column<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3612,7 +3650,7 @@ mod test {
         let logs_rb = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         assert!(logs_rb.column_by_name(consts::SEVERITY_TEXT).is_none());
 
-        let parser_result = KqlParser::parse("logs | where severity_text != string(null)").unwrap();
+        let parser_result = P::parse(&format!("logs | where severity_text != {null_lit}")).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3622,7 +3660,7 @@ mod test {
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()));
 
         // assert we do the right thing where the null is on the left and value on the right
-        let parser_result = KqlParser::parse("logs | where string(null) != severity_text").unwrap();
+        let parser_result = P::parse(&format!("logs | where {null_lit} != severity_text")).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3632,7 +3670,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_struct_property_is_null() {
+    async fn test_filter_property_is_not_null_missing_column_kql_parser() {
+        run_filter_property_is_not_null_missing_column::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_property_is_not_null_missing_column_opl_parser() {
+        run_filter_property_is_not_null_missing_column::<OplParser>("null").await;
+    }
+
+    async fn run_filter_struct_property_is_null<P: Parser>(null_lit: &str) {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -3664,8 +3711,8 @@ mod test {
         };
 
         // test filter by scope properties
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where instrumentation_scope.name == string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where instrumentation_scope.name == {null_lit}"),
             input.clone(),
         )
         .await;
@@ -3681,8 +3728,8 @@ mod test {
         );
 
         // test filter by scope properties, this time the null is on the left
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) == instrumentation_scope.name",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} == instrumentation_scope.name"),
             input.clone(),
         )
         .await;
@@ -3699,7 +3746,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_struct_property_is_null_missing_column() {
+    async fn test_filter_struct_property_is_null_kql_parser() {
+        run_filter_struct_property_is_null::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_null_opl_parser() {
+        run_filter_struct_property_is_null::<OplParser>("null").await;
+    }
+
+    async fn run_filter_struct_property_is_null_missing_column<P: Parser>(null_lit: &str) {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -3730,8 +3786,8 @@ mod test {
         };
 
         // test filter by scope properties
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where instrumentation_scope.name == string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where instrumentation_scope.name == {null_lit}"),
             input.clone(),
         )
         .await;
@@ -3748,7 +3804,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_struct_property_is_not_null() {
+    async fn test_filter_struct_property_is_null_missing_column_kql_parser() {
+        run_filter_struct_property_is_null_missing_column::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_null_missing_column_opl_parser() {
+        run_filter_struct_property_is_null_missing_column::<OplParser>("null").await;
+    }
+
+    async fn run_struct_property_is_not_null<P: Parser>(null_lit: &str) {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -3780,8 +3845,8 @@ mod test {
         };
 
         // test filter by scope properties
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where instrumentation_scope.name != string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where instrumentation_scope.name != {null_lit}"),
             input.clone(),
         )
         .await;
@@ -3797,8 +3862,8 @@ mod test {
         );
 
         // test filter by scope properties, this time the null is on the left
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) != instrumentation_scope.name",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} != instrumentation_scope.name"),
             input.clone(),
         )
         .await;
@@ -3815,7 +3880,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_struct_property_is_not_null_missing_column() {
+    async fn test_struct_property_is_not_null_kql_parser() {
+        run_struct_property_is_not_null::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_struct_property_is_not_null_opl_parser() {
+        run_struct_property_is_not_null::<OplParser>("null").await;
+    }
+
+    async fn run_filter_struct_property_is_not_null_missing_column<P: Parser>(null_lit: &str) {
         let scope_logs = vec![
             ScopeLogs {
                 scope: Some(
@@ -3845,8 +3919,10 @@ mod test {
             }],
         };
 
-        let parser_result =
-            KqlParser::parse("logs | where instrumentation_scope.name != string(null)").unwrap();
+        let parser_result = P::parse(&format!(
+            "logs | where instrumentation_scope.name != {null_lit}"
+        ))
+        .unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(otlp_to_otap(&OtlpProtoMessage::Logs(input)))
@@ -3856,7 +3932,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_attribute_is_null() {
+    async fn test_filter_struct_property_is_not_null_missing_column_kql_parser() {
+        run_filter_struct_property_is_not_null_missing_column::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_struct_property_is_not_null_missing_column_opl_parser() {
+        run_filter_struct_property_is_not_null_missing_column::<OplParser>("null").await;
+    }
+
+    async fn run_filter_attribute_is_null<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3869,8 +3954,8 @@ mod test {
             LogRecord::build().event_name("3").finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where attributes[\"x\"] == string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where attributes[\"x\"] == {null_lit}"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3881,8 +3966,8 @@ mod test {
         );
 
         // check the same thing works if we put null on the left
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) == attributes[\"x\"]",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} == attributes[\"x\"]"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3894,7 +3979,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_attribute_is_null_no_attrs() {
+    async fn test_filter_attribute_is_null_kql_parser() {
+        run_filter_attribute_is_null::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_null_opl_parser() {
+        run_filter_attribute_is_null::<OplParser>("null").await;
+    }
+
+    async fn run_filter_attribute_is_null_no_attrs<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build().event_name("1").finish(),
             LogRecord::build().event_name("2").finish(),
@@ -3906,8 +4000,8 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(to_logs_data(log_records.clone())));
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where attributes[\"x\"] == string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where attributes[\"x\"] == {null_lit}"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3917,8 +4011,8 @@ mod test {
             &log_records.clone()
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) == attributes[\"x\"]",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} == attributes[\"x\"]"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3930,7 +4024,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_attribute_is_not_null() {
+    async fn test_filter_attribute_is_null_no_attrs_kql_parser() {
+        run_filter_attribute_is_null_no_attrs::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_null_no_attrs_opl_parser() {
+        run_filter_attribute_is_null_no_attrs::<OplParser>("null").await;
+    }
+
+    async fn run_filter_attribute_is_not_null<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3943,8 +4046,8 @@ mod test {
             LogRecord::build().event_name("3").finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where attributes[\"x\"] != string(null)",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where attributes[\"x\"] != {null_lit}"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3955,8 +4058,8 @@ mod test {
         );
 
         // check the same thing works if we put null on the left
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where string(null) != attributes[\"x\"]",
+        let result = exec_logs_pipeline::<P>(
+            &format!("logs | where {null_lit} != attributes[\"x\"]"),
             to_logs_data(log_records.clone()),
         )
         .await;
@@ -3968,7 +4071,16 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_attribute_is_not_null_no_attrs() {
+    async fn test_filter_attribute_is_not_null_kql_parser() {
+        run_filter_attribute_is_not_null::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_not_null_opl_parser() {
+        run_filter_attribute_is_not_null::<OplParser>("null").await;
+    }
+
+    async fn run_filter_attribute_is_not_null_no_attrs<P: Parser>(null_lit: &str) {
         let log_records = vec![
             LogRecord::build().event_name("1").finish(),
             LogRecord::build().event_name("2").finish(),
@@ -3981,7 +4093,7 @@ mod test {
         assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
 
         let parser_result =
-            KqlParser::parse("logs | where attributes[\"x\"] != string(null)").unwrap();
+            P::parse(&format!("logs | where attributes[\"x\"] != {null_lit}")).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
@@ -3992,13 +4104,23 @@ mod test {
 
         // assert we do the right thing where the null is on the left and value on the right
         let parser_result =
-            KqlParser::parse("logs | where string(null) != attributes[\"x\"]").unwrap();
+            P::parse(&format!("logs | where {null_lit} != attributes[\"x\"]")).unwrap();
         let mut pipeline = Pipeline::new(parser_result.pipeline);
         let result = pipeline
             .execute(to_otap_logs(log_records.clone()))
             .await
             .unwrap();
         assert_eq!(result, OtapArrowRecords::Logs(Logs::default()))
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_not_null_no_attrs_kql_parser() {
+        run_filter_attribute_is_not_null_no_attrs::<KqlParser>("string(null)").await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_attribute_is_not_null_no_attrs_opl_parser() {
+        run_filter_attribute_is_not_null_no_attrs::<OplParser>("null").await;
     }
 
     async fn test_optional_attrs_existence_changes<P: Parser>() {

@@ -6,6 +6,6 @@ from_template:
     engine_core_range: "0-15"
     loadgen_cores: 48
     loadgen_core_range: "16-63"
-    backend_cores: 8
-    backend_core_range: "64-71"
-    max_batch_size: 200
+    backend_cores: 16
+    backend_core_range: "64-79"
+    max_batch_size: 512
