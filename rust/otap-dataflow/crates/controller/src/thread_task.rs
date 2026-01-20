@@ -96,11 +96,6 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
 /// Contract:
 /// - The task should observe the cancellation token and exit promptly when it is cancelled.
 /// - `T` and `E` must be `Send + 'static` to cross the thread boundary.
-///
-/// # Arguments
-/// * `thread_name` - Name for the spawned thread (for debugging)
-/// * `tracing_setup` - Configuration for the thread's tracing subscriber (includes log level)
-/// * `task_factory` - Factory function that creates the async task to run
 pub fn spawn_thread_local_task<T, E, Fut, F>(
     thread_name: impl Into<String>,
     tracing_setup: TracingSetup,
@@ -120,7 +115,6 @@ where
     let join_handle = thread::Builder::new()
         .name(name_for_thread)
         .spawn(move || {
-            // Run the task with the thread-local tracing subscriber active.
             tracing_setup.with_subscriber(|| {
                 let rt = RtBuilder::new_current_thread()
                     .enable_all()

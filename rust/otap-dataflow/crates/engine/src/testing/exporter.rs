@@ -219,8 +219,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns a metrics reporter for use in the processor runtime.
-    /// TODO: Rename metrics_reporter().
-    pub fn reporter(&self) -> MetricsReporter {
+    pub fn metrics_reporter(&self) -> MetricsReporter {
         self.metrics_system.reporter()
     }
 
@@ -255,8 +254,8 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let metrics_reporter_start = self.reporter();
-        let metrics_reporter_terminal = self.reporter();
+        let metrics_reporter_start = self.metrics_reporter();
+        let metrics_reporter_terminal = self.metrics_reporter();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter_start)

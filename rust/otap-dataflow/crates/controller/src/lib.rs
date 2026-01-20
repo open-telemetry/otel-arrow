@@ -91,19 +91,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let obs_evt_reporter = obs_state_store.reporter();
         let obs_state_handle = obs_state_store.handle();
 
-        // Create the telemetry system with the event reporter
+        // Create the telemetry system, pass the observed state store
+        // as the admin reporter for console_async support.
         let telemetry_system =
             InternalTelemetrySystem::new(telemetry_config, obs_evt_reporter.clone())?;
+        let admin_tracing_setup = telemetry_system.admin_tracing_setup();
 
-        // Initialize the global tracing subscriber
         telemetry_system.init_global_subscriber();
 
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
-
-        // Get tracing setup for admin threads
-        let admin_tracing_setup = telemetry_system.admin_tracing_setup();
 
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
@@ -141,11 +139,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
 
-        // Get tracing setup for engine threads
-        let engine_tracing_setup = telemetry_system.engine_tracing_setup();
-
         // ToDo [LQ] Support multiple pipeline groups in the future.
-
         for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
             let pipeline_key = DeployedPipelineKey {
                 pipeline_group_id: pipeline_group_id.clone(),
@@ -171,7 +165,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
             let obs_evt_reporter = obs_evt_reporter.clone();
-            let engine_setup_for_thread = engine_tracing_setup.clone();
+            let engine_tracing_setup = telemetry_system.engine_tracing_setup();
             let handle = thread::Builder::new()
                 .name(thread_name.clone())
                 .spawn(move || {
@@ -185,7 +179,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         metrics_reporter,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
-                        engine_setup_for_thread,
+                        engine_tracing_setup,
                     )
                 })
                 .map_err(|e| Error::ThreadSpawnError {
