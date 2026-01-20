@@ -33,15 +33,10 @@ pub mod _private {
 /// ```
 // TODO: Remove `name` attribute duplication in logging macros below once `tracing::Fmt` supports displaying `name`.
 // See issue: https://github.com/tokio-rs/tracing/issues/2774
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_info {
-    ($name:expr $(,)?) => {
-        $crate::_private::info!( name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, $($key = $value),+, "");
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
     };
 }
 
@@ -59,18 +54,8 @@ macro_rules! otel_info {
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
-    ($name:expr $(,)?) => {
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::warn!(name: $name,
-                        target: env!("CARGO_PKG_NAME"),
-                        name = $name,
-                        $($key = {
-                                $value
-                        }),+,
-                        ""
-                )
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
     };
 }
 
@@ -86,15 +71,10 @@ macro_rules! otel_warn {
 /// use otap_df_telemetry::otel_debug;
 /// otel_debug!("processing.batch", batch_size = 100);
 /// ```
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr $(,)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, $($key = $value),+, "");
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
     };
 }
 
@@ -110,22 +90,10 @@ macro_rules! otel_debug {
 /// use otap_df_telemetry::otel_error;
 /// otel_error!("export.failure", error_code = 500);
 /// ```
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_error {
-    ($name:expr $(,)?) => {
-        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::error!(name: $name,
-                        target: env!("CARGO_PKG_NAME"),
-                        name = $name,
-                        $($key = {
-                                $value
-                        }),+,
-                        ""
-                )
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
     };
 }
 
@@ -223,8 +191,8 @@ mod tests {
 
         // Test error_event!
         let err = Error::ConfigurationError("bad config".into());
-        let record = error_event!("error.event", error = ?err); // I AM LINE 226
+        let record = error_event!("error.event", error = ?err);
         assert_eq!(*record.callsite().level(), Level::ERROR);
-        assert_eq!(record.callsite().line(), Some(226u32));
+        assert_eq!(record.callsite().line(), Some(194u32));
     }
 }

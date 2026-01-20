@@ -62,6 +62,12 @@ pub struct LoggingProviders {
     /// This defaults to Noop to avoid internal feedback.
     #[serde(default = "default_internal_provider")]
     pub internal: ProviderMode,
+
+    /// Provider mode for admin threads (observed-state-store, http-admin,
+    /// metrics-aggregator). Cannot be ConsoleAsync because that would create
+    /// a feedback loop with the observed-state-store. Defaults to ConsoleDirect.
+    #[serde(default = "default_admin_provider")]
+    pub admin: ProviderMode,
 }
 
 /// Logs producer: how log events are captured and routed.
@@ -110,11 +116,16 @@ const fn default_internal_provider() -> ProviderMode {
     ProviderMode::Noop
 }
 
+const fn default_admin_provider() -> ProviderMode {
+    ProviderMode::ConsoleDirect
+}
+
 fn default_providers() -> LoggingProviders {
     LoggingProviders {
         global: default_global_provider(),
         engine: default_engine_provider(),
         internal: default_internal_provider(),
+        admin: default_admin_provider(),
     }
 }
 
@@ -133,6 +144,7 @@ impl LogsConfig {
     ///
     /// Returns an error if:
     /// - `internal` is configured to use ITS, ConsoleAsync (needs_reporter())
+    /// - `admin` is configured to use ConsoleAsync (would loop to itself)
     /// - `engine` is `OpenTelemetry` but `global` is not
     ///   (current implementation restriction).
     pub fn validate(&self) -> Result<(), Error> {
@@ -142,6 +154,16 @@ impl LogsConfig {
                     "internal provider is invalid: {:?}",
                     self.providers.internal
                 ),
+            });
+        }
+        // Admin provider cannot use ConsoleAsync because the observed-state-store
+        // runs in an admin thread and implements console_async logging. Using
+        // ConsoleAsync for admin would create a feedback loop.
+        if self.providers.admin == ProviderMode::ConsoleAsync {
+            return Err(Error::InvalidUserConfig {
+                error: "admin provider cannot be 'console_async' (would create feedback loop); \
+                        use 'console_direct' or another mode instead"
+                    .into(),
             });
         }
         // Current implementation restriction: engine OpenTelemetry requires global OpenTelemetry.
@@ -175,11 +197,13 @@ mod tests {
         global: ProviderMode,
         engine: ProviderMode,
         internal: ProviderMode,
+        admin: ProviderMode,
     ) -> LoggingProviders {
         LoggingProviders {
             global,
             engine,
             internal,
+            admin,
         }
     }
 
@@ -190,7 +214,7 @@ mod tests {
         internal: ProviderMode,
     ) -> LogsConfig {
         LogsConfig {
-            providers: providers(global, engine, internal),
+            providers: providers(global, engine, internal, ProviderMode::ConsoleDirect),
             ..Default::default()
         }
     }
@@ -215,6 +239,7 @@ mod tests {
         assert_eq!(config.providers.global, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
+        assert_eq!(config.providers.admin, ProviderMode::ConsoleDirect);
         assert!(config.processors.is_empty());
 
         // Serde defaults should match Rust Default
@@ -223,6 +248,7 @@ mod tests {
         assert_eq!(parsed.providers.global, config.providers.global);
         assert_eq!(parsed.providers.engine, config.providers.engine);
         assert_eq!(parsed.providers.internal, config.providers.internal);
+        assert_eq!(parsed.providers.admin, config.providers.admin);
     }
 
     #[test]
@@ -292,6 +318,31 @@ mod tests {
 
         // Both OpenTelemetry succeeds
         let config = config_with(OpenTelemetry, OpenTelemetry, Noop);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_admin_cannot_use_console_async() {
+        use ProviderMode::*;
+        // Admin ConsoleAsync should fail validation
+        let config = LogsConfig {
+            providers: providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleAsync),
+            ..Default::default()
+        };
+        assert_invalid(&config, "admin provider cannot be 'console_async'");
+
+        // Admin ConsoleDirect should succeed
+        let config = LogsConfig {
+            providers: providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+
+        // Admin Noop should succeed
+        let config = LogsConfig {
+            providers: providers(ConsoleAsync, ConsoleAsync, Noop, Noop),
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 }

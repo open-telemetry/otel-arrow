@@ -14,7 +14,7 @@ use otap_df_config::{
 };
 use otap_df_telemetry::event::{EventMessage, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::self_tracing::ConsoleWriter;
-use otap_df_telemetry::{error_event, info_event};
+use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,10 +34,10 @@ pub struct ObservedStateStore {
     reporting_timeout: Duration,
 
     #[serde(skip)]
-    health_policy: HealthPolicy,
+    fallback_mode: ProviderMode,
 
     #[serde(skip)]
-    fallback_logging: ProviderMode,
+    health_policy: HealthPolicy,
 
     #[serde(skip)]
     sender: flume::Sender<ObservedEvent>,
@@ -64,8 +64,10 @@ impl ObservedStateHandle {
         match self.pipelines.lock() {
             Ok(guard) => guard.clone(),
             Err(poisoned) => {
-                log::warn!(
-                    "ObservedStateHandle mutex was poisoned; returning possibly stale snapshot"
+                otel_error!(
+                    "state.mutex_poisoned",
+                    context = "ObservedStateHandle::snapshot",
+                    action = "returning possibly stale snapshot"
                 );
                 poisoned.into_inner().clone()
             }
@@ -86,8 +88,8 @@ impl ObservedStateStore {
 
         Self {
             reporting_timeout: config.pipeline_settings().observed_state.reporting_timeout,
+            fallback_mode: config.service().telemetry.logs.providers.internal,
             health_policy: config.pipeline_settings().health_policy.clone(),
-            fallback_logging: config.service().telemetry.logs.providers.internal,
             sender,
             receiver,
             console: ConsoleWriter::color(),
@@ -100,7 +102,7 @@ impl ObservedStateStore {
     pub fn reporter(&self) -> ObservedEventReporter {
         ObservedEventReporter::new(
             self.reporting_timeout,
-            self.fallback_logging,
+            self.fallback_mode,
             self.sender.clone(),
         )
     }
@@ -116,15 +118,12 @@ impl ObservedStateStore {
     /// Reports a new observed event in the store.
     fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
         match &observed_event.r#type {
-            // TODO: QUESTION!
-            EventType::Request(_) => self.console.print_log_record(
-                observed_event.time,
-                &info_event!("Observed event", observed_event = ?observed_event),
-            ),
-            EventType::Error(_) => self.console.print_log_record(
-                observed_event.time,
-                &error_event!("Observed error", observed_event = ?observed_event),
-            ),
+            EventType::Request(_) => {
+                otel_info!("state.observed_event", observed_event = ?observed_event);
+            }
+            EventType::Error(_) => {
+                otel_error!("state.observed_error", observed_event = ?observed_event);
+            }
             EventType::Success(_) => {}
             EventType::Log => {
                 if let EventMessage::Log(record) = &observed_event.message {
@@ -139,8 +138,10 @@ impl ObservedStateStore {
         };
 
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
-            log::warn!(
-                "ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state"
+            otel_error!(
+                "state.mutex_poisoned",
+                context = "ObservedStateStore::report",
+                action = "continuing with possibly inconsistent state"
             );
             poisoned.into_inner()
         });
@@ -173,7 +174,7 @@ impl ObservedStateStore {
                 // Exit the loop if the channel is closed
                 while let Ok(event) = self.receiver.recv_async().await {
                     if let Err(e) = self.report(event) {
-                        log::error!("Error reporting observed event: {e}");
+                        otel_error!("state.report_failed", error = ?e);
                     }
                 }
             } => { /* Channel closed, exit gracefully */ }
