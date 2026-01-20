@@ -36,7 +36,7 @@ pub mod _private {
 #[macro_export]
 macro_rules! otel_info {
     ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
+        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -55,7 +55,7 @@ macro_rules! otel_info {
 #[macro_export]
 macro_rules! otel_warn {
     ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -74,7 +74,7 @@ macro_rules! otel_warn {
 #[macro_export]
 macro_rules! otel_debug {
     ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -93,7 +93,7 @@ macro_rules! otel_debug {
 #[macro_export]
 macro_rules! otel_error {
     ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { name = $name, $($($fields)*)? }, "");
+        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -128,7 +128,7 @@ macro_rules! __log_record_impl {
         static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
             name: $name,
             kind: $crate::_private::Kind::EVENT,
-            target: module_path!(),
+            target: env!("CARGO_PKG_NAME"),
             level: $level,
             fields: $($($fields)*)?
         };
