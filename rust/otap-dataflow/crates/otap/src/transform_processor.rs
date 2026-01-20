@@ -164,6 +164,18 @@ impl TransformProcessor {
                 error: "Routing error:".into(),
             })?;
 
+        /// access the batch that was the output of the call to pipeline.execute. This should
+        /// eventually be sent on the default out_port
+        let default_otap_batch = match pipeline_result {
+            Ok(otap_batch) => otap_batch,
+            Err(e) => {
+                // clear any batches that are in the buffer to be routed, as the pipeline failed
+                // to execute
+                router_impl.routed.clear();
+                return Err(e);
+            }
+        };
+
         // TODO - there's probably some optimization we can make below where if there's only one
         // non-empty batch to be output, we don't need to change any contexts or subscriptions
 
@@ -195,41 +207,42 @@ impl TransformProcessor {
                 source_detail: "".into(),
             })?;
 
-        // juggle the context for the output of the pipeline. We need to do this b/c we'll be
-        // emitting this batch, plus any routed batches, and we don't want to Ack the inbound
-        // context until we receive Acks from all downstream batches (including this result)
-        if let Ok(otap_batch) = pipeline_result {
-            let mut pdata = OtapPdata::new(Context::default(), otap_batch.into());
-            let outbound_key = self
-                .contexts
-                .insert_outbound(inbound_ctx_key)
-                .ok_or_else(|| {
-                    // if we can't emit the default batch, we won't be able to route any of the
-                    // routed batches, so clear them to ensure they're not stuck in the router's
-                    // buffer
-                    router_impl.routed.clear();
+        // send the output of the pipeline to the default outport while juggling the context for
+        // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
+        // any routed batches, and we don't want to Ack the inbound context until we receive Acks
+        // from all downstream batches (including this result)
+        let mut pdata = OtapPdata::new(Context::default(), default_otap_batch.into());
+        let outbound_key = self
+            .contexts
+            .insert_outbound(inbound_ctx_key)
+            .ok_or_else(|| {
+                // if we can't emit the default batch, we won't be able to route any of the
+                // routed batches, so clear them to ensure they're not stuck in the router's
+                // buffer
+                router_impl.routed.clear();
 
-                    // clear the inbound slot we allocated above as we haven't emitted anything
-                    // that would eventually get Ack/Nack'd to clear it later
-                    self.contexts.clear_inbound(inbound_ctx_key);
+                // clear the inbound slot we allocated above as we haven't emitted anything
+                // that would eventually get Ack/Nack'd to clear it later
+                self.contexts.clear_inbound(inbound_ctx_key);
 
-                    EngineError::ProcessorError {
-                        processor: effect_handler.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: "outbound slots not available".into(),
-                        source_detail: "".into(),
-                    }
-                })?;
-            if !outbound_key.is_null() {
-                effect_handler.subscribe_to(
-                    Interests::NACKS | Interests::ACKS,
-                    outbound_key.into(),
-                    &mut pdata,
-                );
-            }
-            effect_handler.send_message(pdata).await?;
+                EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Other,
+                    error: "outbound slots not available".into(),
+                    source_detail: "".into(),
+                }
+            })?;
+        if !outbound_key.is_null() {
+            effect_handler.subscribe_to(
+                Interests::NACKS | Interests::ACKS,
+                outbound_key.into(),
+                &mut pdata,
+            );
         }
+        effect_handler.send_message(pdata).await?;
 
+        // handle any batches that need to be forwarded to a specific out_port thanks to invocation
+        // of a "route_to" operator call
         for (route_name, otap_batch) in router_impl.routed.drain(..) {
             // Find the port name that matches the route name.
             let port_name = effect_handler
