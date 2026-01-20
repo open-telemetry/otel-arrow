@@ -155,14 +155,7 @@ impl<PData> EffectHandler<PData> {
                 .send(data)
                 .await
                 .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::ProcessorError {
-                processor: self.processor_id(),
-                kind: ProcessorErrorKind::Configuration,
-                error:
-                    "Ambiguous default out port: multiple ports connected and no default configured"
-                        .to_string(),
-                source_detail: String::new(),
-            })),
+            None => Err(self.no_default_port_error()),
         }
     }
 
@@ -193,6 +186,36 @@ impl<PData> EffectHandler<PData> {
                 source_detail: String::new(),
             })),
         }
+    }
+
+    /// Attempts to send a message without blocking.
+    ///
+    /// Unlike `send_message`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if no default port is configured.
+    #[inline]
+    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+        match &self.default_sender {
+            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
+            None => Err(self.no_default_port_error()),
+        }
+    }
+
+    /// Creates an error for when no default output port is configured.
+    fn no_default_port_error<T>(&self) -> TypedError<T> {
+        TypedError::Error(Error::ProcessorError {
+            processor: self.processor_id(),
+            kind: ProcessorErrorKind::Configuration,
+            error:
+                "Ambiguous default out port: multiple ports connected and no default configured"
+                    .to_string(),
+            source_detail: String::new(),
+        })
     }
 
     /// Print an info message to stdout.
@@ -261,6 +284,7 @@ mod tests {
     use super::*;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
+    use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -375,5 +399,58 @@ mod tests {
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
         assert_eq!(ports, expected);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_try_send_message_success() {
+        let (tx, rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, Some("out".into()), metrics_reporter);
+
+        // Should succeed when channel has capacity
+        assert!(eh.try_send_message(42).is_ok());
+        assert_eq!(rx.recv().await.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn effect_handler_try_send_message_channel_full() {
+        // Create a channel with capacity 1
+        let (tx, _rx) = channel::<u64>(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, Some("out".into()), metrics_reporter);
+
+        // First send should succeed
+        assert!(eh.try_send_message(1).is_ok());
+
+        // Second send should fail with Full since channel capacity is 1
+        let result = eh.try_send_message(2);
+        assert!(matches!(
+            result,
+            Err(TypedError::ChannelSendError(SendError::Full(2)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn effect_handler_try_send_message_no_default_sender() {
+        let (a_tx, _a_rx) = channel::<u64>(10);
+        let (b_tx, _b_rx) = channel::<u64>(10);
+
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        // No default port specified with multiple ports = ambiguous
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // Should return configuration error when no default sender
+        let result = eh.try_send_message(99);
+        assert!(matches!(result, Err(TypedError::Error(_))));
     }
 }
