@@ -190,11 +190,9 @@ impl TransformProcessor {
 
         // keep error reason if there was an error, so we can send it to upstream in Nack once
         // all routed outbound batches have been Ack/Nack'd
-        let error_reason = None;
-
         let inbound_ctx_key = self
             .contexts
-            .insert_inbound(inbound_context, error_reason)
+            .insert_inbound(inbound_context, None)
             .ok_or_else(|| EngineError::ProcessorError {
                 processor: effect_handler.processor_id(),
                 kind: ProcessorErrorKind::Other,
