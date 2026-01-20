@@ -851,7 +851,7 @@ mod tests {
                 assert!(res_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(res_attrs.iter().any(|kv| kv.key == "r"));
 
-                // Scope 'c' should remain
+                // Scope 'c' should not be inserted; 'a' should remain
                 let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
                     .scope
                     .as_ref()
