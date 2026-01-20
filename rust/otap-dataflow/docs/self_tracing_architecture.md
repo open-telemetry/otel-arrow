@@ -157,7 +157,7 @@ Synchronous console output. Simple but may block the producing thread.
 ### ConsoleAsync Provider
 
 Asynchronous console output via a bounded channel. Non-blocking for
-the producing thread; logs may be dropped if the channel is full.
+the producing thread; logs will be dropped if the channel is full.
 
 ```
 ┌─────────────────────┐
