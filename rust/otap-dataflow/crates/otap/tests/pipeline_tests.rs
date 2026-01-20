@@ -8,6 +8,7 @@
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.
 
+use otap_df_config::observed_state::ObservedStateSettings;
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
@@ -64,7 +65,7 @@ fn test_telemetry_registries_cleanup() {
     let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
         pipeline_ctrl_msg_channel(pipeline_settings.default_pipeline_ctrl_msg_channel_size);
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
-    let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+    let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
 
     let pipeline_key = DeployedPipelineKey {
         pipeline_group_id,
