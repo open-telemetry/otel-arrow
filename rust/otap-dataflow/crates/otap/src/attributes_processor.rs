@@ -847,7 +847,6 @@ mod tests {
                     .unwrap()
                     .attributes;
 
-                println!("Resource attrs: {:?}", res_attrs);
 
                 assert!(res_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(res_attrs.iter().any(|kv| kv.key == "r"));
