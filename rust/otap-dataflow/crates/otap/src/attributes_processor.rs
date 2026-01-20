@@ -903,7 +903,10 @@ mod tests {
                 let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(log_attrs.iter().any(|kv| kv.key == "count"));
+                assert!(
+                    log_attrs
+                         .iter()
+                         .any(|kv| kv.key == "count" && kv.value == Some(AnyValue::new_int(42)));
                 assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
             })
             .validate(|_| async move {});
