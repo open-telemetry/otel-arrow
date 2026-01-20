@@ -3202,8 +3202,7 @@ mod test {
         test_filter_with_nulls::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_filter_numeric_comparison_binary_operators() {
+    async fn run_filter_numeric_comparison_binary_operators_test<P: Parser>() {
         let log_records = vec![
             LogRecord::build()
                 .event_name("1")
@@ -3231,7 +3230,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] > 2",
             to_logs_data(log_records.clone()),
         )
@@ -3241,7 +3240,7 @@ mod test {
             &[log_records[2].clone()],
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] >= 2",
             to_logs_data(log_records.clone()),
         )
@@ -3251,7 +3250,7 @@ mod test {
             &[log_records[1].clone(), log_records[2].clone()],
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] < 2",
             to_logs_data(log_records.clone()),
         )
@@ -3261,7 +3260,7 @@ mod test {
             &[log_records[0].clone()],
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where attributes[\"z\"] <= 2",
             to_logs_data(log_records.clone()),
         )
@@ -3270,6 +3269,16 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()],
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_numeric_comparison_binary_operators_kql_parser() {
+        run_filter_numeric_comparison_binary_operators_test::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_numeric_comparison_binary_operators_opl_parser() {
+        run_filter_numeric_comparison_binary_operators_test::<OplParser>().await;
     }
 
     async fn test_filter_nomatch<P: Parser>() {

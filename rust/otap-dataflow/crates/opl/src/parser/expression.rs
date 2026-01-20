@@ -6,10 +6,10 @@ use std::sync::LazyLock;
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
     DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
-    IntegerScalarExpression, IntegerValue, LogicalExpression, MathScalarExpression,
-    NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
-    ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-    ValueAccessor,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    IntegerValue, LogicalExpression, MathScalarExpression, NotLogicalExpression,
+    NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -184,30 +184,63 @@ pub(crate) fn parse_rel_expression(
             })?
             .into();
 
-        let expr = match op_rule.as_rule() {
-            Rule::rel_op_eq => LogicalExpression::EqualTo(EqualToLogicalExpression::new(
-                query_location,
-                left_expr.into(),
-                right_expr,
-                true,
-            )),
-            Rule::rel_op_neq => LogicalExpression::Not(NotLogicalExpression::new(
-                query_location.clone(),
-                LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+        let expr =
+            match op_rule.as_rule() {
+                Rule::rel_op_eq => LogicalExpression::EqualTo(EqualToLogicalExpression::new(
                     query_location,
                     left_expr.into(),
                     right_expr,
                     true,
                 )),
-            )),
-            invalid_rule => {
-                return Err(invalid_child_rule_error(
-                    query_location,
-                    Rule::rel_expression,
-                    invalid_rule,
-                ));
-            }
-        };
+
+                Rule::rel_op_neq => LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::EqualTo(EqualToLogicalExpression::new(
+                        query_location,
+                        left_expr.into(),
+                        right_expr,
+                        true,
+                    )),
+                )),
+                Rule::rel_op_gt => LogicalExpression::GreaterThan(
+                    GreaterThanLogicalExpression::new(query_location, left_expr.into(), right_expr),
+                ),
+
+                Rule::rel_op_gte => LogicalExpression::GreaterThanOrEqualTo(
+                    GreaterThanOrEqualToLogicalExpression::new(
+                        query_location,
+                        left_expr.into(),
+                        right_expr,
+                    ),
+                ),
+                // a < b  =>  not (a >= b)
+                Rule::rel_op_lt => LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::GreaterThanOrEqualTo(
+                        GreaterThanOrEqualToLogicalExpression::new(
+                            query_location,
+                            left_expr.into(),
+                            right_expr,
+                        ),
+                    ),
+                )),
+                // a <= b => not (a > b)
+                Rule::rel_op_lte => LogicalExpression::Not(NotLogicalExpression::new(
+                    query_location.clone(),
+                    LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                        query_location,
+                        left_expr.into(),
+                        right_expr,
+                    )),
+                )),
+                invalid_rule => {
+                    return Err(invalid_child_rule_error(
+                        query_location,
+                        Rule::rel_expression,
+                        invalid_rule,
+                    ));
+                }
+            };
 
         Ok(expr.into())
     } else {
@@ -563,10 +596,11 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
 mod test {
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        DoubleScalarExpression, EqualToLogicalExpression, IntegerScalarExpression,
-        LogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
-        OrLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        DoubleScalarExpression, EqualToLogicalExpression, GreaterThanLogicalExpression,
+        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
+        MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
+        QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
+        StringScalarExpression, ValueAccessor,
     };
     use pest::Parser;
     use pretty_assertions::assert_eq;
@@ -788,6 +822,117 @@ mod test {
                 IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
             )),
             true,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_rel_expression_greater_than() {
+        let input = "a > 10";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+
+        let expected = LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+            QueryLocation::new_fake(),
+            ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                    StaticScalarExpression::String(StringScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        "a",
+                    )),
+                )]),
+            )),
+            ScalarExpression::Static(StaticScalarExpression::Integer(
+                IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+            )),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_rel_expression_greater_than_or_equal_to() {
+        let input = "a >= 10";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+
+        let expected =
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                )),
+            ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_rel_expression_less_than_lowered() {
+        let input = "a < 10";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+
+        let expected = LogicalExpression::Not(NotLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::GreaterThanOrEqualTo(GreaterThanOrEqualToLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                )),
+            )),
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_rel_expression_less_than_or_equal_to_lowered() {
+        let input = "a <= 10";
+        let mut rules = OplPestParser::parse(Rule::expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: LogicalExpression = parse_expression(rules.next().unwrap()).unwrap().into();
+
+        let expected = LogicalExpression::Not(NotLogicalExpression::new(
+            QueryLocation::new_fake(),
+            LogicalExpression::GreaterThan(GreaterThanLogicalExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    )]),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 10),
+                )),
+            )),
         ));
 
         assert_eq!(result, expected);
