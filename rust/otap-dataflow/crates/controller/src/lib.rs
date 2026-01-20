@@ -44,12 +44,8 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::{EngineConfig, EngineSettings, HttpAdminSettings};
-use otap_df_config::{
-    PipelineGroupId, PipelineId,
-    pipeline::{CoreAllocation, PipelineConfig, Quota},
-    pipeline_group::PipelineGroupConfig,
-};
+use otap_df_config::engine::EngineConfig;
+use otap_df_config::pipeline::{CoreAllocation, PipelineConfig};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
@@ -63,7 +59,6 @@ use otap_df_state::store::ObservedStateStore;
 use otap_df_state::{DeployedPipelineKey, PipelineKey};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
-use std::collections::HashMap;
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -163,8 +158,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         for (pipeline_group_id, pipeline_group) in pipeline_groups {
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
                 let quota = pipeline.quota().clone();
-                let requested_cores =
-                    Self::select_cores_for_quota(available_core_ids.clone(), quota)?;
+                let requested_cores = Self::select_cores_for_allocation(
+                    available_core_ids.clone(),
+                    &quota.core_allocation,
+                )?;
 
                 for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
                     let pipeline_key = DeployedPipelineKey {
@@ -323,24 +320,24 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         Ok(())
     }
 
-    /// Selects which CPU cores to use based on the given quota configuration.
-    fn select_cores_for_quota(
+    /// Selects which CPU cores to use based on the given allocation.
+    fn select_cores_for_allocation(
         mut available_core_ids: Vec<CoreId>,
-        quota: Quota,
+        core_allocation: &CoreAllocation,
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
 
-        match quota.core_allocation {
+        match core_allocation {
             CoreAllocation::AllCores => Ok(available_core_ids),
             CoreAllocation::CoreCount { count } => {
-                if count == 0 {
+                if *count == 0 {
                     Ok(available_core_ids)
-                } else if count > num_cores {
+                } else if *count > num_cores {
                     Err(Error::InvalidCoreAllocation {
-                        alloc: quota.core_allocation.clone(),
+                        alloc: core_allocation.clone(),
                         message: format!(
                             "Requested {} cores but only {} cores available on this system",
                             count, num_cores
@@ -348,15 +345,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         available: available_core_ids.iter().map(|c| c.id).collect(),
                     })
                 } else {
-                    Ok(available_core_ids.into_iter().take(count).collect())
+                    Ok(available_core_ids.into_iter().take(*count).collect())
                 }
             }
-            CoreAllocation::CoreSet { ref set } => {
+            CoreAllocation::CoreSet { set } => {
                 // Validate all ranges first
                 for r in set.iter() {
                     if r.start > r.end {
                         return Err(Error::InvalidCoreAllocation {
-                            alloc: quota.core_allocation.clone(),
+                            alloc: core_allocation.clone(),
                             message: format!(
                                 "Invalid core range: start ({}) is greater than end ({})",
                                 r.start, r.end
@@ -366,7 +363,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     }
                     if r.start > max_core_id {
                         return Err(Error::InvalidCoreAllocation {
-                            alloc: quota.core_allocation.clone(),
+                            alloc: core_allocation.clone(),
                             message: format!(
                                 "Core ID {} exceeds available cores (system has cores 0-{})",
                                 r.start, max_core_id
@@ -376,7 +373,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     }
                     if r.end > max_core_id {
                         return Err(Error::InvalidCoreAllocation {
-                            alloc: quota.core_allocation.clone(),
+                            alloc: core_allocation.clone(),
                             message: format!(
                                 "Core ID {} exceeds available cores (system has cores 0-{})",
                                 r.end, max_core_id
@@ -394,7 +391,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             let overlap_start = r1.start.max(r2.start);
                             let overlap_end = r1.end.min(r2.end);
                             return Err(Error::InvalidCoreAllocation {
-                                alloc: quota.core_allocation.clone(),
+                                alloc: core_allocation.clone(),
                                 message: format!(
                                     "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
                                     r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
@@ -416,7 +413,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                 if selected.is_empty() {
                     return Err(Error::InvalidCoreAllocation {
-                        alloc: quota.core_allocation.clone(),
+                        alloc: core_allocation.clone(),
                         message: "No available cores in the specified ranges".to_owned(),
                         available: core_affinity::get_core_ids()
                             .unwrap_or_default()
@@ -543,23 +540,24 @@ mod tests {
 
     #[test]
     fn select_all_cores_by_default() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::AllCores,
-        };
+        let core_allocation = CoreAllocation::AllCores;
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 
     #[test]
     fn select_limited_by_num_cores() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreCount { count: 4 },
-        };
+        let core_allocation = CoreAllocation::CoreCount { count: 4 };
         let available_core_ids = available_core_ids();
-        let result =
-            Controller::<()>::select_cores_for_quota(available_core_ids.clone(), quota).unwrap();
+        let result = Controller::<()>::select_cores_for_allocation(
+            available_core_ids.clone(),
+            &core_allocation,
+        )
+        .unwrap();
         assert_eq!(result.len(), 4);
         let expected_ids: Vec<usize> = available_core_ids
             .into_iter()
@@ -573,30 +571,30 @@ mod tests {
     fn select_with_valid_single_core_range() {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreSet {
-                set: vec![CoreRange {
-                    start: first_id,
-                    end: first_id,
-                }],
-            },
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange {
+                start: first_id,
+                end: first_id,
+            }],
         };
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), vec![first_id]);
     }
 
     #[test]
     fn select_with_valid_multi_core_range() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 2, end: 5 },
-                    CoreRange { start: 6, end: 6 },
-                ],
-            },
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 5 },
+                CoreRange { start: 6, end: 6 },
+            ],
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5, 6]);
     }
 
@@ -605,11 +603,10 @@ mod tests {
         let core_allocation = CoreAllocation::CoreSet {
             set: vec![CoreRange { start: 2, end: 1 }],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -625,11 +622,10 @@ mod tests {
         let core_allocation = CoreAllocation::CoreSet {
             set: vec![CoreRange { start, end }],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -640,12 +636,12 @@ mod tests {
 
     #[test]
     fn select_with_zero_count_uses_all_cores() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreCount { count: 0 },
-        };
+        let core_allocation = CoreAllocation::CoreCount { count: 0 };
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 
@@ -657,11 +653,10 @@ mod tests {
                 CoreRange { start: 4, end: 7 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -683,11 +678,10 @@ mod tests {
                 CoreRange { start: 3, end: 5 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -709,11 +703,10 @@ mod tests {
                 CoreRange { start: 3, end: 5 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -730,16 +723,16 @@ mod tests {
     #[test]
     fn select_with_adjacent_ranges_succeeds() {
         // Adjacent but non-overlapping ranges should work
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 2, end: 3 },
-                    CoreRange { start: 4, end: 5 },
-                ],
-            },
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 3 },
+                CoreRange { start: 4, end: 5 },
+            ],
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
     }
 
@@ -752,11 +745,10 @@ mod tests {
                 CoreRange { start: 5, end: 6 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
