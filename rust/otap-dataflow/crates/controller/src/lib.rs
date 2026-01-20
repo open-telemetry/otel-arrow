@@ -18,7 +18,7 @@
 //! - TODO: Support pipeline groups
 
 use crate::error::Error;
-use crate::thread_task::spawn_thread_local_task_with_tracing;
+use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::engine::HttpAdminSettings;
@@ -111,7 +111,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let telemetry_registry = telemetry_system.registry();
         let internal_collector = telemetry_system.collector();
         let admin_setup_for_metrics_agg = admin_tracing_setup.clone();
-        let metrics_agg_handle = spawn_thread_local_task_with_tracing(
+        let metrics_agg_handle = spawn_thread_local_task(
             "metrics-aggregator",
             admin_setup_for_metrics_agg,
             log_level,
@@ -121,7 +121,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Start the metrics dispatcher only if there are metric readers configured.
         let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
             let admin_setup_for_metrics_disp = admin_tracing_setup.clone();
-            Some(spawn_thread_local_task_with_tracing(
+            Some(spawn_thread_local_task(
                 "metrics-dispatcher",
                 admin_setup_for_metrics_disp,
                 log_level,
@@ -133,7 +133,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the observed state store background task
         let admin_setup_for_obs_store = admin_tracing_setup.clone();
-        let obs_state_join_handle = spawn_thread_local_task_with_tracing(
+        let obs_state_join_handle = spawn_thread_local_task(
             "observed-state-store",
             admin_setup_for_obs_store,
             log_level,
@@ -209,7 +209,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         drop(metrics_reporter);
 
         // Start the admin HTTP server
-        let admin_server_handle = spawn_thread_local_task_with_tracing(
+        let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
             log_level,

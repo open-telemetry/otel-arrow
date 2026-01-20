@@ -86,68 +86,24 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
 }
 
 /// Spawn a non-Send async task on a dedicated OS thread running a single-threaded
-/// Tokio runtime with a LocalSet. Returns a handle to signal shutdown and join.
+/// Tokio runtime with a LocalSet, plus a shutdown signal and thread-local tracing.
 ///
 /// The `task_factory` receives a CancellationToken that is cancelled when shutdown is requested
 /// and must return the async task to run. The task's `Output` is surfaced by `shutdown_and_join()`.
 ///
+/// The tracing subscriber is set as the thread-local default before the task
+/// runs, and remains active for the duration of the thread.
+///
 /// Contract:
 /// - The task should observe the cancellation token and exit promptly when it is cancelled.
 /// - `T` and `E` must be `Send + 'static` to cross the thread boundary.
-pub fn spawn_thread_local_task<T, E, Fut, F>(
-    thread_name: impl Into<String>,
-    task_factory: F,
-) -> Result<ThreadLocalTaskHandle<T, E>, crate::error::Error>
-where
-    T: Send + 'static,
-    E: Send + 'static,
-    Fut: 'static + Future<Output = Result<T, E>>,
-    F: 'static + Send + FnOnce(CancellationToken) -> Fut,
-{
-    let name = thread_name.into();
-    let name_for_thread = name.clone();
-    let token = CancellationToken::new();
-    let token_for_task = token.clone();
-
-    let join_handle = thread::Builder::new()
-        .name(name_for_thread)
-        .spawn(move || {
-            let rt = RtBuilder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("Failed to create runtime");
-            let local = LocalSet::new();
-
-            // Build the task future using the provided factory, passing the cancellation token.
-            let fut = task_factory(token_for_task);
-            // Run the future to completion on the LocalSet and return its result to the caller.
-            rt.block_on(local.run_until(fut))
-        })
-        .map_err(|e| crate::error::Error::ThreadSpawnError {
-            thread_name: name.clone(),
-            source: e,
-        })?;
-
-    Ok(ThreadLocalTaskHandle {
-        cancel_token: token,
-        join_handle: Some(join_handle),
-        name,
-    })
-}
-
-/// Spawn a non-Send async task on a dedicated OS thread with a thread-local
-/// tracing subscriber. This is like `spawn_thread_local_task` but installs
-/// the specified tracing subscriber for the thread's lifetime.
-///
-/// The tracing subscriber is set as the thread-local default before the task
-/// runs, and remains active for the duration of the thread.
 ///
 /// # Arguments
 /// * `thread_name` - Name for the spawned thread (for debugging)
 /// * `tracing_setup` - Configuration for the thread's tracing subscriber
 /// * `log_level` - Log level for the tracing subscriber
 /// * `task_factory` - Factory function that creates the async task to run
-pub fn spawn_thread_local_task_with_tracing<T, E, Fut, F>(
+pub fn spawn_thread_local_task<T, E, Fut, F>(
     thread_name: impl Into<String>,
     tracing_setup: TracingSetup,
     log_level: LogLevel,
