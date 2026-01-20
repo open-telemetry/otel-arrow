@@ -110,23 +110,50 @@ steps:
         post:
           - record_event:
               name: observation_stop
-  # Stop the load generator from sending traffic.
+  # Stop the load generator from sending traffic (blocking until fully drained).
   - name: Stop Load Generator
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/pipeline-groups/shutdown
+              url: http://localhost:8085/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
     action:
       no_op: {}
-  # Wait for all items in-flight to transit and ensure metrics are updated.
-  - name: Wait For Drain and Reset
+  # Stop the df-engine and wait for it to drain in-flight data to backend.
+  - name: Stop Engine
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8086/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+    action:
+      no_op: {}
+  # Stop the backend-service (ensures any internal processing completes).
+  - name: Stop Backend
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8087/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
+    action:
+      no_op: {}
+  # Brief wait to ensure final metrics are visible before scraping.
+  - name: Wait For Metrics Update
     action:
       wait:
-        delay_seconds: {{drain_seconds | default(3)}}
+        delay_seconds: 1
   # Stop monitoring all components.
   - name: Stop Monitoring All
     action:

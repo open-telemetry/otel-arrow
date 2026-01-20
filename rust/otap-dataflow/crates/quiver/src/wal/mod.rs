@@ -195,6 +195,9 @@ pub enum WalError {
     /// Configuration parameter is invalid.
     #[error("invalid wal configuration: {0}")]
     InvalidConfig(&'static str),
+    /// Internal state is inconsistent; indicates a bug.
+    #[error("wal internal error: {0}")]
+    InternalError(&'static str),
     /// Test-only failure that simulates a crash at a specific point.
     #[error("wal crash injected: {0}")]
     InjectedCrash(&'static str),

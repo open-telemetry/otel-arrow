@@ -87,23 +87,19 @@ steps:
         post:
           - record_event:
               name: observation_stop
-  # Stop the load generator from sending traffic.
+  # Stop the load generator from sending traffic (blocking until fully drained).
   - name: Stop Load Generator
     hooks:
       run:
         pre:
           - send_http_request:
-              url: http://localhost:8085/pipeline-groups/shutdown
+              url: http://localhost:8085/pipeline-groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
               method: POST
               headers:
                 "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}  # Client timeout slightly longer than server
     action:
       no_op: {}
-  # Wait for all items in-flight to transit and ensure metrics are updated.
-  - name: Wait For Drain and Reset
-    action:
-      wait:
-        delay_seconds: 3
   # Stop monitoring all components.
   - name: Stop Monitoring All
     action:

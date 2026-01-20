@@ -14,7 +14,7 @@ use otap_df_config::pipeline::service::telemetry::{
 
 use crate::{
     error::Error,
-    opentelemetry_client::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
+    otel_sdk::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
 };
 
 /// Client for the OpenTelemetry SDK.
@@ -101,6 +101,15 @@ impl OpentelemetryClient {
     #[must_use]
     pub fn logger_provider(&self) -> &SdkLoggerProvider {
         &self.logger_provider
+    }
+
+    /// Consume the client and return the tokio runtime (if any).
+    ///
+    /// This is used when the runtime ownership needs to be transferred
+    /// to the caller (e.g., to keep it alive in `InternalTelemetrySystem`).
+    #[must_use]
+    pub fn into_runtime(self) -> Option<tokio::runtime::Runtime> {
+        self._runtime
     }
 
     /// Shutdown the OpenTelemetry SDK.
