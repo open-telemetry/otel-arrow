@@ -15,7 +15,7 @@ use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffe
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, Float64Type, Int64Type, UInt8Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, Float64Type, Int64Type, UInt8Type,
     UInt16Type,
 };
 use arrow::row::{RowConverter, SortField};
@@ -874,13 +874,40 @@ pub fn transform_attributes_with_stats(
     // - The transformed batch (rb) to check which (parent_id, key) pairs already exist
     if let Some(insert) = &transform.insert {
         if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
-            let (new_rows, count) =
-                create_inserted_batch(&rb, original_parent_ids, insert, rb.schema().as_ref())?;
+            // Determine which value type columns we need based on what's being inserted
+            let needs_int = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Int(_)));
+            let needs_double = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Double(_)));
+            let needs_bool = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Bool(_)));
+            let needs_str = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Str(_)));
+
+            // Extend schema and batch to include missing value columns
+            let (rb_extended, extended_schema) =
+                extend_schema_for_inserts(&rb, needs_str, needs_int, needs_double, needs_bool)?;
+
+            let (new_rows, count) = create_inserted_batch(
+                &rb_extended,
+                original_parent_ids,
+                insert,
+                extended_schema.as_ref(),
+            )?;
             if count > 0 {
-                let combined = arrow::compute::concat_batches(&rb.schema(), &[rb, new_rows])
-                    .map_err(|e| Error::Format {
-                        error: e.to_string(),
-                    })?;
+                let combined =
+                    arrow::compute::concat_batches(&extended_schema, &[rb_extended, new_rows])
+                        .map_err(|e| Error::Format {
+                            error: e.to_string(),
+                        })?;
                 stats.inserted_entries = count as u64;
                 return Ok((combined, stats));
             }
@@ -3733,6 +3760,79 @@ mod test {
         let plain = transform_attributes(&input, &tx).unwrap();
         assert_eq!(with_stats, plain);
     }
+}
+
+/// Extend a RecordBatch's schema to include missing value columns needed for inserts.
+/// Returns the extended batch and schema. If no columns need to be added, returns a clone of
+/// the original batch with its schema.
+fn extend_schema_for_inserts(
+    batch: &RecordBatch,
+    needs_str: bool,
+    needs_int: bool,
+    needs_double: bool,
+    needs_bool: bool,
+) -> Result<(RecordBatch, Arc<arrow::datatypes::Schema>)> {
+    let schema = batch.schema();
+    let num_rows = batch.num_rows();
+
+    // Check which columns already exist
+    let has_str = schema.column_with_name(consts::ATTRIBUTE_STR).is_some();
+    let has_int = schema.column_with_name(consts::ATTRIBUTE_INT).is_some();
+    let has_double = schema.column_with_name(consts::ATTRIBUTE_DOUBLE).is_some();
+    let has_bool = schema.column_with_name(consts::ATTRIBUTE_BOOL).is_some();
+
+    // If all needed columns exist, return unchanged
+    if (!needs_str || has_str)
+        && (!needs_int || has_int)
+        && (!needs_double || has_double)
+        && (!needs_bool || has_bool)
+    {
+        return Ok((batch.clone(), schema));
+    }
+
+    // Build new schema with missing columns
+    let mut new_fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut new_columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+    // Add missing columns with null arrays
+    if needs_str && !has_str {
+        new_fields.push(Field::new(
+            consts::ATTRIBUTE_STR,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        ));
+        new_columns.push(arrow::array::new_null_array(
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            num_rows,
+        ));
+    }
+
+    if needs_int && !has_int {
+        new_fields.push(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true));
+        new_columns.push(arrow::array::new_null_array(&DataType::Int64, num_rows));
+    }
+
+    if needs_double && !has_double {
+        new_fields.push(Field::new(
+            consts::ATTRIBUTE_DOUBLE,
+            DataType::Float64,
+            true,
+        ));
+        new_columns.push(arrow::array::new_null_array(&DataType::Float64, num_rows));
+    }
+
+    if needs_bool && !has_bool {
+        new_fields.push(Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true));
+        new_columns.push(arrow::array::new_null_array(&DataType::Boolean, num_rows));
+    }
+
+    let new_schema = Arc::new(arrow::datatypes::Schema::new(new_fields));
+    let new_batch =
+        RecordBatch::try_new(new_schema.clone(), new_columns).map_err(|e| Error::Format {
+            error: e.to_string(),
+        })?;
+
+    Ok((new_batch, new_schema))
 }
 
 /// Helper to extract string key from a record batch key column at a given index.

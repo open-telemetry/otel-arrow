@@ -831,7 +831,11 @@ mod tests {
                     .unwrap()
                     .attributes;
 
-                assert!(res_attrs.iter().any(|kv| kv.key == "c"));
+                assert!(
+                    res_attrs
+                        .iter()
+                        .any(|kv| kv.key == "c" && kv.value == Some(AnyValue::new_string("val")))
+                );
                 assert!(res_attrs.iter().any(|kv| kv.key == "r"));
 
                 // Scope 'c' should not be inserted; 'a' should remain
@@ -903,10 +907,19 @@ mod tests {
                 let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
-                assert!(
-                    log_attrs
-                         .iter()
-                         .any(|kv| kv.key == "count" && kv.value == Some(AnyValue::new_int(42)));
+
+                // Verify the int value was inserted correctly
+                assert!(log_attrs.iter().any(|kv| kv.key == "count"));
+                let count_kv = log_attrs.iter().find(|kv| kv.key == "count").unwrap();
+                let inner_val = count_kv.value.as_ref().unwrap().value.as_ref().unwrap();
+                match inner_val {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::IntValue(
+                        i,
+                    ) => {
+                        assert_eq!(*i, 42);
+                    }
+                    _ => panic!("expected IntValue, got {:?}", inner_val),
+                }
                 assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
             })
             .validate(|_| async move {});
@@ -964,7 +977,17 @@ mod tests {
                 let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Verify the double value was inserted correctly
                 assert!(log_attrs.iter().any(|kv| kv.key == "ratio"));
+                let ratio_kv = log_attrs.iter().find(|kv| kv.key == "ratio").unwrap();
+                let inner_val = ratio_kv.value.as_ref().unwrap().value.as_ref().unwrap();
+                match inner_val {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::DoubleValue(d) => {
+                        assert!((d - 1.2345).abs() < f64::EPSILON);
+                    }
+                    _ => panic!("expected DoubleValue, got {:?}", inner_val),
+                }
                 assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
             })
             .validate(|_| async move {});
@@ -1022,7 +1045,17 @@ mod tests {
                 let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
 
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+                // Verify the bool value was inserted correctly
                 assert!(log_attrs.iter().any(|kv| kv.key == "enabled"));
+                let enabled_kv = log_attrs.iter().find(|kv| kv.key == "enabled").unwrap();
+                let inner_val = enabled_kv.value.as_ref().unwrap().value.as_ref().unwrap();
+                match inner_val {
+                    otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::BoolValue(b) => {
+                        assert!(*b);
+                    }
+                    _ => panic!("expected BoolValue, got {:?}", inner_val),
+                }
                 assert!(log_attrs.iter().any(|kv| kv.key == "existing"));
             })
             .validate(|_| async move {});
@@ -1172,7 +1205,10 @@ mod tests {
                 assert_eq!(log_attrs.len(), 3);
                 assert!(log_attrs.iter().any(|kv| kv.key == "existing_a"));
                 assert!(log_attrs.iter().any(|kv| kv.key == "existing_b"));
-                assert!(log_attrs.iter().any(|kv| kv.key == "new_key"));
+                assert!(
+                    log_attrs.iter().any(|kv| kv.key == "new_key"
+                        && kv.value == Some(AnyValue::new_string("new_value")))
+                );
             })
             .validate(|_| async move {});
     }
