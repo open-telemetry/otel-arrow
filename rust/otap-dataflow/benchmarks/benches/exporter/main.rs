@@ -423,7 +423,7 @@ fn bench_exporter(c: &mut Criterion) {
                     // Create a proper pipeline context for the benchmark
                     let metrics_system = InternalTelemetrySystem::default();
                     let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.metrics_reporter();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -483,7 +483,7 @@ fn bench_exporter(c: &mut Criterion) {
                     // Create a proper pipeline context for the benchmark
                     let metrics_system = InternalTelemetrySystem::default();
                     let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.metrics_reporter();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
@@ -549,7 +549,7 @@ fn bench_exporter(c: &mut Criterion) {
                     // Create a proper pipeline context for the benchmark
                     let metrics_system = InternalTelemetrySystem::default();
                     let metrics_registry_handle = metrics_system.registry();
-                    let metrics_reporter = metrics_system.metrics_reporter();
+                    let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
                     let pipeline_ctx =
                         controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);

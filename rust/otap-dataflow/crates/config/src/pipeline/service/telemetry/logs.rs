@@ -63,9 +63,8 @@ pub struct LoggingProviders {
     #[serde(default = "default_internal_provider")]
     pub internal: ProviderMode,
 
-    /// Provider mode for admin threads (observed-state-store, http-admin,
-    /// metrics-aggregator). Cannot be ConsoleAsync because that would create
-    /// a feedback loop with the observed-state-store. Defaults to ConsoleDirect.
+    /// Provider mode for admin threads. Cannot be ConsoleAsync as
+    /// that would create a feedback loop. Defaults to ConsoleDirect.
     #[serde(default = "default_admin_provider")]
     pub admin: ProviderMode,
 }
@@ -212,9 +211,10 @@ mod tests {
         global: ProviderMode,
         engine: ProviderMode,
         internal: ProviderMode,
+        admin: ProviderMode,
     ) -> LogsConfig {
         LogsConfig {
-            providers: providers(global, engine, internal, ProviderMode::ConsoleDirect),
+            providers: providers(global, engine, internal, admin),
             ..Default::default()
         }
     }
@@ -300,10 +300,10 @@ mod tests {
     #[test]
     fn test_validate_internal_cannot_use_reporter() {
         use ProviderMode::*;
-        let config = config_with(Noop, Noop, ITS);
+        let config = config_with(Noop, Noop, ITS, Noop);
         assert_invalid(&config, "internal provider is invalid");
 
-        let config = config_with(Noop, Noop, ConsoleAsync);
+        let config = config_with(Noop, Noop, ConsoleAsync, Noop);
         assert_invalid(&config, "internal provider is invalid");
     }
 
@@ -312,12 +312,12 @@ mod tests {
         use ProviderMode::*;
         // Engine OpenTelemetry without global OpenTelemetry fails
         for global in [Noop, ITS, ConsoleDirect, ConsoleAsync] {
-            let config = config_with(global, OpenTelemetry, Noop);
+            let config = config_with(global, OpenTelemetry, Noop, Noop);
             assert_invalid(&config, "opentelemetry");
         }
 
         // Both OpenTelemetry succeeds
-        let config = config_with(OpenTelemetry, OpenTelemetry, Noop);
+        let config = config_with(OpenTelemetry, OpenTelemetry, Noop, Noop);
         assert!(config.validate().is_ok());
     }
 
@@ -331,18 +331,13 @@ mod tests {
         };
         assert_invalid(&config, "admin provider cannot be 'console_async'");
 
-        // Admin ConsoleDirect should succeed
-        let config = LogsConfig {
-            providers: providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect),
-            ..Default::default()
-        };
-        assert!(config.validate().is_ok());
-
-        // Admin Noop should succeed
-        let config = LogsConfig {
-            providers: providers(ConsoleAsync, ConsoleAsync, Noop, Noop),
-            ..Default::default()
-        };
-        assert!(config.validate().is_ok());
+        // Others should succeed
+        for admin in [Noop, ITS, ConsoleDirect, OpenTelemetry] {
+            let config = LogsConfig {
+                providers: providers(ConsoleAsync, ConsoleAsync, Noop, admin),
+                ..Default::default()
+            };
+            assert!(config.validate().is_ok());
+        }
     }
 }

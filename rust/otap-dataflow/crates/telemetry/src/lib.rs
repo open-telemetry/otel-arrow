@@ -31,7 +31,9 @@ use crate::error::Error;
 use crate::event::ObservedEventReporter;
 use crate::registry::TelemetryRegistryHandle;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
-use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
+use otap_df_config::pipeline::service::telemetry::logs::{
+    LogLevel, LoggingProviders, ProviderMode,
+};
 
 pub mod attributes;
 pub mod collector;
@@ -127,17 +129,11 @@ pub struct InternalTelemetrySystem {
     /// Log level from config.
     log_level: LogLevel,
 
-    /// Global provider mode from config.
-    global_provider_mode: ProviderMode,
-
-    /// Engine provider mode from config.
-    engine_provider_mode: ProviderMode,
-
-    /// Admin provider mode from config (for admin threads).
-    admin_provider_mode: ProviderMode,
+    /// The logging providers.
+    provider_modes: LoggingProviders,
 
     /// Event reporter for asynchronous internal logging modes.
-    event_reporter: ObservedEventReporter,
+    admin_reporter: ObservedEventReporter,
 }
 
 impl InternalTelemetrySystem {
@@ -147,14 +143,14 @@ impl InternalTelemetrySystem {
     /// 1. The internal metrics subsystem (registry, collector, reporter, dispatcher)
     /// 2. The OpenTelemetry SDK providers (meter, and optionally logger)
     ///
-    /// The `event_reporter` is required for async logging modes (`ConsoleAsync`, future `ITS`).
+    /// The `admin_reporter` is required for async logging modes (`ConsoleAsync`, future `ITS`).
     /// Create the `ObservedStateStore` first and pass its reporter here.
     ///
     /// **Note:** The global tracing subscriber is NOT initialized here. Call
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
-        event_reporter: ObservedEventReporter,
+        admin_reporter: ObservedEventReporter,
     ) -> Result<Self, Error> {
         // Validate logs config
         config
@@ -190,10 +186,8 @@ impl InternalTelemetrySystem {
             logger_provider,
             _otel_runtime: otel_runtime,
             log_level: config.logs.level,
-            global_provider_mode: config.logs.providers.global,
-            engine_provider_mode: config.logs.providers.engine,
-            admin_provider_mode: config.logs.providers.admin,
-            event_reporter,
+            provider_modes: config.logs.providers.clone(),
+            admin_reporter,
         })
     }
 
@@ -202,7 +196,7 @@ impl InternalTelemetrySystem {
     /// This sets up the global subscriber based on the configured `global` provider mode.
     /// The event reporter passed to `new()` is used internally for async modes.
     pub fn init_global_subscriber(&self) {
-        let setup = self.tracing_setup_for(self.global_provider_mode);
+        let setup = self.tracing_setup_for(self.provider_modes.global);
 
         if let Err(err) = setup.try_init_global(self.log_level) {
             raw_error!("tracing.subscriber.init", error = err.to_string());
@@ -221,7 +215,7 @@ impl InternalTelemetrySystem {
             ProviderMode::ConsoleDirect => TracingSetup::ConsoleDirect,
 
             ProviderMode::ConsoleAsync => TracingSetup::ConsoleAsync {
-                reporter: self.event_reporter.clone(),
+                reporter: self.admin_reporter.clone(),
             },
 
             ProviderMode::OpenTelemetry => {
@@ -243,20 +237,15 @@ impl InternalTelemetrySystem {
     }
 
     /// Returns a `TracingSetup` for engine threads.
-    ///
-    /// This uses the configured `engine` provider mode from the config.
     #[must_use]
     pub fn engine_tracing_setup(&self) -> TracingSetup {
-        self.tracing_setup_for(self.engine_provider_mode)
+        self.tracing_setup_for(self.provider_modes.engine)
     }
 
     /// Returns a `TracingSetup` for admin threads.
-    ///
-    /// This uses the configured `admin` provider mode from the config.
-    /// Admin threads include: observed-state-store, http-admin, metrics-aggregator.
     #[must_use]
     pub fn admin_tracing_setup(&self) -> TracingSetup {
-        self.tracing_setup_for(self.admin_provider_mode)
+        self.tracing_setup_for(self.provider_modes.admin)
     }
 
     /// Returns the configured log level.
@@ -282,12 +271,6 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn reporter(&self) -> reporter::MetricsReporter {
         self.metrics_reporter.clone()
-    }
-
-    /// Returns a clone of the event reporter for observed events.
-    #[must_use]
-    pub fn event_reporter(&self) -> ObservedEventReporter {
-        self.event_reporter.clone()
     }
 
     /// Returns a shareable handle to the metrics dispatcher.
