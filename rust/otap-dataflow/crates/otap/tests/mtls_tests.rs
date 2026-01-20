@@ -7,6 +7,7 @@
 
 use otap_df_config::tls::{TlsConfig, TlsServerConfig};
 use otap_df_otap::tls_utils::build_reloadable_server_config;
+use otap_df_telemetry::{otel_debug, otel_info};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
@@ -106,7 +107,7 @@ async fn test_mtls_client_cert_verification() {
         match tls_acceptor.accept(stream).await {
             Ok(_tls_stream) => true,
             Err(e) => {
-                log::debug!("Server handshake failed: {}", e);
+                otel_debug!("Server handshake failed", error = ?e);
                 false
             }
         }
@@ -204,7 +205,7 @@ async fn test_mtls_missing_client_cert() {
         match tls_acceptor.accept(stream).await {
             Ok(_) => true,
             Err(e) => {
-                log::info!("Server correctly rejected client: {}", e);
+                otel_info!("Server correctly rejected client", error = ?e);
                 false
             }
         }
@@ -313,7 +314,7 @@ async fn test_mtls_wrong_client_cert() {
         match tls_acceptor.accept(stream).await {
             Ok(_) => true,
             Err(e) => {
-                log::info!("Server correctly rejected untrusted client: {}", e);
+                otel_info!("Server correctly rejected untrusted client", error = ?e);
                 false
             }
         }
@@ -654,7 +655,7 @@ async fn test_mtls_ca_hot_reload() {
         );
     }
 
-    log::info!("mTLS CA hot-reload test completed successfully");
+    otel_info!("mTLS CA hot-reload test completed successfully");
 }
 
 /// Test that server keeps accepting clients when CA file is replaced with invalid/corrupted content.
