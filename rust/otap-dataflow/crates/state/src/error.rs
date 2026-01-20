@@ -3,8 +3,8 @@
 
 //! Errors for the state crate.
 
-use crate::event::{EventType, ObservedEvent};
 use crate::phase::PipelinePhase;
+use otap_df_telemetry::event::{EventType, ObservedEvent};
 
 /// All errors that can occur in the state crate.
 #[derive(thiserror::Error, Debug)]

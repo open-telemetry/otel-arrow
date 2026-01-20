@@ -56,7 +56,7 @@ impl RecordsetKqlProcessor {
             })?;
 
         otap_df_telemetry::otel_info!(
-            "Processor.Ready",
+            "processor.ready",
             processor = "kql",
             message = "KQL processor initialized successfully"
         );
@@ -100,7 +100,7 @@ impl RecordsetKqlProcessor {
         let result = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
-                    "Processor.ProcessingLogs",
+                    "processor.processing_logs",
                     processor = "recordset_kql",
                     message = "Processing KQL query",
                     input_items = input_items,
@@ -124,7 +124,7 @@ impl RecordsetKqlProcessor {
                 let output_items = payload.num_items() as u64;
 
                 otap_df_telemetry::otel_debug!(
-                    "Processor.Success",
+                    "processor.success",
                     processor = "recordset_kql",
                     input_items = input_items,
                     output_items = output_items,
@@ -138,7 +138,7 @@ impl RecordsetKqlProcessor {
             Err(e) => {
                 let message = e.to_string();
                 otap_df_telemetry::otel_debug!(
-                    "Processor.Failure",
+                    "processor.failure",
                     processor = "recordset_kql",
                     input_items = input_items,
                     message = message,
@@ -202,7 +202,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     match Self::parse_bridge_options(&new_config.bridge_options) {
                                         Err(e) => {
                                             otap_df_telemetry::otel_warn!(
-                                                "Processor.ReconfigureError",
+                                                "processor.reconfigure_error",
                                                 processor = "kql",
                                                 message = format!("{e}")
                                             );
@@ -217,7 +217,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                 ) {
                                     Ok(pipeline) => {
                                         otap_df_telemetry::otel_info!(
-                                            "Processor.Reconfigured",
+                                            "processor.reconfigured",
                                             processor = "kql",
                                         );
 
@@ -228,7 +228,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                         let message =
                                             format!("Failed to parse updated query: {:?}", errors);
                                         otap_df_telemetry::otel_error!(
-                                            "Processor.ReconfigureError",
+                                            "processor.reconfigure_error",
                                             processor = "kql",
                                             message = message,
                                         );

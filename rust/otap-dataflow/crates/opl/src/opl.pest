@@ -111,9 +111,18 @@ multiplicative_expression = {
 
 rel_op_eq  = @{ "==" }
 rel_op_neq = @{ "!=" }
-rel_op     = _{
+rel_op_gte = @{ ">=" }
+rel_op_gt  = @{ ">" }
+rel_op_lte = @{ "<=" }
+rel_op_lt  = @{ "<" }
+
+rel_op = _{
     rel_op_eq
   | rel_op_neq
+  | rel_op_gte
+  | rel_op_gt
+  | rel_op_lte
+  | rel_op_lt
 }
 
 rel_expression = {
