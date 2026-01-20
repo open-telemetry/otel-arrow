@@ -27,12 +27,10 @@ use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
 // Re-export for convenience
 pub use crate::event::ObservedEventReporter;
-pub use tracing::dispatcher::DefaultGuard;
 
 /// Creates an `EnvFilter` for the given log level.
 ///
@@ -54,12 +52,63 @@ pub fn create_env_filter(level: LogLevel) -> EnvFilter {
     })
 }
 
-/// Configuration for setting up a tracing subscriber.
+/// Combined tracing configuration for a thread.
+///
+/// This struct bundles the provider setup with the log level, allowing
+/// the `InternalTelemetrySystem` to control all tracing configuration.
+/// Future enhancements may include per-thread log level overrides.
+#[derive(Clone)]
+pub struct TracingSetup {
+    /// The provider mode configuration.
+    pub provider: ProviderSetup,
+    /// The log level for filtering.
+    pub log_level: LogLevel,
+}
+
+impl TracingSetup {
+    /// Create a new tracing setup.
+    #[must_use]
+    pub fn new(provider: ProviderSetup, log_level: LogLevel) -> Self {
+        Self { provider, log_level }
+    }
+
+    /// Initialize this setup as the global tracing subscriber.
+    ///
+    /// This should be called once during startup to set the global subscriber.
+    /// Returns an error if a global subscriber has already been set.
+    ///
+    /// # Notes on Contention
+    ///
+    /// TODO: The engine uses a thread-per-core model and is NUMA aware.
+    /// The global subscriber here is truly global, and hence this will be a source
+    /// of contention. We need to evaluate alternatives:
+    ///
+    /// 1. Set up per thread subscriber using `tracing::subscriber::set_default`.
+    /// 2. Use custom subscriber that batches logs in thread-local buffer.
+    ///
+    /// As of now, this causes contention which we accept temporarily.
+    pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
+        self.provider.try_init_global(self.log_level)
+    }
+
+    /// Run a closure with the appropriate tracing subscriber for this setup.
+    ///
+    /// The closure runs with the configured logging layer active as a thread-local default.
+    /// This is useful for per-thread subscriber configuration in the engine.
+    pub fn with_subscriber<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        self.provider.with_subscriber(self.log_level, f)
+    }
+}
+
+/// Provider configuration for setting up a tracing subscriber.
 ///
 /// This enum captures all the resources needed for each provider mode,
 /// allowing deferred initialization of the global subscriber.
 #[derive(Clone)]
-pub enum TracingSetup {
+pub enum ProviderSetup {
     /// Logs are silently dropped.
     Noop,
 
@@ -80,89 +129,26 @@ pub enum TracingSetup {
     },
 }
 
-impl TracingSetup {
-    /// Initialize this setup as the global tracing subscriber.
-    ///
-    /// This should be called once during startup to set the global subscriber.
-    /// Returns an error if a global subscriber has already been set.
-    ///
-    /// # Notes on Contention
-    ///
-    /// TODO: The engine uses a thread-per-core model and is NUMA aware.
-    /// The global subscriber here is truly global, and hence this will be a source
-    /// of contention. We need to evaluate alternatives:
-    ///
-    /// 1. Set up per thread subscriber using `tracing::subscriber::set_default`.
-    /// 2. Use custom subscriber that batches logs in thread-local buffer.
-    ///
-    /// As of now, this causes contention which we accept temporarily.
-    pub fn try_init_global(
-        &self,
-        log_level: LogLevel,
-    ) -> Result<(), tracing_subscriber::util::TryInitError> {
+impl ProviderSetup {
+    /// Build a `Dispatch` for this provider setup with the given log level.
+    fn build_dispatch(&self, log_level: LogLevel) -> Dispatch {
         let filter = create_env_filter(log_level);
 
         match self {
-            TracingSetup::Noop => tracing::subscriber::NoSubscriber::new().try_init(),
+            ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
-            TracingSetup::ConsoleDirect => Registry::default()
-                .with(filter)
-                .with(RawLoggingLayer::new(ConsoleWriter::color()))
-                .try_init(),
-
-            TracingSetup::ConsoleAsync {
-                reporter,
-            } => {
-                let layer = ConsoleAsyncLayer::new(reporter);
-                Registry::default().with(filter).with(layer).try_init()
-            }
-
-            TracingSetup::OpenTelemetry { logger_provider } => {
-                let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
-                // Also add fmt layer for local console output alongside OTel export
-                let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
-                Registry::default()
-                    .with(filter)
-                    .with(fmt_layer)
-                    .with(sdk_layer)
-                    .try_init()
-            }
-        }
-    }
-
-    /// Set this setup as the thread-local default subscriber.
-    ///
-    /// Returns a guard that restores the previous subscriber when dropped.
-    /// This is useful for dedicated threads (like admin threads) that need
-    /// their own logging configuration for the thread's lifetime.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let setup = TracingSetup::ConsoleDirect;
-    /// let _guard = setup.set_thread_default(LogLevel::Info);
-    /// // All tracing calls on this thread now use ConsoleDirect
-    /// // Guard is dropped when thread exits, restoring previous subscriber
-    /// ```
-    #[must_use]
-    pub fn set_thread_default(&self, log_level: LogLevel) -> DefaultGuard {
-        let filter = create_env_filter(log_level);
-
-        let dispatch = match self {
-            TracingSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
-
-            TracingSetup::ConsoleDirect => Dispatch::new(
+            ProviderSetup::ConsoleDirect => Dispatch::new(
                 Registry::default()
                     .with(filter)
                     .with(RawLoggingLayer::new(ConsoleWriter::color())),
             ),
 
-            TracingSetup::ConsoleAsync { reporter } => {
+            ProviderSetup::ConsoleAsync { reporter } => {
                 let layer = ConsoleAsyncLayer::new(reporter);
                 Dispatch::new(Registry::default().with(filter).with(layer))
             }
 
-            TracingSetup::OpenTelemetry { logger_provider } => {
+            ProviderSetup::OpenTelemetry { logger_provider } => {
                 let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
                 let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
                 Dispatch::new(
@@ -172,9 +158,19 @@ impl TracingSetup {
                         .with(sdk_layer),
                 )
             }
-        };
+        }
+    }
 
-        tracing::dispatcher::set_default(&dispatch)
+    /// Initialize this setup as the global tracing subscriber.
+    ///
+    /// This should be called once during startup to set the global subscriber.
+    /// Returns an error if a global subscriber has already been set.
+    pub fn try_init_global(
+        &self,
+        log_level: LogLevel,
+    ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
+        let dispatch = self.build_dispatch(log_level);
+        tracing::dispatcher::set_global_default(dispatch)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -185,39 +181,8 @@ impl TracingSetup {
     where
         F: FnOnce() -> R,
     {
-        let filter = create_env_filter(log_level);
-
-        match self {
-            TracingSetup::Noop => {
-                let subscriber = tracing::subscriber::NoSubscriber::new();
-                tracing::subscriber::with_default(subscriber, f)
-            }
-
-            TracingSetup::ConsoleDirect => {
-                let subscriber = Registry::default()
-                    .with(filter)
-                    .with(RawLoggingLayer::new(ConsoleWriter::color()));
-                tracing::subscriber::with_default(subscriber, f)
-            }
-
-            TracingSetup::ConsoleAsync {
-                reporter,
-            } => {
-                let layer = ConsoleAsyncLayer::new(reporter);
-                let subscriber = Registry::default().with(filter).with(layer);
-                tracing::subscriber::with_default(subscriber, f)
-            }
-
-            TracingSetup::OpenTelemetry { logger_provider } => {
-                let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
-                let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
-                let subscriber = Registry::default()
-                    .with(filter)
-                    .with(fmt_layer)
-                    .with(sdk_layer);
-                tracing::subscriber::with_default(subscriber, f)
-            }
-        }
+        let dispatch = self.build_dispatch(log_level);
+        tracing::dispatcher::with_default(&dispatch, f)
     }
 }
 
@@ -247,9 +212,7 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let record = LogRecord::new(event);
-        let observed_event = ObservedEvent::log_record(
-            EventMessage::Log(record),
-        );
+        let observed_event = ObservedEvent::log_record(EventMessage::Log(record));
 
         // Use report() - it uses send_timeout internally.
         // Logs may be dropped if the channel is full, which is acceptable for async logging.
@@ -267,21 +230,21 @@ pub fn init_global_subscriber_for_mode(
     logger_provider: Option<&SdkLoggerProvider>,
     event_reporter: Option<&ObservedEventReporter>,
 ) {
-    let setup = match mode {
-        ProviderMode::Noop => TracingSetup::Noop,
+    let provider_setup = match mode {
+        ProviderMode::Noop => ProviderSetup::Noop,
 
-        ProviderMode::ConsoleDirect => TracingSetup::ConsoleDirect,
+        ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect,
 
         ProviderMode::ConsoleAsync => {
             let reporter = event_reporter.expect("ConsoleAsync requires event_reporter");
-            TracingSetup::ConsoleAsync {
+            ProviderSetup::ConsoleAsync {
                 reporter: reporter.clone(),
             }
         }
 
         ProviderMode::OpenTelemetry => {
             let provider = logger_provider.expect("OpenTelemetry requires logger_provider");
-            TracingSetup::OpenTelemetry {
+            ProviderSetup::OpenTelemetry {
                 logger_provider: provider.clone(),
             }
         }
@@ -290,11 +253,12 @@ pub fn init_global_subscriber_for_mode(
             // ITS mode not yet implemented - fall back to Noop
             // TODO: Implement ITS mode with Internal Telemetry Receiver
             crate::raw_error!("ITS provider mode not yet implemented, falling back to Noop");
-            TracingSetup::Noop
+            ProviderSetup::Noop
         }
     };
 
-    if let Err(err) = setup.try_init_global(log_level) {
+    let setup = TracingSetup::new(provider_setup, log_level);
+    if let Err(err) = setup.try_init_global() {
         crate::raw_error!("tracing.subscriber.init", error = err.to_string());
     }
 }

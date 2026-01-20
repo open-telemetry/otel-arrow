@@ -196,8 +196,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns a metrics reporter for use in the processor runtime.
-    /// TODO: rename metrics_reporter()
-    pub fn reporter(&self) -> MetricsReporter {
+    pub fn metrics_reporter(&self) -> MetricsReporter {
         self.metrics_system.reporter()
     }
 

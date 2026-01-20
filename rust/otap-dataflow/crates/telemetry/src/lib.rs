@@ -55,7 +55,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
-pub use tracing_init::{DefaultGuard, TracingSetup};
+pub use tracing_init::TracingSetup;
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -86,21 +86,7 @@ use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 /// This system manages:
 /// - Internal multivariate metrics (registry, collection, reporting)
 /// - OpenTelemetry SDK providers (metrics and logs export)
-/// - Tokio tracing subscriber configuration (deferred until `init_global_subscriber` is called)
-///
-/// # Initialization Pattern
-///
-/// Create the `ObservedStateStore` first, then pass its reporter to the telemetry system.
-/// The global tracing subscriber is NOT initialized during `new()` - call
-/// `init_global_subscriber()` when ready.
-///
-/// ```ignore
-/// let obs_store = ObservedStateStore::new(...);
-/// let telemetry = InternalTelemetrySystem::new(config, obs_store.reporter())?;
-///
-/// // Now initialize global logging (uses the reporter internally)
-/// telemetry.init_global_subscriber();
-/// ```
+/// - Tokio tracing subscriber configuration
 pub struct InternalTelemetrySystem {
     // === Internal Metrics Subsystem ===
     /// The telemetry registry that holds all registered entities and metrics (data + metadata).
@@ -198,7 +184,7 @@ impl InternalTelemetrySystem {
     pub fn init_global_subscriber(&self) {
         let setup = self.tracing_setup_for(self.provider_modes.global);
 
-        if let Err(err) = setup.try_init_global(self.log_level) {
+        if let Err(err) = setup.try_init_global() {
             raw_error!("tracing.subscriber.init", error = err.to_string());
         }
     }
@@ -209,31 +195,35 @@ impl InternalTelemetrySystem {
     /// The event reporter is taken from the internal state.
     #[must_use]
     pub fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
-        match mode {
-            ProviderMode::Noop => TracingSetup::Noop,
+        use tracing_init::ProviderSetup;
 
-            ProviderMode::ConsoleDirect => TracingSetup::ConsoleDirect,
+        let provider = match mode {
+            ProviderMode::Noop => ProviderSetup::Noop,
 
-            ProviderMode::ConsoleAsync => TracingSetup::ConsoleAsync {
+            ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect,
+
+            ProviderMode::ConsoleAsync => ProviderSetup::ConsoleAsync {
                 reporter: self.admin_reporter.clone(),
             },
 
             ProviderMode::OpenTelemetry => {
-                let provider = self
+                let logger = self
                     .logger_provider
                     .as_ref()
                     .expect("OpenTelemetry mode requires logger_provider");
-                TracingSetup::OpenTelemetry {
-                    logger_provider: provider.clone(),
+                ProviderSetup::OpenTelemetry {
+                    logger_provider: logger.clone(),
                 }
             }
 
             ProviderMode::ITS => {
                 // ITS mode not yet implemented - fall back to Noop
                 raw_error!("ITS provider mode not yet implemented, falling back to Noop");
-                TracingSetup::Noop
+                ProviderSetup::Noop
             }
-        }
+        };
+
+        TracingSetup::new(provider, self.log_level)
     }
 
     /// Returns a `TracingSetup` for engine threads.

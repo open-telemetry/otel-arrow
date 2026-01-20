@@ -22,7 +22,6 @@ use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -105,26 +104,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Get tracing setup for admin threads
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
-        let log_level = telemetry_system.log_level();
 
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
         let internal_collector = telemetry_system.collector();
-        let admin_setup_for_metrics_agg = admin_tracing_setup.clone();
         let metrics_agg_handle = spawn_thread_local_task(
             "metrics-aggregator",
-            admin_setup_for_metrics_agg,
-            log_level,
+            admin_tracing_setup.clone(),
             move |cancellation_token| internal_collector.run(cancellation_token),
         )?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
         let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
-            let admin_setup_for_metrics_disp = admin_tracing_setup.clone();
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
-                admin_setup_for_metrics_disp,
-                log_level,
+                admin_tracing_setup.clone(),
                 move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
             )?)
         } else {
@@ -132,11 +126,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         };
 
         // Start the observed state store background task
-        let admin_setup_for_obs_store = admin_tracing_setup.clone();
         let obs_state_join_handle = spawn_thread_local_task(
             "observed-state-store",
-            admin_setup_for_obs_store,
-            log_level,
+            admin_tracing_setup.clone(),
             move |cancellation_token| obs_state_store.run(cancellation_token),
         )?;
 
@@ -194,7 +186,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
                         engine_setup_for_thread,
-                        log_level,
                     )
                 })
                 .map_err(|e| Error::ThreadSpawnError {
@@ -212,7 +203,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let admin_server_handle = spawn_thread_local_task(
             "http-admin",
             admin_tracing_setup,
-            log_level,
             move |cancellation_token| {
                 // Convert the concrete senders to trait objects for the admin crate
                 let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
@@ -416,64 +406,62 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
         tracing_setup: TracingSetup,
-        log_level: LogLevel,
     ) -> Result<Vec<()>, Error> {
-        // Set up thread-local tracing subscriber for this engine thread.
-        // The guard keeps it active for the thread's lifetime.
-        let _tracing_guard = tracing_setup.set_thread_default(log_level);
+        // Run the pipeline with thread-local tracing subscriber active.
+        tracing_setup.with_subscriber(|| {
+            // Create a tracing span for this pipeline thread
+            // so that all logs within this scope include pipeline context.
+            let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
+            let _guard = span.enter();
 
-        // Create a tracing span for this pipeline thread
-        // so that all logs within this scope include pipeline context.
-        let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
-        let _guard = span.enter();
+            // The controller creates a pipeline instance into a dedicated thread. The corresponding
+            // entity is registered here for proper context tracking and set into thread-local storage
+            // in order to be accessible by all components within this thread.
+            let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+            let _pipeline_entity_guard =
+                set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
 
-        // The controller creates a pipeline instance into a dedicated thread. The corresponding
-        // entity is registered here for proper context tracking and set into thread-local storage
-        // in order to be accessible by all components within this thread.
-        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-        let _pipeline_entity_guard =
-            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
+            // Pin thread to specific core
+            if !core_affinity::set_for_current(core_id) {
+                // Continue execution even if pinning fails.
+                // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
+                otel_warn!(
+                    "core_affinity.set_failed",
+                    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
+                );
+            }
 
-        // Pin thread to specific core
-        if !core_affinity::set_for_current(core_id) {
-            // Continue execution even if pinning fails.
-            // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
-            otel_warn!(
-                "core_affinity.set_failed",
-                message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
-            );
-        }
+            obs_evt_reporter.report(ObservedEvent::admitted(
+                pipeline_key.clone(),
+                Some("Pipeline admission successful.".to_owned()),
+            ));
 
-        obs_evt_reporter.report(ObservedEvent::admitted(
-            pipeline_key.clone(),
-            Some("Pipeline admission successful.".to_owned()),
-        ));
+            // Build the runtime pipeline from the configuration
+            let runtime_pipeline = pipeline_factory
+                .build(pipeline_context.clone(), pipeline_config.clone())
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })?;
 
-        // Build the runtime pipeline from the configuration
-        let runtime_pipeline = pipeline_factory
-            .build(pipeline_context.clone(), pipeline_config.clone())
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })?;
+            obs_evt_reporter.report(ObservedEvent::ready(
+                pipeline_key.clone(),
+                Some("Pipeline initialization successful.".to_owned()),
+            ));
 
-        obs_evt_reporter.report(ObservedEvent::ready(
-            pipeline_key.clone(),
-            Some("Pipeline initialization successful.".to_owned()),
-        ));
-
-        // Start the pipeline (this will use the current thread's Tokio runtime)
-        runtime_pipeline
-            .run_forever(
-                pipeline_key,
-                pipeline_context,
-                obs_evt_reporter,
-                metrics_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })
+            // Start the pipeline (this will use the current thread's Tokio runtime)
+            runtime_pipeline
+                .run_forever(
+                    pipeline_key,
+                    pipeline_context,
+                    obs_evt_reporter,
+                    metrics_reporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_ctrl_msg_rx,
+                )
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })
+        })
     }
 }
 
