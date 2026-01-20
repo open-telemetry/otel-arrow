@@ -860,7 +860,7 @@ mod tests {
                 assert!(!scope_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(scope_attrs.iter().any(|kv| kv.key == "a"));
 
-                // Log 'c' should be deleted; 'b' should remain
+                // Log 'c' should not be inserted; 'b' should remain
                 let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
                 assert!(!log_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(log_attrs.iter().any(|kv| kv.key == "b"));
