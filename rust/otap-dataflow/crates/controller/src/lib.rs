@@ -35,7 +35,7 @@ use otap_df_engine::control::{
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn,
@@ -228,11 +228,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
             match handle.join() {
                 Ok(Ok(_)) => {
-                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
+                    obs_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
                 }
                 Ok(Err(e)) => {
                     let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                    obs_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "Pipeline encountered a runtime error.",
                         err_summary,
@@ -245,7 +245,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         message: "The pipeline panicked during execution.".into(),
                         source: Some(format!("{e:?}")),
                     };
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                    obs_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "The pipeline panicked during execution.",
                         err_summary,
@@ -425,7 +425,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 );
             }
 
-            obs_evt_reporter.report(ObservedEvent::admitted(
+            obs_evt_reporter.report(EngineEvent::admitted(
                 pipeline_key.clone(),
                 Some("Pipeline admission successful.".to_owned()),
             ));
@@ -437,7 +437,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     source: Box::new(e),
                 })?;
 
-            obs_evt_reporter.report(ObservedEvent::ready(
+            obs_evt_reporter.report(EngineEvent::ready(
                 pipeline_key.clone(),
                 Some("Pipeline initialization successful.".to_owned()),
             ));

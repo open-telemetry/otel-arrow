@@ -13,8 +13,6 @@ pub mod formatter;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
-use serde::Serialize;
-use serde::ser::Serializer;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
@@ -33,15 +31,6 @@ pub struct LogRecord {
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
-}
-
-impl Serialize for LogRecord {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.format_without_timestamp())
-    }
 }
 
 /// Saved callsite information. This is information that can easily be

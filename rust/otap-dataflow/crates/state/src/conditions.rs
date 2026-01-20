@@ -210,7 +210,7 @@ impl ConditionState {
     pub fn new(
         status: ConditionStatus,
         reason: impl Into<Option<ConditionReason>>,
-        message: impl Into<Option<String>>,
+        message: Option<String>,
         last_transition_time: Option<SystemTime>,
     ) -> Self {
         Self {
@@ -226,7 +226,7 @@ impl ConditionState {
         &mut self,
         status: ConditionStatus,
         reason: impl Into<Option<ConditionReason>>,
-        message: impl Into<Option<String>>,
+        message: Option<String>,
         transition_time: SystemTime,
     ) -> bool {
         let reason = reason.into();

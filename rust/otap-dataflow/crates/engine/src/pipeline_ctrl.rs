@@ -17,7 +17,7 @@ use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::TelemetrySettings;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
@@ -245,7 +245,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::Shutdown { deadline, reason } => {
                             match self.control_senders.shutdown_receivers(deadline, reason.clone()).await {
                                 Ok(()) => {
-                                    self.event_reporter.report(ObservedEvent::shutdown_requested(self.pipeline_key, Some(reason)))
+                                    self.event_reporter.report(EngineEvent::shutdown_requested(self.pipeline_key, Some(reason)))
                                 }
                                 Err(_) => {
                                     let err_summary = ErrorSummary::Pipeline {
@@ -253,7 +253,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                         message: "Shutdown request failed".to_owned(),
                                         source: None,
                                     };
-                                    self.event_reporter.report(ObservedEvent::pipeline_runtime_error(self.pipeline_key, "Shutdown failed", err_summary))
+                                    self.event_reporter.report(EngineEvent::pipeline_runtime_error(self.pipeline_key, "Shutdown failed", err_summary))
                                 }
                             }
                             break;

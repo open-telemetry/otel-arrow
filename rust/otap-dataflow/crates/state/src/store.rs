@@ -12,7 +12,7 @@ use otap_df_config::{
     PipelineKey, health::HealthPolicy, pipeline::PipelineConfig,
     pipeline::service::telemetry::logs::ProviderMode,
 };
-use otap_df_telemetry::event::{EventMessage, EventType, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::self_tracing::ConsoleWriter;
 use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
@@ -116,7 +116,20 @@ impl ObservedStateStore {
     }
 
     /// Reports a new observed event in the store.
-    fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
+    fn report(&self, observed_event: ObservedEvent) -> Result<(), Error> {
+        match observed_event {
+            ObservedEvent::Engine(engine) => {
+                let _ = self.report_engine(engine)?;
+            }
+            ObservedEvent::Log(log) => {
+                self.console.print_log_record(log.time, &log.record);
+            }
+        }
+        Ok(())
+    }
+
+    /// Reports a new observed event in the store.
+    fn report_engine(&self, observed_event: EngineEvent) -> Result<ApplyOutcome, Error> {
         match &observed_event.r#type {
             EventType::Request(_) => {
                 otel_info!("state.observed_event", observed_event = ?observed_event);
@@ -125,17 +138,10 @@ impl ObservedStateStore {
                 otel_error!("state.observed_error", observed_event = ?observed_event);
             }
             EventType::Success(_) => {}
-            EventType::Log => {
-                if let EventMessage::Log(record) = &observed_event.message {
-                    self.console.print_log_record(observed_event.time, record);
-                }
-            }
         };
 
         // Events without a pipeline key don't update state.
-        let Some(key) = &observed_event.key else {
-            return Ok(ApplyOutcome::NoChange);
-        };
+        let key = &observed_event.key;
 
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
             otel_error!(

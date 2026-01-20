@@ -18,11 +18,12 @@
 //! - **OpenTelemetry**: Routes logs through the OpenTelemetry SDK for export to backends.
 //! - **ITS**: Routes logs through the Internal Telemetry System pipeline (not yet implemented).
 
-use crate::event::{EventMessage, ObservedEvent};
+use crate::event::LogEvent;
 use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
+use std::time::SystemTime;
 use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
@@ -69,7 +70,10 @@ impl TracingSetup {
     /// Create a new tracing setup.
     #[must_use]
     pub fn new(provider: ProviderSetup, log_level: LogLevel) -> Self {
-        Self { provider, log_level }
+        Self {
+            provider,
+            log_level,
+        }
     }
 
     /// Initialize this setup as the global tracing subscriber.
@@ -211,12 +215,9 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let time = SystemTime::now();
         let record = LogRecord::new(event);
-        let observed_event = ObservedEvent::log_record(EventMessage::Log(record));
-
-        // Use report() - it uses send_timeout internally.
-        // Logs may be dropped if the channel is full, which is acceptable for async logging.
-        self.reporter.report(observed_event);
+        self.reporter.log(LogEvent { time, record });
     }
 }
 

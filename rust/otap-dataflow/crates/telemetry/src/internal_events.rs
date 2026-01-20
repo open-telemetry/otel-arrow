@@ -112,13 +112,12 @@ macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
         use $crate::self_tracing::ConsoleWriter;
         let now = std::time::SystemTime::now();
-        let record = $crate::error_event!($name $(, $($fields)*)?);
+        let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
         ConsoleWriter::no_color().print_log_record(now, &record);
     }};
 }
 
 /// Internal macro that constructs a `LogRecord` from a static callsite.
-/// This is shared by the level-specific record macros.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __log_record_impl {
@@ -144,55 +143,14 @@ macro_rules! __log_record_impl {
     }};
 }
 
-/// Construct an INFO-level `LogRecord` without dispatching it.
-///
-/// Returns a `LogRecord` that can be used in `EventMessage::Log`.
-#[macro_export]
-macro_rules! info_event {
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::__log_record_impl!($crate::_private::Level::INFO, $name $(, $($fields)*)?)
-    };
-}
-
-/// Construct an ERROR-level `LogRecord` without dispatching it.
-///
-/// Returns a `LogRecord` that can be used in `EventMessage::Log`.
-#[macro_export]
-macro_rules! error_event {
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?)
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
-    use tracing::Level;
 
     #[test]
     fn test_raw_error() {
         let err = Error::ConfigurationError("bad config".into());
         raw_error!("raw error message", error = ?err);
         raw_error!("simple error message");
-    }
-
-    #[test]
-    fn test_log_record_macros() {
-        // Test info_event! with attributes
-        let record = info_event!("test.event", count = 42i64, name = "test");
-        let callsite = record.callsite();
-        assert_eq!(*callsite.level(), Level::INFO);
-        assert_eq!(callsite.name(), "test.event");
-
-        // Test the formatted output contains body and attributes
-        let formatted = record.format_without_timestamp();
-        assert!(formatted.contains("count=42"), "got: {}", formatted);
-        assert!(formatted.contains("name=test"), "got: {}", formatted);
-
-        // Test error_event!
-        let err = Error::ConfigurationError("bad config".into());
-        let record = error_event!("error.event", error = ?err);
-        assert_eq!(*record.callsite().level(), Level::ERROR);
-        assert_eq!(record.callsite().line(), Some(194u32));
     }
 }
