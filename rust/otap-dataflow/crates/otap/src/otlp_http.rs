@@ -783,7 +783,7 @@ pub async fn serve(
                 {
                     if let Some(acceptor) = maybe_tls_acceptor.clone() {
                         let shutdown = shutdown.clone();
-                        let _ = tracker.spawn(async move {
+                        drop(tracker.spawn(async move {
                             let tls_stream = match acceptor.accept(stream).await {
                                 Ok(s) => s,
                                 Err(_) => return,
@@ -805,13 +805,13 @@ pub async fn serve(
                                     let _ = conn.await;
                                 }
                             }
-                        });
+                        }));
                         continue;
                     }
                 }
 
                 let shutdown = shutdown.clone();
-                let _ = tracker.spawn(async move {
+                drop(tracker.spawn(async move {
                     let io = TokioIo::new(stream);
                     let conn = hyper::server::conn::http1::Builder::new()
                         .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
@@ -829,7 +829,7 @@ pub async fn serve(
                             let _ = conn.await;
                         }
                     }
-                });
+                }));
             }
         }
     }
@@ -944,9 +944,9 @@ mod tests {
         let stream = stream.expect("Failed to connect to server");
 
         let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
-        let _ = tokio::spawn(async move {
+        drop(tokio::spawn(async move {
             let _ = conn.await;
-        });
+        }));
 
         let mut request_bytes = Vec::new();
         ExportLogsServiceRequest::default()
