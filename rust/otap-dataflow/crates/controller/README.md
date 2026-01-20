@@ -82,7 +82,7 @@ be explicitly declared in the pipeline topology.
 ### NUMA-Aware Controller
 
 Future versions of the controller are expected to become fully NUMA-aware.
-This includes:      
+This includes:
 
 - allocating pipelines on specific NUMA nodes,
 - pinning threads accordingly,
@@ -95,7 +95,7 @@ multi-socket systems.
 ### Morsel-Driven Parallelism
 
 In the OTAP Dataflow Engine, **batches** are the natural equivalent of
-“morsels”. Future designs may introduce batching at the ingress stage, before
+"morsels". Future designs may introduce batching at the ingress stage, before
 data traverses load-balancing boundaries such as per-core queues or MPMC named
 channels. This enables a form of **morsel-driven parallelism**, where:
 
@@ -107,9 +107,9 @@ channels. This enables a form of **morsel-driven parallelism**, where:
 This approach is inspired by the work described in:
 
 > *Morsel-Driven Parallelism: A NUMA-Aware Query Evaluation Framework for the
-Many-Core Age*  
-> Thomas Neumann, Tobias Mühlbauer, Alfons Kemper  
-> https://db.in.tum.de/~leis/papers/morsels.pdf
+Many-Core Age*
+> Thomas Neumann, Tobias Muhlbauer, Alfons Kemper
+> [https://db.in.tum.de/~leis/papers/morsels.pdf](https://db.in.tum.de/~leis/papers/morsels.pdf)
 
 The goal is to enable flexible and explicit load balancing for compute-heavy or
 skewed workloads, while remaining fully compatible with the engine's

@@ -87,7 +87,7 @@ the many N-to-1 relationships expressed within an OTAP request.
 
 ### Controller and Engine
 
-See the controller and engine crate READMEs: 
+See the controller and engine crate READMEs:
 
 - [controller](./crates/controller/README.md).
 - [engine](./crates/engine/README.md),
