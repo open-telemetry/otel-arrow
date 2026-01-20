@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::Utc;
-use otap_df_state::PipelineKey;
+use otap_df_config::PipelineKey;
 use otap_df_state::conditions::{Condition, ConditionKind, ConditionReason, ConditionStatus};
 use otap_df_state::pipeline_status::PipelineStatus;
 use serde::Serialize;

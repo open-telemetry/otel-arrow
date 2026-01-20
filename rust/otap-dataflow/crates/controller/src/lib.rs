@@ -44,8 +44,11 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::EngineConfig;
-use otap_df_config::pipeline::{CoreAllocation, PipelineConfig};
+use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::{
+    PipelineGroupId, PipelineId,
+    pipeline::PipelineConfig,
+};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
@@ -53,10 +56,8 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_state::{DeployedPipelineKey, PipelineKey};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
@@ -94,7 +95,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
         let telemetry_config = &engine_settings.telemetry;
         otel_info!(
-            "Controller.Start",
+            "controller.start",
             num_pipeline_groups = pipeline_groups.len(),
             num_pipelines = pipeline_groups
                 .values()
@@ -457,7 +458,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
             otel_warn!(
-                "CoreAffinity.SetFailed",
+                "core_affinity.set_failed",
                 message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
             );
         }

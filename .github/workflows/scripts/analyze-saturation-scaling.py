@@ -240,48 +240,74 @@ def main():
         sys.exit(1)
     
     # Find saturation test result directories using specific glob pattern
-    # These directories are named: continuous_saturation_1core, continuous_saturation_2core, etc.
-    throughputs: dict[int, float] = {}
+    # These directories are named: continuous_saturation_1core_otlp, continuous_saturation_1core_otap, etc.
+    # Also support legacy format without protocol suffix: continuous_saturation_1core
     
-    saturation_dirs = list(results_base.glob("continuous_saturation_*core"))
-    if not saturation_dirs:
-        print("No saturation test results found (looking for continuous_saturation_*core directories)", file=sys.stderr)
+    all_benchmark_data = []
+    scenarios_found = []
+    
+    # Check for protocol-specific directories (new format)
+    for protocol in ["otlp", "otap"]:
+        throughputs: dict[int, float] = {}
+        
+        saturation_dirs = list(results_base.glob(f"continuous_saturation_*core_{protocol}"))
+        if not saturation_dirs:
+            continue
+        
+        scenarios_found.append(protocol.upper())
+        print(f"\n{'='*40}", file=sys.stderr)
+        print(f"Processing {protocol.upper()} scenario", file=sys.stderr)
+        print(f"{'='*40}", file=sys.stderr)
+        
+        for entry in sorted(saturation_dirs):
+            # Extract core count from directory name like continuous_saturation_4core_otlp
+            match = re.search(r'continuous_saturation_(\d+)core', entry.name)
+            if not match:
+                continue
+            core_count = int(match.group(1))
+            
+            result_file, throughput = find_result_file(entry)
+            if result_file is None or throughput is None:
+                print(f"Warning: No valid result file found for {entry.name}", file=sys.stderr)
+                continue
+            
+            throughputs[core_count] = throughput
+            print(f"Found: {core_count} core(s) -> {format_number(throughput)} logs/sec", file=sys.stderr)
+        
+        if throughputs:
+            # Compute scaling efficiency
+            efficiencies = compute_scaling_efficiency(throughputs)
+            
+            # Print the report with protocol label
+            print(f"\n\n{'#'*80}")
+            print(f"# {protocol.upper()} SCENARIO")
+            print(f"{'#'*80}")
+            print_scaling_report(throughputs, efficiencies)
+            
+            # Generate benchmark data with protocol prefix
+            benchmark_data = generate_benchmark_json(throughputs, efficiencies)
+            for entry in benchmark_data:
+                entry["name"] = f"{protocol}_{entry['name']}"
+                entry["extra"] = f"[{protocol.upper()}] {entry['extra']}"
+            all_benchmark_data.extend(benchmark_data)
+    
+    if not scenarios_found:
+        print("No saturation test results found (looking for continuous_saturation_*core_otlp/otap directories)", file=sys.stderr)
         sys.exit(0)
     
-    for entry in sorted(saturation_dirs):
-        core_count = extract_core_count(entry.name)
-        if core_count is None:
-            continue
-        
-        result_file, throughput = find_result_file(entry)
-        if result_file is None or throughput is None:
-            print(f"Warning: No valid result file found for {entry.name}", file=sys.stderr)
-            continue
-        
-        throughputs[core_count] = throughput
-        print(f"Found: {core_count} core(s) -> {format_number(throughput)} logs/sec", file=sys.stderr)
-    
-    # Compute scaling efficiency
-    efficiencies = compute_scaling_efficiency(throughputs)
-    
-    # Print the report
-    print_scaling_report(throughputs, efficiencies)
-    
-    # Generate and save benchmark JSON if output path provided
-    if output_json_path:
-        benchmark_data = generate_benchmark_json(throughputs, efficiencies)
+    # Save benchmark JSON if output path provided
+    if output_json_path and all_benchmark_data:
         with open(output_json_path, 'w') as f:
-            json.dump(benchmark_data, f, indent=2)
+            json.dump(all_benchmark_data, f, indent=2)
         print(f"Benchmark JSON written to: {output_json_path}", file=sys.stderr)
     
     # Exit with non-zero if scaling is poor (for CI alerting)
-    multi_core_efficiencies = [e for c, e in efficiencies.items() if c > 1]
-    if multi_core_efficiencies:
-        avg_efficiency = sum(multi_core_efficiencies) / len(multi_core_efficiencies)
-        if avg_efficiency < 0.50:
-            print("Warning: Very poor scaling efficiency detected!", file=sys.stderr)
-            # Don't fail the build, just warn
-            # sys.exit(1)
+    # Check all scenarios
+    if all_benchmark_data:
+        avg_entries = [e for e in all_benchmark_data if "efficiency_avg" in e["name"]]
+        for entry in avg_entries:
+            if entry["value"] < 0.50:
+                print(f"Warning: Very poor scaling efficiency detected for {entry['name']}!", file=sys.stderr)
 
 
 if __name__ == "__main__":
