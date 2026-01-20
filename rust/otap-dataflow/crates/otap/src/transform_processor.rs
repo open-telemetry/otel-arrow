@@ -164,8 +164,8 @@ impl TransformProcessor {
                 error: "Routing error:".into(),
             })?;
 
-        /// access the batch that was the output of the call to pipeline.execute. This should
-        /// eventually be sent on the default out_port
+        // access the batch that was the output of the call to pipeline.execute. This should
+        // eventually be sent on the default out_port
         let default_otap_batch = match pipeline_result {
             Ok(otap_batch) => otap_batch,
             Err(e) => {
@@ -183,19 +183,14 @@ impl TransformProcessor {
             // there were no other record batches that were maybe split off this batch to be
             // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
             // and we can just handle the batch normally.
-            return match pipeline_result {
-                Ok(otap_batch) => {
-                    let pdata = OtapPdata::new(inbound_context, otap_batch.into());
-                    effect_handler.send_message(pdata).await?;
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            };
+            let pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
+            effect_handler.send_message(pdata).await?;
+            return Ok(());
         }
 
         // keep error reason if there was an error, so we can send it to upstream in Nack once
         // all routed outbound batches have been Ack/Nack'd
-        let error_reason = pipeline_result.as_ref().err().map(|e| e.to_string());
+        let error_reason = None;
 
         let inbound_ctx_key = self
             .contexts
