@@ -246,22 +246,45 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .await?;
                     }
                     NodeControlMsg::Ack(ackmsg) => {
-                        if let Ok(dd) = DebugCallData::try_from(ackmsg.calldata.clone()) {
-                            debug_output
-                                .output_message(&format!("ACK received after {:?}\n", dd.elapsed()))
-                                .await?;
+                        match DebugCallData::try_from(ackmsg.calldata.clone()) {
+                            Ok(dd) => {
+                                debug_output
+                                    .output_message(&format!(
+                                        "ACK received after {:?}\n",
+                                        dd.elapsed()
+                                    ))
+                                    .await?;
+                            }
+                            Err(e) => {
+                                debug_output
+                                    .output_message(&format!(
+                                        "ACK received with unrecognized calldata (len={}): {e}\n",
+                                        ackmsg.calldata.len()
+                                    ))
+                                    .await?;
+                            }
                         }
                         // Forward ACK upstream to continue the acknowledgment chain
                         effect_handler.notify_ack(ackmsg).await?;
                     }
                     NodeControlMsg::Nack(nackmsg) => {
-                        if let Ok(dd) = DebugCallData::try_from(nackmsg.calldata.clone()) {
-                            debug_output
-                                .output_message(&format!(
-                                    "NACK received after {:?}\n",
-                                    dd.elapsed()
-                                ))
-                                .await?;
+                        match DebugCallData::try_from(nackmsg.calldata.clone()) {
+                            Ok(dd) => {
+                                debug_output
+                                    .output_message(&format!(
+                                        "NACK received after {:?}\n",
+                                        dd.elapsed()
+                                    ))
+                                    .await?;
+                            }
+                            Err(e) => {
+                                debug_output
+                                    .output_message(&format!(
+                                        "NACK received with unrecognized calldata (len={}): {e}\n",
+                                        nackmsg.calldata.len()
+                                    ))
+                                    .await?;
+                            }
                         }
                         // Forward NACK upstream to continue the rejection chain
                         effect_handler.notify_nack(nackmsg).await?;
