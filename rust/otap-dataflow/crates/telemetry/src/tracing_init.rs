@@ -63,19 +63,11 @@ impl TracingSetup {
     }
 
     /// Initialize this setup as the global tracing subscriber.
-    ///
-    /// This should be called once during startup to set the global subscriber.
-    /// Returns an error if a global subscriber has already been set.
-    ///
-    /// This is a catch-all for threads that have not used with_subscriber().
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         self.provider.try_init_global(self.log_level)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
-    ///
-    /// The closure runs with the configured logging layer active as a thread-local default.
-    /// This is useful for per-thread subscriber configuration in the engine.
     pub fn with_subscriber<F, R>(&self, f: F) -> R
     where
         F: FnOnce() -> R,
@@ -93,8 +85,7 @@ pub enum ProviderSetup {
     /// Synchronous console logging via `RawLoggingLayer`.
     ConsoleDirect,
 
-    /// Asynchronous console logging via the observed event channel.
-    /// Logs are sent as `EventMessage::Log` and printed by a background task.
+    /// Asynchronous console logging via an observed event reporter.
     ConsoleAsync {
         /// Reporter to send log events through.
         reporter: ObservedEventReporter,
@@ -102,7 +93,7 @@ pub enum ProviderSetup {
 
     /// OpenTelemetry SDK logging via `OpenTelemetryTracingBridge`.
     OpenTelemetry {
-        /// The OpenTelemetry SDK logger provider.
+        /// OpenTelemetry SDK logger provider.
         logger_provider: SdkLoggerProvider,
     },
 }
@@ -175,5 +166,80 @@ where
         let time = SystemTime::now();
         let record = LogRecord::new(event);
         self.reporter.log(LogEvent { time, record });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::ObservedEvent;
+    use std::time::Duration;
+
+    fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
+        let (tx, rx) = flume::bounded(16);
+        let reporter = ObservedEventReporter::new(
+            Duration::from_millis(100),
+            otap_df_config::pipeline::service::telemetry::logs::ProviderMode::Noop,
+            tx,
+        );
+        (reporter, rx)
+    }
+
+    /// Test that Noop provider runs without panicking.
+    #[test]
+    fn noop_provider_runs() {
+        let setup = TracingSetup::new(ProviderSetup::Noop, LogLevel::Info);
+        setup.with_subscriber(|| {
+            tracing::info!("this log is silently dropped");
+        });
+    }
+
+    /// Test that ConsoleDirect provider runs without panicking.
+    #[test]
+    fn console_direct_provider_runs() {
+        let setup = TracingSetup::new(ProviderSetup::ConsoleDirect, LogLevel::Info);
+        setup.with_subscriber(|| {
+            tracing::info!("this log goes to console");
+        });
+    }
+
+    /// Test that ConsoleAsync provider sends logs through the channel.
+    #[test]
+    fn console_async_provider_sends_logs() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(
+            ProviderSetup::ConsoleAsync { reporter },
+            LogLevel::Info,
+        );
+
+        setup.with_subscriber(|| {
+            tracing::info!("async log message");
+        });
+
+        // Verify the log was sent through the channel
+        let event = receiver.try_recv().expect("should receive log event");
+        assert!(
+            matches!(event, ObservedEvent::Log(_)),
+            "event should be a log"
+        );
+    }
+
+    /// Test that debug logs are filtered out when log level is Info.
+    #[test]
+    fn log_level_filters_debug() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(
+            ProviderSetup::ConsoleAsync { reporter },
+            LogLevel::Info,
+        );
+
+        setup.with_subscriber(|| {
+            tracing::debug!("this should be filtered out");
+        });
+
+        assert!(
+            receiver.try_recv().is_err(),
+            "debug log should not be received at Info level"
+        );
     }
 }
