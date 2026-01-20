@@ -3,13 +3,10 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
 use otap_df_pdata::{Consumer, Producer};
-use otap_df_telemetry::MetricsSystem;
-use tokio::time::{Duration, timeout};
 
 /// struct to simulate the otel arrow protocol, uses a producer and consumer to encode and decode a otlp request
 pub struct OtelProtoSimulator {
@@ -55,6 +52,12 @@ mod test {
         fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
+    use weaver_common::result::WResult;
+    use weaver_common::vdir::VirtualDirectoryPath;
+    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_resolver::SchemaResolver;
+    use weaver_semconv::registry::SemConvRegistry;
+    use weaver_semconv::registry_repo::RegistryRepo;
 
     const LOG_SIGNAL_COUNT: usize = 100;
     const METRIC_SIGNAL_COUNT: usize = 100;

@@ -1,0 +1,40 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+
+{% set receiver_type = backend_receiver_type | default(value="otlp") %}
+{% set equivalent_check = transformative | default(value=false) %}
+{% set plugin_urn = "urn:otel:otlp:receiver" %}
+{% if receiver_type == "otap" %}
+  {% set plugin_urn = "urn:otel:otap:receiver" %}
+{% endif %}
+
+nodes:
+  suv_receiver:
+    kind: receiver
+    plugin_urn: {{ plugin_urn }}
+    out_ports:
+      out_port:
+        destinations:
+          - validation_exporter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4318"
+
+  control_receiver:
+    kind: receiver
+    plugin_urn: {{ plugin_urn }}
+    out_ports:
+      out_port:
+        destinations:
+          - validation_exporter
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4316"
+  validation_exporter:
+    kind: exporter
+    plugin_urn: "url:otel:validation:exporter"
+    config:
+        equivalent_check: {{ equivalent_check }}

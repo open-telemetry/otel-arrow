@@ -4,11 +4,11 @@ settings:
   default_pdata_channel_size: 100
 
 
-{% set exporter_type = loadgen_exporter_type | default("otap") %}
+{% set exporter_type = loadgen_exporter_type | default(value="otlp") %}
+{% set plugin_urn = "urn:otel:otlp:exporter" %}
 {% if exporter_type == "otap" %}
   {% set plugin_urn = "urn:otel:otap:exporter" %}
-{% else %}
-  {% set plugin_urn = "urn:otel:otlp:exporter" %}
+{% endif %}
 
 nodes:
   receiver:
@@ -38,6 +38,6 @@ nodes:
 
   control_exporter:
     kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    plugin_urn: "{{ plugin_urn }}"
     config:
-      grpc_endpoint: "http://127.0.0.1:4317"
+      grpc_endpoint: "http://127.0.0.1:4316"

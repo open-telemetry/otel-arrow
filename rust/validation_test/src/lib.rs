@@ -6,6 +6,5 @@
 // ToDo: Support transformative processors in a pipeline,
 // we should be able to know when the assert equivalent will fail
 
-
 pub mod encode_decode;
 pub mod pipeline;
