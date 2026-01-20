@@ -1,0 +1,168 @@
+# This configuration file reproduces the continuous benchmarking setup used
+# in our CI pipelines. However, the systems: traffic generator, system under
+# test, and backend are all included in a single configuration for easier
+# local testing and debugging.
+
+# Engine-wide settings
+settings:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+
+# Pipeline groups are used to logically separate different sets of
+# pipelines. We will introduce progressively more features around
+# pipeline groups in the future such as resource quotas, scheduling
+# policies, named channels, group life-cycle management, ...
+pipeline_groups:
+  # This group contains all the pipelines required for continuous benchmarking
+  continuous_benchmark:
+    pipelines:
+      # ======================================================================
+      # Pipeline generating traffic
+      # ======================================================================
+      traffic_gen:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 10
+                end: 35
+
+        nodes:
+          receiver:
+            kind: receiver
+            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            out_ports:
+              out_port:
+                destinations:
+                  - exporter
+                dispatch_strategy: round_robin
+            config:
+              traffic_config:
+                signals_per_second: 100000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:otlp:exporter"
+            config:
+              grpc_endpoint: "http://127.0.0.1:4327"
+
+      # ======================================================================
+      # System Under Test pipeline
+      # ======================================================================
+      sut:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 0
+                end: 0
+        nodes:
+          otlp_recv:
+            kind: receiver
+            plugin_urn: "urn:otel:otlp:receiver"
+            out_ports:
+              out_port:
+                destinations:
+                  - router
+                dispatch_strategy: round_robin
+            config:
+              listening_addr: "127.0.0.1:4327"
+              wait_for_result: true
+
+          otap_recv:
+            kind: receiver
+            plugin_urn: "urn:otel:otap:receiver"
+            out_ports:
+              out_port:
+                destinations:
+                  - otap_exporter
+                dispatch_strategy: round_robin
+            config:
+              listening_addr: "127.0.0.1:4329"
+              response_stream_channel_size: 256
+
+          router:
+            kind: processor
+            plugin_urn: "urn:otap:processor:signal_type_router"
+            out_ports:
+              logs:
+                destinations:
+                  - retry
+                dispatch_strategy: round_robin
+              metrics:
+                destinations:
+                  - metrics_exporter
+                dispatch_strategy: round_robin
+              traces:
+                destinations:
+                  - spans_exporter
+                dispatch_strategy: round_robin
+            config: {}
+
+          retry:
+            kind: processor
+            plugin_urn: "urn:otel:retry:processor"
+            out_ports:
+              out_port:
+                destinations:
+                  - logs_exporter
+                dispatch_strategy: round_robin
+            config:
+              multiplier: 1.5
+
+          logs_exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:otlp:exporter"
+            config:
+              grpc_endpoint: "http://127.0.0.1:4328"
+              max_in_flight: 6
+
+          metrics_exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:noop:exporter"
+            config:
+
+          spans_exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:noop:exporter"
+            config:
+
+          otap_exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:noop:exporter"
+            config:
+
+      # ======================================================================
+      # Performance No-Op pipeline to measure receiver performance
+      # ======================================================================
+      backend:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 1
+                end: 1
+
+        nodes:
+          receiver:
+            kind: receiver
+            plugin_urn: urn:otel:otlp:receiver
+            out_ports:
+              out_port:
+                destinations:
+                  - perf_noop
+                dispatch_strategy: round_robin
+            config:
+              listening_addr: 127.0.0.1:4328
+
+          perf_noop:
+            kind: exporter
+            plugin_urn: urn:otel:noop:exporter
+            config: null
