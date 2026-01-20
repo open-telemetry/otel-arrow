@@ -45,6 +45,8 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     receiver: flume::Receiver<ObservedEvent>,
 
+    /// Console is used only for Log events when this component acts
+    /// as the ConsoleAsync consumer and logs to the console.
     #[serde(skip)]
     console: ConsoleWriter,
 

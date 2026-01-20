@@ -6,18 +6,8 @@
 //! This module handles the setup of the global tokio tracing subscriber,
 //! which is separate from OpenTelemetry SDK configuration. The tracing
 //! subscriber determines how log events are captured and routed.
-//!
-//! # Provider Modes
-//!
-//! The logging infrastructure supports multiple provider modes for different use cases:
-//!
-//! - **Noop**: Logs are silently dropped.
-//! - **ConsoleDirect**: Synchronous console output.
-//! - **ConsoleAsync**: Asynchronous console output via the admin component.
-//! - **OpenTelemetry**: Use the OpenTelemetry SDK.
-//! - **ITS**: Routes logs through the Internal Telemetry System.
 
-use crate::event::LogEvent;
+use crate::event::{LogEvent, ObservedEventReporter};
 use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
@@ -28,9 +18,6 @@ use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
-
-// Re-export for convenience
-pub use crate::event::ObservedEventReporter;
 
 /// Creates an `EnvFilter` for the given log level.
 ///
