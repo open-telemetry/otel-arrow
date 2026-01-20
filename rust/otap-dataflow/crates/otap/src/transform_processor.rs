@@ -443,10 +443,63 @@ mod test {
                 trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
             },
         },
-        testing::round_trip::{otap_to_otlp, otlp_to_otap},
+        testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
     use crate::{pdata::OtapPdata, testing::TestCallData};
+
+    /// Helper to create test log records with specific severity levels
+    fn create_log_records(severities: &[&str]) -> Vec<LogRecord> {
+        severities
+            .iter()
+            .map(|severity| LogRecord::build().severity_text(*severity).finish())
+            .collect()
+    }
+
+    /// Helper to create pdata with subscribers for testing Ack/Nack
+    fn create_pdata_with_subscriber(
+        otap_batch: OtapArrowRecords,
+        interests: Interests,
+        call_data_id: u64,
+        node_id: usize,
+    ) -> OtapPdata {
+        OtapPdata::new_default(otap_batch.into()).test_subscribe_to(
+            interests,
+            TestCallData::new_with(call_data_id, 0).into(),
+            node_id,
+        )
+    }
+
+    /// Helper to send an Ack for a given context
+    async fn send_ack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+    ) -> Result<(), EngineError> {
+        let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+            context,
+            OtapPayload::empty(signal_type),
+        )))
+        .unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+            .await
+    }
+
+    /// Helper to send a Nack for a given context
+    async fn send_nack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        let (_, nack) = Context::next_nack(NackMsg::new(
+            reason,
+            OtapPdata::new(context, OtapPayload::empty(signal_type)),
+        ))
+        .unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+            .await
+    }
 
     fn try_create_with_config(
         config: Value,
@@ -952,27 +1005,14 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
-                let info_log_record = LogRecord::build().severity_text("INFO").finish();
-                let other_log_record = LogRecord::build().severity_text("DEBUG").finish();
-                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-                    resource_logs: vec![ResourceLogs::new(
-                        Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            vec![
-                                error_log_record.clone(),
-                                info_log_record.clone(),
-                                other_log_record.clone(),
-                            ],
-                        )],
-                    )],
-                }));
+                let log_records = create_log_records(&["ERROR", "INFO", "DEBUG"]);
+                let input = to_otap_logs(log_records);
 
                 let upstream_node_id = 999;
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
 
@@ -997,37 +1037,19 @@ mod test {
 
                 // now we'll Ack the outbound messages and ensure that we eventually emit an ack
                 // for the inbound message
-                let (_, ack1) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                    outbound_context1,
-                    OtapPayload::empty(SignalType::Logs),
-                )))
-                .unwrap();
-
-                let (_, ack2) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                    outbound_context2,
-                    OtapPayload::empty(SignalType::Logs),
-                )))
-                .unwrap();
-
-                let (_, ack3) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                    outbound_context3,
-                    OtapPayload::empty(SignalType::Logs),
-                )))
-                .unwrap();
-
-                ctx.process(Message::Control(NodeControlMsg::Ack(ack1)))
+                send_ack(&mut ctx, outbound_context1, SignalType::Logs)
                     .await
                     .unwrap();
                 // no ack b/c not all outbound are ack'd
                 assert!(pipeline_ctrl_rx.is_empty());
 
-                ctx.process(Message::Control(NodeControlMsg::Ack(ack2)))
+                send_ack(&mut ctx, outbound_context2, SignalType::Logs)
                     .await
                     .unwrap();
                 // still no ack b/c not all outbound are ack'd
                 assert!(pipeline_ctrl_rx.is_empty());
 
-                ctx.process(Message::Control(NodeControlMsg::Ack(ack3)))
+                send_ack(&mut ctx, outbound_context3, SignalType::Logs)
                     .await
                     .unwrap();
                 // now we've ack'd all three outbound, so it should emit an Ack message
@@ -1060,22 +1082,14 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
-                let info_log_record = LogRecord::build().severity_text("INFO").finish();
-                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-                    resource_logs: vec![ResourceLogs::new(
-                        Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            vec![error_log_record.clone(), info_log_record.clone()],
-                        )],
-                    )],
-                }));
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
 
                 let upstream_node_id = 999;
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
 
@@ -1098,27 +1112,21 @@ mod test {
                 ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
 
                 // simulate an Ack coming from the message that got sent on the default out port
-                // let call_data
-                let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                    outbound_ctx_default,
-                    OtapPayload::empty(SignalType::Logs),
-                )))
-                .unwrap();
-                ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
                     .await
                     .unwrap();
                 // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
                 assert!(pipeline_ctrl_rx.is_empty());
 
                 // simulate a Nack coming from the message that got routed
-                let (_, routed_nack) = Context::next_nack(NackMsg::new(
+                send_nack(
+                    &mut ctx,
+                    outbound_ctx_routed,
+                    SignalType::Logs,
                     "downstream routed error",
-                    OtapPdata::new(outbound_ctx_routed, OtapPayload::empty(SignalType::Logs)),
-                ))
+                )
+                .await
                 .unwrap();
-                ctx.process(Message::Control(NodeControlMsg::Nack(routed_nack)))
-                    .await
-                    .unwrap();
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
                 // routed messages was Nack'd
@@ -1152,22 +1160,14 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
-                let info_log_record = LogRecord::build().severity_text("INFO").finish();
-                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-                    resource_logs: vec![ResourceLogs::new(
-                        Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            vec![error_log_record.clone(), info_log_record.clone()],
-                        )],
-                    )],
-                }));
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
 
                 let upstream_node_id = 999;
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
 
@@ -1190,25 +1190,19 @@ mod test {
                 ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
 
                 // simulate an Nack coming from the message that got sent on the default out port
-                // let call_data
-                let (_, nack) = Context::next_nack(NackMsg::new(
+                send_nack(
+                    &mut ctx,
+                    outbound_ctx_default,
+                    SignalType::Logs,
                     "downstream default error",
-                    OtapPdata::new(outbound_ctx_default, OtapPayload::empty(SignalType::Logs)),
-                ))
+                )
+                .await
                 .unwrap();
-                ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
-                    .await
-                    .unwrap();
                 // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
                 assert!(pipeline_ctrl_rx.is_empty());
 
                 // simulate a Ack coming from the message that got routed
-                let (_, routed_ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                    outbound_ctx_routed,
-                    OtapPayload::empty(SignalType::Logs),
-                )))
-                .unwrap();
-                ctx.process(Message::Control(NodeControlMsg::Ack(routed_ack)))
+                send_ack(&mut ctx, outbound_ctx_routed, SignalType::Logs)
                     .await
                     .unwrap();
 
@@ -1250,22 +1244,14 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
-                let info_log_record = LogRecord::build().severity_text("INFO").finish();
-                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-                    resource_logs: vec![ResourceLogs::new(
-                        Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            vec![error_log_record.clone(), info_log_record.clone()],
-                        )],
-                    )],
-                }));
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
 
                 let upstream_node_id = 999;
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
 
@@ -1294,12 +1280,7 @@ mod test {
 
                 // because there's only one outbound message, if this message gets Ack'd, we should
                 // then Nack the inbound batch b/c some part of it was not processed
-                let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                    outbound_ctx_default,
-                    OtapPayload::empty(SignalType::Logs),
-                )))
-                .unwrap();
-                ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
                     .await
                     .unwrap();
 
@@ -1340,22 +1321,14 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
-                let info_log_record = LogRecord::build().severity_text("INFO").finish();
-                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-                    resource_logs: vec![ResourceLogs::new(
-                        Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            vec![error_log_record.clone(), info_log_record.clone()],
-                        )],
-                    )],
-                }));
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
 
                 let upstream_node_id = 999;
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
 
@@ -1379,20 +1352,16 @@ mod test {
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
                 for pdata_ctx in [outbound_ctx_default, outbound_ctx_routed] {
-                    let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                        pdata_ctx,
-                        OtapPayload::empty(SignalType::Logs),
-                    )))
-                    .unwrap();
-                    ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                    send_ack(&mut ctx, pdata_ctx, SignalType::Logs)
                         .await
                         .unwrap();
                 }
 
                 // send another pdata and it should succeed b/c the slot map is cleared out
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
                 ctx.process(Message::PData(pdata)).await.unwrap();
@@ -1400,9 +1369,10 @@ mod test {
                 // send yet another failed batch -- we do this to ensure that when we returned
                 // an error for the first failed batch, that we cleared the inbound slot. If
                 // we didn't, we'd see an error saying the inbound slot cannot be allocated
-                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
                 let err = ctx
@@ -1439,32 +1409,25 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
-                let error_log_record = LogRecord::build().severity_text("ERROR").finish();
-                let info_log_record = LogRecord::build().severity_text("INFO").finish();
-                let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
-                    resource_logs: vec![ResourceLogs::new(
-                        Resource::default(),
-                        vec![ScopeLogs::new(
-                            InstrumentationScope::default(),
-                            vec![error_log_record.clone(), info_log_record.clone()],
-                        )],
-                    )],
-                }));
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
 
                 let upstream_node_id = 999;
 
                 // Send first batch - this should fill the single inbound slot
-                let pdata1 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata1 = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(1, 0).into(),
+                    1,
                     upstream_node_id,
                 );
                 ctx.process(Message::PData(pdata1)).await.unwrap();
 
                 // Try to send another batch - this should fail because inbound slot is full
-                let pdata2 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata2 = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(2, 0).into(),
+                    2,
                     upstream_node_id,
                 );
                 let err = ctx
@@ -1483,20 +1446,16 @@ mod test {
 
                 // Ack both outbound messages to free the inbound slot
                 for pdata_ctx in [outbound_ctx_default, outbound_ctx_routed] {
-                    let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
-                        pdata_ctx,
-                        OtapPayload::empty(SignalType::Logs),
-                    )))
-                    .unwrap();
-                    ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+                    send_ack(&mut ctx, pdata_ctx, SignalType::Logs)
                         .await
                         .unwrap();
                 }
 
                 // Now try again - should succeed because inbound slot was freed
-                let pdata3 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata3 = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(3, 0).into(),
+                    3,
                     upstream_node_id,
                 );
                 ctx.process(Message::PData(pdata3))
@@ -1504,9 +1463,10 @@ mod test {
                     .expect("should succeed after inbound slot freed");
 
                 // Verify we can process again and fill the slot
-                let pdata4 = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                let pdata4 = create_pdata_with_subscriber(
+                    input.clone(),
                     Interests::ACKS | Interests::NACKS,
-                    TestCallData::new_with(4, 0).into(),
+                    4,
                     upstream_node_id,
                 );
                 let err = ctx
