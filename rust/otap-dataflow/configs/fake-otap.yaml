@@ -14,13 +14,14 @@ nodes:
         dispatch_strategy: round_robin
     config:
       traffic_config:
-        max_signal_count: 1000
-        max_batch_size: 1000
-        signals_per_second: 1000
-        log_weight: 100
+        signals_per_second: 100000
+        max_signal_count: null
+        metric_weight: 0
+        trace_weight: 0
+        log_weight: 30
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otap:exporter"
     config:
-      grpc_endpoint: "http://127.0.0.1:4318"
+      grpc_endpoint: "http://127.0.0.1:4327"

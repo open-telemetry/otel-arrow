@@ -424,12 +424,11 @@ impl ServerCommon {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
             effect_handler,
-            state: settings
-                .wait_for_result
-                .then(|| AckSlot::new(settings.max_concurrent_requests)),
+            state,
             settings: settings.clone(),
             metrics,
         }
@@ -450,9 +449,10 @@ impl LogsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics),
+            common: ServerCommon::new(effect_handler, settings, metrics, state),
         }
     }
 }
@@ -505,9 +505,10 @@ impl MetricsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics),
+            common: ServerCommon::new(effect_handler, settings, metrics, state),
         }
     }
 }
@@ -560,9 +561,10 @@ impl TraceServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics),
+            common: ServerCommon::new(effect_handler, settings, metrics, state),
         }
     }
 }

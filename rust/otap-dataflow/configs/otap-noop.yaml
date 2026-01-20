@@ -1,0 +1,22 @@
+settings:
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_node_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - perf_noop
+        dispatch_strategy: round_robin
+    config:
+      listening_addr: "127.0.0.1:4328"
+      response_stream_channel_size: 256
+
+  perf_noop:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config:
