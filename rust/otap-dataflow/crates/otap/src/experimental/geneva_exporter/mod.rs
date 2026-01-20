@@ -285,7 +285,7 @@ impl GenevaExporter {
             // Empty payloads are a no-op but should still be acked.
             // Avoids unnecessary encoding/upload work.
             otel_info!(
-                "GenevaExporter.Skip",
+                "geneva_exporter.skip",
                 message = "Geneva exporter skipping empty payload"
             );
             return Ok(0);
@@ -312,7 +312,7 @@ impl GenevaExporter {
 
                         // Fallback path: Convert OTAP Arrow → OTLP bytes
                         otel_info!(
-                            "GenevaExporter.Convert",
+                            "geneva_exporter.convert",
                             message = "Converting OTAP logs to OTLP bytes (fallback path)"
                         );
 
@@ -340,7 +340,7 @@ impl GenevaExporter {
                             .await?;
 
                         otel_info!(
-                            "GenevaExporter.Upload",
+                            "geneva_exporter.upload",
                             count = batches.len(),
                             message = "Successfully uploaded log batches to Geneva (OTAP fallback)"
                         );
@@ -352,7 +352,7 @@ impl GenevaExporter {
 
                         // Fallback path: Convert OTAP Arrow → OTLP bytes
                         otel_info!(
-                            "GenevaExporter.Convert",
+                            "geneva_exporter.convert",
                             message = "Converting OTAP traces to OTLP bytes (fallback path)"
                         );
 
@@ -380,7 +380,7 @@ impl GenevaExporter {
                             .await?;
 
                         otel_info!(
-                            "GenevaExporter.Upload",
+                            "geneva_exporter.upload",
                             count = batches.len(),
                             message =
                                 "Successfully uploaded trace batches to Geneva (OTAP fallback)"
@@ -399,7 +399,7 @@ impl GenevaExporter {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
-                            "GenevaExporter.Upload",
+                            "geneva_exporter.upload",
                             message = "Uploading logs to Geneva using OTLP fallback path"
                         );
 
@@ -418,7 +418,7 @@ impl GenevaExporter {
                             .await?;
 
                         otel_info!(
-                            "GenevaExporter.Upload",
+                            "geneva_exporter.upload",
                             count = batches.len(),
                             message = "Successfully uploaded log batches to Geneva (OTLP fallback)"
                         );
@@ -427,7 +427,7 @@ impl GenevaExporter {
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         otel_info!(
-                            "GenevaExporter.Upload",
+                            "geneva_exporter.upload",
                             message = "Uploading traces to Geneva using OTLP fallback path"
                         );
 
@@ -446,7 +446,7 @@ impl GenevaExporter {
                             .await?;
 
                         otel_info!(
-                            "GenevaExporter.Upload",
+                            "geneva_exporter.upload",
                             count = batches.len(),
                             message =
                                 "Successfully uploaded trace batches to Geneva (OTLP fallback)"
@@ -492,7 +492,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
-            "GenevaExporter.Start",
+            "geneva_exporter.start",
             endpoint = self.config.endpoint,
             namespace = self.config.namespace,
             account = self.config.account,
@@ -504,7 +504,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     otel_info!(
-                        "GenevaExporter.Shutdown",
+                        "geneva_exporter.shutdown",
                         message = "Geneva exporter shutting down"
                     );
 
@@ -541,7 +541,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
                             self.pdata_metrics.inc_failed(signal_type);
                             self.metrics.exports_failed.inc();
                             otel_info!(
-                                "GenevaExporter.Error",
+                                "geneva_exporter.error",
                                 error = e,
                                 message = "Failed to export to Geneva"
                             );

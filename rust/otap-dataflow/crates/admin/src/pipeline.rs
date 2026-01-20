@@ -22,7 +22,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use otap_df_state::PipelineKey;
+use otap_df_config::PipelineKey;
 use otap_df_state::pipeline_status::PipelineStatus;
 
 /// All the routes for pipelines.

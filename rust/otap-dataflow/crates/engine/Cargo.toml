@@ -15,6 +15,7 @@ workspace = true
 [features]
 testing = []
 jemalloc-testing = []
+test-utils = []
 
 [dependencies]
 otap-df-channel = { path = "../channel" }

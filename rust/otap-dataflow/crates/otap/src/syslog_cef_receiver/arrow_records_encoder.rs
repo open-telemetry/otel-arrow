@@ -1012,12 +1012,16 @@ mod tests {
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
                 );
+                assert_eq!(
+                    log1_attrs.get("syslog.app_name"),
+                    Some(&AttributeValue::String("su".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (5 for RFC3164)
+                // Check that we have exactly the expected number of attributes (6 for RFC3164 with app_name)
                 assert_eq!(
                     log1_attrs.len(),
-                    5,
-                    "Log 1 should have exactly 5 attributes, got {}",
+                    6,
+                    "Log 1 should have exactly 6 attributes, got {}",
                     log1_attrs.len()
                 );
 
@@ -1049,12 +1053,20 @@ mod tests {
                         "Application started successfully".to_string()
                     ))
                 );
+                assert_eq!(
+                    log2_attrs.get("syslog.app_name"),
+                    Some(&AttributeValue::String("app".to_string()))
+                );
+                assert_eq!(
+                    log2_attrs.get("syslog.process_id"),
+                    Some(&AttributeValue::Integer(1234))
+                );
 
-                // Check that we have exactly the expected number of attributes (5 for RFC3164)
+                // Check that we have exactly the expected number of attributes (7 for RFC3164 with app_name and proc_id)
                 assert_eq!(
                     log2_attrs.len(),
-                    5,
-                    "Log 2 should have exactly 5 attributes, got {}",
+                    7,
+                    "Log 2 should have exactly 7 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -1086,12 +1098,16 @@ mod tests {
                         "Kernel panic - not syncing: VFS".to_string()
                     ))
                 );
+                assert_eq!(
+                    log3_attrs.get("syslog.app_name"),
+                    Some(&AttributeValue::String("kernel".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes (5 for RFC3164)
+                // Check that we have exactly the expected number of attributes (6 for RFC3164 with app_name)
                 assert_eq!(
                     log3_attrs.len(),
-                    5,
-                    "Log 3 should have exactly 5 attributes, got {}",
+                    6,
+                    "Log 3 should have exactly 6 attributes, got {}",
                     log3_attrs.len()
                 );
             }
@@ -1969,12 +1985,16 @@ mod tests {
                         "'su root' failed for lonvick on /dev/pts/8".to_string()
                     ))
                 );
+                assert_eq!(
+                    log2_attrs.get("syslog.app_name"),
+                    Some(&AttributeValue::String("su".to_string()))
+                );
 
-                // Check that we have exactly the expected number of attributes for RFC3164 (5)
+                // Check that we have exactly the expected number of attributes for RFC3164 (6 with app_name)
                 assert_eq!(
                     log2_attrs.len(),
-                    5,
-                    "Log 2 should have exactly 5 attributes, got {}",
+                    6,
+                    "Log 2 should have exactly 6 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -2439,9 +2459,10 @@ mod tests {
             log1_attrs.get("syslog.content"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
+        assert_eq!(log1_attrs.get("syslog.app_name"), Some(&"su".to_string()));
 
-        // Ensure no unexpected attributes are present (exactly 5 attributes expected)
-        assert_eq!(log1.attributes.len(), 5);
+        // Ensure no unexpected attributes are present (exactly 6 attributes expected with app_name)
+        assert_eq!(log1.attributes.len(), 6);
 
         // Verify second log record attributes (RFC3164 with process ID in tag)
         let log2_attrs: std::collections::HashMap<String, String> = log2
@@ -2471,9 +2492,14 @@ mod tests {
             log2_attrs.get("syslog.content"),
             Some(&"Application started successfully".to_string())
         );
+        assert_eq!(log2_attrs.get("syslog.app_name"), Some(&"app".to_string()));
+        assert_eq!(
+            log2_attrs.get("syslog.process_id"),
+            Some(&"1234".to_string())
+        );
 
-        // Ensure no unexpected attributes are present (exactly 5 attributes expected)
-        assert_eq!(log2.attributes.len(), 5);
+        // Ensure no unexpected attributes are present (exactly 7 attributes expected with app_name and proc_id)
+        assert_eq!(log2.attributes.len(), 7);
 
         // Verify third log record
         let log3 = &scope_logs.log_records[2];
@@ -2539,9 +2565,13 @@ mod tests {
             log3_attrs.get("syslog.content"),
             Some(&"Kernel panic - not syncing: VFS".to_string())
         );
+        assert_eq!(
+            log3_attrs.get("syslog.app_name"),
+            Some(&"kernel".to_string())
+        );
 
-        // Ensure no unexpected attributes are present (exactly 5 attributes expected)
-        assert_eq!(log3.attributes.len(), 5);
+        // Ensure no unexpected attributes are present (exactly 6 attributes expected with app_name)
+        assert_eq!(log3.attributes.len(), 6);
     }
 
     #[test]
@@ -3002,9 +3032,10 @@ mod tests {
             log2_attrs.get("syslog.content"),
             Some(&"'su root' failed for lonvick on /dev/pts/8".to_string())
         );
+        assert_eq!(log2_attrs.get("syslog.app_name"), Some(&"su".to_string()));
 
-        // Ensure no unexpected attributes are present for RFC3164 (exactly 5 attributes expected)
-        assert_eq!(log2.attributes.len(), 5);
+        // Ensure no unexpected attributes are present for RFC3164 (exactly 6 attributes expected with app_name)
+        assert_eq!(log2.attributes.len(), 6);
 
         // Verify third log record (CEF)
         let log3 = &scope_logs.log_records[2];
