@@ -18,12 +18,12 @@ use linkme::distributed_slice;
 use otap_df_config::PortName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{CallData, NodeControlMsg};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
-use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
@@ -257,7 +257,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     NodeControlMsg::Nack(nackmsg) => {
                         if let Ok(dd) = DebugCallData::try_from(nackmsg.calldata.clone()) {
                             debug_output
-                                .output_message(&format!("NACK received after {:?}\n", dd.elapsed()))
+                                .output_message(&format!(
+                                    "NACK received after {:?}\n",
+                                    dd.elapsed()
+                                ))
                                 .await?;
                         }
                         // Forward NACK upstream to continue the rejection chain
@@ -1364,22 +1367,26 @@ mod tests {
 
         let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel::<OtapPdata>(10);
 
-        (test_runtime, processor, pipeline_ctrl_tx, pipeline_ctrl_rx, output_file.to_string())
+        (
+            test_runtime,
+            processor,
+            pipeline_ctrl_tx,
+            pipeline_ctrl_rx,
+            output_file.to_string(),
+        )
     }
 
     /// Creates test pdata without any payload (empty logs request).
     fn create_empty_test_pdata() -> OtapPdata {
-        OtapPdata::new_default(
-            OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::from(vec![])).into(),
-        )
+        OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes::Bytes::from(vec![])).into())
     }
 
     /// Tests that the debug processor forwards ACK messages upstream via the effect handler.
     #[test]
     fn test_debug_processor_forwards_ack_upstream() {
         use crate::testing::TestCallData;
-        use otap_df_engine::control::{AckMsg, PipelineControlMsg};
         use otap_df_engine::Interests;
+        use otap_df_engine::control::{AckMsg, PipelineControlMsg};
 
         let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
             create_ack_nack_test_setup("debug_output_ack_test.txt");
@@ -1392,8 +1399,11 @@ mod tests {
 
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 42usize;
-                    let pdata = create_empty_test_pdata()
-                        .test_subscribe_to(Interests::ACKS, test_calldata.clone().into(), upstream_node_id);
+                    let pdata = create_empty_test_pdata().test_subscribe_to(
+                        Interests::ACKS,
+                        test_calldata.clone().into(),
+                        upstream_node_id,
+                    );
 
                     ctx.process(Message::ack_ctrl_msg(AckMsg::new(pdata)))
                         .await
@@ -1401,9 +1411,15 @@ mod tests {
 
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverAck { node_id, ack }) => {
-                            assert_eq!(node_id, upstream_node_id, "ACK should route to subscriber's node_id");
+                            assert_eq!(
+                                node_id, upstream_node_id,
+                                "ACK should route to subscriber's node_id"
+                            );
                             let received_calldata: TestCallData = ack.calldata.try_into().unwrap();
-                            assert_eq!(received_calldata, test_calldata, "ACK should contain subscriber's calldata");
+                            assert_eq!(
+                                received_calldata, test_calldata,
+                                "ACK should contain subscriber's calldata"
+                            );
                         }
                         Ok(other) => panic!("Expected DeliverAck, got: {other:?}"),
                         Err(e) => panic!("Expected ACK to be forwarded upstream: {e:?}"),
@@ -1419,8 +1435,8 @@ mod tests {
     #[test]
     fn test_debug_processor_forwards_nack_upstream() {
         use crate::testing::TestCallData;
-        use otap_df_engine::control::{NackMsg, PipelineControlMsg};
         use otap_df_engine::Interests;
+        use otap_df_engine::control::{NackMsg, PipelineControlMsg};
 
         let (test_runtime, processor, pipeline_ctrl_tx, mut pipeline_ctrl_rx, output_file) =
             create_ack_nack_test_setup("debug_output_nack_test.txt");
@@ -1434,8 +1450,11 @@ mod tests {
                     let test_calldata = TestCallData::default();
                     let upstream_node_id = 99usize;
                     let nack_reason = "downstream unavailable";
-                    let pdata = create_empty_test_pdata()
-                        .test_subscribe_to(Interests::NACKS, test_calldata.clone().into(), upstream_node_id);
+                    let pdata = create_empty_test_pdata().test_subscribe_to(
+                        Interests::NACKS,
+                        test_calldata.clone().into(),
+                        upstream_node_id,
+                    );
 
                     ctx.process(Message::nack_ctrl_msg(NackMsg::new(nack_reason, pdata)))
                         .await
@@ -1443,9 +1462,15 @@ mod tests {
 
                     match pipeline_ctrl_rx.try_recv() {
                         Ok(PipelineControlMsg::DeliverNack { node_id, nack }) => {
-                            assert_eq!(node_id, upstream_node_id, "NACK should route to subscriber's node_id");
+                            assert_eq!(
+                                node_id, upstream_node_id,
+                                "NACK should route to subscriber's node_id"
+                            );
                             let received_calldata: TestCallData = nack.calldata.try_into().unwrap();
-                            assert_eq!(received_calldata, test_calldata, "NACK should contain subscriber's calldata");
+                            assert_eq!(
+                                received_calldata, test_calldata,
+                                "NACK should contain subscriber's calldata"
+                            );
                             assert_eq!(nack.reason, nack_reason, "NACK reason should be preserved");
                         }
                         Ok(other) => panic!("Expected DeliverNack, got: {other:?}"),
@@ -1478,9 +1503,12 @@ mod tests {
                         .await
                         .expect("Processor should handle ACK with no subscriber");
 
-                    ctx.process(Message::nack_ctrl_msg(NackMsg::new("some reason", pdata_no_sub)))
-                        .await
-                        .expect("Processor should handle NACK with no subscriber");
+                    ctx.process(Message::nack_ctrl_msg(NackMsg::new(
+                        "some reason",
+                        pdata_no_sub,
+                    )))
+                    .await
+                    .expect("Processor should handle NACK with no subscriber");
 
                     // Verify no messages were forwarded (channel should be empty)
                     assert!(
