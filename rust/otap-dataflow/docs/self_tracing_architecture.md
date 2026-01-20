@@ -127,7 +127,6 @@ Logs are silently dropped. Useful for testing or disabling logging.
 │  tracing::info!()   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────┐
 │   NoSubscriber      │
 │   (logs dropped)    │
@@ -144,13 +143,11 @@ Synchronous console output. Simple but may block the producing thread.
 │  tracing::info!()   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────┐
 │   RawLoggingLayer   │
 │   + EnvFilter       │
 └──────────┬──────────┘
            │ (blocking)
-           ▼
 ┌─────────────────────┐
 │      Console        │
 │      (stdout)       │
@@ -168,21 +165,18 @@ the producing thread; logs may be dropped if the channel is full.
 │  tracing::info!()   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────┐
 │  AsyncLayer         │
 │   + EnvFilter       │
 └──────────┬──────────┘
            │ (non-blocking send)
-           ▼
 ┌─────────────────────┐
 │   Bounded Channel   │
 │   (flume::Sender)   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────┐     ┌─────────────────────┐
-│   LogsCollector     │────▶│      Console        │
+│   LogsCollector     │────>│      Console        │
 │   (background task) │     │      (stdout)       │
 └─────────────────────┘     └─────────────────────┘
 ```
@@ -197,15 +191,13 @@ Routes logs through the OpenTelemetry SDK for export to backends.
 │  tracing::info!()   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────┐
 │  OTelTracingBridge  │
 │   + EnvFilter       │
 └──────────┬──────────┘
            │ (non-blocking)
-           ▼
 ┌─────────────────────┐     ┌─────────────────────┐
-│  SdkLoggerProvider  │────▶│   OTLP Exporter     │
+│  SdkLoggerProvider  │────>│   OTLP Exporter     │
 │  (queue processor)  │     │   (to backend)      │
 └─────────────────────┘     └─────────────────────┘
 ```
@@ -222,23 +214,20 @@ but consumed by the Internal Telemetry Receiver.
 │  tracing::info!()   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────┐
 │  AsyncLayer         │
 │   + EnvFilter       │
 └──────────┬──────────┘
            │ (non-blocking send)
-           ▼
 ┌─────────────────────┐
 │   Bounded Channel   │
 │   (flume::Sender)   │
 └──────────┬──────────┘
            │
-           ▼
 ┌─────────────────────────────────────────────────┐
 │         Internal Telemetry Pipeline             │
 │  ┌───────────────┐  ┌───────────┐  ┌─────────┐  │
-│  │  ITR Receiver │─▶│ Processor │─▶│Exporter │  │
+│  │  ITR Receiver │─>│ Processor │─>│Exporter │  │
 │  └───────────────┘  └───────────┘  └─────────┘  │
 └─────────────────────────────────────────────────┘
 ```
