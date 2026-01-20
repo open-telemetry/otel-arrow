@@ -70,7 +70,7 @@ and attrbutes.
 
 Because OTLP bytes is one of the builtin `OtapPayload` formats, it is
 simple to get from a slic of `LogRecord` to the `OtapPayload` we need
-to consume internal telemetry.  To obtain the partial bytes encoding
+to consume internal telemetry. To obtain the partial bytes encoding
 needed, we have a custom [Tokio `tracing` Event][TOKIOEVENT] handler
 based on `otap_df_pdata::otlp::common::ProtoBuffer`.
 
@@ -236,12 +236,10 @@ but consumed by the Internal Telemetry Receiver.
 
 The tracing subscriber can be configured at two scopes:
 
-1. **Global subscriber** (`try_init_global`): Set once at startup,
-   applies to all threads that don't have a thread-local override.
-
-2. **Thread-local subscriber** (`with_subscriber`): Temporarily sets
-   a subscriber for the duration of a closure. Used by engine threads
-   to have their own tracing configuration.
+1. Global subscriber (`try_init_global`): Set once at startup,
+   applies to all threads that do not use with_subscriber.
+2. Thread-local subscriber (`with_subscriber`): Temporarily sets
+   a subscriber for the duration of a closure. Used by engine threads.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
