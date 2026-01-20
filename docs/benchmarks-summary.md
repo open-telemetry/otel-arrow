@@ -221,13 +221,28 @@ Syslog was specifically chosen as the input protocol because:
 4. Complete Pipeline Test: This approach validates the full pipeline efficiency,
    including parsing, transformation, and serialization stages
 
-The output protocols are set to each system's native format: OTLP for the
-OpenTelemetry Collector and OTAP for the OTel Arrow engine, ensuring optimal
-egress performance for each.
+Both OTLP and OTAP are used as output protocols to measure egress performance
+across different serialization formats.
 
 ### Performance Comparison
 
-#### Standard Load (100K Syslog Messages/sec)
+**Test Parameters:**
+
+- Input protocol: Syslog RFC 3164 (UDP)
+- Input load: 100,000 messages/second
+- Output protocols: OTLP and OTAP
+- Test duration: 60 seconds
+
+#### Standard Load (100K Syslog Messages/sec) - OTLP Output
+
+| Metric | OTel Collector | OTel Arrow | Improvement |
+|--------|---------------|------------|-------------|
+| CPU Usage | TBD | TBD | TBD |
+| Memory Usage | TBD | TBD | TBD |
+| Network Egress | TBD | TBD | TBD |
+| Throughput (messages/sec) | TBD | TBD | TBD |
+
+#### Standard Load (100K Syslog Messages/sec) - OTAP Output
 
 | Metric | OTel Collector | OTel Arrow | Improvement |
 |--------|---------------|------------|-------------|
