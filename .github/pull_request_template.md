@@ -16,5 +16,4 @@ We highly recommend correlation of every PR to an issue
 
 ## Are there any user-facing changes?
 
-* [ ] No
-* [ ] Yes <!-- (Provide further info below) -->
+ <!-- If yes, provide further info below -->
