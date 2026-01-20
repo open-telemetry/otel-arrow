@@ -88,7 +88,7 @@ pub enum Action {
         /// The attribute key to insert.
         key: String,
         /// The value to insert.
-        value: Value,
+        value: LiteralValue,
     },
 
     /// Other actions are accepted for forward-compatibility but ignored.
@@ -164,23 +164,7 @@ impl AttributesProcessor {
                     let _ = renames.insert(source_key, destination_key);
                 }
                 Action::Insert { key, value } => {
-                    let lit_val = match value {
-                        Value::String(s) => Some(LiteralValue::Str(s)),
-                        Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                Some(LiteralValue::Int(i))
-                            } else {
-                                n.as_f64().map(LiteralValue::Double)
-                            }
-                        }
-                        Value::Bool(b) => Some(LiteralValue::Bool(b)),
-                        // Ignore null, object, array as not supported by LiteralValue
-                        _ => None,
-                    };
-
-                    if let Some(val) = lit_val {
-                        inserts.push((key, val));
-                    }
+                    inserts.push((key, value));
                 }
                 // Unsupported actions are ignored for now
                 Action::Unsupported => {}
@@ -846,7 +830,6 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .attributes;
-
 
                 assert!(res_attrs.iter().any(|kv| kv.key == "c"));
                 assert!(res_attrs.iter().any(|kv| kv.key == "r"));

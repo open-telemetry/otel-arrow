@@ -484,12 +484,13 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
 pub enum LiteralValue {
-    Str(String),
+    Bool(bool),
     Int(i64),
     Double(f64),
-    Bool(bool),
+    Str(String),
 }
 
 pub struct InsertTransform {
