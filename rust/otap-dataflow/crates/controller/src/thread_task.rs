@@ -85,7 +85,7 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
 }
 
 /// Spawn a non-Send async task on a dedicated OS thread running a single-threaded
-/// Tokio runtime with a LocalSet, plus a shutdown signal and thread-local tracing.
+/// Tokio runtime with a LocalSet. Returns a handle to signal shutdown and join.
 ///
 /// The `task_factory` receives a CancellationToken that is cancelled when shutdown is requested
 /// and must return the async task to run. The task's `Output` is surfaced by `shutdown_and_join()`.
