@@ -228,7 +228,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Admitted),
-            message: message.into(),
+            message,
         }
     }
 
@@ -241,7 +241,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Ready),
-            message: message.into(),
+            message,
         }
     }
 
@@ -254,7 +254,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::UpdateAdmitted),
-            message: message.into(),
+            message,
         }
     }
 
@@ -267,7 +267,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::UpdateApplied),
-            message: message.into(),
+            message,
         }
     }
 
@@ -280,7 +280,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::RollbackComplete),
-            message: message.into(),
+            message,
         }
     }
 
@@ -293,7 +293,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Drained),
-            message: message.into(),
+            message,
         }
     }
 
@@ -306,7 +306,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Deleted),
-            message: message.into(),
+            message,
         }
     }
 
@@ -323,7 +323,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::AdmissionError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -340,7 +340,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::ConfigRejected(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -357,7 +357,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::UpdateFailed(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -374,7 +374,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::RollbackFailed(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -391,7 +391,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DrainError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -408,7 +408,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DeleteError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -444,7 +444,7 @@ impl EngineEvent {
             node_kind: Some(node_kind),
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -457,7 +457,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::StartRequested),
-            message: message.into(),
+            message,
         }
     }
 
@@ -470,7 +470,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::ShutdownRequested),
-            message: message.into(),
+            message,
         }
     }
 
@@ -483,7 +483,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::DeleteRequested),
-            message: message.into(),
+            message,
         }
     }
 
@@ -496,7 +496,7 @@ impl EngineEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::ForceDeleteRequested),
-            message: message.into(),
+            message,
         }
     }
 }

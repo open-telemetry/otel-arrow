@@ -99,6 +99,7 @@ settings:
 - Global: The default Tokio subscriber, this will apply in threads
   that do not belong to an OTAP dataflow engine core.
 - Engine: This is the default configuration for engine core threads.
+- Admin: This is the configuration use in administrative threads.
 - Internal: This is the default configuration for internal telemetry
   pipeline components.
 
@@ -113,6 +114,178 @@ Provider mode values are:
 Note that the ITS and ConsoleAsync modes share a the same provider
 logic, which writes to an internal channel. These modes differ in how
 the channel is consumed.
+
+## Provider Mode Diagrams
+
+### Noop Provider
+
+Logs are silently dropped. Useful for testing or disabling logging.
+
+```
+┌─────────────────────┐
+│  Application Code   │
+│  tracing::info!()   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│   NoSubscriber      │
+│   (logs dropped)    │
+└─────────────────────┘
+```
+
+### ConsoleDirect Provider
+
+Synchronous console output. Simple but may block the producing thread.
+
+```
+┌─────────────────────┐
+│  Application Code   │
+│  tracing::info!()   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│   RawLoggingLayer   │
+│   + EnvFilter       │
+└──────────┬──────────┘
+           │ (blocking)
+           ▼
+┌─────────────────────┐
+│      Console        │
+│      (stdout)       │
+└─────────────────────┘
+```
+
+### ConsoleAsync Provider
+
+Asynchronous console output via a bounded channel. Non-blocking for
+the producing thread; logs may be dropped if the channel is full.
+
+```
+┌─────────────────────┐
+│  Application Code   │
+│  tracing::info!()   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  AsyncLayer         │
+│   + EnvFilter       │
+└──────────┬──────────┘
+           │ (non-blocking send)
+           ▼
+┌─────────────────────┐
+│   Bounded Channel   │
+│   (flume::Sender)   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│   LogsCollector     │────▶│      Console        │
+│   (background task) │     │      (stdout)       │
+└─────────────────────┘     └─────────────────────┘
+```
+
+### OpenTelemetry Provider
+
+Routes logs through the OpenTelemetry SDK for export to backends.
+
+```
+┌─────────────────────┐
+│  Application Code   │
+│  tracing::info!()   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  OTelTracingBridge  │
+│   + EnvFilter       │
+└──────────┬──────────┘
+           │ (non-blocking)
+           ▼
+┌─────────────────────┐     ┌─────────────────────┐
+│  SdkLoggerProvider  │────▶│   OTLP Exporter     │
+│  (queue processor)  │     │   (to backend)      │
+└─────────────────────┘     └─────────────────────┘
+```
+
+### ITS Provider (Internal Telemetry System)
+
+Routes logs through the internal telemetry pipeline for self-hosted
+telemetry consumption. Uses the same channel mechanism as ConsoleAsync
+but consumed by the Internal Telemetry Receiver.
+
+```
+┌─────────────────────┐
+│  Application Code   │
+│  tracing::info!()   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  AsyncLayer         │
+│   + EnvFilter       │
+└──────────┬──────────┘
+           │ (non-blocking send)
+           ▼
+┌─────────────────────┐
+│   Bounded Channel   │
+│   (flume::Sender)   │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────┐
+│         Internal Telemetry Pipeline             │
+│  ┌───────────────┐  ┌───────────┐  ┌─────────┐  │
+│  │  ITR Receiver │─▶│ Processor │─▶│Exporter │  │
+│  └───────────────┘  └───────────┘  └─────────┘  │
+└─────────────────────────────────────────────────┘
+```
+
+## Thread Model and Subscriber Scopes
+
+The tracing subscriber can be configured at two scopes:
+
+1. **Global subscriber** (`try_init_global`): Set once at startup,
+   applies to all threads that don't have a thread-local override.
+
+2. **Thread-local subscriber** (`with_subscriber`): Temporarily sets
+   a subscriber for the duration of a closure. Used by engine threads
+   to have their own tracing configuration.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Process                                     │
+│                                                                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                   Global Subscriber                           │  │
+│  │         Applies to: main thread, misc threads                 │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  ┌───────────────────────┐  ┌───────────────────────┐               │
+│  │  Engine Thread 0      │  │  Engine Thread 1      │  ...          │
+│  │  ┌─────────────────┐  │  │  ┌─────────────────┐  │               │
+│  │  │ Thread-local    │  │  │  │ Thread-local    │  │               │
+│  │  │  Subscriber     │  │  │  │  Subscriber     │  │               │
+│  │  │(with_subscriber)│  │  │  │(with_subscriber)│  │               │
+│  │  └─────────────────┘  │  │  └─────────────────┘  │               │
+│  │                       │  │                       │               │
+│  │  Pipeline code runs   │  │  Pipeline code runs   │               │
+│  │  with thread-local    │  │  with thread-local    │               │
+│  │  tracing active       │  │  tracing active       │               │
+│  └───────────────────────┘  └───────────────────────┘               │
+│                                                                     │
+│  ┌───────────────────────────┐                                      │
+│  │  Admin                    │  (e.g., for ConsoleAsync mode)       │
+│  │  Observer Thread          │                                      │
+│  │  ┌─────────────────────┐  │                                      │
+│  │  │ Uses ConsoleDirect  │  │                                      │
+│  │  │ or Noop             │  │                                      │
+│  │  └─────────────────────┘  │                                      │
+│  └───────────────────────────┘                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## Default configuration
 
@@ -135,6 +308,7 @@ service:
       providers:
         global: console_async
         engine: console_async
+        admin: console_direct
         internal: noop
 ```
 
@@ -153,6 +327,7 @@ service:
       providers:
         global: its
         engine: its
+        admin: noop
         internal: console_direct
 
 # Normal pipeline node

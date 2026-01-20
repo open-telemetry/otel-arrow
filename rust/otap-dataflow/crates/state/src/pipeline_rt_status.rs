@@ -195,7 +195,7 @@ impl PipelineRuntimeStatus {
                 }
             }
             EventType::Error(err) => {
-                let (reason, message) = error_reason_and_message(err, &event);
+                let (reason, message) = error_reason_and_message(err, event);
                 _ = self.ready_condition.update(
                     ConditionStatus::False,
                     Some(reason.clone()),

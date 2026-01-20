@@ -216,7 +216,7 @@ impl ConditionState {
         Self {
             status,
             reason: reason.into(),
-            message: message.into(),
+            message,
             last_transition_time,
         }
     }
@@ -230,7 +230,6 @@ impl ConditionState {
         transition_time: SystemTime,
     ) -> bool {
         let reason = reason.into();
-        let message = message.into();
         if self.status == status && self.reason == reason && self.message == message {
             return false;
         }
