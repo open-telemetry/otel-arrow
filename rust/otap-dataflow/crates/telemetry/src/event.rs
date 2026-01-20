@@ -516,13 +516,10 @@ impl ObservedEvent {
     }
 
     /// Create a log record event.
-    ///
-    /// The `key` is optional - use `None` for global/controller-level logs that
-    /// don't have a specific pipeline context.
     #[must_use]
-    pub fn log_record(key: Option<DeployedPipelineKey>, message: impl Into<EventMessage>) -> Self {
+    pub fn log_record(message: impl Into<EventMessage>) -> Self {
         Self {
-            key,
+            key: None,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),

@@ -24,7 +24,7 @@ use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
 use tracing::level_filters::LevelFilter;
-use tracing::{Event, Subscriber};
+use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -32,6 +32,7 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
 // Re-export for convenience
 pub use crate::event::ObservedEventReporter;
+pub use tracing::dispatcher::DefaultGuard;
 
 /// Creates an `EnvFilter` for the given log level.
 ///
@@ -129,6 +130,53 @@ impl TracingSetup {
         }
     }
 
+    /// Set this setup as the thread-local default subscriber.
+    ///
+    /// Returns a guard that restores the previous subscriber when dropped.
+    /// This is useful for dedicated threads (like admin threads) that need
+    /// their own logging configuration for the thread's lifetime.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let setup = TracingSetup::ConsoleDirect;
+    /// let _guard = setup.set_thread_default(LogLevel::Info);
+    /// // All tracing calls on this thread now use ConsoleDirect
+    /// // Guard is dropped when thread exits, restoring previous subscriber
+    /// ```
+    #[must_use]
+    pub fn set_thread_default(&self, log_level: LogLevel) -> DefaultGuard {
+        let filter = create_env_filter(log_level);
+
+        let dispatch = match self {
+            TracingSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
+
+            TracingSetup::ConsoleDirect => Dispatch::new(
+                Registry::default()
+                    .with(filter)
+                    .with(RawLoggingLayer::new(ConsoleWriter::color())),
+            ),
+
+            TracingSetup::ConsoleAsync { reporter } => {
+                let layer = ConsoleAsyncLayer::new(reporter);
+                Dispatch::new(Registry::default().with(filter).with(layer))
+            }
+
+            TracingSetup::OpenTelemetry { logger_provider } => {
+                let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
+                let fmt_layer = tracing_subscriber::fmt::layer().with_thread_names(true);
+                Dispatch::new(
+                    Registry::default()
+                        .with(filter)
+                        .with(fmt_layer)
+                        .with(sdk_layer),
+                )
+            }
+        };
+
+        tracing::dispatcher::set_default(&dispatch)
+    }
+
     /// Run a closure with the appropriate tracing subscriber for this setup.
     ///
     /// The closure runs with the configured logging layer active as a thread-local default.
@@ -200,7 +248,6 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let record = LogRecord::new(event);
         let observed_event = ObservedEvent::log_record(
-            None, // Global logs don't have a pipeline key
             EventMessage::Log(record),
         );
 

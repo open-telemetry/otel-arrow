@@ -9,6 +9,9 @@ use std::thread;
 use tokio::{runtime::Builder as RtBuilder, task::LocalSet};
 use tokio_util::sync::CancellationToken;
 
+use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
+use otap_df_telemetry::{DefaultGuard, TracingSetup};
+
 /// Handle to a task running on a dedicated thread.
 ///
 /// - `shutdown()` requests cancellation via the token (idempotent, best-effort).
@@ -109,6 +112,65 @@ where
     let join_handle = thread::Builder::new()
         .name(name_for_thread)
         .spawn(move || {
+            let rt = RtBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to create runtime");
+            let local = LocalSet::new();
+
+            // Build the task future using the provided factory, passing the cancellation token.
+            let fut = task_factory(token_for_task);
+            // Run the future to completion on the LocalSet and return its result to the caller.
+            rt.block_on(local.run_until(fut))
+        })
+        .map_err(|e| crate::error::Error::ThreadSpawnError {
+            thread_name: name.clone(),
+            source: e,
+        })?;
+
+    Ok(ThreadLocalTaskHandle {
+        cancel_token: token,
+        join_handle: Some(join_handle),
+        name,
+    })
+}
+
+/// Spawn a non-Send async task on a dedicated OS thread with a thread-local
+/// tracing subscriber. This is like `spawn_thread_local_task` but installs
+/// the specified tracing subscriber for the thread's lifetime.
+///
+/// The tracing subscriber is set as the thread-local default before the task
+/// runs, and remains active for the duration of the thread.
+///
+/// # Arguments
+/// * `thread_name` - Name for the spawned thread (for debugging)
+/// * `tracing_setup` - Configuration for the thread's tracing subscriber
+/// * `log_level` - Log level for the tracing subscriber
+/// * `task_factory` - Factory function that creates the async task to run
+pub fn spawn_thread_local_task_with_tracing<T, E, Fut, F>(
+    thread_name: impl Into<String>,
+    tracing_setup: TracingSetup,
+    log_level: LogLevel,
+    task_factory: F,
+) -> Result<ThreadLocalTaskHandle<T, E>, crate::error::Error>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    Fut: 'static + Future<Output = Result<T, E>>,
+    F: 'static + Send + FnOnce(CancellationToken) -> Fut,
+{
+    let name = thread_name.into();
+    let name_for_thread = name.clone();
+    let token = CancellationToken::new();
+    let token_for_task = token.clone();
+
+    let join_handle = thread::Builder::new()
+        .name(name_for_thread)
+        .spawn(move || {
+            // Set up thread-local tracing subscriber. The guard keeps it active
+            // for the thread's lifetime and restores the previous subscriber on drop.
+            let _tracing_guard: DefaultGuard = tracing_setup.set_thread_default(log_level);
+
             let rt = RtBuilder::new_current_thread()
                 .enable_all()
                 .build()

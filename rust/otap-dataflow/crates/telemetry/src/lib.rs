@@ -30,7 +30,6 @@ use std::sync::Arc;
 use crate::error::Error;
 use crate::event::ObservedEventReporter;
 use crate::registry::TelemetryRegistryHandle;
-use crate::tracing_init::TracingSetup;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use otap_df_config::pipeline::service::telemetry::logs::{LogLevel, ProviderMode};
 
@@ -52,6 +51,9 @@ pub mod self_tracing;
 pub mod semconv;
 /// Tokio tracing subscriber initialization.
 pub mod tracing_init;
+
+// Re-export tracing setup types for per-thread subscriber configuration.
+pub use tracing_init::{DefaultGuard, TracingSetup};
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -131,6 +133,9 @@ pub struct InternalTelemetrySystem {
     /// Engine provider mode from config.
     engine_provider_mode: ProviderMode,
 
+    /// Admin provider mode from config (for admin threads).
+    admin_provider_mode: ProviderMode,
+
     /// Event reporter for asynchronous internal logging modes.
     event_reporter: ObservedEventReporter,
 }
@@ -187,6 +192,7 @@ impl InternalTelemetrySystem {
             log_level: config.logs.level,
             global_provider_mode: config.logs.providers.global,
             engine_provider_mode: config.logs.providers.engine,
+            admin_provider_mode: config.logs.providers.admin,
             event_reporter,
         })
     }
@@ -242,6 +248,15 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn engine_tracing_setup(&self) -> TracingSetup {
         self.tracing_setup_for(self.engine_provider_mode)
+    }
+
+    /// Returns a `TracingSetup` for admin threads.
+    ///
+    /// This uses the configured `admin` provider mode from the config.
+    /// Admin threads include: observed-state-store, http-admin, metrics-aggregator.
+    #[must_use]
+    pub fn admin_tracing_setup(&self) -> TracingSetup {
+        self.tracing_setup_for(self.admin_provider_mode)
     }
 
     /// Returns the configured log level.

@@ -18,10 +18,11 @@
 //! - TODO: Support pipeline groups
 
 use crate::error::Error;
-use crate::thread_task::spawn_thread_local_task;
+use crate::thread_task::spawn_thread_local_task_with_tracing;
 use core_affinity::CoreId;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
 use otap_df_config::{
     PipelineGroupId, PipelineId,
     pipeline::PipelineConfig,
@@ -37,7 +38,7 @@ use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{ErrorSummary, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn};
 use std::sync::Arc;
 use std::thread;
 
@@ -100,18 +101,28 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_reporter = telemetry_system.metrics_reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
+        // Get tracing setup for admin threads
+        let admin_tracing_setup = telemetry_system.admin_tracing_setup();
+        let log_level = telemetry_system.log_level();
+
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
         let internal_collector = telemetry_system.collector();
-        let metrics_agg_handle =
-            spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
-                internal_collector.run(cancellation_token)
-            })?;
+        let admin_setup_for_metrics_agg = admin_tracing_setup.clone();
+        let metrics_agg_handle = spawn_thread_local_task_with_tracing(
+            "metrics-aggregator",
+            admin_setup_for_metrics_agg,
+            log_level,
+            move |cancellation_token| internal_collector.run(cancellation_token),
+        )?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
         let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
-            Some(spawn_thread_local_task(
+            let admin_setup_for_metrics_disp = admin_tracing_setup.clone();
+            Some(spawn_thread_local_task_with_tracing(
                 "metrics-dispatcher",
+                admin_setup_for_metrics_disp,
+                log_level,
                 move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
             )?)
         } else {
@@ -119,10 +130,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         };
 
         // Start the observed state store background task
-        let obs_state_join_handle =
-            spawn_thread_local_task("observed-state-store", move |cancellation_token| {
-                obs_state_store.run(cancellation_token)
-            })?;
+        let admin_setup_for_obs_store = admin_tracing_setup.clone();
+        let obs_state_join_handle = spawn_thread_local_task_with_tracing(
+            "observed-state-store",
+            admin_setup_for_obs_store,
+            log_level,
+            move |cancellation_token| obs_state_store.run(cancellation_token),
+        )?;
 
         // Start one thread per requested core
         // Get available CPU cores for pinning
@@ -132,6 +146,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         )?;
         let mut threads = Vec::with_capacity(requested_cores.len());
         let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
+
+        // Get tracing setup for engine threads
+        let engine_tracing_setup = telemetry_system.engine_tracing_setup();
 
         // ToDo [LQ] Support multiple pipeline groups in the future.
 
@@ -160,6 +177,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
             let thread_name = format!("pipeline-core-{}", core_id.id);
             let obs_evt_reporter = obs_evt_reporter.clone();
+            let engine_setup_for_thread = engine_tracing_setup.clone();
             let handle = thread::Builder::new()
                 .name(thread_name.clone())
                 .spawn(move || {
@@ -173,6 +191,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         metrics_reporter,
                         pipeline_ctrl_msg_tx,
                         pipeline_ctrl_msg_rx,
+                        engine_setup_for_thread,
+                        log_level,
                     )
                 })
                 .map_err(|e| Error::ThreadSpawnError {
@@ -187,8 +207,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         drop(metrics_reporter);
 
         // Start the admin HTTP server
-        let admin_server_handle =
-            spawn_thread_local_task("http-admin", move |cancellation_token| {
+        let admin_server_handle = spawn_thread_local_task_with_tracing(
+            "http-admin",
+            admin_tracing_setup,
+            log_level,
+            move |cancellation_token| {
                 // Convert the concrete senders to trait objects for the admin crate
                 let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
                     ctrl_msg_senders
@@ -206,7 +229,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     telemetry_registry,
                     cancellation_token,
                 )
-            })?;
+            },
+        )?;
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
@@ -389,7 +413,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        tracing_setup: TracingSetup,
+        log_level: LogLevel,
     ) -> Result<Vec<()>, Error> {
+        // Set up thread-local tracing subscriber for this engine thread.
+        // The guard keeps it active for the thread's lifetime.
+        let _tracing_guard = tracing_setup.set_thread_default(log_level);
+
         // Create a tracing span for this pipeline thread
         // so that all logs within this scope include pipeline context.
         let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
