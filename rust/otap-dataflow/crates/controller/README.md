@@ -8,6 +8,8 @@ allocation, lifecycle management, and inter-pipeline coordination, while
 preserving the engine's core design principles: thread-per-core execution,
 share-nothing hot paths, and predictable performance.
 
+![Controller Architecture](./assets/controller-architecture.svg)
+
 ## Execution Model
 
 Each pipeline configuration declares its CPU requirements through quota

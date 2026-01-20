@@ -24,7 +24,7 @@ data.
 
 ## Architecture
 
-![OTAP Dataflow Engine architecture](docs/images/otap-df-engine.svg)
+![OTAP Dataflow Engine architecture](docs/images/architecture-high-level.svg)
 
 The controller is the local control plane for pipeline groups. It allocates CPU
 cores, spawns one worker thread per core, and owns lifecycle, coordination, and
