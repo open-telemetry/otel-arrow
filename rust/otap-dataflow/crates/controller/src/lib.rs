@@ -38,7 +38,9 @@ use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{ErrorSummary, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{
+    InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn,
+};
 use std::sync::Arc;
 use std::thread;
 
@@ -98,7 +100,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         telemetry_system.init_global_subscriber();
 
         let metrics_dispatcher = telemetry_system.dispatcher();
-        let metrics_reporter = telemetry_system.metrics_reporter();
+        let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
         // Get tracing setup for admin threads

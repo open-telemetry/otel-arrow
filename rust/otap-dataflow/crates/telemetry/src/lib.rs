@@ -278,8 +278,9 @@ impl InternalTelemetrySystem {
     }
 
     /// Returns a shareable/cloneable handle to the metrics reporter.
+    /// TODO: Rename metrics_reporter.
     #[must_use]
-    pub fn metrics_reporter(&self) -> reporter::MetricsReporter {
+    pub fn reporter(&self) -> reporter::MetricsReporter {
         self.metrics_reporter.clone()
     }
 

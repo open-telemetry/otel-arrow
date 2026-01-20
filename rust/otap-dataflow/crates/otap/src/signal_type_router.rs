@@ -395,7 +395,7 @@ mod tests {
         fn start_telemetry() -> (TelemetryRegistryHandle, MetricsReporter, JoinHandle<()>) {
             let telemetry = InternalTelemetrySystem::default();
             let telemetry_registry = telemetry.registry();
-            let reporter = telemetry.metrics_reporter();
+            let reporter = telemetry.reporter();
             let collector_task = tokio::task::spawn_local(async move {
                 let collector = telemetry.collector();
                 let _ = collector.run_collection_loop().await;

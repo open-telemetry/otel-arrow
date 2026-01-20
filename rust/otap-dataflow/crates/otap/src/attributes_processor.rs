@@ -1064,7 +1064,7 @@ mod telemetry_tests {
 
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
         let telemetry_registry = rt.metrics_registry();
-        let metrics_reporter = rt.metrics_reporter();
+        let metrics_reporter = rt.reporter();
 
         // 2) Pipeline context sharing the same registry handle
         let controller = ControllerContext::new(rt.metrics_registry().clone());

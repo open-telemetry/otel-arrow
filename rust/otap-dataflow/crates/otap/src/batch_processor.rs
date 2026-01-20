@@ -1381,7 +1381,7 @@ mod tests {
     ) {
         let rt = TestRuntime::new();
         let telemetry_registry = rt.metrics_registry();
-        let metrics_reporter = rt.metrics_reporter();
+        let metrics_reporter = rt.reporter();
 
         // Create processor using TestRuntime's registry
         let controller = ControllerContext::new(telemetry_registry.clone());

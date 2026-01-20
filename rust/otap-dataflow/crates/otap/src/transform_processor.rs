@@ -359,7 +359,7 @@ mod test {
     fn test_simple_transform_pipeline() {
         let runtime = TestRuntime::<OtapPdata>::new();
         let telemetry_registry = runtime.metrics_registry();
-        let metrics_reporter = runtime.metrics_reporter();
+        let metrics_reporter = runtime.reporter();
         let query = "logs | where severity_text == \"ERROR\"";
         let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime

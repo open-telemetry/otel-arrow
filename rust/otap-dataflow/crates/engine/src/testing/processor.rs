@@ -196,8 +196,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns a metrics reporter for use in the processor runtime.
-    pub fn metrics_reporter(&self) -> MetricsReporter {
-        self.metrics_system.metrics_reporter()
+    /// TODO: rename metrics_reporter()
+    pub fn reporter(&self) -> MetricsReporter {
+        self.metrics_system.reporter()
     }
 
     /// Returns the message counter.
@@ -264,7 +265,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let metrics_reporter = self.metrics_system.metrics_reporter();
+        let metrics_reporter = self.metrics_system.reporter();
         // Spawn metrics collection loop
         let collector = self.metrics_system.collector();
         let metrics_collection_handle = self.rt.spawn(collector.run_collection_loop());

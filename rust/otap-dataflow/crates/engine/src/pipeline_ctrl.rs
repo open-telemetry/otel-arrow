@@ -459,7 +459,7 @@ mod tests {
 
         // Create a dummy MetricsReporter for testing using MetricsSystem
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
-        let metrics_reporter = metrics_system.metrics_reporter();
+        let metrics_reporter = metrics_system.reporter();
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let pipeline_config =
@@ -888,7 +888,7 @@ mod tests {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
                 let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
-                let metrics_reporter = metrics_system.metrics_reporter();
+                let metrics_reporter = metrics_system.reporter();
                 let pipeline_group_id: PipelineGroupId = Default::default();
                 let pipeline_id: PipelineId = Default::default();
                 let core_id = 0;
