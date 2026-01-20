@@ -922,7 +922,7 @@ mod tests {
                     pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
-            observed_state_store.reporter(),
+                    observed_state_store.reporter(),
                     metrics_reporter,
                     TelemetrySettings::default(),
                     Vec::new(),
