@@ -211,9 +211,8 @@ impl<PData> EffectHandler<PData> {
         TypedError::Error(Error::ProcessorError {
             processor: self.processor_id(),
             kind: ProcessorErrorKind::Configuration,
-            error:
-                "Ambiguous default out port: multiple ports connected and no default configured"
-                    .to_string(),
+            error: "Ambiguous default out port: multiple ports connected and no default configured"
+                .to_string(),
             source_detail: String::new(),
         })
     }
@@ -408,7 +407,12 @@ mod tests {
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, Some("out".into()), metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("out".into()),
+            metrics_reporter,
+        );
 
         // Should succeed when channel has capacity
         assert!(eh.try_send_message(42).is_ok());
@@ -423,7 +427,12 @@ mod tests {
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, Some("out".into()), metrics_reporter);
+        let eh = EffectHandler::new(
+            test_node("proc"),
+            senders,
+            Some("out".into()),
+            metrics_reporter,
+        );
 
         // First send should succeed
         assert!(eh.try_send_message(1).is_ok());
