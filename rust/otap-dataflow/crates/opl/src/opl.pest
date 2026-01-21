@@ -52,9 +52,14 @@ attribute_selection_expression = {
     identifier_expression ~ ("." ~ member_expression)+
 }
 
+argument_list = { expression ~ ("," ~ expression)* }
+
+function_call = { identifier_expression ~ "(" ~ argument_list ~ ")" }
+
 member_expression = {
     index_expression
   | attribute_selection_expression
+  | function_call
   | primitive_expression // TODO function calls
 }
 

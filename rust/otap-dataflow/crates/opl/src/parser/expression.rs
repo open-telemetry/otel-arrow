@@ -5,11 +5,12 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    DoubleScalarExpression, DoubleValue, EqualToLogicalExpression, Expression,
-    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
-    IntegerValue, LogicalExpression, MathScalarExpression, NotLogicalExpression,
-    NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
-    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
+    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
+    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
+    IntegerScalarExpression, IntegerValue, LogicalExpression, MatchesLogicalExpression,
+    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
+    QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
+    StringScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,
@@ -450,6 +451,7 @@ pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
         Rule::index_expression => parse_index_expression(rule),
         Rule::primitive_expression => parse_primitive_expression(rule),
         Rule::attribute_selection_expression => parse_attribute_selection_expression(rule),
+        Rule::function_call => parse_function_call(rule),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
             Rule::member_expression,
@@ -592,15 +594,114 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
         )),
     }
 }
+
+fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
+    let query_location = to_query_location(&rule);
+    let mut inner_rules = rule.into_inner();
+
+    let fn_name_rule = inner_rules
+        .next()
+        .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+
+    if fn_name_rule.as_rule() != Rule::identifier_expression {
+        return Err(invalid_child_rule_error(
+            query_location,
+            Rule::function_call,
+            fn_name_rule.as_rule(),
+        ));
+    }
+
+    let fn_name = fn_name_rule.as_str();
+
+    let args_rule = inner_rules.next().ok_or_else(|| {
+        ParserError::SyntaxError(
+            query_location.clone(),
+            "Expected argument_list in function call".to_string(),
+        )
+    })?;
+
+    if args_rule.as_rule() != Rule::argument_list {
+        return Err(invalid_child_rule_error(
+            query_location,
+            Rule::function_call,
+            args_rule.as_rule(),
+        ));
+    }
+
+    // There should be exactly 2 children--> identifier_expression + argument_list
+    if inner_rules.next().is_some() {
+        return Err(ParserError::SyntaxError(
+            query_location,
+            "Unexpected extra tokens in function call".to_string(),
+        ));
+    }
+
+    // argument parsing
+    let mut args: Vec<ScalarExpression> = Vec::new();
+    for arg_expr_rule in args_rule.into_inner() {
+        if arg_expr_rule.as_rule() != Rule::expression {
+            return Err(invalid_child_rule_error(
+                to_query_location(&arg_expr_rule),
+                Rule::argument_list,
+                arg_expr_rule.as_rule(),
+            ));
+        }
+
+        let arg_expr = parse_expression(arg_expr_rule)?.into();
+        args.push(arg_expr);
+    }
+
+    // 2 args for both contains and matches
+    if args.len() != 2 {
+        return Err(ParserError::SyntaxError(
+            query_location,
+            format!(
+                "Function '{fn_name}' expects 2 arguments, got {}",
+                args.len()
+            ),
+        ));
+    }
+
+    let haystack = args.remove(0);
+    let rhs = args.remove(0);
+
+    match fn_name {
+        "contains" => {
+            let case_insensitive = true;
+
+            Ok(LogicalExpression::Contains(ContainsLogicalExpression::new(
+                query_location,
+                haystack,
+                rhs,
+                case_insensitive,
+            ))
+            .into())
+        }
+        "matches" => Ok(LogicalExpression::Matches(MatchesLogicalExpression::new(
+            query_location,
+            haystack,
+            rhs,
+        ))
+        .into()),
+        _ => Err(ParserError::SyntaxNotSupported(
+            query_location,
+            format!(
+                "Unsupported function '{fn_name}'. Only 'contains' and 'matches' are supported."
+            ),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        DoubleScalarExpression, EqualToLogicalExpression, GreaterThanLogicalExpression,
-        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
-        MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
-        QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
-        StringScalarExpression, ValueAccessor,
+        ContainsLogicalExpression, DoubleScalarExpression, EqualToLogicalExpression,
+        GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
+        IntegerScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
+        NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
+        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        ValueAccessor,
     };
     use pest::Parser;
     use pretty_assertions::assert_eq;
@@ -1310,5 +1411,162 @@ mod test {
         ));
 
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_function_call_contains_with_identifier_and_literal() {
+        let input = "contains(severity_text, \"ERR\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "severity_text",
+                )),
+            )]),
+        ));
+
+        let expected_needle = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "ERR"),
+        ));
+
+        let expected = LogicalExpression::Contains(ContainsLogicalExpression::new(
+            QueryLocation::new_fake(),
+            expected_haystack,
+            expected_needle,
+            true,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_function_call_matches_with_identifier_and_literal() {
+        let input = "matches(severity_text, \"ERR.*\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "severity_text",
+                )),
+            )]),
+        ));
+
+        let expected_pattern = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "ERR.*"),
+        ));
+
+        let expected = LogicalExpression::Matches(MatchesLogicalExpression::new(
+            QueryLocation::new_fake(),
+            expected_haystack,
+            expected_pattern,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_function_call_contains_with_attribute_selection() {
+        let input = "contains(resource.schema_url, \"version\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "resource"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "schema_url"),
+                )),
+            ]),
+        ));
+
+        let expected_needle = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "version"),
+        ));
+
+        let expected = LogicalExpression::Contains(ContainsLogicalExpression::new(
+            QueryLocation::new_fake(),
+            expected_haystack,
+            expected_needle,
+            true,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_function_call_contains_with_index_expression() {
+        let input = "contains(attributes[\"username\"], \"bert\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let result: LogicalExpression = parse_member_expression(rules.next().unwrap())
+            .unwrap()
+            .into();
+
+        let expected_haystack = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "username"),
+                )),
+            ]),
+        ));
+
+        let expected_needle = ScalarExpression::Static(StaticScalarExpression::String(
+            StringScalarExpression::new(QueryLocation::new_fake(), "bert"),
+        ));
+
+        let expected = LogicalExpression::Contains(ContainsLogicalExpression::new(
+            QueryLocation::new_fake(),
+            expected_haystack,
+            expected_needle,
+            true,
+        ));
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_function_call_wrong_arity_one_arg_errors() {
+        let input = "contains(severity_text)";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        assert!(parse_member_expression(rules.next().unwrap()).is_err());
+    }
+
+    #[test]
+    fn test_parse_function_call_wrong_arity_three_args_errors() {
+        let input = "matches(severity_text, \"ERR.*\", \"extra\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        assert!(parse_member_expression(rules.next().unwrap()).is_err());
     }
 }

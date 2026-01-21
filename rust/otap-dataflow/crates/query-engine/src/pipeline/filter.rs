@@ -1904,8 +1904,7 @@ mod test {
         test_simple_attrs_filter::<OplParser>().await;
     }
 
-    #[tokio::test]
-    async fn test_filter_text_contains() {
+    async fn test_filter_text_contains<P: Parser>(q1: &str, q2: &str, q3: &str, q4: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("error happen")
@@ -1927,44 +1926,28 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where event_name contains \"error\"",
-            to_logs_data(log_records.clone()),
-        )
-        .await;
+        let result = exec_logs_pipeline::<P>(q1, to_logs_data(log_records.clone())).await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()]
         );
 
         // check we could specify the column on the right
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where \"1234\" contains event_name",
-            to_logs_data(log_records.clone()),
-        )
-        .await;
+        let result = exec_logs_pipeline::<P>(q2, to_logs_data(log_records.clone())).await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()]
         );
 
         // also check we can filter by attributes using contains
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where attributes[\"username\"] contains \"y\"",
-            to_logs_data(log_records.clone()),
-        )
-        .await;
+        let result = exec_logs_pipeline::<P>(q3, to_logs_data(log_records.clone())).await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()],
         );
 
         // check that we could also specify the column on the right for attributes
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where \"albert\" contains attributes[\"username\"]",
-            to_logs_data(log_records.clone()),
-        )
-        .await;
+        let result = exec_logs_pipeline::<P>(q4, to_logs_data(log_records.clone())).await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone()],
@@ -1972,7 +1955,28 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_text_contains_struct_cols() {
+    async fn test_filter_text_contains_kql() {
+        test_filter_text_contains::<KqlParser>(
+            r#"logs | where event_name contains "error""#,
+            r#"logs | where "1234" contains event_name"#,
+            r#"logs | where attributes["username"] contains "y""#,
+            r#"logs | where "albert" contains attributes["username"]"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_contains_opl() {
+        test_filter_text_contains::<OplParser>(
+            r#"logs | where contains(event_name, "error")"#,
+            r#"logs | where contains("1234", event_name)"#,
+            r#"logs | where contains(attributes["username"], "y")"#,
+            r#"logs | where contains("albert", attributes["username"])"#,
+        )
+        .await;
+    }
+
+    async fn test_filter_text_contains_struct_cols<P: Parser>(q1: &str, q2: &str) {
         let input = LogsData {
             resource_logs: vec![
                 ResourceLogs {
@@ -2001,11 +2005,8 @@ mod test {
                 },
             ],
         };
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where resource.schema_url contains \"version\"",
-            input.clone(),
-        )
-        .await;
+
+        let result = exec_logs_pipeline::<P>(q1, input.clone()).await;
         assert_eq!(
             result,
             LogsData {
@@ -2014,11 +2015,7 @@ mod test {
         );
 
         // test same as above, but with literal contains the column value
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where \"experimental version\" contains resource.schema_url",
-            input.clone(),
-        )
-        .await;
+        let result = exec_logs_pipeline::<P>(q2, input.clone()).await;
         assert_eq!(
             result,
             LogsData {
@@ -2028,7 +2025,24 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_matches_regex() {
+    async fn test_filter_text_contains_struct_cols_kql() {
+        test_filter_text_contains_struct_cols::<KqlParser>(
+            r#"logs | where resource.schema_url contains "version""#,
+            r#"logs | where "experimental version" contains resource.schema_url"#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_contains_struct_cols_opl() {
+        test_filter_text_contains_struct_cols::<OplParser>(
+            r#"logs | where contains(resource.schema_url, "version")"#,
+            r#"logs | where contains("experimental version", resource.schema_url)"#,
+        )
+        .await;
+    }
+
+    async fn test_filter_matches_regex<P: Parser>(q1: &str, q2: &str) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("error happen")
@@ -2050,22 +2064,14 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where event_name matches regex \"^err.*\"",
-            to_logs_data(log_records.clone()),
-        )
-        .await;
+        let result = exec_logs_pipeline::<P>(q1, to_logs_data(log_records.clone())).await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone()]
         );
 
-        // also check we can filter by attributes using contains
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where attributes[\"username\"] matches regex \"^t.*\"",
-            to_logs_data(log_records.clone()),
-        )
-        .await;
+        // also check we can filter by attributes using matches/regex
+        let result = exec_logs_pipeline::<P>(q2, to_logs_data(log_records.clone())).await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[1].clone(), log_records[2].clone()],
@@ -2073,7 +2079,24 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_filter_text_matches_regex_struct_cols() {
+    async fn test_filter_matches_regex_kql() {
+        test_filter_matches_regex::<KqlParser>(
+            r#"logs | where event_name matches regex "^err.*""#,
+            r#"logs | where attributes["username"] matches regex "^t.*""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_matches_regex_opl() {
+        test_filter_matches_regex::<OplParser>(
+            r#"logs | where matches(event_name, "^err.*")"#,
+            r#"logs | where matches(attributes["username"], "^t.*")"#,
+        )
+        .await;
+    }
+
+    async fn test_filter_text_matches_regex_struct_cols<P: Parser>(q1: &str) {
         let input = LogsData {
             resource_logs: vec![
                 ResourceLogs {
@@ -2102,17 +2125,30 @@ mod test {
                 },
             ],
         };
-        let result = exec_logs_pipeline::<KqlParser>(
-            "logs | where resource.schema_url matches regex \"v.*1\"",
-            input.clone(),
-        )
-        .await;
+
+        let result = exec_logs_pipeline::<P>(q1, input.clone()).await;
         assert_eq!(
             result,
             LogsData {
                 resource_logs: vec![input.resource_logs[0].clone()],
             }
         );
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_matches_regex_struct_cols_kql() {
+        test_filter_text_matches_regex_struct_cols::<KqlParser>(
+            r#"logs | where resource.schema_url matches regex "v.*1""#,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_filter_text_matches_regex_struct_cols_opl() {
+        test_filter_text_matches_regex_struct_cols::<OplParser>(
+            r#"logs | where matches(resource.schema_url, "v.*1")"#,
+        )
+        .await;
     }
 
     async fn test_filter_by_resources<P: Parser>() {
