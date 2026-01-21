@@ -1110,7 +1110,6 @@ mod tests {
     };
     use crate::subscriber::SubscriberId;
     use crate::wal::WalReader;
-    use arrow_array::RecordBatch as ArrowRecordBatch;
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
@@ -1128,7 +1127,7 @@ mod tests {
 
     struct DummyBundle {
         descriptor: BundleDescriptor,
-        batch: ArrowRecordBatch,
+        batch: arrow_array::RecordBatch,
     }
 
     impl DummyBundle {
@@ -1143,7 +1142,7 @@ mod tests {
                     SlotId::new(0),
                     "Logs",
                 )]),
-                batch: ArrowRecordBatch::new_empty(schema),
+                batch: arrow_array::RecordBatch::new_empty(schema),
             }
         }
 
@@ -1161,7 +1160,8 @@ mod tests {
             }
             let array = builder.finish();
 
-            let batch = ArrowRecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+            let batch =
+                arrow_array::RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
 
             Self {
                 descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(
@@ -1781,7 +1781,7 @@ mod tests {
     /// Helper struct for testing bundles with custom fingerprints.
     struct DummyBundleWithFingerprint {
         descriptor: BundleDescriptor,
-        batch: ArrowRecordBatch,
+        batch: arrow_array::RecordBatch,
         fingerprint: [u8; 32],
     }
 
@@ -1799,7 +1799,8 @@ mod tests {
             }
             let array = builder.finish();
 
-            let batch = ArrowRecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
+            let batch =
+                arrow_array::RecordBatch::try_new(schema.clone(), vec![Arc::new(array)]).unwrap();
 
             Self {
                 descriptor: BundleDescriptor::new(vec![SlotDescriptor::new(
@@ -2149,7 +2150,7 @@ mod tests {
     /// Multi-slot bundle simulating OTAP structure (Logs, LogAttrs, ScopeAttrs, ResourceAttrs).
     struct MultiSlotBundle {
         descriptor: BundleDescriptor,
-        batches: [ArrowRecordBatch; 4],
+        batches: [arrow_array::RecordBatch; 4],
     }
 
     impl MultiSlotBundle {
@@ -2168,7 +2169,8 @@ mod tests {
                 for i in 0..rows {
                     builder.append_value(i as i64);
                 }
-                ArrowRecordBatch::try_new(schema.clone(), vec![Arc::new(builder.finish())]).unwrap()
+                arrow_array::RecordBatch::try_new(schema.clone(), vec![Arc::new(builder.finish())])
+                    .unwrap()
             });
 
             Self {
