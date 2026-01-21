@@ -1101,27 +1101,33 @@ impl WalCoordinator {
         self.active_header_size.saturating_add(data_within_active)
     }
 
-    /// Scans a WAL file and returns the last valid sequence number and the
+    /// Scans a WAL file and returns the last valid sequence number, the
     /// byte offset immediately after the last valid entry (i.e., where new
-    /// writes should begin). Returns file offsets (not WAL positions).
+    /// writes should begin), and a list of entry boundary offsets (file offsets).
+    /// Returns file offsets (not WAL positions).
+    ///
+    /// The entry boundaries can be used to initialize the `entry_boundaries` vector
+    /// for cursor validation during WAL replay.
     ///
     /// Note: Uses sync I/O via `WalReader` - this is acceptable because it's
     /// only called during startup/recovery.
-    fn scan_file_last_sequence(&self, path: &Path) -> WalResult<(Option<u64>, u64)> {
+    fn scan_file_for_entries(&self, path: &Path) -> WalResult<(Option<u64>, u64, Vec<u64>)> {
         if !path.exists() {
-            return Ok((None, 0));
+            return Ok((None, 0, Vec::new()));
         }
         let mut reader = WalReader::open(path)?;
         let header_size = reader.header_size();
         let iter = reader.iter_from(0)?;
         let mut last_seq = None;
         let mut last_valid_offset = header_size;
+        let mut boundaries = Vec::new();
         for entry in iter {
             match entry {
                 Ok(bundle) => {
                     last_seq = Some(bundle.sequence);
                     // Convert WAL position back to file offset for internal use
                     last_valid_offset = bundle.next_offset + header_size;
+                    boundaries.push(last_valid_offset);
                 }
                 Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {
                     // Partial or corrupted entry - stop here
@@ -1130,7 +1136,7 @@ impl WalCoordinator {
                 Err(err) => return Err(err),
             }
         }
-        Ok((last_seq, last_valid_offset))
+        Ok((last_seq, last_valid_offset, boundaries))
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1138,6 +1144,7 @@ impl WalCoordinator {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Determines the next sequence number and last valid offset in the active file.
+    /// Also populates `entry_boundaries` with all entry end offsets for cursor validation.
     ///
     /// Since sequence numbers are monotonically increasing, the highest sequence
     /// is always in the active file (or the most recent rotated file if the active
@@ -1145,8 +1152,12 @@ impl WalCoordinator {
     ///
     /// Note: Uses sync I/O via `WalReader` internally - this is acceptable because
     /// this method is only called during startup/recovery, not on the hot path.
-    async fn detect_next_sequence(&self) -> WalResult<(u64, u64)> {
-        let (active_seq, active_valid_offset) = self.scan_file_last_sequence(&self.options.path)?;
+    async fn detect_next_sequence(&mut self) -> WalResult<(u64, u64)> {
+        let (active_seq, active_valid_offset, boundaries) =
+            self.scan_file_for_entries(&self.options.path)?;
+
+        // Populate entry_boundaries so cursor validation works during WAL replay
+        self.entry_boundaries = boundaries;
 
         // If active file has entries, use its sequence
         if let Some(seq) = active_seq {
@@ -1155,7 +1166,7 @@ impl WalCoordinator {
 
         // Active file is empty - check the most recent rotated file (highest rotation_id)
         if let Some(most_recent) = self.rotated_files.iter().max_by_key(|f| f.rotation_id) {
-            let (seq, _) = self.scan_file_last_sequence(&most_recent.path)?;
+            let (seq, _, _) = self.scan_file_for_entries(&most_recent.path)?;
             if let Some(s) = seq {
                 return Ok((s.wrapping_add(1), active_valid_offset));
             }
