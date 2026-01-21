@@ -323,17 +323,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_engine_otel_requires_global_otel() {
+    fn test_validate_mixed_otel() {
         use ProviderMode::*;
-        // Engine OpenTelemetry without global OpenTelemetry fails
-        for global in [Noop, ITS, ConsoleDirect, ConsoleAsync] {
-            let config = config_with(global, OpenTelemetry, Noop, Noop);
-            assert_invalid(&config, "opentelemetry");
-        }
 
-        // Both OpenTelemetry succeeds
-        let config = config_with(OpenTelemetry, OpenTelemetry, Noop, Noop);
-        assert!(config.validate().is_ok());
+        for config in [
+            config_with(ConsoleAsync, OpenTelemetry, Noop, Noop),
+            config_with(OpenTelemetry, OpenTelemetry, Noop, Noop),
+            config_with(Noop, OpenTelemetry, Noop, OpenTelemetry),
+            config_with(OpenTelemetry, OpenTelemetry, OpenTelemetry, OpenTelemetry),
+        ] {
+            assert!(config.validate().is_ok());
+        }
     }
 
     #[test]
