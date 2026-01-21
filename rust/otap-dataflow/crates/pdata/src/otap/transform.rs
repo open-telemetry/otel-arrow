@@ -3847,51 +3847,6 @@ fn extend_schema_for_inserts(
     Ok((new_batch, new_schema))
 }
 
-/// Helper to extract string key from a record batch key column at a given index.
-/// Handles both plain Utf8 and Dictionary-encoded columns.
-fn get_key_at_index(key_col: &ArrayRef, idx: usize) -> Option<String> {
-    match key_col.data_type() {
-        DataType::Utf8 => key_col
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .and_then(|arr| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    Some(arr.value(idx).to_string())
-                }
-            }),
-        DataType::Dictionary(k, _) => match **k {
-            DataType::UInt8 => key_col
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt8Type>>()
-                .and_then(|dict| {
-                    if dict.is_null(idx) {
-                        None
-                    } else {
-                        let values = dict.values().as_any().downcast_ref::<StringArray>()?;
-                        let key = dict.keys().value(idx);
-                        Some(values.value(key as usize).to_string())
-                    }
-                }),
-            DataType::UInt16 => key_col
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt16Type>>()
-                .and_then(|dict| {
-                    if dict.is_null(idx) {
-                        None
-                    } else {
-                        let values = dict.values().as_any().downcast_ref::<StringArray>()?;
-                        let key = dict.keys().value(idx);
-                        Some(values.value(key as usize).to_string())
-                    }
-                }),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Returns `ArrayOptions` configured to match the given `DataType`.
 /// For dictionary types, configures the appropriate dictionary options.
 /// For native types (Utf8, Int64, Float64), returns options with no dictionary.
@@ -3943,14 +3898,18 @@ fn create_inserted_batch(
             actual: parent_ids.data_type().clone(),
         })?;
 
-    // Build a set of (parent_id, key) pairs that already exist
+    // Build a set of (parent_id, key) pairs that already exist using StringArrayAccessor
     let mut existing_keys: BTreeMap<u16, BTreeSet<String>> = BTreeMap::new();
     if let Some(key_col) = current_batch.column_by_name(consts::ATTRIBUTE_KEY) {
+        let key_accessor = MaybeDictArrayAccessor::<StringArray>::try_new(key_col)?;
         for i in 0..current_batch.num_rows() {
             if !parent_ids_arr.is_null(i) {
                 let parent = parent_ids_arr.value(i);
-                if let Some(key) = get_key_at_index(key_col, i) {
-                    let _ = existing_keys.entry(parent).or_default().insert(key);
+                if let Some(key) = key_accessor.str_at(i) {
+                    let _ = existing_keys
+                        .entry(parent)
+                        .or_default()
+                        .insert(key.to_string());
                 }
             }
         }
