@@ -75,7 +75,7 @@ impl ObservedEventReporter {
     }
 }
 
-/// The obseved event
+/// The observed event
 #[derive(Debug, Clone, Serialize)]
 pub enum ObservedEvent {
     /// The engine event has pipeline key and structured information.
