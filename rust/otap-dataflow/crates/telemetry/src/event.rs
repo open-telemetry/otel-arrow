@@ -34,10 +34,6 @@ impl ObservedEventReporter {
     }
 
     fn observe(&self, event: ObservedEvent) {
-        // Note: we expect fallback_mode is equal to providers.internal
-        // so it's in the set (Noop, ConsoleDirect, OpenTelemetry).
-        //
-        // OpenTelemetry is silently ignored in this location.
         match self.policy.blocking_timeout {
             None => match self.sender.try_send(event) {
                 Ok(_) => {}
@@ -47,10 +43,10 @@ impl ObservedEventReporter {
                     }
                     match err {
                         flume::TrySendError::Full(event) => {
-                            crate::raw_error!("Timeout sending observed event", event = ?event);
+                            crate::raw_error!("Channel full, dropping observed event", event = ?event);
                         }
                         flume::TrySendError::Disconnected(event) => {
-                            crate::raw_error!("Disconnect sending observed event", event = ?event);
+                            crate::raw_error!("Disconnect, dropping observed event", event = ?event);
                         }
                     }
                 }
@@ -63,10 +59,10 @@ impl ObservedEventReporter {
                     }
                     match err {
                         flume::SendTimeoutError::Timeout(event) => {
-                            crate::raw_error!("Timeout sending observed event", event = ?event);
+                            crate::raw_error!("Timeout, dropping observed event", event = ?event);
                         }
                         flume::SendTimeoutError::Disconnected(event) => {
-                            crate::raw_error!("Disconnect sending observed event", event = ?event);
+                            crate::raw_error!("Disconnect, dropping observed event", event = ?event);
                         }
                     }
                 }
