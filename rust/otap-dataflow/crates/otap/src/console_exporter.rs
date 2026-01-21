@@ -21,7 +21,6 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_pdata::OtapPayload;
-use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::views::common::InstrumentationScopeView;
 use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use otap_df_pdata::views::otap::OtapLogsView;
@@ -128,15 +127,20 @@ impl ConsoleExporter {
 
     fn export_logs(&self, payload: &OtapPayload) {
         match payload {
-            OtapPayload::OtlpBytes(bytes) => {
-                self.formatter.format_logs_bytes(bytes);
-            }
-            OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
+            OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => {
-                    self.formatter.format_logs_arrow(&logs_view);
+                    self.formatter.print_logs_data(&logs_view);
                 }
                 Err(e) => {
-                    otel_error!("Failed to create Arrow logs view", error = ?e);
+                    otel_error!("Failed to create OTLP logs view", error = ?e);
+                }
+            },
+            OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
+                Ok(logs_view) => {
+                    self.formatter.print_logs_data(&logs_view);
+                }
+                Err(e) => {
+                    otel_error!("Failed to create OTAP logs view", error = ?e);
                 }
             },
         }
@@ -198,25 +202,12 @@ impl HierarchicalFormatter {
         }
     }
 
-    /// Format logs from OTLP bytes to stdout.
-    pub fn format_logs_bytes(&self, bytes: &OtlpProtoBytes) {
-        let mut output = Vec::new();
-        self.format_logs_bytes_to(bytes, &mut output);
-        let _ = std::io::stdout().write_all(&output);
-    }
-
-    /// Format logs from Arrow format to stdout.
-    pub fn format_logs_arrow(&self, logs_view: &OtapLogsView<'_>) {
-        let mut output = Vec::new();
-        self.format_logs_data_to(logs_view, &mut output);
-        let _ = std::io::stdout().write_all(&output);
-    }
-
     /// Format logs from OTLP bytes to a writer.
-    pub fn format_logs_bytes_to(&self, bytes: &OtlpProtoBytes, output: &mut Vec<u8>) {
-        if let OtlpProtoBytes::ExportLogsRequest(data) = bytes {
-            let logs_data = RawLogsData::new(data.as_ref());
-            self.format_logs_data_to(&logs_data, output);
+    pub fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
+        let mut output = Vec::new();
+        self.format_logs_data_to(logs_data, &mut output);
+        if let Err(err) = std::io::stdout().write_all(&output) {
+            otel_error!("could not write to console", error = ?err);
         }
     }
 
@@ -378,6 +369,7 @@ impl HierarchicalFormatter {
                 |w, _| {
                     if let Some(name) = event_name {
                         let _ = w.write_all(name.as_bytes());
+                        let _ = w.write_all(b": ");
                     }
                 },
             );
@@ -406,6 +398,7 @@ fn nanos_to_time(nanos: u64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
     use prost::Message;
 
@@ -416,7 +409,8 @@ mod tests {
         let formatter = HierarchicalFormatter::new(false, true);
 
         let mut output = Vec::new();
-        formatter.format_logs_bytes_to(&bytes, &mut output);
+        let logs_view = RawLogsData::try_from(&bytes).expect("logs");
+        formatter.format_logs_data_to(&logs_view, &mut output);
 
         let text = String::from_utf8_lossy(&output);
 
@@ -426,11 +420,11 @@ mod tests {
         let expected = "\
 2025-01-15T10:30:00.000Z  RESOURCE   v1.Resource:
 2025-01-15T10:30:00.000Z  │ SCOPE    scope-alpha/1.0.0:
-2025-01-15T10:30:00.000Z  │ ├─ INFO  event: first log in alpha
-2025-01-15T10:30:01.000Z  │ ├─ WARN  event: second log in alpha
+2025-01-15T10:30:00.000Z  │ ├─ INFO  first log in alpha
+2025-01-15T10:30:01.000Z  │ ├─ WARN  second log in alpha
 2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0:
-2025-01-15T10:30:02.000Z  │ ├─ ERROR event: first log in beta
-2025-01-15T10:30:03.000Z  │ └─ DEBUG event: second log in beta
+2025-01-15T10:30:02.000Z  │ ├─ ERROR first log in beta
+2025-01-15T10:30:03.000Z  │ └─ DEBUG second log in beta
 ";
         assert_eq!(text, expected);
     }

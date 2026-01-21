@@ -150,7 +150,10 @@ impl ConsoleWriter {
             time,
             &view,
             |w, cw| cw.write_level(w, &level),
-            |w, _| Self::write_event_name(w, callsite),
+            |w, _| {
+                Self::write_event_name(w, callsite);
+                let _ = w.write_all(b": ");
+            },
         );
 
         w.position() as usize
@@ -396,7 +399,6 @@ impl ConsoleWriter {
 
         // Event name (callsite-based or string-based)
         self.write_styled(w, AnsiCode::Bold, |w| format_event_name(w, self));
-        let _ = w.write_all(b": ");
 
         // Body and attributes
         Self::write_body_and_attrs(w, record);
