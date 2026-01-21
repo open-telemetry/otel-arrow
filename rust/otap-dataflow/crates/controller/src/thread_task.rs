@@ -11,10 +11,10 @@ use tokio_util::sync::CancellationToken;
 
 use otap_df_telemetry::TracingSetup;
 
-/// Handle to a task running on a dedicated thread.
-///
-/// - `shutdown()` requests cancellation via the token (idempotent, best-effort).
-/// - `shutdown_and_join()` requests shutdown and then waits for completion, returning controller::Error on failure.
+/// Handle to a task running on a dedicated thread.  This represents
+/// OS thread and single-threaded async runtime, without thread
+/// pinning, dedicated to things like internal metrics aggregation or
+/// internal event processing.
 pub struct ThreadLocalTaskHandle<T, E> {
     cancel_token: CancellationToken,
     join_handle: Option<thread::JoinHandle<Result<T, E>>>,
@@ -86,6 +86,10 @@ impl<T, E> Drop for ThreadLocalTaskHandle<T, E> {
 
 /// Spawn a non-Send async task on a dedicated OS thread running a single-threaded
 /// Tokio runtime with a LocalSet. Returns a handle to signal shutdown and join.
+///
+/// Note creates an OS thread and a single-threaded async runtime,
+/// without thread pinning, dedicated to things like internal metrics
+/// aggregation or internal event processing.
 ///
 /// The `task_factory` receives a CancellationToken that is cancelled when shutdown is requested
 /// and must return the async task to run. The task's `Output` is surfaced by `shutdown_and_join()`.
